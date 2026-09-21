@@ -269,12 +269,12 @@ describe("ensureChannel", () => {
       join(projectRoot, "app/_components/agent-chat.tsx"),
       "utf8",
     );
-    expect(agentChatSource).toMatch(/<PromptInputTextarea\s+disabled=\{isResuming\}/);
+    expect(agentChatSource).toContain("disabled={isResuming || isDisconnected}");
     expect(agentChatSource).toContain('turnPolicy: "steer"');
     expect(agentChatSource).toContain('const isResuming = agent.status === "resuming"');
     expect(agentChatSource).toContain("canRespond={!isBusy && !isResuming}");
     expect(agentChatSource).toContain("{showPendingThinking ? <PendingThinking /> : null}");
-    expect(agentChatSource).not.toContain("StatusDot");
+    expect(agentChatSource).toContain("useServerStatus");
     await expect(readFile(join(projectRoot, "app/icon.svg"), "utf8")).resolves.toContain(
       'viewBox="0 0 102 102"',
     );
