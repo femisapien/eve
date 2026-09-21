@@ -1,1 +1,1 @@
-{ "title": "Reference", "pages": ["agent-files", "typescript-api", "cli", "telemetry"] }
+{ "title": "Reference", "pages": ["cli", "typescript-api", "agent-files", "telemetry"] }
