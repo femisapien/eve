@@ -68,6 +68,7 @@ function AgentConversation({
   const {
     cache,
     draftOwner,
+    openSubagent,
     preparedSession,
     sessionCreatedAt,
     model,
@@ -341,6 +342,8 @@ function AgentConversation({
                 isPendingAssistantShell &&
                 message.id === lastMessage.id ? null : (
                   <AgentMessage
+                    subagents={agent.data.subagents}
+                    onOpenSubagent={openSubagent}
                     canRespond={!isBusy && !isResuming}
                     isStreaming={
                       isBusy &&
