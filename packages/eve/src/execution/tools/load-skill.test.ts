@@ -39,6 +39,25 @@ describe("loadSkill", () => {
 });
 
 describe("load_skill executor", () => {
+  it("preserves module-authored instruction bodies without reprocessing them", async () => {
+    const ctx = new ContextContainer();
+    const markdown = "---\nThis is the author's instruction body.\n---\nFollow it verbatim.";
+    const execute = skillToolExecutor(ctx, [
+      {
+        description: "Follow the authored policy",
+        logicalPath: "skills/policy.ts",
+        markdown,
+        name: "policy",
+        sourceId: "skills/policy.ts",
+        sourceKind: "module",
+      },
+    ]);
+
+    await expect(
+      contextStorage.run(ctx, () => execute({ skill: "policy" }, {} as never)),
+    ).resolves.toBe(markdown);
+  });
+
   it("loads an authored markdown skill from the active compiled bundle", async () => {
     const ctx = new ContextContainer();
     const execute = skillToolExecutor(ctx, [
@@ -125,7 +144,7 @@ describe("load_skill executor", () => {
         {
           description: "Apply the dynamic policy",
           files: [],
-          markdown: "---\ndescription: Dynamic\n---\n# Dynamic policy\n",
+          markdown: "# Dynamic policy\n",
           name: "policy",
         },
       ],

@@ -322,6 +322,7 @@ export const DynamicSubagentAgentConfigKey = new ContextKey<DynamicSubagentAgent
 export interface DurableDynamicSkillPackage {
   readonly name: string;
   readonly description: string;
+  /** Instruction body; files retain the original SKILL.md bytes. */
   readonly markdown: string;
   readonly files: readonly {
     readonly relativePath: string;

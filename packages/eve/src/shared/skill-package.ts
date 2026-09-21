@@ -20,6 +20,10 @@ export interface MaterializableSkillPackage {
   readonly name: string;
 }
 
+export function stripSkillFrontmatter(markdown: string): string {
+  return markdown.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n?/, "");
+}
+
 /**
  * Normalizes one named skill package into the concrete files eve writes to
  * workspace resources or the live sandbox.

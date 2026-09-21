@@ -4,7 +4,6 @@ import { loadContext } from "#context/container.js";
 import { DynamicSkillManifestKey } from "#context/keys.js";
 import { ConnectionRegistryKey } from "#context/providers/connection-key.js";
 import { BundleKey } from "#runtime/sessions/runtime-context-keys.js";
-import { stripSkillFrontmatter } from "#runtime/skills/sandbox-access.js";
 
 /**
  * Typed input accepted by {@link executeLoadSkillTool}.
@@ -14,45 +13,32 @@ type LoadSkillInput = z.infer<typeof SKILL_INPUT_SCHEMA>;
 /**
  * Executes the `load_skill` tool.
  *
- * Returns authored skill instructions directly from the resolved agent.
- * Active dynamic skills take precedence and retain their instructions in
- * durable context, independent of sandbox materialization.
+ * Returns resolved instructions from memory. Dynamic skills take precedence;
+ * both sources retain instruction bodies independently of sandbox files.
  */
 async function executeLoadSkillTool(args: LoadSkillInput): Promise<unknown> {
   const ctx = loadContext();
   const { skill } = args;
-  const authoredSkills = ctx.require(BundleKey).resolvedAgent.skills;
-  const dynamicSkills = Object.values(ctx.get(DynamicSkillManifestKey) ?? {}).flat();
-  const availableSkills = [
-    ...new Set([...authoredSkills, ...dynamicSkills].map((entry) => entry.name)),
-  ].sort();
+  const skills = [
+    ...Object.values(ctx.get(DynamicSkillManifestKey) ?? {}).flat(),
+    ...ctx.require(BundleKey).resolvedAgent.skills,
+  ];
+  const selected = skills.find((entry) => entry.name === skill);
+  if (selected !== undefined) return selected.markdown;
 
-  try {
-    const dynamicSkill = dynamicSkills.find((entry) => entry.name === skill);
-    if (dynamicSkill !== undefined) {
-      return stripSkillFrontmatter(dynamicSkill.markdown);
-    }
+  const availableSkills = [...new Set(skills.map((entry) => entry.name))].sort();
+  const error = new Error(formatSkillNotFoundError(skill, availableSkills));
+  const connectionName = ctx
+    .get(ConnectionRegistryKey)
+    ?.getConnectionNames()
+    .find((name) => name.toLowerCase() === skill.toLowerCase());
+  if (connectionName === undefined) throw error;
 
-    const authoredSkill = authoredSkills.find((entry) => entry.name === skill);
-    if (authoredSkill !== undefined) {
-      return authoredSkill.markdown;
-    }
-
-    throw new Error(formatSkillNotFoundError(skill, availableSkills));
-  } catch (error) {
-    const connectionName = ctx
-      .get(ConnectionRegistryKey)
-      ?.getConnectionNames()
-      .find((name) => name.toLowerCase() === skill.toLowerCase());
-    if (connectionName === undefined || availableSkills.includes(skill)) throw error;
-
-    const message = error instanceof Error ? error.message : String(error);
-    throw new Error(
-      `${message} "${connectionName}" is an installed connection, not a skill. ` +
-        `Use connection_search with connection "${connectionName}" to find its tools.`,
-      { cause: error },
-    );
-  }
+  throw new Error(
+    `${error.message} "${connectionName}" is an installed connection, not a skill. ` +
+      `Use connection_search with connection "${connectionName}" to find its tools.`,
+    { cause: error },
+  );
 }
 
 function formatSkillNotFoundError(skill: string, availableSkills: readonly string[]): string {

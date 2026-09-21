@@ -178,11 +178,13 @@ describe("lazy dynamic skill lifecycle", () => {
   it("rebuilds announcements and loads durable markdown after a JSON round trip before opening a fresh sandbox", async () => {
     const first = createContext();
     const bytes = new Uint8Array([0, 128, 255]);
+    const body = "---\nKeep this body intact.\n---\nFollow the tenant policy.";
+    const markdown = `---\ndescription: Tenant policy\n---\n${body}`;
     await startTurn(first.ctx, [
       resolver("tenant", () =>
         defineSkill({
           description: "Tenant policy",
-          markdown: "Follow the tenant policy.",
+          markdown,
           files: { "assets/policy.bin": bytes },
         }),
       ),
@@ -193,7 +195,8 @@ describe("lazy dynamic skill lifecycle", () => {
     await startTurn(resumed.ctx, []);
 
     expect(resumed.ctx.get(PendingSkillAnnouncementKey)).toContain("tenant: Tenant policy");
-    await expect(load(resumed.ctx, "tenant")).resolves.toBe("Follow the tenant policy.");
+    await expect(load(first.ctx, "tenant")).resolves.toBe(body);
+    await expect(load(resumed.ctx, "tenant")).resolves.toBe(body);
     expect(first.get).not.toHaveBeenCalled();
     expect(resumed.get).not.toHaveBeenCalled();
     expect(resumed.sandbox.writes).toEqual([]);
@@ -201,6 +204,7 @@ describe("lazy dynamic skill lifecycle", () => {
     const actual = await skillHandle(resumed.ctx, "tenant").file("assets/policy.bin").bytes();
     expect([...actual]).toEqual([...bytes]);
     expect(resumed.get).toHaveBeenCalledOnce();
+    expect(resumed.sandbox.files.get(`${SKILL_ROOT}/tenant/SKILL.md`)).toBe(markdown);
   });
 
   it("does not acquire or rewrite an unchanged package when fresh bytes and file key order change", async () => {

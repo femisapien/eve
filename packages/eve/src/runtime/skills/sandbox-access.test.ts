@@ -1,10 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import {
-  assertSafeSkillId,
-  createSandboxSkillHandle,
-  stripSkillFrontmatter,
-} from "#runtime/skills/sandbox-access.js";
+import { assertSafeSkillId, createSandboxSkillHandle } from "#runtime/skills/sandbox-access.js";
 import { mockSandbox } from "#internal/testing/mocks/mock-sandbox.js";
 
 const HOME_PROBE_COMMAND = `printf '%s\\n' "$HOME"`;
@@ -19,15 +15,6 @@ describe("assertSafeSkillId", () => {
     for (const value of ["", " skill", ".skill", "../skill", "a/b", "a\\b", "C:skill"]) {
       expect(() => assertSafeSkillId(value)).toThrow("Expected skill id");
     }
-  });
-});
-
-describe("stripSkillFrontmatter", () => {
-  it("preserves markdown and strips only leading frontmatter", () => {
-    expect(stripSkillFrontmatter("---\nname: research\ndescription: x\n---\n# Research\n")).toBe(
-      "# Research\n",
-    );
-    expect(stripSkillFrontmatter("# Research\n\n---\n")).toBe("# Research\n\n---\n");
   });
 });
 

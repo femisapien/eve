@@ -18,6 +18,11 @@ state. Listing skills and loading their markdown must not acquire a sandbox,
 even when a package includes supporting files or execution resumes in a fresh
 workflow step. Empty results with no prior materialization do no sandbox work.
 
+Static and dynamic skills share one in-memory lookup with dynamic precedence.
+Prepare dynamic instruction bodies during resolution, preserving the original
+`SKILL.md` bytes for the sandbox. Static instruction bodies already come from
+the compiled agent and need no per-session copy or load-time preprocessing.
+
 Accessing the sandbox through `ctx.getSandbox`, a skill file handle, or a
 built-in filesystem tool materializes the current package files before reading
 or running commands. An unused supporting file remains unstaged until this

@@ -3,12 +3,6 @@ import type { SandboxAccess } from "#sandbox/state.js";
 import type { SkillHandle } from "#shared/skill-types.js";
 import { resolveSandboxSkillReadPaths } from "#shared/skill-paths.js";
 
-const FRONTMATTER_PATTERN = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
-
-export function stripSkillFrontmatter(markdown: string): string {
-  return markdown.replace(FRONTMATTER_PATTERN, "");
-}
-
 /**
  * Validates a skill id before it is used as one path segment under
  * the sandbox skill root.

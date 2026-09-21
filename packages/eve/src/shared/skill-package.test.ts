@@ -4,10 +4,21 @@ import { mockSandbox } from "#internal/testing/mocks/mock-sandbox.js";
 import {
   normalizeSkillPackage,
   removeSkillPackageFromSandbox,
+  stripSkillFrontmatter,
   writeSkillPackageToSandbox,
 } from "#shared/skill-package.js";
 
 const HOME_PROBE_COMMAND = `printf '%s\\n' "$HOME"`;
+
+describe("stripSkillFrontmatter", () => {
+  it.each(["\n", "\r\n"])("strips leading frontmatter with %j line endings", (newline) => {
+    const markdown = ["---", "name: research", "description: x", "---", "# Research", ""].join(
+      newline,
+    );
+    expect(stripSkillFrontmatter(markdown)).toBe(`# Research${newline}`);
+    expect(stripSkillFrontmatter("# Research\n\n---\n")).toBe("# Research\n\n---\n");
+  });
+});
 
 describe("normalizeSkillPackage", () => {
   it("generates SKILL.md and sorts package files deterministically", () => {

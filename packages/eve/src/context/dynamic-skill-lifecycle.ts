@@ -2,7 +2,11 @@ import type { ModelMessage } from "ai";
 
 import { ALLOWED_DYNAMIC_SKILL_EVENTS } from "#dynamic/definition.js";
 import { isBrandedSkillEntry, type SkillPackageDefinition } from "#shared/skill-definition.js";
-import { type MaterializableSkillPackage, normalizeSkillPackage } from "#shared/skill-package.js";
+import {
+  type MaterializableSkillPackage,
+  normalizeSkillPackage,
+  stripSkillFrontmatter,
+} from "#shared/skill-package.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import type { ResolvedDynamicSkillResolver } from "#runtime/types.js";
 import { formatAvailableSkillsSection } from "#execution/skills/instructions.js";
@@ -167,7 +171,7 @@ export async function dispatchDynamicSkillEvent(input: {
           content: file.content.toString("base64"),
           relativePath: file.relativePath,
         })),
-        markdown: skill.markdown,
+        markdown: stripSkillFrontmatter(skill.markdown),
         name: skill.name,
       }));
     }
