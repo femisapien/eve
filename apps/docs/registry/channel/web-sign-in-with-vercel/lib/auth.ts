@@ -1,4 +1,5 @@
 import { betterAuth } from "better-auth";
+import { APIError, createAuthMiddleware } from "better-auth/api";
 
 const SESSION_MAX_AGE_SECONDS = 8 * 60 * 60;
 const DEVELOPMENT_ALLOWED_HOSTS = ["localhost:*", "127.0.0.1:*"];
@@ -41,8 +42,23 @@ export const auth = betterAuth({
       strategy: "jwe",
     },
   },
+  // Better Auth filters input:false fields from OAuth profile mapping too.
+  // Accept this field internally, but reject any attempt to set it via an API body.
+  hooks: {
+    before: createAuthMiddleware(async (ctx) => {
+      if (ctx.body && Object.hasOwn(ctx.body, "vercelSubject")) {
+        throw new APIError("BAD_REQUEST", { message: "Account identity is provider-managed." });
+      }
+    }),
+  },
+  user: {
+    additionalFields: {
+      vercelSubject: { type: "string", required: false },
+    },
+  },
   socialProviders: {
     vercel: {
+      mapProfileToUser: (profile) => ({ vercelSubject: profile.sub }),
       clientId: requireEnvironmentVariable("VERCEL_APP_CLIENT_ID"),
       clientSecret: requireEnvironmentVariable("VERCEL_APP_CLIENT_SECRET"),
     },

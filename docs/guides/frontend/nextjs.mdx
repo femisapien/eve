@@ -185,16 +185,29 @@ See [Resumable sessions](./overview#resumable-sessions) for persistence and repl
 - [Auth & route protection](../auth-and-route-protection)
 - [Deployment](../deployment/overview)
 
-## Generated chat behavior
+## Session history and persistent drafts
 
-Improve generated Web Chat link and code contrast, simplify code blocks, and keep a compact composer visible while scrolling.
+New Web Chat apps include a responsive history sidebar, persistent per-session
+drafts with undo/redo and attachments, connection recovery, and a closable subagent
+inspection pane. Drafts and cached child transcripts are stored in the browser,
+isolated by workspace user. Clearing browser storage removes these local copies;
+eve remains the server transcript store.
 
-Add consistent copying for tool commands, parameters, output and errors. Preserve disclosure choices during streaming and reduce repeated thinking shimmer.
+Local development reads sessions from the app's local eve workflow storage.
+For deployed, signed-in history, select Sign in with Vercel and configure
+`SESSION_DATABASE_URL` (a Neon-compatible Postgres URL) and `SESSION_INDEX_SCOPE`
+(a stable scope unique to the app/environment) in both Next.js and eve services.
+Run `node scripts/migrate-session-index.mjs` once before serving production traffic.
 
-Preserve repeated chat messages, follow new submissions, and derive parent activity independently of children. Disable input when the server is unreachable and recover on reconnection.
+The generated adapter derives ownership from the verified Vercel account subject
+in the Better Auth session. Deployment OIDC credentials are separate from browser
+identity. The base Web Chat scaffold deliberately leaves its production viewer
+adapter unconfigured; custom authentication must implement `lib/session-viewer.ts`
+and enforce the same owner checks in the eve channel.
 
-Add local session history ordered by recent messages, metadata tooltips, responsive navigation, and cached session switching.
-
-Persist composer drafts, attachments and undo history across reloads. Clear only acknowledged submissions without erasing newer edits.
-
-Inspect subagents in a closable, resizable detail pane with persistent transcripts and view state, named progress and accurate completion status.
+The index stores ownership, title, creation time, last-message time, and last-turn
+time; it does not duplicate transcripts. Browser users can read/control only their
+indexed sessions and inspect children linked by their parent's durable events.
+Session creation and index writes are not transactional together: a database
+outage may leave an unlisted session or stale activity metadata. Existing sessions
+are not automatically backfilled.

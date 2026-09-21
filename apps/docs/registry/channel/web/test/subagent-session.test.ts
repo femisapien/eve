@@ -1,12 +1,17 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { MessageStreamEvent } from "eve/client";
+import type { Channel, RouteHandlerArgs } from "eve/channels";
+import { eveChannel } from "eve/channels/eve";
+import { withSessionAccess } from "../lib/session-access.ts";
+import { canReadSubagent } from "../lib/subagent-access.ts";
 import { chatMessageReducer } from "../lib/chat-message-reducer.ts";
 import {
   readSubagentEvents,
   subagentStreamPath,
   type SubagentSession,
 } from "../lib/subagent-session.ts";
+import type { SessionStore } from "../lib/session-store.ts";
 
 const child: SubagentSession = {
   sessionId: "parent",
@@ -95,4 +100,117 @@ test("stream HTTP and malformed record failures produce a recoverable error", as
       }
     });
   }
+});
+function fixture(events: MessageStreamEvent[] = [called]) {
+  let opened = 0,
+    cancelled = false;
+  const unused = () => {
+    throw new Error("Unexpected channel operation");
+  };
+  const args: RouteHandlerArgs = {
+    from: unused,
+    resolveSession: unused,
+    to: unused,
+    waitUntil: unused,
+    requestIp: null,
+    params: { sessionId: "child" },
+    attachSession() {
+      return {
+        getStreamTailIndex: async () => events.length - 1,
+        getEventStream: async () => {
+          opened++;
+          return new ReadableStream({
+            start(controller) {
+              events.forEach((event) => controller.enqueue(event));
+            },
+            cancel() {
+              cancelled = true;
+            },
+          });
+        },
+      } as ReturnType<RouteHandlerArgs["attachSession"]>;
+    },
+  };
+  const store = {
+    owns: async (owner: string, id: string) => owner === "alice" && id === "parent",
+  } as SessionStore;
+  return {
+    args,
+    store,
+    get opened() {
+      return opened;
+    },
+    get cancelled() {
+      return cancelled;
+    },
+  };
+}
+const request = (query = "parentSessionId=parent&callId=call") =>
+  new Request(`https://app.example/eve/v1/session/child/stream?${query}`);
+test("an owner may read only the exact child binding in their parent's durable history", async () => {
+  const f = fixture();
+  assert.equal(await canReadSubagent(request(), f.args, "alice", f.store), true);
+  assert.equal(f.cancelled, true);
+  assert.equal(
+    await canReadSubagent(
+      request("parentSessionId=parent&callId=forged"),
+      f.args,
+      "alice",
+      f.store,
+    ),
+    false,
+  );
+  assert.equal(
+    await canReadSubagent(
+      request(),
+      { ...f.args, params: { sessionId: "sibling" } },
+      "alice",
+      f.store,
+    ),
+    false,
+  );
+});
+test("foreign owners and missing parent coordinates never open a stream", async () => {
+  const f = fixture();
+  assert.equal(await canReadSubagent(request(), f.args, "bob", f.store), false);
+  assert.equal(await canReadSubagent(request(""), f.args, "alice", f.store), false);
+  assert.equal(f.opened, 0);
+});
+test("remote bindings cannot authorize an unrelated local child with the same ID", async () => {
+  const f = fixture([{ ...called, data: { ...child, remote: { url: "https://remote.example" } } }]);
+  assert.equal(await canReadSubagent(request(), f.args, "alice", f.store), false);
+});
+
+test("parent authorization grants only child stream reads, never child writes", async () => {
+  const f = fixture();
+  const base = eveChannel({ auth: [] });
+  let calls = 0;
+  const channel: Channel = withSessionAccess(
+    {
+      ...base,
+      routes: base.routes
+        .filter((route) => route.transport !== "websocket")
+        .map((route) => ({
+          ...route,
+          handler: async () => {
+            calls++;
+            return Response.json({ ok: true });
+          },
+        })),
+    },
+    { viewer: async () => ({ key: "alice", name: "Alice" }), store: () => f.store },
+  );
+  for (const route of channel.routes.filter((route) => route.path.includes(":sessionId"))) {
+    if (route.transport === "websocket") continue;
+    const response = await route.handler(
+      new Request(request().url, { method: route.method }),
+      f.args,
+    );
+    assert.equal(
+      response.status,
+      route.method === "GET" && route.path.endsWith("/stream") ? 200 : 404,
+      route.path,
+    );
+  }
+  assert.equal(calls, 1);
 });

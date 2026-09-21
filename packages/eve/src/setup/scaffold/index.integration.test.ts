@@ -275,7 +275,7 @@ describe("ensureChannel", () => {
     expect(agentChatSource).toContain('const isResuming = agent.status === "resuming"');
     expect(agentChatSource).toContain("canRespond={!isBusy && !isResuming}");
     expect(agentChatSource).toContain("{showPendingThinking ? <PendingThinking /> : null}");
-    expect(agentChatSource).toContain("useServerStatus");
+    expect(agentChatSource).not.toContain("StatusDot");
     await expect(readFile(join(projectRoot, "app/icon.svg"), "utf8")).resolves.toContain(
       'viewBox="0 0 102 102"',
     );
@@ -376,8 +376,17 @@ describe("ensureChannel", () => {
     expect(authSource).not.toContain("*.vercel.app");
 
     const channelSource = await readFile(join(projectRoot, "agent/channels/eve.ts"), "utf8");
-    expect(channelSource).toContain("auth.api.getSession");
-    expect(channelSource).toContain('authenticator: "better-auth:vercel"');
+    expect(channelSource).toContain("withSessionAccess");
+    const viewerSource = await readFile(join(projectRoot, "lib/session-viewer.ts"), "utf8");
+    expect(viewerSource).toContain("auth.api.getSession");
+    expect(viewerSource).toContain("viewerFromVerifiedSession");
+    const identitySource = await readFile(join(projectRoot, "lib/session-identity.ts"), "utf8");
+    expect(identitySource).toContain('authenticator: "better-auth:vercel"');
+    expect(identitySource).toContain("session?.user.vercelSubject");
+    expect(authSource).toContain("vercelSubject: profile.sub");
+    expect(result.filesWritten).toContain(join(projectRoot, "agent/hooks/session-history.ts"));
+    expect(result.filesWritten).toContain(join(projectRoot, "db/session-index.sql"));
+    expect(result.filesWritten.some((file) => file.includes("/test/"))).toBe(false);
     expect(channelSource).not.toContain('issuer: "https://vercel.com"');
     expect(channelSource).toContain("vercelOidc()");
     expect(channelSource).toContain("localDev()");

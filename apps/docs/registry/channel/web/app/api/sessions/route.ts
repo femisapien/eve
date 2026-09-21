@@ -1,6 +1,8 @@
 import { localActivityReader } from "@/lib/local-session-activity";
 import { readLocalSessionHistory } from "@/lib/local-session-history";
 import { paginateSessions, parseSessionPageQuery } from "@/lib/session-pagination";
+import { productionSessionStore, usesLocalSessions } from "@/lib/production-session-store";
+import { sessionViewer } from "@/lib/session-viewer";
 import type { SessionHistory } from "@/lib/session-history";
 
 export const runtime = "nodejs";
@@ -15,10 +17,7 @@ export async function GET(request: Request) {
   } catch (error) {
     return Response.json({ error: (error as Error).message }, { status: 400, headers });
   }
-  if (
-    process.env.NODE_ENV === "development" &&
-    !["production", "preview"].includes(process.env.VERCEL_ENV ?? "")
-  ) {
+  if (usesLocalSessions()) {
     try {
       const history: SessionHistory = {
         ...paginateSessions(
@@ -32,8 +31,24 @@ export async function GET(request: Request) {
       return Response.json({ error: "Unable to read session history." }, { status: 503, headers });
     }
   }
-  return Response.json(
-    { error: "Production session history requires an authenticated store." },
-    { status: 401, headers },
-  );
+  let viewer;
+  try {
+    viewer = await sessionViewer(request);
+  } catch {
+    return Response.json({ error: "Unable to verify your identity." }, { status: 401, headers });
+  }
+  if (!viewer)
+    return Response.json({ error: "Sign in to view your chats." }, { status: 401, headers });
+  try {
+    const history: SessionHistory = {
+      ...(await productionSessionStore().list(viewer.key, query)),
+      viewer: { id: viewer.key, name: viewer.name, source: "user" },
+    };
+    return Response.json(history, { headers });
+  } catch {
+    return Response.json(
+      { error: "Session history is unavailable. Please retry." },
+      { status: 503, headers },
+    );
+  }
 }
