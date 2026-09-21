@@ -238,10 +238,9 @@ describe("createSlackFetchFile", () => {
     await expect(result).rejects.not.toThrow("PRIVATE");
   });
 
-  // Documents what eve does today: the file download has no retry
-  // logic either, so a rate-limited attachment fails the turn even
-  // though Slack said how long to wait.
-  it("throws on a rate-limited download and ignores Retry-After (documents current behavior)", async () => {
+  // The file download has no retry logic, so a rate-limited attachment
+  // fails the turn even though Slack said how long to wait.
+  it("throws on a rate-limited download and ignores Retry-After", async () => {
     const fetchSpy = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValue(new Response("", { status: 429, headers: { "retry-after": "30" } }));

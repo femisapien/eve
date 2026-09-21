@@ -228,15 +228,10 @@ function allowUpload(api: MockSlack, fileIds: readonly string[] = ["F1"]): void 
 
 /**
  * Declares the three calls a turn makes on its way out: the reply, an
- * edit of it, and the typing indicator.
- *
- * Narrow on purpose. A baseline wide enough to cover everything the
- * channel can reach leaves the double strict only about method names
- * outside the contract — and those do not typecheck through `allow()`
- * in the first place, so it buys nothing while hiding a second
- * `chat.update`, an extra `conversations.replies`, or an ephemeral on
- * an error path. Anything past posting is declared by the test that
- * expects it.
+ * edit of it, and the typing indicator. Nothing else — a second
+ * `chat.update`, an extra `conversations.replies`, an ephemeral on an
+ * error path — is declared by the test that expects it, so a turn that
+ * makes one unasked fails.
  */
 function allowOutboundPost(api: MockSlack): void {
   // Successive posts get distinct ts values so a test that reads back
@@ -296,10 +291,9 @@ function allowConversationInfo(
 ): void {
   api.allow("conversations.info").andRespond((body) => {
     const known = conversations[body.channel];
-    // A violation rather than a bare throw: production swallows a
-    // failing conversations.info and falls back to treating the
-    // channel as private, so a throw here would quietly move the turn
-    // onto the branch the test is not looking at.
+    // A violation: production swallows a failing conversations.info
+    // and treats the channel as private, so a bare throw would move the
+    // turn onto a branch the test is not looking at.
     if (known === undefined) api.reject(`conversations.info: unexpected ${body.channel}`);
     return { ok: true, channel: { id: body.channel, ...known } };
   });
@@ -1832,8 +1826,7 @@ describe("rebuildSlackContext", () => {
     const secondBody = bodyOf(slack.calls[1]);
     expect(secondBody.thread_ts).toBe(ANCHOR_TS);
     // Both replies live in the anchored thread, the second hanging off
-    // the first rather than starting a second top-level message. The
-    // call bodies above already pin that; nothing further to read back.
+    // the first rather than starting a second top-level message.
 
     // Once anchored, continuation.alias does not fire again — the
     // raw token is unchanged across subsequent posts.
@@ -1896,9 +1889,9 @@ describe("rebuildSlackContext", () => {
   });
 
   it("does not upload a threadless reply when Slack omits the anchor timestamp", async () => {
-    // Slack's own chat.postMessage always answers with a ts, so this
-    // response is deliberately off-contract: it pins what eve does if
-    // Slack ever leaves nothing to anchor on.
+    // Slack's own chat.postMessage always answers with a ts. This
+    // off-contract response pins what eve does if it ever leaves
+    // nothing to anchor on.
     slack.allow("chat.postMessage").andReturnRaw({ ok: true });
     const adapter = withState(
       getAdapter(
@@ -2575,8 +2568,7 @@ describe("slackChannel() inbound mention pipeline", () => {
 
     expect(response.status).toBe(200);
     expect(send).toHaveBeenCalledTimes(1);
-    // The indicator was attempted once and its failure swallowed: the
-    // 200 and the dispatch above are the whole claim.
+    // The indicator was attempted once, and its failure swallowed.
     expect(slack.callsTo("assistant.threads.setStatus")).toHaveLength(1);
   });
 
@@ -2827,7 +2819,7 @@ describe("slackChannel() generic Events API pipeline", () => {
       });
       expect(ctx.slack.teamId).toBe("T_ACTOR");
       // Reached through the raw request escape hatch, outside the
-      // typed contract by design.
+      // typed contract.
       slack.allowUncheckedMethod("reactions.get", { ok: true, message: { reactions: [] } });
       await ctx.slack.request("reactions.get", {
         channel: "C01",
@@ -4671,9 +4663,8 @@ describe("slackChannel() Slack API base URL", () => {
   });
 
   /**
-   * Stubs the global `fetch`, which this block — unlike the rest of the
-   * file — has to do: what it pins is which base a call lands on when no
-   * `api.fetch` is configured.
+   * Stubs the global `fetch`: what this block pins is which base a call
+   * lands on when no `api.fetch` is configured.
    */
   function useGlobalSlack(url?: string): MockSlack {
     const api = mockSlack(url === undefined ? {} : { url });
@@ -4759,9 +4750,8 @@ describe("slackChannel() Slack API base URL", () => {
       buildFreeformClickRequest(),
     );
 
-    // The simulator's double rejects anything aimed at another base, so
-    // a leak back to slack.com is a recorded violation rather than a
-    // silently passing assertion.
+    // The simulator's double rejects anything aimed at another base,
+    // so a leak back to slack.com is a recorded violation.
     expect(simulator.callsTo("views.open")).toHaveLength(1);
     expect(slack.callsTo("views.open")).toHaveLength(1);
     simulator.assertNoViolations();

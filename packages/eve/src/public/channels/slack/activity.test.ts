@@ -18,10 +18,9 @@ const doubles: MockSlack[] = [];
 /**
  * A double registered for the {@link afterEach} sweep below.
  *
- * These are renderer paths, and renderers swallow transport errors so a
- * failed status update never fails the turn. Without the sweep an
- * unstubbed or malformed call reads as a render that did not happen,
- * which is the hardest kind of failure to diagnose here.
+ * Renderers swallow transport errors so a failed status update never
+ * fails the turn. The sweep is what separates an unstubbed or malformed
+ * call from a render that legitimately did not happen.
  */
 function slackDouble(): MockSlack {
   const slack = mockSlack();

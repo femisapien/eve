@@ -16,10 +16,9 @@ const doubles: MockSlack[] = [];
 /**
  * A double registered for the {@link afterEach} sweep below.
  *
- * These are renderer paths, and renderers swallow transport errors so a
- * failed status update never fails the turn. Without the sweep an
- * unstubbed or malformed call reads as a render that did not happen,
- * which is the hardest kind of failure to diagnose here.
+ * Renderers swallow transport errors so a failed status update never
+ * fails the turn. The sweep is what separates an unstubbed or malformed
+ * call from a render that legitimately did not happen.
  */
 function slackDouble(): MockSlack {
   const slack = mockSlack();
@@ -408,8 +407,8 @@ describe("Slack activity activity", () => {
     const cursors = slack
       .callsTo("conversations.replies")
       .map((call) => (call.body as { cursor?: string }).cursor);
-    // Asserting the exact cursor proves it was echoed back, where the
-    // old `expect.any(String)` only proved some cursor was sent.
+    // The exact cursor, so the assertion pins that page one's cursor
+    // was echoed back and not merely that some cursor was sent.
     expect(cursors).toEqual([undefined, "page-2"]);
     expect(slack.calls.at(-1)?.method).toBe("chat.update");
     expect(slack.bodyOf("chat.update")).toMatchObject({

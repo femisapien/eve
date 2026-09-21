@@ -47,8 +47,8 @@ function allowUpload(slack: MockSlack, fileIds: readonly string[] = ["F1"]): voi
   const pending = [...fileIds];
   slack.allow("files.getUploadURLExternal").andRespond(() => {
     const id = pending.shift();
-    // A violation rather than a bare throw, so it survives the paths
-    // that swallow a rejected fetch.
+    // A violation, so it still surfaces on the paths that swallow a
+    // rejected fetch.
     if (id === undefined) {
       slack.reject("more files were uploaded than allowUpload declared ids for");
     }
@@ -60,15 +60,11 @@ function allowUpload(slack: MockSlack, fileIds: readonly string[] = ["F1"]): voi
 }
 
 describe("callSlackApi encoding", () => {
-  // Slack accepts form encoding on every endpoint but JSON on only a
-  // subset (conversations.replies rejects JSON). Lock in form so the
-  // partial-JSON endpoints don't silently break again.
+  // Slack accepts form encoding on every endpoint but JSON on only
+  // some (conversations.replies rejects JSON), so eve form-encodes
+  // everything bar the two JSON-only surfaces.
   it("sends every Slack API call as application/x-www-form-urlencoded", async () => {
     const slack = mockSlack();
-    // Each answers with the shape Slack really returns rather than a
-    // bare `{ ok: true }`. These are all contract methods, so declaring
-    // them through the unchecked door would trade the response-shape
-    // check for a convenience the contract can supply itself.
     const responses = {
       "assistant.threads.setStatus": { ok: true },
       "chat.postEphemeral": { ok: true, message_ts: "1700.2" },
@@ -95,8 +91,8 @@ describe("callSlackApi encoding", () => {
     for (const call of slack.calls) {
       expect(call.contentType).toBe("application/x-www-form-urlencoded");
     }
-    // The double rejects an unencoded or unsigned call outright, so a
-    // regression surfaces here even for a method added later.
+    // The double rejects an unencoded or unsigned call, so this covers
+    // a method added to the list later as well.
     slack.assertNoViolations();
   });
 });
@@ -320,17 +316,16 @@ describe("SlackThread.post with files", () => {
 });
 
 /**
- * Pins a latent production bug rather than fixing it: this PR is
- * test-only.
+ * Pins a production bug, and does not fix it.
  *
  * {@link SlackPostedMessage.id} is documented as the Slack message `ts`,
  * which is what a follow-up `chat.update` needs, and the
- * `{ markdown | blocks | card } + files` branches do return one. The
- * `{ text, files }` branch instead returns `raw.files[0].id` — a file id
- * from a different Slack namespace — so a caller that updates the
- * message it just posted addresses a file that no `chat.update` can
- * reach. Seeing it at all takes a double whose message `ts` and file
- * ids are distinguishable, which is what the stubs below declare.
+ * `{ markdown | blocks | card } + files` branches return one. The
+ * `{ text, files }` branch returns `raw.files[0].id` — a file id, from a
+ * different Slack namespace — so a caller that updates the message it
+ * just posted addresses a file no `chat.update` can reach. The stubs
+ * below give the message `ts` and the file ids distinguishable values,
+ * which is what makes the difference visible.
  */
 describe("SlackThread.post id namespace", () => {
   let slack: MockSlack;
@@ -443,10 +438,9 @@ describe("Slack API failure surfaces", () => {
     });
   }
 
-  // Documents what eve does today, not what it should do: the vendored
-  // Slack primitive has no retry logic at all, so a 429 fails the call
-  // outright even though Slack said exactly how long to wait.
-  it("throws on HTTP 429 without honoring Retry-After (documents current behavior)", async () => {
+  // The vendored Slack primitive has no retry logic, so a 429 fails
+  // the call outright even though Slack said how long to wait.
+  it("throws on HTTP 429 without honoring Retry-After", async () => {
     slack.allow("chat.postMessage").andReturn({ ok: true, channel: "C01", ts: "1700.1" });
     slack.failNextHttp("chat.postMessage", {
       status: 429,
@@ -529,10 +523,10 @@ describe("Slack API failure surfaces", () => {
     expect(slack.callsTo("files.completeUploadExternal")).toHaveLength(1);
   });
 
-  // Documents current behavior: `fileIds` is built from the ids eve
-  // staged, never reconciled against the files Slack says it completed,
-  // so a partial completion is reported to the caller as a full success.
-  it("reports a partial completeUploadExternal as a full success (documents current behavior)", async () => {
+  // `fileIds` is built from the ids eve staged and never reconciled
+  // against the files Slack says it completed, so a partial completion
+  // reaches the caller as a full success.
+  it("reports a partial completeUploadExternal as a full success", async () => {
     allowUpload(slack, ["F1", "F2"]);
     // Slack completing only one of the two files it was sent.
     slack.allow("files.completeUploadExternal").andReturn({ ok: true, files: [{ id: "F1" }] });
@@ -709,8 +703,8 @@ describe("SlackThread.refresh", () => {
     const gate = new Promise<void>((resolve) => {
       release = resolve;
     });
-    // Holding the reply in flight is what makes the overlap observable;
-    // the workspace behind it stays the real one.
+    // Holding the reply in flight is what makes the overlap
+    // observable; the double behind the gate still serves it.
     const gatedFetch: typeof globalThis.fetch = async (target, init) => {
       if (String(target).endsWith("conversations.replies")) await gate;
       return slack.fetch(target, init);
@@ -1192,8 +1186,8 @@ describe("Slack Web API base URL", () => {
   });
 
   it("encodes the JSON-only surfaces as JSON and signs them with the bot token", async () => {
-    // Asserts the exact transport headers rather than Slack semantics,
-    // so it reads the raw `init` instead of going through the double.
+    // Asserts the transport headers themselves, so it reads the raw
+    // `init` instead of going through the double.
     const apiFetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
       Response.json({ ok: true }),
     );
@@ -1331,9 +1325,9 @@ describe("Slack Web API base URL", () => {
       "https://sim.example/api/conversations.replies",
       "https://sim.example/api/auth.test",
     ]);
-    // The refresh parsed the replies the simulator served. That the "hi"
-    // just posted would also come back is a fact about Slack, not about
-    // eve, so this asserts only what the double was told to return.
+    // The refresh parsed the replies the simulator served. Slack would
+    // also return the "hi" just posted; the double returns only what it
+    // was told to.
     expect(binding.thread.recentMessages.map((message) => message.text)).toEqual(["root"]);
   });
 
@@ -1409,8 +1403,8 @@ describe("Slack Web API base URL", () => {
 
   it("routes the workspace handle through the configured base", async () => {
     const simulator = mockSlack({ url: "https://sim.example/api/" });
-    // Reached through the raw request escape hatch, which is outside the
-    // typed contract by design.
+    // Reached through the raw request escape hatch, which is outside
+    // the typed contract.
     simulator.allowUncheckedMethod("usergroups.list", { ok: true, usergroups: [] });
     const handle = buildSlackWorkspaceHandle({
       api: { url: "https://sim.example/api/", fetch: simulator.fetch },
