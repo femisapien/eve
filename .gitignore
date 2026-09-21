@@ -67,3 +67,7 @@ Thumbs.db
 .vercel
 .env*.local
 .env*
+
+# Generated Web Chat verification apps
+.web-preview/
+.web-preview-auth/
