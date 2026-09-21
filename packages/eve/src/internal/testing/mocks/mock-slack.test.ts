@@ -12,9 +12,8 @@ describe("mockSlack strictness", () => {
     const slack = mockSlack();
     slack.allow("auth.test").andReturn({ ok: true });
 
-    // The whole point of the double: a method nobody declared must not
-    // quietly succeed. The message has to be diagnosable without reading
-    // the double's source.
+    // The failure has to be diagnosable without opening the double's
+    // source, so the message names the method and what is stubbed.
     await expect(call(slack, "chat.postMessage", { channel: "C01" })).rejects.toThrow(
       /chat\.postMessage was called but never stubbed.*slack\.allow\("chat\.postMessage"\).*stubbed methods: auth\.test/s,
     );
@@ -42,8 +41,7 @@ describe("mockSlack strictness", () => {
     slack.failNext("chat.postMessage", "ratelimited");
 
     // A queued failure says how the next call fails, not that the call
-    // was expected: serving it would hand back a well-formed envelope
-    // for a collaboration no test ever declared.
+    // was expected, so the method still has to be stubbed.
     await expect(call(slack, "chat.postMessage", { channel: "C01" })).rejects.toThrow(
       /never stubbed/,
     );
@@ -67,9 +65,9 @@ describe("mockSlack strictness", () => {
       return { ok: true, channel: { id: body.channel } };
     });
 
-    // Production swallows a throwing conversations.info and falls back
-    // to treating the channel as private, so a stub that merely threw
-    // would leave the test green on the wrong branch.
+    // Production swallows a failing conversations.info and treats the
+    // channel as private, so the violation is what keeps a rejected
+    // call from passing as the private branch.
     await expect(call(slack, "conversations.info", { channel: "C_OTHER" })).rejects.toThrow(
       /unexpected C_OTHER/,
     );
@@ -103,8 +101,8 @@ describe("mockSlack responses", () => {
     slack.allow("chat.postMessage").andFail("channel_not_found");
     slack.allow("chat.postMessage").andReturn({ ok: true, ts: "1700.1" });
 
-    // A failure that outlived the declaration replacing it would make
-    // every subsequent stub for the method silently inert.
+    // A declared failure is an answer like any other, so the andReturn
+    // below clears it.
     expect(await call(slack, "chat.postMessage", { channel: "C01" })).toEqual({
       ok: true,
       ts: "1700.1",

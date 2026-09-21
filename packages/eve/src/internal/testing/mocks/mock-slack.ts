@@ -1,38 +1,24 @@
 /**
- * A strict test double over the Slack Web API, in the shape rspec-mocks
- * would build it.
+ * A strict test double over the Slack Web API.
  *
  * The double owns the `api.fetch` seam and nothing else. It holds no
- * workspace, allocates no timestamps, and models no Slack behavior. Each
- * test declares the collaboration it expects — which methods are called
- * and what they return — and asserts afterwards against the recorded
- * calls.
+ * workspace, allocates no timestamps, and models no Slack behavior. A
+ * test declares which methods may be called and what they answer, then
+ * asserts against the recorded calls.
  *
- * ## Strict by default
+ * A method nobody stubbed fails the request, naming the method and
+ * listing what is stubbed, so a Slack call added to the channel fails
+ * every test that reaches it until those tests declare it.
  *
- * A method nobody stubbed is a test failure naming the method, never a
- * friendly `{ ok: true }`. This is the property the whole double exists
- * for. When someone adds a Slack call to the channel next quarter, their
- * test fails immediately and tells them what to declare, instead of
- * passing having verified nothing. A permissive default is how a fake
- * quietly stops describing reality.
+ * Failures are recorded as {@link MockSlack.violations} as well as
+ * rejecting the `fetch`, because production paths such as thread refresh
+ * and typing indicators swallow transport errors. Assert with
+ * {@link MockSlack.assertNoViolations}.
  *
- * Failures are also recorded as {@link MockSlack.violations}, because
- * several production paths (thread refresh, typing indicators) swallow
- * transport errors and would otherwise hide the very failure that is
- * supposed to be loud. Assert with {@link MockSlack.assertNoViolations}.
- *
- * ## What it cannot tell you
- *
- * Stub shapes are checked against {@link SlackApiContract}, which is our
- * belief about Slack, not Slack. If Slack changes a response shape, this
- * double keeps answering the old one and every test keeps passing — no
- * local artifact can catch that, and none here pretends to. What the
- * contract does catch is *our* drift: a typo'd method, a stub returning
- * the wrong shape, or a new production call with no contract entry.
- *
- * There is deliberately no `and_call_original` and no partial double:
- * Slack is not in-process, so there is no original to call.
+ * Stub method names and response shapes are checked against
+ * {@link SlackApiContract}, which catches a typo'd method, a stub
+ * returning the wrong shape, and a production call with no contract
+ * entry.
  *
  * ```ts
  * const slack = mockSlack();
@@ -56,10 +42,9 @@ import { decodeSlackApiBody } from "#public/channels/slack/api-encoding.js";
 const DEFAULT_URL = "https://slack.com/api/";
 
 /**
- * Methods eve deliberately sends as JSON because Slack accepts nothing
- * else for them. Every other method must arrive form-encoded: Slack's
- * JSON support is partial, and form encoding is the invariant
- * `callSlackApi` exists to hold.
+ * Methods eve sends as JSON, because Slack accepts nothing else for
+ * them. Slack's JSON support is partial, so every other method must
+ * arrive form-encoded.
  */
 const JSON_METHODS = new Set<string>(["views.open", "chat.update"]);
 
@@ -82,50 +67,35 @@ export interface MockSlackHttpFailure {
   readonly body?: Readonly<Record<string, unknown>>;
 }
 
-/**
- * Fluent stub for one method — rspec's
- * `allow(x).to receive(:m).with(...).and_return(...)`.
- */
+/** Fluent declaration of what one Slack method does when it is called. */
 export interface MockSlackStub<M extends SlackApiMethod> {
   /** Answer every matching call with this response. */
   andReturn(response: SlackApiResponseFor<M>): MockSlackStub<M>;
   /**
-   * Answer successive calls with successive responses. Running past the
-   * end is a failure rather than a silent repeat of the last one, so a
-   * loop that calls more times than the test declared is caught.
+   * Answer successive calls with successive responses. A call past the
+   * end of the list fails, naming the method.
    */
   andReturnEach(responses: readonly SlackApiResponseFor<M>[]): MockSlackStub<M>;
   /**
-   * Answer with a response the contract does not describe, for pinning
-   * what eve does when Slack breaks its own shape — a `chat.postMessage`
-   * that comes back with no `ts`, say.
-   *
-   * Named to be conspicuous at the call site. `andReturn(… as never)`
-   * does the same thing while reading like an ordinary stub, and
-   * switches off shape checking for the whole object rather than
-   * saying that this one response is deliberately off-contract.
-   * Loosening the contract instead would be worse still: making `ts`
-   * optional to serve one test drops the requirement from every honest
-   * stub of that method.
+   * Answer with a response {@link SlackApiContract} does not describe,
+   * for pinning what eve does when Slack breaks its own shape — a
+   * `chat.postMessage` that comes back with no `ts`, say. The response
+   * is not shape-checked; {@link andReturn} is the checked form.
    */
   andReturnRaw(response: Readonly<Record<string, unknown>>): MockSlackStub<M>;
   /** Compute the response from the decoded request body. */
   andRespond(respond: (body: SlackApiRequest<M>) => SlackApiResponseFor<M>): MockSlackStub<M>;
   /**
    * Constrain which calls this stub answers. A call to the method that
-   * does not satisfy the constraint fails loudly rather than falling
-   * through, so a wrong-argument call is caught at the call, not by an
-   * assertion someone remembered to write.
+   * does not satisfy the constraint fails at the call.
    *
    * The expectation is in {@link SlackApiRequest} — the wire shape — so
    * a form-encoded number is written as the string it arrives as:
-   * `.with({ limit: "50" })`, never `.with({ limit: 50 })`.
+   * `.with({ limit: "50" })`, not `.with({ limit: 50 })`.
    *
-   * One constraint per method. A second `with` on the same method
-   * replaces the first rather than adding an argument-discriminated
-   * alternative, because the double answers a method from a single
-   * stub; express two argument cases with `andRespond` reading the
-   * body.
+   * One constraint per method: a second `with` replaces the first. To
+   * answer two argument cases differently, read the body in
+   * {@link andRespond}.
    */
   with(expected: Partial<SlackApiRequest<M>>): MockSlackStub<M>;
   /** Answer with a Slack-level `{ ok: false, error }` envelope. */
@@ -145,14 +115,11 @@ export interface MockSlack {
   callsTo(method: string): readonly MockSlackCall[];
   /**
    * Decoded body of one call to a method — the nth, defaulting to the
-   * first. Fails naming the method when there was no such call, which
-   * reads better at the assertion site than indexing into `callsTo`.
+   * first. Throws naming the method, and listing the methods that were
+   * called, when there was no such call.
    *
-   * Typed from {@link SlackApiContract}, so an assertion reads a field
-   * Slack actually has or does not compile. This is where the contract
-   * earns most of its keep: the stub side is a literal the author is
-   * already looking at, while the assertion side is spread across every
-   * claim the suite makes about what eve sent.
+   * Typed from {@link SlackApiContract}, so an assertion that reads a
+   * field the method does not carry is a compile error.
    */
   bodyOf<M extends SlackApiMethod>(method: M, index?: number): SlackApiRequest<M>;
   /** Methods actually called, in first-call order. */
@@ -160,18 +127,14 @@ export interface MockSlack {
   /** Declare what one method does. Unstubbed methods fail loudly. */
   allow<M extends SlackApiMethod>(method: M): MockSlackStub<M>;
   /**
-   * Declare a method that is deliberately outside
-   * {@link SlackApiContract}.
+   * Declare a method that sits outside {@link SlackApiContract}.
    *
    * `ctx.slack.request(...)` is a documented escape hatch that can reach
    * any Slack method, including ones the channel itself never drives, so
-   * the contract cannot cover them without growing entries for the whole
-   * Web API. This is the unverified door for exactly that case: nothing
-   * checks the method name or the response shape.
-   *
-   * Named to be conspicuous at the call site, and excluded from the
-   * contract parity check. Reach for {@link allow} unless the method
-   * under test is genuinely ad hoc.
+   * the contract cannot cover them without entries for the whole Web
+   * API. Neither the method name nor the response shape is checked here,
+   * and the method is invisible to the contract parity check. Use
+   * {@link allow} for anything the channel itself calls.
    */
   allowUncheckedMethod(method: string, response: Readonly<Record<string, unknown>>): void;
   /**
@@ -180,21 +143,19 @@ export interface MockSlack {
    * be stubbed: a queued failure says how the next call fails, not that
    * the call was expected at all.
    *
-   * Deliberately narrower than {@link failNextHttp}: a Slack envelope is
-   * something only a Web API method produces, so the two transport legs
-   * have no `{ ok: false }` to serve. The asymmetry is the point, not an
-   * oversight.
+   * Web API methods only. The upload and download legs return bytes,
+   * not a Slack envelope, so they have no `{ ok: false }` to serve —
+   * use {@link failNextHttp} for those.
    */
   failNext(method: SlackApiMethod, error: string): void;
   /**
-   * Queues a one-shot HTTP failure, served before any {@link failNext}
-   * for the same method because the request never reaches Slack's
-   * method dispatch.
+   * Queues a one-shot HTTP failure. It is served before any
+   * {@link failNext} for the same method, because the request never
+   * reaches Slack's method dispatch.
    *
    * Accepts the two transport legs as well as a Web API method: an
    * upload POST and a `url_private` download are ordinary HTTP requests
-   * that Slack can rate limit, and they never produce a Slack envelope,
-   * which is why {@link failNext} stays narrower.
+   * that Slack can rate limit.
    */
   failNextHttp(method: SlackApiMethod | SlackTransportLeg, failure: MockSlackHttpFailure): void;
   /** The URL `files.getUploadURLExternal` should hand out for a file id. */
@@ -210,11 +171,11 @@ export interface MockSlack {
    * whose `andRespond` has decided the call itself is wrong — an
    * unexpected channel id, more uploads than the test declared ids for.
    *
-   * Reach for this rather than `throw new Error(...)`, which rejects
-   * the fetch and nothing else. Several production paths swallow a
-   * rejected fetch: a throwing `conversations.info` fails closed and
-   * routes the turn down the "treat as private" branch, so a plain
-   * throw leaves the test passing while asserting the wrong branch.
+   * The recorded violation is what makes such a failure visible. A bare
+   * `throw` only rejects the `fetch`, and production swallows that on
+   * several paths: a failing `conversations.info` fails closed onto the
+   * "treat as private" branch, leaving the test green on a branch it is
+   * not asserting about.
    */
   reject(message: string): never;
   /**
@@ -277,14 +238,12 @@ export function mockSlack(options: MockSlackOptions = {}): MockSlack {
   }
 
   /**
-   * Resolves the stub a call is answered from, rejecting a method
-   * nobody declared or a call its constraint refuses.
+   * Resolves the stub a call is answered from, rejecting a method nobody
+   * declared or a call its constraint refuses.
    *
-   * Split out of {@link answer} so the one-shot `failNext` queues run
-   * *after* it. Serving a queued failure for an undeclared method would
-   * hand back a well-formed Slack envelope for a collaboration no test
-   * ever admitted to, which is the one thing this double exists to make
-   * impossible.
+   * Runs before the one-shot `failNext` queues, so a queued failure for
+   * an undeclared method does not answer with a well-formed Slack
+   * envelope.
    */
   function requireStub(method: string, body: Record<string, unknown>): StubState {
     const stub = stubs.get(method);
@@ -435,9 +394,9 @@ export function mockSlack(options: MockSlackOptions = {}): MockSlack {
             `Observed methods: ${[...new Set(calls.map((entry) => entry.method))].join(", ") || "none"}.`,
         );
       }
-      // The one cast the contract needs: a recorded body is `unknown`
-      // until the method name says what it is. Doing it here is what
-      // lets every assertion site read a typed field instead.
+      // A recorded body is `unknown` until the method name says what
+      // it is. Casting here is what lets assertion sites read a typed
+      // field.
       return asRecord(call.body) as SlackApiRequest<M>;
     },
     observedMethods() {
@@ -446,10 +405,10 @@ export function mockSlack(options: MockSlackOptions = {}): MockSlack {
     allow(method) {
       const state = stubFor(method);
       const stub: MockSlackStub<typeof method> = {
-        // Every one of these five replaces the others: the last
-        // declaration for a method wins outright, so re-stubbing after
-        // an andFail is not quietly ignored. `with` is the exception —
-        // it narrows whichever answer is declared, so it survives.
+        // The last answer declared for a method wins: each of these
+        // clears the others, so re-stubbing after an andFail takes
+        // effect. `with` is not an answer — it narrows whichever answer
+        // is declared, so it survives a re-declaration.
         andReturn(response) {
           clearAnswer(state);
           state.responses = [response];

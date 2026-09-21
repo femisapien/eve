@@ -1,40 +1,23 @@
 /**
- * The Slack Web API surface eve's Slack channel drives *and the tests
- * exercise*, as a typed request/response map.
+ * The Slack Web API surface eve's Slack channel drives and the tests
+ * exercise, as a typed request/response map.
  *
- * This is the `instance_double` half of the rspec translation. A plain
- * double will happily answer a method that does not exist, or answer it
- * with a shape the real collaborator would never produce; rspec solves
- * that by verifying the double against the real class. Slack is not
- * in-process, so there is no class to verify against — this map is the
- * local contract we own and verify against instead.
+ * The double in `mock-slack.ts` is a mapped type over these keys, so
+ * `allow("chat.postMesage")` is a compile error rather than a stub that
+ * silently never matches, and a stubbed response is shape-checked
+ * against the method answering it. Adding a method here without
+ * teaching the double about it is a compile error too, and
+ * `slack-api-contract.test.ts` fails on an entry that no Slack test
+ * stubs.
  *
- * What it buys:
+ * The channel also issues `chat.startStream`, `chat.appendStream`,
+ * `chat.stopStream` and `chat.delete`. They are absent until a test
+ * needs one: a test that stubs an unlisted method fails to compile
+ * until its entry is added.
  *
- * - Only a real method name typechecks. `allow("chat.postMesage")` is a
- *   compile error, not a test that silently never matches.
- * - A stubbed response is shape-checked against what that method
- *   actually returns, so a stub cannot drift into fiction the way a
- *   hand-written simulation can.
- * - The double is a mapped type over these keys, so adding a method here
- *   without teaching the double about it is a compile error.
- *
- * What it explicitly does not buy: conformance. These types encode what
- * we *believe* Slack returns. Nothing here can check that belief against
- * Slack, and no local artifact can. The runtime parity check in
- * `slack-api-contract.test.ts` narrows the gap from the other side by
- * asserting the suite actually exercises every method listed here.
- *
- * Scope note: the channel also issues `chat.startStream`,
- * `chat.appendStream`, `chat.stopStream`, and `chat.delete`, which no
- * test currently drives through the double. They are deliberately absent
- * rather than modeled on speculation — the first test to exercise one
- * will fail to compile until its entry is added, which is the point.
- *
- * `response` is always the success shape. Slack-level `{ ok: false }`
- * and HTTP-level failures are separate paths on the double (rspec's
- * `and_raise`), because in this codebase they genuinely are different:
- * one arrives as an envelope the caller inspects, the other as a thrown
+ * `response` is always the success shape. A Slack-level `{ ok: false }`
+ * and an HTTP-level failure are separate paths on the double: one
+ * arrives as an envelope the caller inspects, the other as a thrown
  * `SlackApiError`.
  *
  * `request` is declared in Slack's own logical types — `limit` is a
@@ -186,14 +169,12 @@ type SlackWireValue<V> = V extends number | boolean ? string : V;
 type SlackWireRequest<T> = { [K in keyof T]: SlackWireValue<T[K]> };
 
 /**
- * A request in the shape it reaches the double, which is the shape
- * every stub predicate and every assertion actually reads.
+ * A request in the shape it reaches the double, which is the shape every
+ * stub predicate and every assertion reads.
  *
- * Deliberately not `SlackApiContract[M]["request"]`: that is the shape
- * production *wrote*, and typing the double with it makes
- * `.with({ limit: 50 })` a constraint no call can ever satisfy, since
- * the body carries `"50"`. Projecting to the wire shape turns that into
- * a compile error instead of a stub that silently never matches.
+ * The wire shape, not `SlackApiContract[M]["request"]`: a form-encoded
+ * body carries `"50"`, so `.with({ limit: 50 })` is a compile error
+ * here instead of a constraint no call could satisfy.
  */
 export type SlackApiRequest<M extends SlackApiMethod> = SlackWireRequest<
   SlackApiContract[M]["request"]
@@ -202,11 +183,9 @@ export type SlackApiRequest<M extends SlackApiMethod> = SlackWireRequest<
 export type SlackApiResponseFor<M extends SlackApiMethod> = SlackApiContract[M]["response"];
 
 /**
- * Runtime list of the contract's keys.
- *
- * Typed as a mapped record rather than an array so the compiler rejects
- * both a missing key and a key that is not in the contract — keeping this
- * list and {@link SlackApiContract} in step is not left to discipline.
+ * Runtime list of the contract's keys. A mapped record, so both a
+ * missing key and a key that is not in {@link SlackApiContract} are
+ * compile errors.
  */
 const SLACK_API_METHOD_SET: { readonly [M in SlackApiMethod]: true } = {
   "assistant.threads.setStatus": true,
@@ -232,10 +211,9 @@ export const SLACK_API_METHODS: readonly SlackApiMethod[] = Object.keys(
 /**
  * The two legs of the file-upload handshake that are not Web API method
  * calls: the raw bytes POST to the URL `files.getUploadURLExternal`
- * hands out, and an authenticated `url_private` download. They are
- * recorded under these names so tests can assert on them, but they are
- * deliberately outside {@link SlackApiContract} — they have no method
- * name, no form-encoded body, and no JSON response, so folding them in
- * would distort the shape the contract exists to pin down.
+ * hands out, and an authenticated `url_private` download. The double
+ * records them under these names so tests can assert on them. They sit
+ * outside {@link SlackApiContract}, which describes method calls: these
+ * have no method name, no form-encoded body and no JSON response.
  */
 export type SlackTransportLeg = "files.upload" | "files.download";
