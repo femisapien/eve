@@ -102,7 +102,7 @@ describe("dispatchDynamicSkillEvent", () => {
     });
 
     expect(ctx.get(PendingSkillAnnouncementKey)).toContain("tenant: Tenant policy");
-    expect(ctx.get(DynamicSkillManifestKey)).toEqual({
+    expect(ctx.get(DynamicSkillManifestKey)).toMatchObject({
       tenant: [{ description: "Tenant policy", name: "tenant" }],
     });
 
@@ -114,9 +114,18 @@ describe("dispatchDynamicSkillEvent", () => {
       resolvers: [resolver],
     });
 
-    expect(ctx.get(DynamicSkillManifestKey)).toEqual({});
+    expect(ctx.get(DynamicSkillManifestKey)).toMatchObject({});
     expect(ctx.get(PendingSkillAnnouncementKey)).toBe("Available skills: none");
-    expect(sandbox.removedPaths).toEqual(["/home/agent/.agents/skills/tenant"]);
+    expect(sandbox.removedPaths).toEqual([]);
+
+    ctx.clearVirtualContext();
+    await dispatchDynamicSkillEvent({
+      ctx,
+      event: makeEvent(),
+      messages: [],
+      resolvers: [],
+    });
+    expect(ctx.get(PendingSkillAnnouncementKey)).toBe("Available skills: none");
   });
 
   it("keeps remaining dynamic skills in the announcement when one resolver removes its skill", async () => {
@@ -160,13 +169,11 @@ describe("dispatchDynamicSkillEvent", () => {
       resolvers: [resolver],
     });
 
-    expect(ctx.get(DynamicSkillManifestKey)).toEqual({
+    expect(ctx.get(DynamicSkillManifestKey)).toMatchObject({
       custom: [{ description: "Talk like a dog", name: "talk-like-a-dog" }],
     });
     expect(ctx.get(PendingSkillAnnouncementKey)).toContain("talk-like-a-dog: Talk like a dog");
-    expect(
-      sandbox.writes.some((w) => w.path.includes("/home/agent/.agents/skills/talk-like-a-dog/")),
-    ).toBe(true);
+    expect(sandbox.writes).toEqual([]);
   });
 
   it("prefixes map entries with the mount namespace for an extension resolver", async () => {
@@ -184,13 +191,11 @@ describe("dispatchDynamicSkillEvent", () => {
       resolvers: [resolver],
     });
 
-    expect(ctx.get(DynamicSkillManifestKey)).toEqual({
+    expect(ctx.get(DynamicSkillManifestKey)).toMatchObject({
       crm__playbooks: [{ description: "Triage an account", name: "crm__triage" }],
     });
     expect(ctx.get(PendingSkillAnnouncementKey)).toContain("crm__triage: Triage an account");
-    expect(
-      sandbox.writes.some((w) => w.path.includes("/home/agent/.agents/skills/crm__triage/")),
-    ).toBe(true);
+    expect(sandbox.writes).toEqual([]);
   });
 
   it("lets a dynamic skill override a same-named authored skill instead of throwing", async () => {
@@ -206,15 +211,10 @@ describe("dispatchDynamicSkillEvent", () => {
       resolvers: [resolver],
     });
 
-    // No throw; the dynamic skill is written to the authored skill's path.
-    expect(ctx.get(DynamicSkillManifestKey)).toEqual({
+    expect(ctx.get(DynamicSkillManifestKey)).toMatchObject({
       custom: [{ description: "Dynamic override", name: "talk-like-a-dog" }],
     });
-    expect(
-      sandbox.writes.some((w) =>
-        w.path.includes("/home/agent/.agents/skills/talk-like-a-dog/SKILL.md"),
-      ),
-    ).toBe(true);
+    expect(sandbox.writes).toEqual([]);
   });
 
   it("collapses a directly-returned single defineSkill to the bare slug", async () => {
@@ -228,12 +228,10 @@ describe("dispatchDynamicSkillEvent", () => {
       resolvers: [resolver],
     });
 
-    expect(ctx.get(DynamicSkillManifestKey)).toEqual({
+    expect(ctx.get(DynamicSkillManifestKey)).toMatchObject({
       tenant: [{ description: "Tenant policy", name: "tenant" }],
     });
-    expect(sandbox.writes.some((w) => w.path.includes("/home/agent/.agents/skills/tenant/"))).toBe(
-      true,
-    );
+    expect(sandbox.writes).toEqual([]);
   });
 
   it("throws and recommends manual namespacing when two resolvers emit the same name", async () => {

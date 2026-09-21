@@ -2,25 +2,16 @@ import type { ModelMessage } from "ai";
 
 import { ALLOWED_DYNAMIC_SKILL_EVENTS } from "#dynamic/definition.js";
 import { isBrandedSkillEntry, type SkillPackageDefinition } from "#shared/skill-definition.js";
-import {
-  type MaterializableSkillPackage,
-  normalizeSkillPackage,
-  removeSkillPackageFromSandbox,
-  writeSkillPackageToSandbox,
-} from "#shared/skill-package.js";
+import { type MaterializableSkillPackage, normalizeSkillPackage } from "#shared/skill-package.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import type { ResolvedDynamicSkillResolver } from "#runtime/types.js";
 import { formatAvailableSkillsSection } from "#execution/skills/instructions.js";
 import { createLogger } from "#internal/logging.js";
 import { toErrorMessage } from "#shared/errors.js";
 import type { ContextContainer } from "#context/container.js";
-import {
-  type DurableDynamicSkillMetadata,
-  DynamicSkillManifestKey,
-  SandboxKey,
-} from "#context/keys.js";
+import { type DynamicSkillManifest, DynamicSkillManifestKey } from "#context/keys.js";
 import { buildResolveContext } from "#context/dynamic-resolve-context.js";
-import { resolveSandboxSkillRoot } from "#shared/skill-paths.js";
+import { DynamicSkillSandboxKey } from "#context/dynamic-skill-sandbox.js";
 
 const log = createLogger("dynamic-skills");
 
@@ -66,16 +57,8 @@ interface DynamicSkillResolution {
   readonly named: readonly { name: string; entry: SkillPackageDefinition }[];
 }
 
-async function formatDynamicSkillAnnouncement(input: {
-  readonly ctx: ContextContainer;
-  readonly manifest: Readonly<Record<string, readonly DurableDynamicSkillMetadata[]>>;
-}): Promise<string> {
-  const sandbox = await input.ctx.require(SandboxKey).get();
-  const skillRoot = sandbox === null ? undefined : await resolveSandboxSkillRoot({ sandbox });
-  return (
-    formatAvailableSkillsSection(Object.values(input.manifest).flat(), { skillRoot }) ??
-    "Available skills: none"
-  );
+function formatDynamicSkillAnnouncement(manifest: DynamicSkillManifest): string {
+  return formatAvailableSkillsSection(Object.values(manifest).flat()) ?? "Available skills: none";
 }
 
 // ---------------------------------------------------------------------------
@@ -89,7 +72,7 @@ async function formatDynamicSkillAnnouncement(input: {
 import { ContextKey } from "#context/key.js";
 
 /**
- * Durable pending skill announcement text. Set by
+ * Step-local pending skill announcement text. Set by
  * {@link dispatchDynamicSkillEvent} whenever the dynamic skill manifest
  * changes. Read by the tool-loop to inject the announcement into model
  * context.
@@ -102,8 +85,8 @@ export const PendingSkillAnnouncementKey = new ContextKey<string>("eve.pendingSk
 
 /**
  * Dispatches a stream event to dynamic skill resolvers. On a matching
- * event: runs handlers, materializes resolved skills to the sandbox,
- * cleans up removed skills, and stores a pending announcement for the
+ * event: runs handlers, reconciles already materialized skills,
+ * retains complete packages, and stores a pending announcement for the
  * tool-loop to inject.
  */
 export async function dispatchDynamicSkillEvent(input: {
@@ -115,15 +98,11 @@ export async function dispatchDynamicSkillEvent(input: {
   const { ctx, resolvers, event, messages } = input;
 
   // Build phase: rebuild announcement from durable manifest when the
-  // virtual key is empty (step boundary crossed). Sandbox files persist;
-  // only the announcement needs rebuilding.
+  // virtual key is empty (step boundary crossed).
   if (ctx.get(PendingSkillAnnouncementKey) === undefined) {
     const manifest = ctx.get(DynamicSkillManifestKey);
-    if (manifest !== undefined && Object.keys(manifest).length > 0) {
-      ctx.setVirtualContext(
-        PendingSkillAnnouncementKey,
-        await formatDynamicSkillAnnouncement({ ctx, manifest }),
-      );
+    if (manifest !== undefined) {
+      ctx.setVirtualContext(PendingSkillAnnouncementKey, formatDynamicSkillAnnouncement(manifest));
     }
   }
 
@@ -184,15 +163,18 @@ export async function dispatchDynamicSkillEvent(input: {
     } else {
       newManifest[resolver.slug] = skills.map((skill) => ({
         description: skill.description,
+        files: skill.files.map((file) => ({
+          content: file.content.toString("base64"),
+          relativePath: file.relativePath,
+        })),
+        markdown: skill.markdown,
         name: skill.name,
       }));
     }
   }
 
-  // A dynamic skill whose name matches an authored skill overrides it: the
-  // dynamic write overwrites the authored file at the same sandbox path, so
-  // load_skill returns the dynamic body. Two dynamic resolvers emitting the
-  // same name is a genuine ambiguity and still throws.
+  // Dynamic skills override authored skills, but two dynamic resolvers
+  // emitting the same name are ambiguous.
   const dynamicSkillOwners = new Map<string, string>();
   for (const [resolverSlug, skills] of Object.entries(newManifest)) {
     for (const { name } of skills) {
@@ -206,38 +188,8 @@ export async function dispatchDynamicSkillEvent(input: {
     }
   }
 
-  const sandbox = await ctx.require(SandboxKey).get();
-
-  if (sandbox !== null) {
-    const finalDynamicSkillNames = new Set(
-      Object.values(newManifest)
-        .flat()
-        .map((skill) => skill.name),
-    );
-    const removedSkillNames = new Set<string>();
-
-    for (const { resolver } of updates) {
-      for (const skill of manifest[resolver.slug] ?? []) {
-        if (!finalDynamicSkillNames.has(skill.name)) {
-          removedSkillNames.add(skill.name);
-        }
-      }
-    }
-
-    for (const name of removedSkillNames) {
-      await removeSkillPackageFromSandbox({ name, sandbox });
-    }
-
-    for (const { skills } of updates) {
-      for (const skill of skills) {
-        await writeSkillPackageToSandbox({ sandbox, skill });
-      }
-    }
-  }
+  await ctx.get(DynamicSkillSandboxKey)?.refresh(newManifest);
 
   ctx.set(DynamicSkillManifestKey, newManifest);
-  ctx.setVirtualContext(
-    PendingSkillAnnouncementKey,
-    await formatDynamicSkillAnnouncement({ ctx, manifest: newManifest }),
-  );
+  ctx.setVirtualContext(PendingSkillAnnouncementKey, formatDynamicSkillAnnouncement(newManifest));
 }

@@ -317,21 +317,34 @@ export const DynamicSubagentAgentConfigKey = new ContextKey<DynamicSubagentAgent
 // ---------------------------------------------------------------------------
 
 /**
- * Durable metadata for one session-scoped dynamic skill.
+ * Complete, JSON-safe package for one session-scoped dynamic skill.
  */
-export interface DurableDynamicSkillMetadata {
+export interface DurableDynamicSkillPackage {
   readonly name: string;
   readonly description: string;
+  readonly markdown: string;
+  readonly files: readonly {
+    readonly relativePath: string;
+    /** Base64 preserves binary supporting files across durable steps. */
+    readonly content: string;
+  }[];
 }
+
+export type DynamicSkillManifest = Record<string, readonly DurableDynamicSkillPackage[]>;
 
 /**
  * Durable map from resolver slug to the qualified skills it last produced.
  * Used to diff on re-resolution, clean up removed skills from the sandbox,
  * and rebuild the model-visible announcement across turns.
  */
-export const DynamicSkillManifestKey = new ContextKey<
-  Record<string, readonly DurableDynamicSkillMetadata[]>
->("eve.dynamicSkillManifest");
+export const DynamicSkillManifestKey = new ContextKey<DynamicSkillManifest>(
+  "eve.dynamicSkillManifest",
+);
+
+/** Names whose sandbox copies this session must reconcile, including failed writes. */
+export const MaterializedDynamicSkillNamesKey = new ContextKey<readonly string[]>(
+  "eve.materializedDynamicSkillNames",
+);
 
 // ---------------------------------------------------------------------------
 // Dynamic instruction keys

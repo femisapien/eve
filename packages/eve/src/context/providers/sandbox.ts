@@ -12,6 +12,7 @@ import {
 } from "#runtime/sessions/runtime-context-keys.js";
 import { getActiveRuntimeNode } from "#context/node.js";
 import type { FrameworkContextProvider } from "#context/provider.js";
+import { bindDynamicSkillSandbox } from "#context/dynamic-skill-sandbox.js";
 
 export const sandboxProvider: FrameworkContextProvider<SandboxAccess> = {
   key: SandboxKey,
@@ -31,20 +32,23 @@ export const sandboxProvider: FrameworkContextProvider<SandboxAccess> = {
     const sandboxSessionId = sharesSandbox ? (sharedSandboxSessionId ?? sessionId) : sessionId;
 
     return {
-      value: await ensureSandboxAccess({
-        compiledArtifactsSource: bundle.compiledArtifactsSource,
-        nodeId: node.nodeId,
-        ownsSandbox: !sharesSandbox,
-        registry,
-        runOnSession: async (callback) => await contextStorage.run(ctx, callback),
-        sessionId: sandboxSessionId,
-        state: session.sandboxState ?? (sharesSandbox ? parentSandboxState : undefined) ?? null,
-        tags: {
-          agent: resolveTagAgentName({ bundle, node }),
-          channel: resolveTagChannelKind(channel),
-          sessionId,
-        },
-      }),
+      value: bindDynamicSkillSandbox(
+        ctx,
+        await ensureSandboxAccess({
+          compiledArtifactsSource: bundle.compiledArtifactsSource,
+          nodeId: node.nodeId,
+          ownsSandbox: !sharesSandbox,
+          registry,
+          runOnSession: async (callback) => await contextStorage.run(ctx, callback),
+          sessionId: sandboxSessionId,
+          state: session.sandboxState ?? (sharesSandbox ? parentSandboxState : undefined) ?? null,
+          tags: {
+            agent: resolveTagAgentName({ bundle, node }),
+            channel: resolveTagChannelKind(channel),
+            sessionId,
+          },
+        }),
+      ),
     };
   },
 

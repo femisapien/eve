@@ -9,7 +9,9 @@ A skill is a model-loadable procedure that follows the `SKILL.md` convention. It
 
 eve scans the files under `agent/skills/` and exposes each one's description to the model alongside a framework-owned `load_skill` tool. When a request matches a skill's description (or you name the skill outright), the model calls `load_skill`, and eve appends that skill's markdown to the active turn's context.
 
-Static skills do not require a sandbox: `load_skill` returns their instructions directly from the compiled agent. Dynamic skills and access to supporting package files require a sandbox. Builds may also prewarm sandbox templates that contain static package files. Supporting files are available under `$HOME/.agents/skills/<skill>/`, with `/workspace/skills/<skill>/` as the fallback when `$HOME` is unavailable. Sibling references inside `SKILL.md`, such as `references/checklist.md`, are relative to the directory containing that specific `SKILL.md`.
+Listing skills and loading their markdown do not require a sandbox, including dynamic skills with supporting files. eve reads static instructions from the compiled agent and dynamic instructions from durable session state. Supporting files are staged when a tool or hook accesses the sandbox, including through `ctx.getSkill(id).file(...)` or a built-in filesystem tool. Builds may also prewarm sandbox templates that contain static package files.
+
+Supporting files are available under `$HOME/.agents/skills/<skill>/`, with `/workspace/skills/<skill>/` as the fallback when `$HOME` is unavailable. Sibling references inside `SKILL.md`, such as `references/checklist.md`, are relative to the directory containing that specific `SKILL.md`.
 
 The description is a routing hint, not a label. Write it as the task that should trigger activation:
 
@@ -90,6 +92,8 @@ The handle exposes the skill's `name` and `file(relativePath)`; file content is 
 ## Dynamic skills
 
 To serve a different skill per principal, tenant, or channel (the caller's own team playbook, say), wrap `defineSkill` in a `defineDynamic` resolver keyed on `ctx.session.auth`. See [Dynamic capabilities](./guides/dynamic-capabilities).
+
+eve preserves each resolved package, including its supporting files, across durable workflow steps. An unchanged package is not rewritten on refresh. When a resolver changes a package, eve replaces its staged files, removing files omitted from the new result. A removed dynamic skill is no longer loadable; if it overrode an authored skill, the authored skill becomes available again.
 
 ## What to read next
 
