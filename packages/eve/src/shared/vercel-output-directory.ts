@@ -19,18 +19,16 @@ async function fileExists(path: string): Promise<boolean> {
 
 async function findClosestDirectoryWithFile(input: {
   readonly start: string;
-  readonly directoryNames: readonly string[];
+  readonly directoryName: string;
   readonly fileName: string;
 }): Promise<string | undefined> {
   let current = input.start;
 
   while (true) {
-    for (const directoryName of input.directoryNames) {
-      const directory = join(current, directoryName);
+    const directory = join(current, input.directoryName);
 
-      if (await fileExists(join(directory, input.fileName))) {
-        return directory;
-      }
+    if (await fileExists(join(directory, input.fileName))) {
+      return directory;
     }
 
     const parent = dirname(current);
@@ -46,7 +44,7 @@ async function findClosestDirectoryWithFile(input: {
 export async function findClosestLinkedVercelDirectory(start: string): Promise<string | undefined> {
   return findClosestDirectoryWithFile({
     start,
-    directoryNames: [VERCEL_DIRECTORY_NAME],
+    directoryName: VERCEL_DIRECTORY_NAME,
     fileName: VERCEL_PROJECT_FILE_NAME,
   });
 }
@@ -54,7 +52,7 @@ export async function findClosestLinkedVercelDirectory(start: string): Promise<s
 export async function findClosestVercelOutputDirectory(start: string): Promise<string | undefined> {
   return findClosestDirectoryWithFile({
     start,
-    directoryNames: [join(VERCEL_DIRECTORY_NAME, "build-output"), "output"],
+    directoryName: "output",
     fileName: VERCEL_BUILDS_FILE_NAME,
   });
 }
