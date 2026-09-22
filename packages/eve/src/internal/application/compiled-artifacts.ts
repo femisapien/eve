@@ -74,6 +74,7 @@ export async function writeCompiledArtifactsFiles(input: {
   const instrumentationPluginPath = join(input.outDir, "compiled-artifacts-instrumentation.mjs");
   const workflowWorldPluginPath = join(input.outDir, "compiled-artifacts-workflow-world.mjs");
   const prepared = await prepareAuthoredRuntimeModules({
+    appRoot: input.compileResult.project.appRoot,
     manifest: input.compileResult.manifest,
     moduleMapPath: input.compileResult.paths.moduleMapPath,
   });
