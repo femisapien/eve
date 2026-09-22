@@ -2354,7 +2354,7 @@ describe("turnStep", () => {
 
     expect(result).toMatchObject({
       action: "park",
-      settled: { output: "settled answer" },
+      completion: { kind: "settled", output: "settled answer" },
     });
   });
 
@@ -2386,7 +2386,7 @@ describe("turnStep", () => {
 
     expect(result).toMatchObject({
       action: "park",
-      settled: { output: "settled answer" },
+      completion: { kind: "settled", output: "settled answer" },
     });
   });
 
@@ -2437,7 +2437,8 @@ describe("turnStep", () => {
 
     expect(first).toMatchObject({
       action: "park",
-      settled: {
+      completion: {
+        kind: "settled",
         output: "first answer",
         usage: { cacheReadTokens: 0, cacheWriteTokens: 0, inputTokens: 100, outputTokens: 40 },
       },
@@ -2470,7 +2471,8 @@ describe("turnStep", () => {
 
     expect(second).toMatchObject({
       action: "park",
-      settled: {
+      completion: {
+        kind: "settled",
         output: "second answer",
         usage: { cacheReadTokens: 0, cacheWriteTokens: 0, inputTokens: 50, outputTokens: 20 },
       },
@@ -2517,7 +2519,7 @@ describe("turnStep", () => {
     expect(result).toMatchObject({
       action: "park",
       hasPendingInputBatch: true,
-      settled: { output: "settled while approval remains open" },
+      completion: { kind: "settled", output: "settled while approval remains open" },
     });
   });
 
@@ -2603,7 +2605,7 @@ describe("turnStep", () => {
 
     expect(result.action).toBe("park");
     if (result.action === "park") {
-      expect(result.settled).toBeUndefined();
+      expect(result.completion).toBeUndefined();
     }
   });
 
