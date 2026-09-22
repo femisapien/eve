@@ -92,6 +92,17 @@ describe("resolveWebSearchBackend", () => {
     expect(resolveWebSearchBackend(ref)).toBe("exa");
   });
 
+  it("does not use a Gateway backend for a live model from another provider", () => {
+    const ref: RuntimeModelReference = { id: "openrouter/openai/gpt-5" };
+    const resolveForModel = resolveWebSearchBackend as unknown as (
+      reference: RuntimeModelReference,
+      gatewayProvider: "exa",
+      modelProvider: string,
+    ) => ReturnType<typeof resolveWebSearchBackend>;
+
+    expect(resolveForModel(ref, "exa", "openrouter.chat")).toBeNull();
+  });
+
   it("returns the configured Parallel provider for a gateway model", () => {
     const ref: RuntimeModelReference = { id: "openai/gpt-5.4" };
     expect(resolveWebSearchBackend(ref, "parallel")).toBe("parallel");
