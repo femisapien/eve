@@ -9,7 +9,8 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { execFile } from "node:child_process";
-import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
+import { findPackageJSON } from "node:module";
 import { tmpdir } from "node:os";
 import { basename, dirname, join } from "node:path";
 import { promisify } from "node:util";
@@ -21,8 +22,8 @@ import { resolvePackageRoot } from "#internal/application/package.js";
 import { runPnpmCommand } from "#internal/testing/run-pnpm-command.js";
 
 const SCENARIO_APP_CLEANUP_TIMEOUT_MS = 60_000;
-const require = createRequire(import.meta.url);
 const SCENARIO_AI_PACKAGE_VERSION = resolvePackageVersion("ai");
+const SCENARIO_JUST_BASH_PACKAGE_VERSION = resolvePackageVersion("just-bash");
 
 /**
  * Declarative description of a scenario-tier application.
@@ -58,8 +59,9 @@ export interface ScenarioAppDescriptor {
    * package names, values are npm version specifiers or `file:` specifiers.
    *
    * `eve` is always wired via the test tarball and must not be
-   * listed here. The AI SDK peer dependency is wired from the workspace's
-   * installed version by default unless a descriptor overrides `ai`.
+   * listed here. The AI SDK and just-bash peer dependencies are wired from
+   * the workspace's installed versions by default unless a descriptor
+   * overrides them.
    */
   readonly dependencies?: Readonly<Record<string, string>>;
   /**
@@ -195,6 +197,7 @@ async function writePackageManifest(input: {
     dependencies: {
       ai: SCENARIO_AI_PACKAGE_VERSION,
       [EVE_PACKAGE_NAME]: `file:./${tarballFileName}`,
+      "just-bash": SCENARIO_JUST_BASH_PACKAGE_VERSION,
       ...input.descriptor.dependencies,
     },
     name: input.descriptor.name,
@@ -212,10 +215,14 @@ async function writePackageManifest(input: {
 }
 
 function resolvePackageVersion(packageName: string): string {
-  const manifest = require(`${packageName}/package.json`) as { version?: unknown };
+  const manifestPath = findPackageJSON(packageName, import.meta.url);
+  if (manifestPath === undefined) {
+    throw new Error(`Could not resolve the installed ${packageName} package manifest.`);
+  }
 
+  const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as { version?: unknown };
   if (typeof manifest.version !== "string") {
-    throw new Error(`Expected ${packageName}/package.json to contain a string version.`);
+    throw new Error(`Expected ${manifestPath} to contain a string version.`);
   }
 
   return manifest.version;

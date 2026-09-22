@@ -40,6 +40,7 @@ describe("materializeScenarioApp", () => {
     expect(manifest.name).toBe("manifest-only-app");
     expect(manifest.type).toBe("module");
     expect(manifest.dependencies["eve"]).toMatch(/^file:\.\/eve-.*\.tgz$/);
+    expect(manifest.dependencies["just-bash"]).toMatch(/^\d+\.\d+\.\d+/);
   });
 
   it("creates declared empty directories", async () => {
@@ -71,12 +72,15 @@ describe("materializeScenarioApp", () => {
     });
 
     const eveManifestPath = join(app.appRoot, "node_modules", "eve", "package.json");
+    const justBashManifestPath = join(app.appRoot, "node_modules", "just-bash", "package.json");
     const zodManifestPath = join(app.appRoot, "node_modules", "zod", "package.json");
 
     const eveManifestStat = await stat(eveManifestPath);
+    const justBashManifestStat = await stat(justBashManifestPath);
     const zodManifestStat = await stat(zodManifestPath);
 
     expect(eveManifestStat.isFile()).toBe(true);
+    expect(justBashManifestStat.isFile()).toBe(true);
     expect(zodManifestStat.isFile()).toBe(true);
   }, 60_000);
 });
