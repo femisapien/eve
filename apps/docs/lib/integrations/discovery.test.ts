@@ -1,8 +1,26 @@
 import { describe, expect, it } from "vitest";
-import { getIntegration, integrations } from "./data";
+import {
+  getIntegration,
+  integrationDomainOrder,
+  integrations,
+  recommendedIntegrationSlugs,
+} from "./data";
 import { integrationMarkdown, integrationPaths, integrationSearchText } from "./discovery";
 
 describe("integration discovery", () => {
+  it("assigns every integration to a visible domain", () => {
+    for (const integration of integrations) {
+      expect(integrationDomainOrder).toContain(integration.domain);
+    }
+  });
+
+  it("keeps every recommended integration in the gallery", () => {
+    expect(new Set(recommendedIntegrationSlugs).size).toBe(recommendedIntegrationSlugs.length);
+    for (const slug of recommendedIntegrationSlugs) {
+      expect(getIntegration(slug)).toBeDefined();
+    }
+  });
+
   it("includes the landing page and every detail page in crawler paths", () => {
     const paths = integrationPaths();
 

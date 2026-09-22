@@ -21,6 +21,31 @@ import type { LogoKey } from "./logos";
 
 export type IntegrationType = "channel" | "connection" | "extension" | "instrumentation" | "memory";
 
+export type IntegrationDomain =
+  | "Automation"
+  | "Commerce & finance"
+  | "Communication"
+  | "Content & marketing"
+  | "Data & analytics"
+  | "Developer tools & infrastructure"
+  | "Memory"
+  | "Observability"
+  | "Productivity & collaboration"
+  | "Research & AI";
+
+export const integrationDomainOrder: readonly IntegrationDomain[] = [
+  "Communication",
+  "Developer tools & infrastructure",
+  "Productivity & collaboration",
+  "Data & analytics",
+  "Automation",
+  "Content & marketing",
+  "Commerce & finance",
+  "Research & AI",
+  "Memory",
+  "Observability",
+];
+
 /** Wire protocol and transport identity types are owned by the shared catalog. */
 export type { ConnectionProtocol, McpTransport, OpenApiTransport } from "@eve/catalog";
 import type { ConnectionProtocol } from "@eve/catalog";
@@ -85,6 +110,8 @@ export interface Integration {
   slug: string;
   name: string;
   type: IntegrationType;
+  /** User-facing domain used to organize the integrations gallery. */
+  domain: IntegrationDomain;
   /** Protocol badges shown on the gallery card (connections only). */
   protocols?: ConnectionProtocol[];
   /** One-line summary shown on the gallery card. */
@@ -2540,6 +2567,74 @@ Point the exporter at your collector's OTLP HTTP endpoint when self-hosting. See
   },
 };
 
+const domainOverrides: Record<string, IntegrationDomain> = {
+  "agent-browser": "Automation",
+  agentcard: "Commerce & finance",
+  airtable: "Productivity & collaboration",
+  bitly: "Content & marketing",
+  blitzreels: "Content & marketing",
+  brex: "Commerce & finance",
+  "browser-use": "Automation",
+  browserbase: "Automation",
+  candid: "Research & AI",
+  clickhouse: "Data & analytics",
+  cloudinary: "Content & marketing",
+  coda: "Productivity & collaboration",
+  context: "Research & AI",
+  datadog: "Observability",
+  egnyte: "Productivity & collaboration",
+  embat: "Commerce & finance",
+  "github-tools": "Developer tools & infrastructure",
+  hindsight: "Memory",
+  honeycomb: "Observability",
+  "hugging-face": "Research & AI",
+  jetty: "Observability",
+  kernel: "Automation",
+  linear: "Developer tools & infrastructure",
+  "local-falcon": "Data & analytics",
+  make: "Automation",
+  manufact: "Automation",
+  mem0: "Memory",
+  miro: "Productivity & collaboration",
+  mixpanel: "Data & analytics",
+  "mux-video": "Content & marketing",
+  natural: "Commerce & finance",
+  neon: "Developer tools & infrastructure",
+  netlify: "Developer tools & infrastructure",
+  notion: "Productivity & collaboration",
+  oreilly: "Research & AI",
+  planetscale: "Developer tools & infrastructure",
+  posthog: "Data & analytics",
+  postman: "Developer tools & infrastructure",
+  razorpay: "Commerce & finance",
+  sentry: "Observability",
+  shopify: "Commerce & finance",
+  similarweb: "Data & analytics",
+  stripe: "Commerce & finance",
+  supabase: "Developer tools & infrastructure",
+  "ticket-tailor": "Commerce & finance",
+  ticktick: "Productivity & collaboration",
+  tinybird: "Data & analytics",
+  todoist: "Productivity & collaboration",
+  vercel: "Developer tools & infrastructure",
+  webflow: "Content & marketing",
+  wix: "Content & marketing",
+  zapier: "Automation",
+  zomato: "Commerce & finance",
+};
+
+const domainFor = (entry: IntegrationEntry): IntegrationDomain => {
+  if (entry.kind === "channel") return "Communication";
+  if (entry.kind === "instrumentation") return "Observability";
+  if (entry.kind === "memory") return "Memory";
+
+  const domain = domainOverrides[entry.slug];
+  if (domain === undefined) {
+    throw new Error(`Integration "${entry.slug}" is missing a gallery domain.`);
+  }
+  return domain;
+};
+
 function buildChannel(entry: IntegrationEntry): Integration {
   const presentation = channelPresentations[entry.slug];
   if (presentation === undefined) {
@@ -2551,6 +2646,7 @@ function buildChannel(entry: IntegrationEntry): Integration {
     slug: entry.slug,
     name: entry.name,
     type: "channel",
+    domain: domainFor(entry),
     tagline: entry.tagline,
     logo: presentation.logo,
     badge: presentation.badge,
@@ -2586,6 +2682,7 @@ function buildConnection(entry: IntegrationEntry): Integration {
     slug: entry.slug,
     name: entry.name,
     type: "connection",
+    domain: domainFor(entry),
     tagline: entry.tagline,
     protocols: protocolsForIdentity(identity),
     logo,
@@ -2609,6 +2706,7 @@ function buildExtension(entry: IntegrationEntry): Integration {
     slug: entry.slug,
     name: entry.name,
     type: "extension",
+    domain: domainFor(entry),
     tagline: entry.tagline,
     logo: presentation.logo,
     docsHref: presentation.docsHref,
@@ -2631,6 +2729,7 @@ function buildMemory(entry: IntegrationEntry): Integration {
     slug: entry.slug,
     name: entry.name,
     type: "memory",
+    domain: domainFor(entry),
     tagline: entry.tagline,
     logo: presentation.logo,
     docsHref: presentation.docsHref,
@@ -2653,6 +2752,7 @@ function buildInstrumentation(entry: IntegrationEntry): Integration {
     slug: entry.slug,
     name: entry.name,
     type: "instrumentation",
+    domain: domainFor(entry),
     tagline: entry.tagline,
     logo: presentation.logo,
     docsHref: presentation.docsHref,
@@ -2711,6 +2811,16 @@ export const integrations: Integration[] = [
   ...connections,
   ...instrumentation,
 ];
+
+/** Most common integrations across the official templates shipped on eve.dev. */
+export const recommendedIntegrationSlugs = [
+  "slack",
+  "github",
+  "notion",
+  "linear",
+  "vercel",
+  "datadog",
+] as const;
 
 export const getIntegration = (slug: string): Integration | undefined =>
   integrations.find((integration) => integration.slug === slug);

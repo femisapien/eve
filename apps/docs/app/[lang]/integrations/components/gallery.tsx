@@ -12,7 +12,12 @@ import {
   getQueryLengthBucket,
   normalizeSearchQuery,
 } from "@/lib/analytics/events";
-import type { Integration, IntegrationType } from "@/lib/integrations/data";
+import {
+  type Integration,
+  type IntegrationType,
+  integrationDomainOrder,
+  recommendedIntegrationSlugs,
+} from "@/lib/integrations/data";
 import { cn } from "@/lib/utils";
 import { IntegrationCard } from "./integration-card";
 
@@ -37,6 +42,12 @@ const FILTER_DESCRIPTIONS: Record<Exclude<GalleryFilter, "all">, string> = {
   instrumentation:
     "Observability providers are OpenTelemetry backends that receive your agent's traces: every model call, tool execution, and turn.",
 };
+
+const domainHeadingId = (domain: string): string =>
+  `domain-${domain
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/(^-|-$)/g, "")}`;
 
 interface GalleryProps {
   filter: GalleryFilter;
@@ -65,6 +76,30 @@ export const Gallery = ({ filter, integrations }: GalleryProps) => {
       return haystack.includes(normalized);
     });
   }, [integrations, filter, query]);
+
+  const normalizedQuery = query.trim().toLowerCase();
+  const showRecommendations = filter === "all" && normalizedQuery.length === 0;
+  const recommendedSlugSet = useMemo(() => new Set<string>(recommendedIntegrationSlugs), []);
+  const recommendations = useMemo(
+    () =>
+      recommendedIntegrationSlugs.flatMap((slug) => {
+        const integration = integrations.find((candidate) => candidate.slug === slug);
+        return integration ? [integration] : [];
+      }),
+    [integrations],
+  );
+  const groupedResults = useMemo(
+    () =>
+      integrationDomainOrder.flatMap((domain) => {
+        const domainIntegrations = results.filter(
+          (integration) =>
+            integration.domain === domain &&
+            (!showRecommendations || !recommendedSlugSet.has(integration.slug)),
+        );
+        return domainIntegrations.length > 0 ? [{ domain, integrations: domainIntegrations }] : [];
+      }),
+    [recommendedSlugSet, results, showRecommendations],
+  );
 
   useEffect(() => {
     const normalizedQuery = normalizeSearchQuery(query);
@@ -133,20 +168,63 @@ export const Gallery = ({ filter, integrations }: GalleryProps) => {
       {filter !== "all" && <p className="text-gray-800 text-sm">{FILTER_DESCRIPTIONS[filter]}</p>}
 
       {results.length > 0 ? (
-        <div className="grid min-w-0 grid-cols-1 gap-4 min-[1024px]:grid-cols-2 min-[1200px]:grid-cols-3">
-          {results.map((integration) => (
-            <IntegrationCard
-              integration={integration}
-              key={integration.slug}
-              onSelect={() =>
-                track(analyticsEvents.integrationOpened, {
-                  filter,
-                  integration: integration.slug,
-                  search: query.trim().length > 0,
-                })
-              }
-            />
-          ))}
+        <div className="flex min-w-0 flex-col gap-10">
+          {showRecommendations ? (
+            <section aria-labelledby="recommended-integrations">
+              <div className="mb-4 flex flex-col gap-1">
+                <h2 className="text-gray-1000 text-heading-24" id="recommended-integrations">
+                  Recommended
+                </h2>
+                <p className="text-gray-800 text-sm">
+                  Curated from the integrations featured across official eve templates.
+                </p>
+              </div>
+              <div className="grid min-w-0 grid-cols-1 gap-4 min-[1024px]:grid-cols-2 min-[1200px]:grid-cols-3">
+                {recommendations.map((integration) => (
+                  <IntegrationCard
+                    integration={integration}
+                    key={integration.slug}
+                    onSelect={() =>
+                      track(analyticsEvents.integrationOpened, {
+                        filter,
+                        integration: integration.slug,
+                        search: false,
+                      })
+                    }
+                  />
+                ))}
+              </div>
+            </section>
+          ) : null}
+
+          {groupedResults.map(({ domain, integrations: domainIntegrations }) => {
+            const headingId = domainHeadingId(domain);
+            return (
+              <section aria-labelledby={headingId} key={domain}>
+                <div className="mb-4 flex items-baseline gap-2">
+                  <h2 className="text-gray-1000 text-heading-20" id={headingId}>
+                    {domain}
+                  </h2>
+                  <span className="text-gray-700 text-sm">{domainIntegrations.length}</span>
+                </div>
+                <div className="grid min-w-0 grid-cols-1 gap-4 min-[1024px]:grid-cols-2 min-[1200px]:grid-cols-3">
+                  {domainIntegrations.map((integration) => (
+                    <IntegrationCard
+                      integration={integration}
+                      key={integration.slug}
+                      onSelect={() =>
+                        track(analyticsEvents.integrationOpened, {
+                          filter,
+                          integration: integration.slug,
+                          search: query.trim().length > 0,
+                        })
+                      }
+                    />
+                  ))}
+                </div>
+              </section>
+            );
+          })}
         </div>
       ) : (
         <div className="flex flex-col items-center justify-center gap-1 rounded-lg border border-dashed py-16 text-center">
