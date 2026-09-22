@@ -4,6 +4,8 @@ packages:
 minimumReleaseAgeExclude:
   - eve
   - "@vercel/connect"
+  - "@ai-sdk/gateway@4.0.88"
+  - ai@7.0.109
 
 allowBuilds:
   "@parcel/watcher": false

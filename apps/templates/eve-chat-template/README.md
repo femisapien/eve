@@ -132,7 +132,7 @@ pnpm dev
 - Optional Neon-backed cross-device chat history
 - Optional Upstash Redis rate limiting in production mode
 - Optional long-term memory in a private Vercel Blob document (per user in production mode)
-- Drizzle schema and migrations for production mode under `lib/db`
+- Drizzle schema and migrations for production mode under `apps/web/lib/db`
 - Saved eve session cursors and event snapshots in either storage mode
 - Sidebar history with delete and new-chat actions
 - Vercel Connect-backed Notion, Linear, and Sentry MCP connections

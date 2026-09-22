@@ -21,14 +21,14 @@ prompt → four parallel council members → judge answer + agreement scores
 
 The root [eve agent](https://eve.dev/docs/) delegates the same prompt to four declared [subagents](https://eve.dev/docs/subagents). Each subagent has a fixed AI Gateway model and runs in its own durable session. The Next.js client follows those child [session streams](https://eve.dev/docs/concepts/sessions-runs-and-streaming) so every response appears independently as it is generated.
 
-After all four members finish, the root agent returns a concise answer and per-model agreement scores using a [structured output schema](https://eve.dev/docs/guides/client/output-schema). [`withEve()` and `useEveAgent()`](https://eve.dev/docs/guides/frontend/nextjs) keep the agent routes and UI in the same Next.js application.
+After all four members finish, the root agent returns a concise answer and per-model agreement scores using a [structured output schema](https://eve.dev/docs/guides/client/output-schema). [`useEveAgent()`](https://eve.dev/docs/guides/frontend/nextjs) calls the eve service through the shared Vercel deployment.
 
 The main pieces are:
 
 - `agent/instructions.md` — fan-out and judging behavior
 - `agent/subagents/` — the four fixed council members
 - `agent/lib/schemas.ts` — final answer and score schema
-- `app/council-app.tsx` — submission, child streaming, and rendering
+- `apps/web/app/council-app.tsx` — submission, child streaming, and rendering
 
 ## Run locally
 

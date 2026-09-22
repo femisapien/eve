@@ -10,13 +10,13 @@ importers:
     dependencies:
       '@vercel/connect':
         specifier: 0.8.0
-        version: 0.8.0(ai@7.0.70(zod@4.4.3))(eve@0.54.2(ai@7.0.70(zod@4.4.3)))
+        version: 0.8.0(ai@7.0.109(zod@4.4.3))(eve@0.63.0(ai@7.0.109(zod@4.4.3)))
       ai:
-        specifier: 7.0.70
-        version: 7.0.70(zod@4.4.3)
+        specifier: 7.0.109
+        version: 7.0.109(zod@4.4.3)
       eve:
-        specifier: ^0.54.2
-        version: 0.54.2(ai@7.0.70(zod@4.4.3))
+        specifier: ^0.63.0
+        version: 0.63.0(ai@7.0.109(zod@4.4.3))
       zod:
         specifier: 4.4.3
         version: 4.4.3
@@ -30,20 +30,20 @@ importers:
 
 packages:
 
-  '@ai-sdk/gateway@4.0.56':
-    resolution: {integrity: sha512-fc7tq+v7WrzCV+aXegbq/EOs68tFDJYLEwnCOnVYcB/Y5ZTjUIHzyJlrqdoJUlMTkc/qmKsXb1ovVvdUYPmxIA==}
+  '@ai-sdk/gateway@4.0.88':
+    resolution: {integrity: sha512-hpEdOAqrp3FOShSytk6n8BZVZ/xrCV7L9hqYA6Q55h7sQknvh99QfC0uQAIbQWjh+66tmo1Fo6ndQla8uCJGyA==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/provider-utils@5.0.28':
-    resolution: {integrity: sha512-TnHUyd/rCYQqHg5RuiOaz/hUql6U+kbUaBW0Rp+0N5UhnAInA9CzzV0HXvuAAPwppDsK6fAx9Rd+tRawpJ/3pg==}
+  '@ai-sdk/provider-utils@5.0.45':
+    resolution: {integrity: sha512-gLuaCups8OCIRz3eO6WWz5op7VLYNNtFzyH0sWUr0FE9v7cTxR0qxDpQdrKnGcql+9WWttobjnZsJVsuEbsPQQ==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/provider@4.0.7':
-    resolution: {integrity: sha512-6or44XprPzKbr8zkmzosowSE0pxkvJcoojBL+mCZvPUt3kvXp3XSNqeVun9golb1acEfSo6yaEBRT18h2VU+1Q==}
+  '@ai-sdk/provider@4.0.17':
+    resolution: {integrity: sha512-VYMBxIQdcHqbIf1j+YZlI9Ati6LZ4wJe0GGd4z4a5H/KxTggjeOiyaVYTnfF7LHZK5jMQ+rofmzz4QPqf++NUw==}
     engines: {node: '>=22'}
 
   '@oxc-project/types@0.149.0':
@@ -315,8 +315,8 @@ packages:
   '@workflow/serde@4.1.0':
     resolution: {integrity: sha512-pav4F2BoirECWR7Nf1TKt+2eETcBj7jj4cBefQ8VXQCA6NPkaKeLfj/zMgi+3zYV5ZIBT4GuUiphsj0/b9hPQQ==}
 
-  ai@7.0.70:
-    resolution: {integrity: sha512-r7Y0alVQqairf0WvT3puyjz5wPMjRV5zYSHiGz87K3uoqkCeK1EaN6O8lLqduSszLcfqC6XVJAIdy3/RkPwPHg==}
+  ai@7.0.109:
+    resolution: {integrity: sha512-hTnm8K4GIT0R6gHrnDJHr1KRnGVAtFa26mLtjqn/TGy+ufD5Y5XXerTEabLXVgmb9iunWxSFRCPOZUZ/VeXYLQ==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -344,13 +344,13 @@ packages:
     resolution: {integrity: sha512-2iDP2DfheAMMAKeXBggEuFmpSq+1Xs6wQoHba1g65pZFXlC3VHD1O6/tgVzS6GQLv+P2koPKZPKgKhXkigNBdg==}
     hasBin: true
 
-  eve@0.54.2:
-    resolution: {integrity: sha512-LqiWleXbsA4upBsl5bkZ9O+qZ6h+WOMzNy/IL79Tz5LLkIjpk4koJq1gdBON80V+butfy/A5fwnOcL8isK+DfQ==}
+  eve@0.63.0:
+    resolution: {integrity: sha512-iDv0S4MXvZimaXNTJnyB2THumRQLWQSAgpMcZsGtMNquYQpSKB1+i8sxX4KJOHHCLd04lwD+06xnh+ja7rlZIw==}
     engines: {node: '>=24'}
     hasBin: true
     peerDependencies:
       '@opentelemetry/api': ^1.0.0
-      ai: ^7.0.93
+      ai: ^7.0.105
       braintrust: ^3.0.0
       dd-trace: ^6.13.0
       just-bash: ^3.1.0
@@ -526,23 +526,23 @@ packages:
 
 snapshots:
 
-  '@ai-sdk/gateway@4.0.56(zod@4.4.3)':
+  '@ai-sdk/gateway@4.0.88(zod@4.4.3)':
     dependencies:
-      '@ai-sdk/provider': 4.0.7
-      '@ai-sdk/provider-utils': 5.0.28(zod@4.4.3)
+      '@ai-sdk/provider': 4.0.17
+      '@ai-sdk/provider-utils': 5.0.45(zod@4.4.3)
       '@vercel/oidc': 3.2.0
       zod: 4.4.3
 
-  '@ai-sdk/provider-utils@5.0.28(zod@4.4.3)':
+  '@ai-sdk/provider-utils@5.0.45(zod@4.4.3)':
     dependencies:
-      '@ai-sdk/provider': 4.0.7
+      '@ai-sdk/provider': 4.0.17
       '@standard-schema/spec': 1.1.0
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.1
       undici: 7.29.0
       zod: 4.4.3
 
-  '@ai-sdk/provider@4.0.7':
+  '@ai-sdk/provider@4.0.17':
     dependencies:
       json-schema: 0.4.0
 
@@ -670,12 +670,12 @@ snapshots:
     dependencies:
       execa: 5.1.1
 
-  '@vercel/connect@0.8.0(ai@7.0.70(zod@4.4.3))(eve@0.54.2(ai@7.0.70(zod@4.4.3)))':
+  '@vercel/connect@0.8.0(ai@7.0.109(zod@4.4.3))(eve@0.63.0(ai@7.0.109(zod@4.4.3)))':
     dependencies:
       '@vercel/oidc': 3.8.4
     optionalDependencies:
-      ai: 7.0.70(zod@4.4.3)
-      eve: 0.54.2(ai@7.0.70(zod@4.4.3))
+      ai: 7.0.109(zod@4.4.3)
+      eve: 0.63.0(ai@7.0.109(zod@4.4.3))
 
   '@vercel/oidc@3.2.0': {}
 
@@ -687,11 +687,11 @@ snapshots:
 
   '@workflow/serde@4.1.0': {}
 
-  ai@7.0.70(zod@4.4.3):
+  ai@7.0.109(zod@4.4.3):
     dependencies:
-      '@ai-sdk/gateway': 4.0.56(zod@4.4.3)
-      '@ai-sdk/provider': 4.0.7
-      '@ai-sdk/provider-utils': 5.0.28(zod@4.4.3)
+      '@ai-sdk/gateway': 4.0.88(zod@4.4.3)
+      '@ai-sdk/provider': 4.0.17
+      '@ai-sdk/provider-utils': 5.0.45(zod@4.4.3)
       zod: 4.4.3
 
   consola@3.4.2: {}
@@ -715,9 +715,9 @@ snapshots:
       httpxy: 0.5.5
       srvx: 1.0.4
 
-  eve@0.54.2(ai@7.0.70(zod@4.4.3)):
+  eve@0.63.0(ai@7.0.109(zod@4.4.3)):
     dependencies:
-      ai: 7.0.70(zod@4.4.3)
+      ai: 7.0.109(zod@4.4.3)
       nitro: 3.0.260903-beta
       undici: 8.9.0
 

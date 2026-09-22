@@ -43,13 +43,13 @@ importers:
         version: 2.0.1(next@16.3.4(@types/node@25.9.5)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)
       '@vercel/connect':
         specifier: 0.8.0
-        version: 0.8.0(ai@7.0.84(zod@4.4.3))(better-auth@1.7.1(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@neondatabase/serverless@1.1.0)(@types/pg@8.20.0)(@upstash/redis@1.38.2)(kysely@0.29.5))(mongodb@7.3.0)(next@16.3.4(@types/node@25.9.5)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(eve@0.54.2(ai@7.0.84(zod@4.4.3))(microsandbox@0.5.10))
+        version: 0.8.0(ai@7.0.109(zod@4.4.3))(better-auth@1.7.1(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@neondatabase/serverless@1.1.0)(@types/pg@8.20.0)(@upstash/redis@1.38.2)(kysely@0.29.5))(mongodb@7.3.0)(next@16.3.4(@types/node@25.9.5)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(eve@0.63.0(ai@7.0.109(zod@4.4.3))(microsandbox@0.5.10))
       '@vercel/speed-insights':
         specifier: 2.0.0
         version: 2.0.0(next@16.3.4(@types/node@25.9.5)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react@19.2.8)
       ai:
-        specifier: 7.0.84
-        version: 7.0.84(zod@4.4.3)
+        specifier: 7.0.109
+        version: 7.0.109(zod@4.4.3)
       better-auth:
         specifier: 1.7.1
         version: 1.7.1(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@neondatabase/serverless@1.1.0)(@types/pg@8.20.0)(@upstash/redis@1.38.2)(kysely@0.29.5))(mongodb@7.3.0)(next@16.3.4(@types/node@25.9.5)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
@@ -66,8 +66,8 @@ importers:
         specifier: 0.45.2
         version: 0.45.2(@neondatabase/serverless@1.1.0)(@types/pg@8.20.0)(@upstash/redis@1.38.2)(kysely@0.29.5)
       eve:
-        specifier: ^0.54.2
-        version: 0.54.2(ai@7.0.84(zod@4.4.3))(microsandbox@0.5.10)
+        specifier: ^0.63.0
+        version: 0.63.0(ai@7.0.109(zod@4.4.3))(microsandbox@0.5.10)
       lucide-react:
         specifier: 1.33.0
         version: 1.33.0(react@19.2.8)
@@ -126,20 +126,20 @@ importers:
 
 packages:
 
-  '@ai-sdk/gateway@4.0.68':
-    resolution: {integrity: sha512-XKvZv6HFoMOWK64zXMaQatk4SxBzBDkGg7enXPWsCkxqPP4zDhFewOoBKasf3FPnZP9ceE+Yj3BgW925blAWtw==}
+  '@ai-sdk/gateway@4.0.88':
+    resolution: {integrity: sha512-hpEdOAqrp3FOShSytk6n8BZVZ/xrCV7L9hqYA6Q55h7sQknvh99QfC0uQAIbQWjh+66tmo1Fo6ndQla8uCJGyA==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/provider-utils@5.0.33':
-    resolution: {integrity: sha512-TfjJqJmRsQyxAlb+3hGmP1o1xLUIT79yhOgtJuTF4hqsB37IC3CufGsuFhU04EeTOg7R9iptQ6Bzm0MW0n/c3g==}
+  '@ai-sdk/provider-utils@5.0.45':
+    resolution: {integrity: sha512-gLuaCups8OCIRz3eO6WWz5op7VLYNNtFzyH0sWUr0FE9v7cTxR0qxDpQdrKnGcql+9WWttobjnZsJVsuEbsPQQ==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
 
-  '@ai-sdk/provider@4.0.8':
-    resolution: {integrity: sha512-aWO7iwhFUGf347tCwNGggggfmZigaSu7TF739IZSrWWABUp7zkb4Cr3fMqvBe5EIS7ABJJu3Cadn0g/zs1G0QQ==}
+  '@ai-sdk/provider@4.0.17':
+    resolution: {integrity: sha512-VYMBxIQdcHqbIf1j+YZlI9Ati6LZ4wJe0GGd4z4a5H/KxTggjeOiyaVYTnfF7LHZK5jMQ+rofmzz4QPqf++NUw==}
     engines: {node: '>=22'}
 
   '@alloc/quick-lru@5.2.0':
@@ -2542,8 +2542,8 @@ packages:
   '@workflow/serde@4.1.0':
     resolution: {integrity: sha512-pav4F2BoirECWR7Nf1TKt+2eETcBj7jj4cBefQ8VXQCA6NPkaKeLfj/zMgi+3zYV5ZIBT4GuUiphsj0/b9hPQQ==}
 
-  ai@7.0.84:
-    resolution: {integrity: sha512-znHNBWADOy79k8EK7636kDm5LmnjF4tMzegC2TfmlLDobDZbs0z0OXD2sxtH3eDTp5Re+pJQESvjinWJ6+kadQ==}
+  ai@7.0.109:
+    resolution: {integrity: sha512-hTnm8K4GIT0R6gHrnDJHr1KRnGVAtFa26mLtjqn/TGy+ufD5Y5XXerTEabLXVgmb9iunWxSFRCPOZUZ/VeXYLQ==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -3037,13 +3037,13 @@ packages:
   estree-util-is-identifier-name@3.0.0:
     resolution: {integrity: sha512-hFtqIDZTIUZ9BXLb8y4pYGyk6+wekIivNVTcmvk8NoOh+VeRn5y6cEHzbURrWbfp1fIqdVipilzj+lfaadNZmg==}
 
-  eve@0.54.2:
-    resolution: {integrity: sha512-LqiWleXbsA4upBsl5bkZ9O+qZ6h+WOMzNy/IL79Tz5LLkIjpk4koJq1gdBON80V+butfy/A5fwnOcL8isK+DfQ==}
+  eve@0.63.0:
+    resolution: {integrity: sha512-iDv0S4MXvZimaXNTJnyB2THumRQLWQSAgpMcZsGtMNquYQpSKB1+i8sxX4KJOHHCLd04lwD+06xnh+ja7rlZIw==}
     engines: {node: '>=24'}
     hasBin: true
     peerDependencies:
       '@opentelemetry/api': ^1.0.0
-      ai: ^7.0.93
+      ai: ^7.0.105
       braintrust: ^3.0.0
       dd-trace: ^6.13.0
       just-bash: ^3.1.0
@@ -4096,23 +4096,23 @@ packages:
 
 snapshots:
 
-  '@ai-sdk/gateway@4.0.68(zod@4.4.3)':
+  '@ai-sdk/gateway@4.0.88(zod@4.4.3)':
     dependencies:
-      '@ai-sdk/provider': 4.0.8
-      '@ai-sdk/provider-utils': 5.0.33(zod@4.4.3)
+      '@ai-sdk/provider': 4.0.17
+      '@ai-sdk/provider-utils': 5.0.45(zod@4.4.3)
       '@vercel/oidc': 3.2.0
       zod: 4.4.3
 
-  '@ai-sdk/provider-utils@5.0.33(zod@4.4.3)':
+  '@ai-sdk/provider-utils@5.0.45(zod@4.4.3)':
     dependencies:
-      '@ai-sdk/provider': 4.0.8
+      '@ai-sdk/provider': 4.0.17
       '@standard-schema/spec': 1.1.0
       '@workflow/serde': 4.1.0
       eventsource-parser: 3.1.1
       undici: 7.29.1
       zod: 4.4.3
 
-  '@ai-sdk/provider@4.0.8':
+  '@ai-sdk/provider@4.0.17':
     dependencies:
       json-schema: 0.4.0
 
@@ -6039,13 +6039,13 @@ snapshots:
     dependencies:
       execa: 5.1.1
 
-  '@vercel/connect@0.8.0(ai@7.0.84(zod@4.4.3))(better-auth@1.7.1(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@neondatabase/serverless@1.1.0)(@types/pg@8.20.0)(@upstash/redis@1.38.2)(kysely@0.29.5))(mongodb@7.3.0)(next@16.3.4(@types/node@25.9.5)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(eve@0.54.2(ai@7.0.84(zod@4.4.3))(microsandbox@0.5.10))':
+  '@vercel/connect@0.8.0(ai@7.0.109(zod@4.4.3))(better-auth@1.7.1(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@neondatabase/serverless@1.1.0)(@types/pg@8.20.0)(@upstash/redis@1.38.2)(kysely@0.29.5))(mongodb@7.3.0)(next@16.3.4(@types/node@25.9.5)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(eve@0.63.0(ai@7.0.109(zod@4.4.3))(microsandbox@0.5.10))':
     dependencies:
       '@vercel/oidc': 3.8.4
     optionalDependencies:
-      ai: 7.0.84(zod@4.4.3)
+      ai: 7.0.109(zod@4.4.3)
       better-auth: 1.7.1(drizzle-kit@0.31.10)(drizzle-orm@0.45.2(@neondatabase/serverless@1.1.0)(@types/pg@8.20.0)(@upstash/redis@1.38.2)(kysely@0.29.5))(mongodb@7.3.0)(next@16.3.4(@types/node@25.9.5)(react-dom@19.2.8(react@19.2.8))(react@19.2.8))(react-dom@19.2.8(react@19.2.8))(react@19.2.8)
-      eve: 0.54.2(ai@7.0.84(zod@4.4.3))(microsandbox@0.5.10)
+      eve: 0.63.0(ai@7.0.109(zod@4.4.3))(microsandbox@0.5.10)
 
   '@vercel/oidc@3.2.0': {}
 
@@ -6062,11 +6062,11 @@ snapshots:
 
   '@workflow/serde@4.1.0': {}
 
-  ai@7.0.84(zod@4.4.3):
+  ai@7.0.109(zod@4.4.3):
     dependencies:
-      '@ai-sdk/gateway': 4.0.68(zod@4.4.3)
-      '@ai-sdk/provider': 4.0.8
-      '@ai-sdk/provider-utils': 5.0.33(zod@4.4.3)
+      '@ai-sdk/gateway': 4.0.88(zod@4.4.3)
+      '@ai-sdk/provider': 4.0.17
+      '@ai-sdk/provider-utils': 5.0.45(zod@4.4.3)
       zod: 4.4.3
 
   aria-hidden@1.2.6:
@@ -6514,9 +6514,9 @@ snapshots:
 
   estree-util-is-identifier-name@3.0.0: {}
 
-  eve@0.54.2(ai@7.0.84(zod@4.4.3))(microsandbox@0.5.10):
+  eve@0.63.0(ai@7.0.109(zod@4.4.3))(microsandbox@0.5.10):
     dependencies:
-      ai: 7.0.84(zod@4.4.3)
+      ai: 7.0.109(zod@4.4.3)
       nitro: 3.0.260903-beta
       undici: 8.9.0
     optionalDependencies:
