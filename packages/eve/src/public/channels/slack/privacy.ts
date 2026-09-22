@@ -1,4 +1,4 @@
-import type { SlackApiResponse } from "#public/channels/slack/api.js";
+import type { SlackApiResponse } from "#public/channels/slack/api-transport.js";
 
 export type SlackConversationPrivacy = "private" | "public" | "unknown";
 
@@ -20,7 +20,7 @@ export function readSlackConversationPrivacy(
 export async function isPrivateSlackConversation(input: {
   readonly channelId: string;
   readonly raw: Readonly<Record<string, unknown>> | undefined;
-  readonly request: (operation: string, body: unknown) => Promise<SlackApiResponse>;
+  readonly request: (operation: string, body: object) => Promise<SlackApiResponse>;
 }): Promise<boolean> {
   const eventPrivacy = readSlackConversationPrivacy(input.raw);
   if (eventPrivacy !== "unknown") return eventPrivacy === "private";

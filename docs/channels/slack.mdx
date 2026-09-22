@@ -407,6 +407,7 @@ import { connectSlackCredentials } from "@vercel/connect/eve";
 
 const { botToken } = connectSlackCredentials("slack/my-agent");
 const response = await callSlackApi({
+  api: { apiBaseUrl: process.env.SLACK_API_BASE_URL },
   botToken,
   context: { teamId: "T0123456789" },
   operation: "reactions.get",
@@ -420,6 +421,68 @@ rotation) with the supplied `context` at call time and form-encodes the body —
 since Slack's JSON support is partial (`conversations.replies` rejects
 JSON). `resolveSlackBotToken` materializes a `SlackBotToken` to a string
 when you need the bearer token itself.
+
+Pass the same [`api`](#point-the-channel-at-a-different-slack-api-host) the
+channel was given. `callSlackApi` has no channel to inherit it from, so
+omitting it sends the call to `https://slack.com/api/` with whatever token you
+supplied — the one way left to reach the real workspace from a deployment
+pointed at a stand-in. Leaving `apiBaseUrl` `undefined` keeps Slack's own host,
+so a single `process.env` read works in both deployments.
+
+### Point the channel at a different Slack API host
+
+`api` overrides the transport every outbound Slack Web API call uses. Every
+field is optional; omit `api` and the channel talks to `https://slack.com/api/`
+through the global `fetch`, exactly as before.
+
+```ts
+import { slackChannel } from "eve/channels/slack";
+
+export default slackChannel({
+  api: { apiBaseUrl: "http://localhost:3000/api/slack" },
+  credentials: { botToken: process.env.SLACK_BOT_TOKEN },
+});
+```
+
+`apiBaseUrl` must be an absolute `http:` or `https:` URL carrying no query
+string or fragment: method names are appended by relative URL resolution, which
+keeps only the origin and the directory part of the path, so anything trailing
+it would be silently dropped. A base without a trailing slash is normalized to
+one, so `https://sim.example/api` and `https://sim.example/api/` both send
+`chat.postMessage` to `https://sim.example/api/chat.postMessage`. An empty
+string is rejected rather than treated as "unset", so
+`apiBaseUrl: process.env.FAKE_SLACK_URL ?? ""` fails loudly instead of reaching
+the real workspace with the real token.
+
+`fileBaseUrl` names where the stand-in serves its own attachments, and
+defaults to `apiBaseUrl`. A download URL counts as the stand-in's when it
+starts with this base, so set it to the host root when files are served from
+paths outside the API base:
+
+```ts
+export default slackChannel({
+  api: {
+    apiBaseUrl: "http://localhost:3000/api/slack",
+    fileBaseUrl: "http://localhost:3000/files",
+  },
+  credentials: { botToken: process.env.SLACK_BOT_TOKEN },
+});
+```
+
+It is validated like `apiBaseUrl` and normalized the same way. Slack's own file
+hosts (`files.slack.com` and Enterprise Grid) are always downloadable and are
+not affected by it; every other URL still passes through to the model provider
+unchanged.
+
+`api.fetch` replaces the global `fetch` for requests to `apiBaseUrl` and to
+`fileBaseUrl` — useful for adding a per-call header, such as a
+deployment-protection bypass, or for instrumenting the calls. It is confined to
+those two bases on purpose: a wrapper usually attaches credentials meant for
+the stand-in, which have no business on a request to Slack's own hosts. That
+includes the second leg of a file upload, whose URL
+`files.getUploadURLExternal` chooses: it goes through `api.fetch` only when it
+lands on the `apiBaseUrl` origin, and with no `apiBaseUrl` set it never does. Inbound webhook verification is untouched either way:
+that still uses `credentials.signingSecret` / `SLACK_SIGNING_SECRET`.
 
 ### Delivery
 
@@ -520,6 +583,8 @@ To post without invoking the model, use `ctx.thread.post(...)` in an inbound Sla
 Inbound files behind authenticated Slack URLs are staged with `fetchFile`. See [File uploads](./custom#file-uploads) for the `fetchFile` contract.
 
 Private file downloads resolve credentials from the session's app installation workspace and require the Slack bot token's `files:read` scope. Add the scope and reinstall the Slack app before sending attachments.
+
+Downloads are restricted to Slack's own file hosts, plus URLs under a configured [`api.fileBaseUrl`](#point-the-channel-at-a-different-slack-api-host) (which falls back to `api.apiBaseUrl`). Any other URL is passed through to the model provider unchanged.
 
 Staged files live in the session sandbox under `/workspace/attachments`. Session history keeps a reference to that path, not a second copy of the Slack file. If the backend can no longer reattach the original sandbox, eve cannot restore the attachment bytes from history; later turns receive a missing-file result. Store files outside the sandbox when the agent must retain them independently of sandbox availability.
 

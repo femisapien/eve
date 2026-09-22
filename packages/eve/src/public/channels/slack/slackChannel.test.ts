@@ -3,6 +3,7 @@ import { createHmac } from "node:crypto";
 import { afterAll, afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 
 import { buildAdapterContext } from "#channel/adapter-context.js";
+import { getChannelActivityPresentation } from "#channel/activity-renderer.js";
 import { callAdapterEventHandler, type ChannelAdapter } from "#channel/adapter.js";
 import { isCompiledChannel, type CompiledChannel } from "#channel/compiled-channel.js";
 import type { ChannelFrom, ChannelSource } from "#channel/channel-operations.js";
@@ -15,7 +16,12 @@ import {
   type ObservedChannelDelivery,
 } from "#internal/testing/mocks/mock-channel-operations.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
-import { experimental_slackActivityStatus } from "#public/channels/slack/activity.js";
+import { createActivitySnapshot, reduceActivityBatch } from "#execution/session-activity.js";
+import {
+  experimental_slackActivityPlan,
+  experimental_slackActivityStatus,
+  experimental_slackActivityTree,
+} from "#public/channels/slack/activity.js";
 import { decodeSlackApiBody } from "#public/channels/slack/api-encoding.js";
 import {
   HITL_ACTION_PREFIX,
@@ -552,6 +558,72 @@ describe("slackChannel() default event handlers", () => {
       thread_ts: "1700000000.000001",
       markdown_text: "Hello from the agent",
     });
+  });
+
+  it("api.apiBaseUrl redirects the outbound call away from slack.com", async () => {
+    const adapter = withState(
+      getAdapter(
+        slackChannel({
+          api: { apiBaseUrl: "http://localhost:3000/api/slack" },
+          credentials: { botToken: "xoxb-test" },
+        }),
+      ),
+      THREAD_STATE,
+    );
+    const ctx = buildAdapterContext(adapter, stubAccessor());
+
+    await callEvent(
+      adapter,
+      makeEvent("message.completed", {
+        finishReason: "stop",
+        message: "Hello from the agent",
+        sequence: 0,
+        stepIndex: 0,
+        turnId: "t1",
+      }),
+      ctx,
+    );
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(String(fetchMock.mock.calls[0]![0])).toBe(
+      "http://localhost:3000/api/slack/chat.postMessage",
+    );
+  });
+
+  it("api.fetch replaces the global fetch for outbound Slack traffic", async () => {
+    const apiFetch = vi.fn<typeof fetch>(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ ok: true, ts: "1700000001.000001" }), {
+          headers: { "content-type": "application/json" },
+        }),
+      ),
+    );
+    const adapter = withState(
+      getAdapter(
+        slackChannel({
+          api: { fetch: apiFetch },
+          credentials: { botToken: "xoxb-test" },
+        }),
+      ),
+      THREAD_STATE,
+    );
+    const ctx = buildAdapterContext(adapter, stubAccessor());
+
+    await callEvent(
+      adapter,
+      makeEvent("message.completed", {
+        finishReason: "stop",
+        message: "Hello from the agent",
+        sequence: 0,
+        stepIndex: 0,
+        turnId: "t1",
+      }),
+      ctx,
+    );
+
+    expect(apiFetch).toHaveBeenCalledTimes(1);
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(String(apiFetch.mock.calls[0]![0])).toBe("https://slack.com/api/chat.postMessage");
   });
 
   it("message.completed keeps a reply at the Markdown limit inline", async () => {
@@ -4650,5 +4722,234 @@ describe("constrainAuthorizationRequired", () => {
     expect(handler).toHaveBeenCalledTimes(1);
     expect(handler.mock.calls[0]?.[0]).toBe(eventData);
     expect(handler.mock.calls[0]?.[2]).toBe(sessionCtx);
+  });
+});
+
+// One turn that touches every Slack primitive the channel owns, with a
+// configured `api`. The load-bearing assertion is the negative one: the
+// global `fetch` is never reached. A new call site that forgets the
+// transport fails here without anyone remembering to extend a list.
+describe("slackChannel() api transport coverage", () => {
+  const API_BASE = "http://localhost:4000/api/slack";
+  const ORIGINAL_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET;
+  let globalFetch: ReturnType<typeof vi.fn>;
+  let apiFetch: ReturnType<typeof vi.fn>;
+  let seen: string[];
+
+  beforeEach(() => {
+    process.env.SLACK_SIGNING_SECRET = SIGNING_SECRET;
+    globalFetch = vi.fn(() => Promise.reject(new Error("global fetch reached")));
+    vi.stubGlobal("fetch", globalFetch);
+    seen = [];
+    apiFetch = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      seen.push(url);
+      const operation = url.startsWith(`${API_BASE}/`) ? url.slice(API_BASE.length + 1) : url;
+      if (operation === "conversations.replies") return Response.json({ messages: [], ok: true });
+      if (operation === "conversations.info")
+        return Response.json({ channel: { is_private: false }, ok: true });
+      if (operation === "conversations.open")
+        return Response.json({ channel: { id: "D01" }, ok: true });
+      if (operation === "files.getUploadURLExternal")
+        return Response.json({ file_id: "F01", ok: true, upload_url: `${API_BASE}/uploads/F01` });
+      if (operation === "uploads/F01") return new Response("OK");
+      if (operation === "files.completeUploadExternal")
+        return Response.json({ files: [{ id: "F01" }], ok: true });
+      return Response.json({ ok: true, ts: "1700000001.000001" });
+    });
+  });
+
+  afterAll(() => {
+    if (ORIGINAL_SIGNING_SECRET === undefined) delete process.env.SLACK_SIGNING_SECRET;
+    else process.env.SLACK_SIGNING_SECRET = ORIGINAL_SIGNING_SECRET;
+  });
+
+  function activitySnapshot() {
+    const root = {
+      id: "work:root:turn",
+      kind: "root-turn" as const,
+      rootSessionId: "root",
+      rootTurnId: "turn",
+    };
+    const child = {
+      id: "work:root:turn:child",
+      kind: "subagent" as const,
+      name: "research",
+      parentId: root.id,
+      rootSessionId: "root",
+      rootTurnId: "turn",
+    };
+    return reduceActivityBatch(createActivitySnapshot(), {
+      events: [
+        { eventId: "root", kind: "work.started", startedAt: "2026-01-01T00:00:00Z", work: root },
+        { eventId: "child", kind: "work.started", startedAt: "2026-01-01T00:00:01Z", work: child },
+      ],
+      version: 1,
+    });
+  }
+
+  it("routes every outbound Slack call through the configured transport", async () => {
+    const channel = slackChannel({
+      activity: {
+        renderers: [
+          experimental_slackActivityStatus(),
+          experimental_slackActivityTree(),
+          experimental_slackActivityPlan(),
+        ],
+      },
+      api: { apiBaseUrl: API_BASE, fetch: apiFetch as unknown as typeof fetch },
+      credentials: { botToken: "xoxb-test" },
+      async onInteraction(_action, ctx) {
+        await ctx.thread.post("interaction reply");
+        await ctx.slack.request("auth.test", {});
+      },
+      async onShortcut(_shortcut, ctx) {
+        await ctx.slack.request("auth.test", {});
+      },
+      async onAppMention(ctx) {
+        await ctx.thread.refresh();
+        await ctx.thread.post("hello");
+        await ctx.thread.postEphemeral("U01", "psst");
+        await ctx.thread.postDirectMessage("U01", "dm");
+        await ctx.thread.startTyping("Working…");
+        await ctx.slack.uploadFiles([
+          { data: new Uint8Array([1, 2, 3]), filename: "a.txt", mediaType: "text/plain" },
+        ]);
+        await ctx.slack.request("auth.test", {});
+        return { auth: null };
+      },
+    });
+
+    // Inbound mention: thread refresh, post, ephemeral, IM, typing,
+    // uploads, a raw request, and the privacy probe behind `audience`.
+    await firePost(channel, buildSignedRequest({ body: buildMentionBody().body }));
+
+    // Every activity renderer, against the destination the channel derives.
+    const presentation = getChannelActivityPresentation(getAdapter(channel));
+    const destination = presentation!.destination({
+      ...THREAD_STATE,
+      installationTeamId: "T01",
+      triggeringUserId: "U01",
+    });
+    for (const renderer of presentation!.renderers) {
+      const state = await renderer.render({
+        destination,
+        snapshot: activitySnapshot(),
+        state: undefined,
+      });
+      await renderer.dispose?.({ destination, state });
+    }
+
+    // Interaction surfaces: the freeform modal and the answered card.
+    await firePost(
+      channel,
+      buildSignedInteractionRequest({
+        type: "block_actions",
+        trigger_id: "trigger-123",
+        team: { id: "T01" },
+        user: { id: "U01", username: "ada", team_id: "T01" },
+        channel: { id: "C01" },
+        message: {
+          ts: "1700000000.000010",
+          thread_ts: "1700000000.000001",
+          blocks: [{ type: "section", text: { type: "mrkdwn", text: "Explain" } }],
+        },
+        actions: [
+          {
+            action_id: `${HITL_FREEFORM_ACTION_PREFIX}route:C01:1700000000.000001:call_abc123`,
+            text: { type: "plain_text", text: "Type your answer" },
+            value: "call_abc123",
+          },
+        ],
+      }),
+    );
+    await firePost(
+      channel,
+      buildSignedInteractionRequest({
+        type: "view_submission",
+        team: { id: "T01" },
+        user: { id: "U01", username: "ada", name: "ada", team_id: "T01" },
+        view: {
+          app_installed_team_id: "T01",
+          callback_id: HITL_FREEFORM_MODAL_CALLBACK_ID,
+          private_metadata: JSON.stringify({
+            channelId: "C01",
+            continuationToken: "C01:1700000000.000001",
+            messageChannelId: "C01",
+            messageTs: "1700000000.000010",
+            requestId: "call_abc123",
+            threadTs: "1700000000.000001",
+          }),
+          state: {
+            values: {
+              [HITL_FREEFORM_MODAL_BLOCK_ID]: {
+                [HITL_FREEFORM_MODAL_ACTION_ID]: { value: "answered" },
+              },
+            },
+          },
+        },
+      }),
+    );
+
+    // The two author-owned interaction surfaces: a custom block action
+    // and a message shortcut, each handed its own `{ thread, slack }`.
+    await firePost(
+      channel,
+      buildSignedInteractionRequest({
+        type: "block_actions",
+        trigger_id: "trigger-456",
+        team: { id: "T01" },
+        user: { id: "U01", username: "ada", team_id: "T01" },
+        channel: { id: "C01" },
+        message: { ts: "1700000000.000010", thread_ts: "1700000000.000001", blocks: [] },
+        actions: [{ action_id: "inspect", text: { type: "plain_text", text: "Inspect" } }],
+      }),
+    );
+    await firePost(
+      channel,
+      buildSignedInteractionRequest({
+        type: "message_action",
+        callback_id: "summarize_message",
+        trigger_id: "trigger-789",
+        team: { id: "T01" },
+        user: { id: "U01", username: "ada", team_id: "T01" },
+        channel: { id: "C01" },
+        message: {
+          text: "Please summarize this",
+          ts: "1700000000.000010",
+          thread_ts: "1700000000.000001",
+          user: "U02",
+        },
+      }),
+    );
+
+    // The oversized-reply snippet upload on the default delivery path.
+    const adapter = withState(getAdapter(channel), THREAD_STATE);
+    await callEvent(
+      adapter,
+      makeEvent("message.completed", {
+        finishReason: "stop",
+        message: "x".repeat(SLACK_MARKDOWN_TEXT_MAX_LENGTH + 1),
+        sequence: 0,
+        stepIndex: 0,
+        turnId: "t1",
+      }),
+      buildAdapterContext(adapter, stubAccessor()),
+    );
+
+    const operations = new Set(seen.map((url) => url.slice(API_BASE.length + 1)));
+    expect(operations).toContain("chat.postMessage");
+    expect(operations).toContain("conversations.replies");
+    expect(operations).toContain("views.open");
+    expect(operations).toContain("assistant.threads.setStatus");
+    expect(operations).toContain("chat.startStream");
+    expect(operations).toContain("files.completeUploadExternal");
+    // One `auth.test` each from the mention, the block action and the
+    // shortcut. A count, not membership: a handle built off a second
+    // transport fails its request instead of reaching another host, and
+    // the negative assertion below would stay green.
+    expect(seen.filter((url) => url === `${API_BASE}/auth.test`)).toHaveLength(3);
+    expect(seen.filter((url) => !url.startsWith(`${API_BASE}/`))).toEqual([]);
+    expect(globalFetch).not.toHaveBeenCalled();
   });
 });

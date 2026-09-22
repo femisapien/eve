@@ -8,10 +8,8 @@ export type { ModelMessage } from "ai";
 
 export {
   slackChannel,
-  type SlackApiResponse,
   type SlackAuthorizationEventContext,
   type SlackAuthorizationRequiredHandler,
-  type SlackBotToken,
   type SlackChannel,
   type SlackChannelConfig,
   type SlackChannelCredentials,
@@ -67,10 +65,17 @@ export type {
 export {
   callSlackApi,
   resolveSlackBotToken,
+  type SlackApiOptions,
+  type SlackApiResponse,
+  type SlackBotToken,
+  type SlackBotTokenContext,
+  type SlackFetch,
+} from "#public/channels/slack/api-transport.js";
+
+export {
   slackContinuationToken,
   type SlackPostInput,
   type SlackPostedMessage,
-  type SlackBotTokenContext,
   type SlackThreadMessage,
   type SlackUploadFilesOptions,
   type SlackUploadFilesResult,

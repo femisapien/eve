@@ -3,11 +3,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { Card, CardText } from "#compiled/chat/index.js";
 import { decodeSlackApiBody } from "#public/channels/slack/api-encoding.js";
 import {
-  buildSlackBinding,
   callSlackApi,
+  createSlackTransport,
+  resolveSlackApiBaseUrl,
   resolveSlackBotToken,
+  resolveSlackFileBaseUrl,
+  SLACK_API_BASE_URL,
   type SlackBotTokenContext,
-} from "#public/channels/slack/api.js";
+} from "#public/channels/slack/api-transport.js";
+import { buildSlackBinding } from "#public/channels/slack/api.js";
 
 interface FetchCall {
   url: string;
@@ -144,7 +148,7 @@ describe("SlackHandle.uploadFiles", () => {
 
   it("runs the 3-step Slack upload flow per file", async () => {
     const { slack } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "1.0",
       teamId: "T01",
@@ -186,7 +190,7 @@ describe("SlackHandle.uploadFiles", () => {
 
   it("returns an empty result for zero files", async () => {
     const { slack } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "1.0",
       teamId: undefined,
@@ -199,7 +203,7 @@ describe("SlackHandle.uploadFiles", () => {
 
   it("accepts options.channelId and options.threadTs overrides", async () => {
     const { slack } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "1.0",
       teamId: undefined,
@@ -229,7 +233,7 @@ describe("SlackHandle.uploadFiles", () => {
     );
 
     const { slack } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "1.0",
       teamId: undefined,
@@ -255,7 +259,7 @@ describe("SlackThread.post with files", () => {
 
   it("{ markdown, files } posts markdown before uploading files", async () => {
     const { thread } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "1.0",
       teamId: undefined,
@@ -291,7 +295,7 @@ describe("SlackThread.post with files", () => {
 
   it("{ text, files } keeps a single Slack upload comment", async () => {
     const { thread } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "1.0",
       teamId: undefined,
@@ -315,7 +319,7 @@ describe("SlackThread.post with files", () => {
 
   it("{ card, files } posts the card via chat.postMessage and uploads files separately", async () => {
     const { thread } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "1.0",
       teamId: undefined,
@@ -354,7 +358,7 @@ describe("Slack outbound text", () => {
 
   it("preserves literal at-prefixed tokens in markdown and text posts", async () => {
     const { thread } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "1.0",
       teamId: undefined,
@@ -379,7 +383,7 @@ describe("Slack outbound text", () => {
 
   it("preserves literal at-prefixed tokens in file upload comments", async () => {
     const { thread } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "1.0",
       teamId: undefined,
@@ -413,7 +417,7 @@ describe("SlackThread.refresh", () => {
 
   it("hydrates recent messages with the eve-owned Slack thread shape", async () => {
     const { thread } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "1700000000.000001",
       teamId: undefined,
@@ -472,7 +476,7 @@ describe("SlackThread.refresh", () => {
     vi.stubGlobal("fetch", mock.fetch);
 
     const { thread } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "1700000000.000001",
       teamId: undefined,
@@ -519,7 +523,7 @@ describe("SlackThread.refresh", () => {
     vi.stubGlobal("fetch", mock.fetch);
 
     const { thread } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "1700000000.000001",
       teamId: undefined,
@@ -547,7 +551,7 @@ describe("SlackThread.refresh", () => {
       });
     });
     const { thread } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "1.0",
       teamId: undefined,
@@ -577,7 +581,7 @@ describe("SlackThread.refresh", () => {
 
   it("starts a new request after the previous refresh completes", async () => {
     const { thread } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "1.0",
       teamId: undefined,
@@ -596,7 +600,7 @@ describe("SlackThread.refresh", () => {
 
   it("preserves loaded messages when a later refresh fails", async () => {
     const { thread } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "1.0",
       teamId: undefined,
@@ -648,7 +652,7 @@ describe("SlackThread.refresh", () => {
     });
     const { thread } = buildSlackBinding({
       appId: "A_SELF",
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       botUserId: "U_SELF",
       channelId: "C01",
       threadTs: "1.0",
@@ -676,7 +680,7 @@ describe("SlackThread.listParticipants", () => {
     ]);
     vi.stubGlobal("fetch", mock.fetch);
     const { thread } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "1.0",
       teamId: undefined,
@@ -705,7 +709,7 @@ describe("SlackThread.postEphemeral", () => {
 
   it("posts via chat.postEphemeral with user / channel / thread_ts", async () => {
     const { thread } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "1.0",
       teamId: undefined,
@@ -737,7 +741,7 @@ describe("SlackThread.postDirectMessage", () => {
 
   it("opens the IM conversation and posts to it without a thread_ts", async () => {
     const { thread } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "1.0",
       teamId: undefined,
@@ -774,7 +778,7 @@ describe("auto-anchor on first post", () => {
   it("first chat.postMessage on an unanchored binding adopts its own ts as the thread root", async () => {
     const anchors: string[] = [];
     const { thread, slack } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "",
       teamId: undefined,
@@ -799,7 +803,7 @@ describe("auto-anchor on first post", () => {
 
   it("subsequent posts thread under the anchored ts", async () => {
     const { thread } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "",
       teamId: undefined,
@@ -819,7 +823,7 @@ describe("auto-anchor on first post", () => {
   it("does not anchor when the binding already has a threadTs", async () => {
     const anchors: string[] = [];
     const { thread, slack } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "1700000000.000999",
       teamId: undefined,
@@ -837,7 +841,7 @@ describe("auto-anchor on first post", () => {
   it("does not anchor on postEphemeral", async () => {
     const anchors: string[] = [];
     const { thread, slack } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "",
       teamId: undefined,
@@ -855,7 +859,7 @@ describe("auto-anchor on first post", () => {
   it("anchors before uploading files for a markdown post", async () => {
     const anchors: string[] = [];
     const { thread, slack } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "",
       teamId: undefined,
@@ -884,7 +888,7 @@ describe("auto-anchor on first post", () => {
   it("does not anchor on an upload-only text/file post", async () => {
     const anchors: string[] = [];
     const { thread, slack } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "",
       teamId: undefined,
@@ -904,7 +908,7 @@ describe("auto-anchor on first post", () => {
 
   it("enables startTyping after a post anchors the thread", async () => {
     const { thread } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "",
       teamId: undefined,
@@ -927,7 +931,7 @@ describe("auto-anchor on first post", () => {
 
   it("sends assistant status as plain text", async () => {
     const { thread } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "1.0",
       teamId: undefined,
@@ -947,7 +951,7 @@ describe("auto-anchor on first post", () => {
   it("invokes onThreadTsChanged exactly once even on concurrent first-posts", async () => {
     const anchors: string[] = [];
     const { thread } = buildSlackBinding({
-      botToken: "xoxb-test",
+      transport: createSlackTransport({ botToken: "xoxb-test" }),
       channelId: "C01",
       threadTs: "",
       teamId: undefined,
@@ -997,5 +1001,218 @@ describe("Slack bot token context", () => {
 
     expect(token).toBe("xoxb-legacy");
     expect(botToken).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("api.apiBaseUrl", () => {
+  it("defaults to Slack's own host", () => {
+    expect(resolveSlackApiBaseUrl()).toBe(SLACK_API_BASE_URL);
+    expect(resolveSlackApiBaseUrl({})).toBe(SLACK_API_BASE_URL);
+  });
+
+  it("normalizes the base to a directory so method names append to it", () => {
+    expect(resolveSlackApiBaseUrl({ apiBaseUrl: "http://localhost:3000/api/slack" })).toBe(
+      "http://localhost:3000/api/slack/",
+    );
+    expect(resolveSlackApiBaseUrl({ apiBaseUrl: "http://localhost:3000/api/slack/" })).toBe(
+      "http://localhost:3000/api/slack/",
+    );
+  });
+
+  it("rejects a base URL that relative resolution would mangle", () => {
+    expect(() => resolveSlackApiBaseUrl({ apiBaseUrl: "/api/slack" })).toThrow(
+      /must be a valid absolute URL/,
+    );
+    // `apiBaseUrl: process.env.FAKE_SLACK_URL ?? ""` must fail loudly
+    // rather than fall back to the real workspace with the real token.
+    expect(() => resolveSlackApiBaseUrl({ apiBaseUrl: "" })).toThrow(
+      /must be a valid absolute URL/,
+    );
+    expect(() => resolveSlackApiBaseUrl({ apiBaseUrl: "https://[bad" })).toThrow(
+      /must be a valid absolute URL/,
+    );
+    expect(() => resolveSlackApiBaseUrl({ apiBaseUrl: "file:///tmp/slack" })).toThrow(
+      /must be an http: or https: URL/,
+    );
+    expect(() => resolveSlackApiBaseUrl({ apiBaseUrl: "https://sim.test/api?token=x" })).toThrow(
+      /query string or fragment/,
+    );
+    expect(() => resolveSlackApiBaseUrl({ apiBaseUrl: "https://sim.test/api#frag" })).toThrow(
+      /query string or fragment/,
+    );
+  });
+
+  it("sends the call to the configured base and through the configured fetch", async () => {
+    const calls: string[] = [];
+    const apiFetch = vi.fn(async (input: string | URL | Request) => {
+      calls.push(String(input));
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { "content-type": "application/json" },
+      });
+    });
+
+    await callSlackApi({
+      api: { apiBaseUrl: "http://localhost:3000/api/slack", fetch: apiFetch as typeof fetch },
+      body: {},
+      botToken: "xoxb-test",
+      operation: "auth.test",
+    });
+
+    expect(calls).toEqual(["http://localhost:3000/api/slack/auth.test"]);
+  });
+});
+
+// A payload declared as an `interface` carries no implicit index
+// signature, so this only compiles while the public `request` surface
+// takes `object` rather than `Record<string, unknown>`.
+interface InterfaceTypedPayload {
+  channel: string;
+  text: string;
+}
+
+describe("SlackHandle.request", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("accepts an interface-typed payload", async () => {
+    const calls: unknown[] = [];
+    const apiFetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+      calls.push(init?.body);
+      return Response.json({ ok: true });
+    });
+    const { slack } = buildSlackBinding({
+      transport: createSlackTransport({
+        api: { fetch: apiFetch as unknown as typeof fetch },
+        botToken: "xoxb-test",
+      }),
+      channelId: "C01",
+      threadTs: "1.0",
+      teamId: undefined,
+    });
+
+    const payload: InterfaceTypedPayload = { channel: "C01", text: "hi" };
+    await slack.request("chat.postMessage", payload);
+
+    expect(calls).toEqual(["channel=C01&text=hi"]);
+  });
+});
+
+describe("api.fileBaseUrl", () => {
+  it("is unset until a base is configured", () => {
+    expect(resolveSlackFileBaseUrl()).toBeUndefined();
+    expect(resolveSlackFileBaseUrl({})).toBeUndefined();
+    expect(resolveSlackFileBaseUrl({ fetch: globalThis.fetch })).toBeUndefined();
+  });
+
+  it("falls back to apiBaseUrl and normalizes both to a directory", () => {
+    expect(resolveSlackFileBaseUrl({ apiBaseUrl: "https://sim.test/api" })).toBe(
+      "https://sim.test/api/",
+    );
+    expect(
+      resolveSlackFileBaseUrl({
+        apiBaseUrl: "https://sim.test/api",
+        fileBaseUrl: "https://cdn.test",
+      }),
+    ).toBe("https://cdn.test/");
+  });
+
+  it("rejects a file base the prefix match could never hit", () => {
+    expect(() => resolveSlackFileBaseUrl({ fileBaseUrl: "/files" })).toThrow(
+      /api\.fileBaseUrl must be a valid absolute URL/,
+    );
+    expect(() => resolveSlackFileBaseUrl({ fileBaseUrl: "https://cdn.test/?sig=x" })).toThrow(
+      /api\.fileBaseUrl must not carry a query string or fragment/,
+    );
+  });
+});
+
+// `files.getUploadURLExternal` answers with an `upload_url` of the
+// server's choosing, and the vendored helper POSTs the bytes to it. A
+// consumer's `fetch` usually carries stand-in credentials, so it must
+// not follow that pointer off the configured origin.
+describe("api.fetch on the upload leg", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps the upload leg on the global fetch when Slack names its own host", async () => {
+    const apiCalls: string[] = [];
+    const globalCalls: string[] = [];
+    const apiFetch = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      apiCalls.push(url);
+      if (url.endsWith("/files.getUploadURLExternal"))
+        return Response.json({
+          file_id: "F1",
+          ok: true,
+          upload_url: "https://files.slack.com/upload/abc",
+        });
+      return Response.json({ files: [{ id: "F1" }], ok: true });
+    });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async (input: string | URL | Request) => {
+        globalCalls.push(String(input));
+        return new Response("OK");
+      }),
+    );
+
+    const { slack } = buildSlackBinding({
+      transport: createSlackTransport({
+        api: {
+          apiBaseUrl: "http://localhost:3000/api/slack",
+          fetch: apiFetch as unknown as typeof fetch,
+        },
+        botToken: "xoxb-test",
+      }),
+      channelId: "C01",
+      threadTs: "1.0",
+      teamId: undefined,
+    });
+
+    await slack.uploadFiles([{ data: new Uint8Array([1, 2, 3]), filename: "a.bin" }]);
+
+    expect(apiCalls).toEqual([
+      "http://localhost:3000/api/slack/files.getUploadURLExternal",
+      "http://localhost:3000/api/slack/files.completeUploadExternal",
+    ]);
+    expect(globalCalls).toEqual(["https://files.slack.com/upload/abc"]);
+  });
+
+  it("keeps an upload leg on the configured origin on api.fetch", async () => {
+    const apiCalls: string[] = [];
+    const apiFetch = vi.fn(async (input: string | URL | Request) => {
+      const url = String(input);
+      apiCalls.push(url);
+      if (url.endsWith("/files.getUploadURLExternal"))
+        return Response.json({
+          file_id: "F1",
+          ok: true,
+          upload_url: "http://localhost:3000/uploads/F1",
+        });
+      if (url === "http://localhost:3000/uploads/F1") return new Response("OK");
+      return Response.json({ files: [{ id: "F1" }], ok: true });
+    });
+    const globalFetch = vi.fn(() => Promise.reject(new Error("global fetch reached")));
+    vi.stubGlobal("fetch", globalFetch);
+
+    const { slack } = buildSlackBinding({
+      transport: createSlackTransport({
+        api: {
+          apiBaseUrl: "http://localhost:3000/api/slack",
+          fetch: apiFetch as unknown as typeof fetch,
+        },
+        botToken: "xoxb-test",
+      }),
+      channelId: "C01",
+      threadTs: "1.0",
+      teamId: undefined,
+    });
+
+    await slack.uploadFiles([{ data: new Uint8Array([1, 2, 3]), filename: "a.bin" }]);
+
+    expect(apiCalls).toContain("http://localhost:3000/uploads/F1");
+    expect(globalFetch).not.toHaveBeenCalled();
   });
 });

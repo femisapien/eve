@@ -3,11 +3,8 @@ import type { FilePart, TextPart, UserContent } from "ai";
 import type { FetchFileContext, FetchFileResult } from "#channel/adapter.js";
 import { EveAttachmentError } from "#internal/attachments/errors.js";
 import { createLogger } from "#internal/logging.js";
-import {
-  resolveSlackBotToken,
-  type SlackBotToken,
-  type SlackThread,
-} from "#public/channels/slack/api.js";
+import type { SlackTransport } from "#public/channels/slack/api-transport.js";
+import type { SlackThread } from "#public/channels/slack/api.js";
 import type { SlackAttachment, SlackMessage } from "#public/channels/slack/inbound.js";
 import {
   evaluateFilePart,
@@ -165,19 +162,29 @@ export function buildSlackTurnMessage(
  * Returns `null` for URLs that don't belong to Slack so they pass
  * through to the model provider unchanged. Fetches Slack file URLs
  * with the bot token.
+ *
+ * A configured `api.fileBaseUrl` — or, failing that, `api.apiBaseUrl` —
+ * adds its own URLs to the downloadable set, because a Slack-compatible
+ * stand-in serves its attachments from there, and only those are fetched
+ * with `api.fetch`. Slack's own file hosts stay on the global `fetch`: a
+ * consumer's wrapper usually attaches credentials meant for the stand-in,
+ * which have no business on a request to Slack's CDN.
  */
 export function createSlackFetchFile(input: {
-  readonly botToken?: SlackBotToken;
+  /** The channel's bound Slack Web API transport. */
+  readonly transport: SlackTransport;
 }): (url: string, context?: FetchFileContext) => Promise<FetchFileResult | null> {
   return async (url, context) => {
-    if (!isSlackFileUrl(url)) {
+    const standInFetch = input.transport.downloadFetch(url);
+    if (standInFetch === undefined && !isSlackFileUrl(url)) {
       return null;
     }
     const installationTeamId = context?.state.installationTeamId;
-    const token = await resolveSlackBotToken(input.botToken, {
+    const token = await input.transport.resolveToken({
       teamId: typeof installationTeamId === "string" ? installationTeamId : undefined,
     });
-    const response = await fetch(url, {
+    const download = standInFetch ?? fetch;
+    const response = await download(url, {
       headers: { authorization: `Bearer ${token}` },
     });
     if (!response.ok) {
