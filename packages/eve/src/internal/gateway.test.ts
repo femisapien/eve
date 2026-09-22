@@ -5,6 +5,7 @@ import {
   AI_GATEWAY_MODELS_CATALOG_URL,
   AI_GATEWAY_MODELS_URL,
   vercelGatewayFetch,
+  resolveModelProvider,
   resolveProviderHeaders,
 } from "#internal/gateway.js";
 
@@ -53,5 +54,25 @@ describe("resolveProviderHeaders", () => {
       modelId: "claude-sonnet-4-5",
     });
     expect(resolveProviderHeaders(model)).toBeUndefined();
+  });
+});
+
+describe("resolveModelProvider", () => {
+  it("normalizes bare model ids to the Gateway provider", () => {
+    expect(resolveModelProvider("anthropic/claude-sonnet-4-5")).toBe("gateway");
+  });
+
+  it("preserves the provider reported by model instances", () => {
+    const gatewayModel = new MockLanguageModelV3({
+      provider: "gateway.language-model",
+      modelId: "anthropic/claude-sonnet-4-5",
+    });
+    const directModel = new MockLanguageModelV3({
+      provider: "anthropic.messages",
+      modelId: "claude-sonnet-4-5",
+    });
+
+    expect(resolveModelProvider(gatewayModel)).toBe("gateway.language-model");
+    expect(resolveModelProvider(directModel)).toBe("anthropic.messages");
   });
 });
