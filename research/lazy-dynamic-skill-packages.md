@@ -33,7 +33,7 @@ access boundary. Shared sandbox readers see the owner's current packages.
 Track the names this session has staged. Unchanged resolver results need no
 sandbox access. A sandbox-local receipt identifies the complete file revision
 successfully written, including supporting-file bytes. Check the receipt and
-required files on access so shared readers and cold resumes can reuse that
+declared file checksums on access so shared readers and cold resumes can reuse that
 revision. A replacement sandbox materializes the current packages again. A changed
 package replaces its directory so removed files and file/directory shape
 changes cannot leave stale content. Other packages remain untouched.
@@ -43,11 +43,24 @@ Reconcile any staged files, restoring a same-named authored package when a
 dynamic override ends. Failed materialization must remain retryable and must
 not record the package as successfully staged.
 
-Retaining package bytes increases durable session state. Invalidate the receipt
+Shared-child preparation must return materialization bookkeeping to the owner's
+current durable context, even when it runs with a separate invocation snapshot.
+The cross-deployment checkpoint version is 7 because older dynamic manifests
+retain only names and descriptions. An incompatible handoff is rejected and
+the original deployment keeps the session.
+
+Retaining package bytes increases durable session state. Limit each file to
+256 KiB, each package to 128 files including `SKILL.md`, and the combined
+serialized manifest to 1 MiB. Account for base64 expansion and the retained
+instruction body before copying bytes or changing the active manifest.
+
+Invalidate the receipt
 before replacing files and write it last. Preserve runtime-generated sibling
 files until the resolver changes the package. Directory replacement retains the existing
 non-atomic behavior: concurrent readers sharing a sandbox can observe an
-in-progress replacement. This change does not add filesystem transactions.
+in-progress replacement. Check declared file bytes in one sandbox command so
+a mixed concurrent write is repaired on the next access instead of remaining
+valid indefinitely. This change does not add filesystem transactions.
 
 ## Verification
 

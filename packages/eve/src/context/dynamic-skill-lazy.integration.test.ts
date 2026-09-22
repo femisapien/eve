@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { describe, expect, it, vi } from "vitest";
 
 import { buildCallbackContext } from "#context/build-callback-context.js";
@@ -45,11 +47,21 @@ function createContext(
     },
     initialFiles: input.initialFiles,
     run: ({ command }) => {
-      const files = [...command.matchAll(/\[ -f '([^']+)' \]/gu)].map((match) => match[1]!);
+      const files = [
+        ...command.matchAll(
+          /sha256sum < '([^']+)'\) \|\| exit \$\?; if \[ "\$skill_checksum" != '([a-f0-9]+)  -'/gu,
+        ),
+      ];
+      const matches = files.every(([, path, checksum]) => {
+        const content = sandbox.files.get(path!);
+        return (
+          content !== undefined && createHash("sha256").update(content).digest("hex") === checksum
+        );
+      });
       return {
         exitCode: 0,
         stderr: "",
-        stdout: files.length > 0 && files.every((path) => sandbox.files.has(path)) ? "present" : "",
+        stdout: files.length > 0 && matches ? "matches" : "",
       };
     },
   });

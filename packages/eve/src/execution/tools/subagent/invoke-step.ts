@@ -65,6 +65,7 @@ import {
 import {
   AuthKey,
   InitiatorAuthKey,
+  MaterializedDynamicSkillNamesKey,
   SessionDynamicSubagentSelectionsKey,
   TurnDynamicSubagentSelectionsKey,
 } from "#context/keys.js";
@@ -125,11 +126,25 @@ export async function dispatchAgentInvocation(input: {
     };
   }
   const invocationAction = entry.kind === "start" ? entry.target.action : entry.action;
+  // Persist shared-sandbox ownership without promoting task-scoped auth into the owner context.
+  const materializedSkills = [
+    input.serializedContext[MaterializedDynamicSkillNamesKey.name],
+    prepared.serializedContext[MaterializedDynamicSkillNamesKey.name],
+  ].flatMap((names) =>
+    Array.isArray(names) ? names.filter((name): name is string => typeof name === "string") : [],
+  );
+  const serializedContext =
+    materializedSkills.length === 0
+      ? input.serializedContext
+      : {
+          ...input.serializedContext,
+          [MaterializedDynamicSkillNamesKey.name]: [...new Set(materializedSkills)],
+        };
   const tracing = prepareAgentInvocationTrace({
     conversation: prepared.inheritedConversation,
     invocation: invocationAction,
     ownerId: input.ownerId,
-    serializedContext: input.serializedContext,
+    serializedContext,
     sessionId: prepared.session.sessionId,
     sessionState: durableSession.state,
     startTimeMs: Date.now(),

@@ -1,4 +1,6 @@
-import { describe, expect, it } from "vitest";
+import { Buffer } from "node:buffer";
+
+import { describe, expect, it, vi } from "vitest";
 
 import { ContextContainer } from "#context/container.js";
 import {
@@ -17,6 +19,11 @@ import { defineSkill } from "#public/definitions/skill.js";
 import { BundleKey, type CompiledBundle } from "#runtime/sessions/runtime-context-keys.js";
 import type { ResolvedDynamicSkillResolver } from "#runtime/types.js";
 import type { SkillPackageDefinition } from "#shared/skill-definition.js";
+import {
+  MAX_DYNAMIC_SKILL_FILE_BYTES,
+  MAX_DYNAMIC_SKILL_MANIFEST_BYTES,
+} from "#context/dynamic-skill-limits.js";
+import { DynamicSkillSandboxKey } from "#context/dynamic-skill-sandbox.js";
 
 const HOME_PROBE_COMMAND = `printf '%s\\n' "$HOME"`;
 
@@ -87,6 +94,98 @@ function makeSkill(description: string, markdown = description): SkillPackageDef
 }
 
 describe("dispatchDynamicSkillEvent", () => {
+  it("rejects an oversized file before copying bytes or changing an existing manifest", async () => {
+    const { ctx, sandbox } = createCtx();
+    const getSandbox = vi.spyOn(sandbox.access, "get");
+    let packageResult = makeSkill("Original policy");
+    const resolver = createResolver("policy", () => packageResult);
+    const dispatch = () =>
+      dispatchDynamicSkillEvent({ ctx, event: makeEvent(), messages: [], resolvers: [resolver] });
+    await dispatch();
+    const manifest = ctx.get(DynamicSkillManifestKey);
+    const announcement = ctx.get(PendingSkillAnnouncementKey);
+    const refresh = vi.fn();
+    ctx.setVirtualContext(DynamicSkillSandboxKey, { refresh });
+    packageResult = defineSkill({
+      description: "Replacement policy",
+      files: { "asset.bin": new Uint8Array(MAX_DYNAMIC_SKILL_FILE_BYTES + 1) },
+      markdown: "Replacement policy",
+    });
+    const copies = vi.spyOn(Buffer, "from");
+    try {
+      await expect(dispatch()).rejects.toThrow('file "asset.bin" is 262145 bytes');
+      expect(copies).not.toHaveBeenCalled();
+    } finally {
+      copies.mockRestore();
+    }
+    expect(ctx.get(DynamicSkillManifestKey)).toBe(manifest);
+    expect(ctx.get(PendingSkillAnnouncementKey)).toBe(announcement);
+    expect(refresh).not.toHaveBeenCalled();
+    expect(getSandbox).not.toHaveBeenCalled();
+  });
+
+  it("bounds the combined manifest across unchanged and updated resolvers", async () => {
+    const { ctx, sandbox } = createCtx();
+    const getSandbox = vi.spyOn(sandbox.access, "get");
+    const large = makeSkill("Large policy", "a".repeat(MAX_DYNAMIC_SKILL_FILE_BYTES));
+    const original = createResolver("original", () => large);
+    await dispatchDynamicSkillEvent({
+      ctx,
+      event: makeEvent(),
+      messages: [],
+      resolvers: [original],
+    });
+    const manifest = ctx.get(DynamicSkillManifestKey);
+    const announcement = ctx.get(PendingSkillAnnouncementKey);
+
+    await expect(
+      dispatchDynamicSkillEvent({
+        ctx,
+        event: makeEvent(),
+        messages: [],
+        resolvers: [createResolver("second", () => large)],
+      }),
+    ).rejects.toThrow("1 MiB");
+
+    expect(ctx.get(DynamicSkillManifestKey)).toBe(manifest);
+    expect(ctx.get(PendingSkillAnnouncementKey)).toBe(announcement);
+    expect(getSandbox).not.toHaveBeenCalled();
+
+    await dispatchDynamicSkillEvent({
+      ctx,
+      event: makeEvent(),
+      messages: [],
+      resolvers: [createResolver("second", () => large), createResolver("original", () => null)],
+    });
+    expect(Object.keys(ctx.require(DynamicSkillManifestKey))).toEqual(["second"]);
+    expect(getSandbox).not.toHaveBeenCalled();
+  });
+
+  it("allows exactly the serialized manifest limit including resolver and skill array overhead", async () => {
+    const { ctx } = createCtx();
+    let description = "Policy";
+    const resolver = createResolver('tenant"team', () => ({
+      policy: makeSkill(description, "Policy"),
+      helper: makeSkill("Helper"),
+    }));
+    const dispatch = () =>
+      dispatchDynamicSkillEvent({ ctx, event: makeEvent(), messages: [], resolvers: [resolver] });
+    await dispatchDynamicSkillEvent({
+      ctx,
+      event: makeEvent(),
+      messages: [],
+      resolvers: [createResolver("existing", () => makeSkill("Existing")), resolver],
+    });
+    const initialBytes = Buffer.byteLength(JSON.stringify(ctx.get(DynamicSkillManifestKey)));
+    description += "a".repeat(MAX_DYNAMIC_SKILL_MANIFEST_BYTES - initialBytes);
+    await dispatch();
+    const manifest = ctx.get(DynamicSkillManifestKey);
+    expect(Buffer.byteLength(JSON.stringify(manifest))).toBe(MAX_DYNAMIC_SKILL_MANIFEST_BYTES);
+    description += "a";
+    await expect(dispatch()).rejects.toThrow("1 MiB");
+    expect(ctx.get(DynamicSkillManifestKey)).toBe(manifest);
+  });
+
   it("announces when all dynamic skills are withdrawn", async () => {
     const { ctx, sandbox } = createCtx();
     let enabled = true;

@@ -95,6 +95,8 @@ To serve a different skill per principal, tenant, or channel (the caller's own t
 
 eve preserves each resolved package, including its supporting files, across durable workflow steps. An unchanged package is not rewritten on refresh. When a resolver changes a package, eve replaces its staged files, removing files omitted from the new result. A removed dynamic skill is no longer loadable; if it overrode an authored skill, the authored skill becomes available again.
 
+Dynamic packages can contain up to 128 files, including `SKILL.md`, with at most 256 KiB per file. All active dynamic packages together must fit within 1 MiB of serialized session state, including base64 encoding and instruction text. An oversized result fails resolution before changing the active packages. Keep large assets outside the skill package and read them through a tool when needed.
+
 ## What to read next
 
 - [Connections](./connections): add tools from external MCP and OpenAPI servers

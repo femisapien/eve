@@ -15,6 +15,7 @@ import { registerWorkflowToolRun } from "#harness/workflow-tool-runs.js";
 import {
   AuthKey,
   InitiatorAuthKey,
+  MaterializedDynamicSkillNamesKey,
   SessionDynamicSubagentSelectionsKey,
   TurnDynamicSubagentSelectionsKey,
 } from "#context/keys.js";
@@ -225,6 +226,7 @@ describe("owner agent invocation dispatch", () => {
       const serializedContext = {
         [AuthKey.name]: receiverAuth,
         [InitiatorAuthKey.name]: receiverInitiatorAuth,
+        [MaterializedDynamicSkillNamesKey.name]: ["owner-policy"],
         [SessionDynamicSubagentSelectionsKey.name]: { source: "receiver-session" },
         [TurnDynamicSubagentSelectionsKey.name]: { source: "receiver-turn" },
         "eve.test": "preserved",
@@ -240,6 +242,10 @@ describe("owner agent invocation dispatch", () => {
         [InitiatorAuthKey.name]: sessionInitiatorAuth,
         [SessionDynamicSubagentSelectionsKey.name]: { source: "creator-session" },
         [TurnDynamicSubagentSelectionsKey.name]: { source: "creator-turn" },
+      };
+      const preparedContext = {
+        ...planningContext,
+        [MaterializedDynamicSkillNamesKey.name]: ["policy"],
       };
       const taskWork = {
         callId: "task-call",
@@ -284,7 +290,7 @@ describe("owner agent invocation dispatch", () => {
             ? { kind: "start", target: { action, kind: "local", source: { type: "runtime" } } }
             : { kind: "resume", action, agentId: "agent-1" },
         ],
-        serializedContext: planningContext,
+        serializedContext: preparedContext,
         session: indexedSession,
       } as never);
       vi.mocked(startSubagent).mockResolvedValue(called);
@@ -323,7 +329,12 @@ describe("owner agent invocation dispatch", () => {
       expect(prepareOwnerAgentInvocation).toHaveBeenCalledWith(
         expect.objectContaining({ serializedContext: planningContext }),
       );
-      expect(result).toMatchObject({ serializedContext });
+      expect(result).toMatchObject({
+        serializedContext: {
+          ...serializedContext,
+          [MaterializedDynamicSkillNamesKey.name]: ["owner-policy", "policy"],
+        },
+      });
     },
   );
 

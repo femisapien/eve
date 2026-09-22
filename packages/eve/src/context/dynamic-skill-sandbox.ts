@@ -170,12 +170,15 @@ async function packageMatches(
 ): Promise<boolean> {
   const previous = await sandbox.readBinaryFile({ path: receipt });
   if (previous === null || Buffer.from(previous).toString("utf8") !== revision) return false;
-  const files = skill.files.map((file) => `[ -f ${shellQuote(`${path}/${file.relativePath}`)} ]`);
-  const present = await runSandboxCommand(
-    sandbox,
-    `if ${files.join(" && ")}; then printf 'present'; fi`,
-  );
-  return present === "present";
+  // Shared writers can interleave before either writes its receipt. Check the
+  // bytes inside the sandbox so a mixed package is repaired without downloading it.
+  const files = skill.files.map((file) => {
+    const filePath = shellQuote(`${path}/${file.relativePath}`);
+    const checksum = createHash("sha256").update(Buffer.from(file.content, "base64")).digest("hex");
+    return `if [ ! -f ${filePath} ]; then exit 0; fi; skill_checksum=$(sha256sum < ${filePath}) || exit $?; if [ "$skill_checksum" != '${checksum}  -' ]; then exit 0; fi`;
+  });
+  const matches = await runSandboxCommand(sandbox, `${files.join("; ")}; printf 'matches'`);
+  return matches === "matches";
 }
 
 function packageRevision(skill: DurableDynamicSkillPackage): string {

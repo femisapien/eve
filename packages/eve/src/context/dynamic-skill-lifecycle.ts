@@ -1,12 +1,10 @@
+import { Buffer } from "node:buffer";
+
 import type { ModelMessage } from "ai";
 
 import { ALLOWED_DYNAMIC_SKILL_EVENTS } from "#dynamic/definition.js";
 import { isBrandedSkillEntry, type SkillPackageDefinition } from "#shared/skill-definition.js";
-import {
-  type MaterializableSkillPackage,
-  normalizeSkillPackage,
-  stripSkillFrontmatter,
-} from "#shared/skill-package.js";
+import { normalizeSkillPackage, stripSkillFrontmatter } from "#shared/skill-package.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import type { ResolvedDynamicSkillResolver } from "#runtime/types.js";
 import { formatAvailableSkillsSection } from "#execution/skills/instructions.js";
@@ -16,6 +14,10 @@ import type { ContextContainer } from "#context/container.js";
 import { type DynamicSkillManifest, DynamicSkillManifestKey } from "#context/keys.js";
 import { buildResolveContext } from "#context/dynamic-resolve-context.js";
 import { DynamicSkillSandboxKey } from "#context/dynamic-skill-sandbox.js";
+import {
+  assertDynamicSkillManifestSize,
+  getDynamicSkillPackageSize,
+} from "#context/dynamic-skill-limits.js";
 
 const log = createLogger("dynamic-skills");
 
@@ -49,11 +51,6 @@ function qualifyDynamicSkillNames(
     result.push({ name: `${prefix}${key}`, entryKey: key, entry: entries[key]! });
   }
   return result;
-}
-
-interface DynamicSkillUpdate {
-  readonly resolver: ResolvedDynamicSkillResolver;
-  readonly skills: readonly MaterializableSkillPackage[];
 }
 
 interface DynamicSkillResolution {
@@ -117,7 +114,7 @@ export async function dispatchDynamicSkillEvent(input: {
 
   const resolveCtx = buildResolveContext(ctx, messages);
   const manifest = ctx.get(DynamicSkillManifestKey) ?? {};
-  const updates: DynamicSkillUpdate[] = [];
+  const updates: DynamicSkillResolution[] = [];
 
   const outcomes = await Promise.allSettled(
     matching.map(async (resolver) => {
@@ -150,22 +147,27 @@ export async function dispatchDynamicSkillEvent(input: {
       continue;
     }
     if (outcome.value === null) continue;
-    updates.push({
-      resolver: outcome.value.resolver,
-      skills: outcome.value.named.map(({ name, entry }) =>
-        normalizeSkillPackage({ ...entry, name }),
-      ),
-    });
+    updates.push(outcome.value);
   }
 
   if (updates.length === 0) return;
 
   const newManifest = { ...manifest };
-  for (const { resolver, skills } of updates) {
-    if (skills.length === 0) {
-      delete newManifest[resolver.slug];
-    } else {
-      newManifest[resolver.slug] = skills.map((skill) => ({
+  for (const { resolver } of updates) delete newManifest[resolver.slug];
+  let manifestBytes = Buffer.byteLength(JSON.stringify(newManifest));
+  let resolverCount = Object.keys(newManifest).length;
+  for (const { resolver, named } of updates) {
+    if (named.length === 0) continue;
+    assertDynamicSkillManifestSize(Buffer.byteLength(resolver.slug));
+    manifestBytes += Buffer.byteLength(JSON.stringify({ [resolver.slug]: [] })) - 2;
+    if (resolverCount++ > 0) manifestBytes++;
+    assertDynamicSkillManifestSize(manifestBytes);
+    newManifest[resolver.slug] = named.map(({ name, entry }, index) => {
+      const definition = { ...entry, name };
+      manifestBytes += getDynamicSkillPackageSize(definition) + (index > 0 ? 1 : 0);
+      assertDynamicSkillManifestSize(manifestBytes);
+      const skill = normalizeSkillPackage(definition);
+      return {
         description: skill.description,
         files: skill.files.map((file) => ({
           content: file.content.toString("base64"),
@@ -173,8 +175,8 @@ export async function dispatchDynamicSkillEvent(input: {
         })),
         markdown: stripSkillFrontmatter(skill.markdown),
         name: skill.name,
-      }));
-    }
+      };
+    });
   }
 
   // Dynamic skills override authored skills, but two dynamic resolvers

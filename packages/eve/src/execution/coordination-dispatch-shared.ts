@@ -22,7 +22,7 @@ import {
   ChannelKey,
   type CompiledBundle,
 } from "#runtime/sessions/runtime-context-keys.js";
-import { deserializeContext } from "#context/serialize.js";
+import { deserializeContext, serializeContext } from "#context/serialize.js";
 import type { RuntimeSession } from "#subagents/handle-dispatch.js";
 import { getAgentHandleStore } from "#subagents/handles/store.js";
 import { deriveRootTurnActivityWorkId } from "#execution/activity-work-id.js";
@@ -202,6 +202,7 @@ export async function prepareActionDispatch<PlanEntry>(input: {
   });
 
   const sandboxSessionId = resolveActiveSandboxSessionId(adapter.state, session.sessionId);
+  let serializedContext = input.serializedContext;
   if (input.planSharesSandbox?.({ bundle, plan }) === true) {
     try {
       const scoped = await withContextScope(ctx, session, async (enrichedSession) => {
@@ -209,6 +210,7 @@ export async function prepareActionDispatch<PlanEntry>(input: {
         return { result: undefined, session: enrichedSession };
       });
       session = scoped.session;
+      serializedContext = serializeContext(ctx);
     } finally {
       ctx.clearVirtualContext();
     }
@@ -234,7 +236,7 @@ export async function prepareActionDispatch<PlanEntry>(input: {
       batch.event.turnId,
     ),
     sandboxSessionId,
-    serializedContext: input.serializedContext,
+    serializedContext,
     session,
     workflowAgents: resolveWorkflowAgentMetadata(ctx),
   };

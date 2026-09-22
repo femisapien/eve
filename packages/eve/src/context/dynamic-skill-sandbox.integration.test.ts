@@ -202,6 +202,90 @@ describe("dynamic skill sandbox reconciliation", () => {
     expect(packageWrites(sandbox)).toHaveLength(2);
   });
 
+  it("repairs mixed revisions left by concurrent writers sharing a sandbox", async () => {
+    const sandbox = createSandbox();
+    const first = bind(
+      { resolver: [skill("policy", { "support.txt": "first" }, "# First")] },
+      sandbox,
+    );
+    const second = bind(
+      { resolver: [skill("policy", { "support.txt": "second" }, "# Second")] },
+      sandbox,
+    );
+    const written = Promise.withResolvers<void>();
+    const resume = Promise.withResolvers<void>();
+    const write = sandbox.write.getMockImplementation()!;
+    sandbox.write.mockImplementationOnce(async (file) => {
+      await write(file);
+      written.resolve();
+      await resume.promise;
+    });
+
+    const materializing = first.access.get();
+    await written.promise;
+    try {
+      await second.access.get();
+    } finally {
+      resume.resolve();
+    }
+    await materializing;
+    expect(await sandbox.bash.fs.readFile(`${ROOT}/policy/SKILL.md`)).toBe("# Second");
+    expect(await sandbox.bash.fs.readFile(`${ROOT}/policy/support.txt`)).toBe("first");
+
+    await first.access.get();
+    expect(await sandbox.bash.fs.readFile(`${ROOT}/policy/SKILL.md`)).toBe("# First");
+    expect(await sandbox.bash.fs.readFile(`${ROOT}/policy/support.txt`)).toBe("first");
+    sandbox.write.mockClear();
+    await first.access.get();
+    expect(sandbox.write).not.toHaveBeenCalled();
+  });
+
+  it("repairs modified binary files without reading package bytes back to the runtime", async () => {
+    const fileName = "references/it's a file\n.bin";
+    const original = new Uint8Array([0, 255, 17]);
+    const { access, sandbox } = bind({ resolver: [skill("policy", { [fileName]: original })] });
+    await access.get();
+    await sandbox.bash.fs.writeFile(`${ROOT}/policy/${fileName}`, new Uint8Array([255, 0, 17]));
+    const read = vi.spyOn(sandbox.session, "readBinaryFile");
+
+    await access.get();
+    expect(Array.from(await sandbox.bash.fs.readFileBuffer(`${ROOT}/policy/${fileName}`))).toEqual(
+      Array.from(original),
+    );
+    expect(read.mock.calls.map(([file]) => file.path)).toEqual([
+      `${ROOT}/.eve-dynamic-skills/policy`,
+    ]);
+    sandbox.write.mockClear();
+    await access.get();
+    expect(sandbox.write).not.toHaveBeenCalled();
+  });
+
+  it("preserves package files when the checksum command fails", async () => {
+    const { access, sandbox } = bind({
+      resolver: [skill("policy", { "reference.txt": "original" })],
+    });
+    await access.get();
+    await sandbox.bash.fs.writeFile(`${ROOT}/policy/reference.txt`, "modified externally");
+    await sandbox.bash.fs.writeFile(`${ROOT}/policy/result.json`, "generated result");
+    const run = sandbox.session.run;
+    vi.spyOn(sandbox.session, "run").mockImplementation((options) =>
+      run({
+        ...options,
+        command: options.command.replaceAll("sha256sum", "missing_checksum_command"),
+      }),
+    );
+    sandbox.write.mockClear();
+
+    await expect(access.get()).rejects.toThrow(
+      "Failed to reconcile dynamic skill files in the sandbox.",
+    );
+    expect(await sandbox.bash.fs.readFile(`${ROOT}/policy/reference.txt`)).toBe(
+      "modified externally",
+    );
+    expect(await sandbox.bash.fs.readFile(`${ROOT}/policy/result.json`)).toBe("generated result");
+    expect(sandbox.write).not.toHaveBeenCalled();
+  });
+
   it("tracks materialized existing packages so withdrawal removes their files", async () => {
     const sandbox = createSandbox({ [`${ROOT}/policy/SKILL.md`]: "# policy" });
     const { access, ctx } = bind({ resolver: [skill("policy")] }, sandbox);

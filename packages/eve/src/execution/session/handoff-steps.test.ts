@@ -64,7 +64,7 @@ describe("validateSessionCheckpointStep", () => {
     );
   });
 
-  it.each([4, 5, 7])(
+  it.each([4, 5, 6, 8])(
     "rejects checkpoint version %s before reading nested state",
     async (version) => {
       const checkpoint = createCheckpoint();
@@ -78,6 +78,24 @@ describe("validateSessionCheckpointStep", () => {
       expect(readDurableSessionMock).not.toHaveBeenCalled();
     },
   );
+
+  it("rejects a metadata-only dynamic skill checkpoint before restoring its context", async () => {
+    const checkpoint = createCheckpoint();
+    Object.assign(checkpoint, {
+      version: 6,
+      serializedContext: {
+        "eve.dynamicSkillManifest": {
+          tenant: [{ name: "policy", description: "Tenant policy" }],
+        },
+      },
+    });
+
+    await expect(validateSessionCheckpointStep({ checkpoint })).rejects.toThrow(
+      "Unsupported session checkpoint version 6; this deployment reads version 7",
+    );
+    expect(deserializeContextMock).not.toHaveBeenCalled();
+    expect(readDurableSessionMock).not.toHaveBeenCalled();
+  });
 
   it.each([undefined, -1, NaN, Infinity, "30000", true])(
     "rejects an invalid renewal duration (%s)",
@@ -93,7 +111,7 @@ describe("validateSessionCheckpointStep", () => {
 
 function createCheckpoint(): SessionCheckpoint {
   return {
-    version: 6,
+    version: 7,
     sessionTimeoutMs: false,
     mode: "conversation",
     serializedContext: {},
