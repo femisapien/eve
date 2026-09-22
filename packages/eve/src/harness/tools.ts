@@ -304,7 +304,7 @@ export async function buildToolSetWithProviderTools(input: {
   readonly capabilities?: SessionCapabilities;
   readonly disabledProviderTools?: ReadonlySet<string>;
   readonly modelReference: RuntimeModelReference;
-  readonly modelProvider: string;
+  readonly modelProvider?: string;
   readonly tools: HarnessToolMap;
 }): Promise<ToolSet> {
   const disabled = input.disabledProviderTools;

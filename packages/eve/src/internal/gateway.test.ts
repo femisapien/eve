@@ -1,3 +1,4 @@
+import type { LanguageModel } from "ai";
 import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
 
@@ -5,6 +6,7 @@ import {
   AI_GATEWAY_MODELS_CATALOG_URL,
   AI_GATEWAY_MODELS_URL,
   vercelGatewayFetch,
+  isGatewayModel,
   resolveModelProvider,
   resolveProviderHeaders,
 } from "#internal/gateway.js";
@@ -74,5 +76,12 @@ describe("resolveModelProvider", () => {
 
     expect(resolveModelProvider(gatewayModel)).toBe("gateway.language-model");
     expect(resolveModelProvider(directModel)).toBe("anthropic.messages");
+  });
+
+  it("tolerates provider-less test doubles", () => {
+    const model = {} as LanguageModel;
+
+    expect(resolveModelProvider(model)).toBeUndefined();
+    expect(isGatewayModel(model)).toBe(false);
   });
 });
