@@ -1393,6 +1393,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
         capabilities: config.capabilities,
         disabledProviderTools: opts.disabledProviderTools,
         modelReference: requireSessionModelReference(session),
+        modelProvider: typeof model === "string" ? "gateway" : model.provider,
         tools: advertisedHarnessTools,
       });
 
