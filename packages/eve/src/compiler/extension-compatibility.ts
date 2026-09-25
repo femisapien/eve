@@ -22,8 +22,8 @@ interface ExtensionCapabilityContract {
 const EXTENSION_CAPABILITY_CONTRACTS = {
   extension: { current: 1, supported: [1], dropped: {} },
   tool: {
-    current: 56,
-    supported: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 29, 30, 31, 32, 34, 35, 54, 55, 56],
+    current: 57,
+    supported: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 29, 30, 31, 32, 34, 35, 54, 55, 57],
     dropped: {
       14: "TaskExec.delegated was removed; migrate to workflow-backed background tools",
       15: "TaskExec replaces stageEffect with send",
@@ -59,12 +59,13 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       51: "Background defineTool and TaskExec were removed; use defineWorkflowTool for durable background work.",
       52: "Background defineTool and TaskExec were removed; use defineWorkflowTool for durable background work.",
       53: "Sandbox sessions no longer expose core identity and mutable networking is provider-specific.",
+      56: "SandboxSession no longer exposes setNetworkPolicy; pass the configured environment to ctx.getSandbox(environment) to access network policy capabilities",
     },
   },
   dynamicTool: {
-    current: 54,
+    current: 55,
     supported: [
-      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 31, 32, 33, 52, 54,
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 31, 32, 33, 52, 55,
     ],
     dropped: {
       21: "Message and reasoning append events now expose deltas instead of cumulative snapshots.",
@@ -95,11 +96,12 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       50: "Background dynamic tools were removed; use a static defineWorkflowTool for durable background work.",
       51: "Sandbox sessions no longer expose core identity and mutable networking is provider-specific.",
       53: "step.started now identifies either a model-backed or harness-backed execution.",
+      54: "step.started now identifies either a model-backed or harness-backed execution.",
     },
   },
   channel: {
-    current: 31,
-    supported: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 31],
+    current: 32,
+    supported: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 32],
     dropped: {
       12: "Message and reasoning append events now expose deltas instead of cumulative snapshots.",
       19: "Continuation rekey was removed; channel extensions must use additive continuation.alias instead.",
@@ -114,6 +116,7 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       28: "Sandbox sessions no longer expose core identity and mutable networking is provider-specific.",
       29: "step.started now identifies either a model-backed or harness-backed execution.",
       30: "step.started now identifies either a model-backed or harness-backed execution.",
+      31: "step.started now identifies either a model-backed or harness-backed execution.",
     },
   },
   schedule: {
@@ -137,19 +140,20 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
     },
   },
   connection: {
-    current: 26,
-    supported: [1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 26],
+    current: 27,
+    supported: [1, 2, 3, 4, 5, 6, 7, 8, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 27],
     dropped: {
       9: "Dynamic connection resolvers no longer receive conversation or channel continuation data",
       10: "Message and reasoning append events now expose deltas instead of cumulative snapshots.",
       23: "Sandbox sessions no longer expose core identity and mutable networking is provider-specific.",
       24: "step.started now identifies either a model-backed or harness-backed execution.",
       25: "step.started now identifies either a model-backed or harness-backed execution.",
+      26: "step.started now identifies either a model-backed or harness-backed execution.",
     },
   },
   hook: {
-    current: 27,
-    supported: [10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 27],
+    current: 28,
+    supported: [10, 11, 12, 13, 14, 15, 17, 18, 19, 20, 21, 22, 23, 28],
     dropped: {
       1: "Model identity moved from session.started runtime metadata to step.started call attribution.",
       2: "Model identity moved from session.started runtime metadata to step.started call attribution.",
@@ -164,6 +168,7 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       24: "Sandbox sessions no longer expose core identity and mutable networking is provider-specific.",
       25: "step.started now identifies either a model-backed or harness-backed execution.",
       26: "step.started now identifies either a model-backed or harness-backed execution.",
+      27: "step.started now identifies either a model-backed or harness-backed execution.",
     },
   },
   skill: { current: 2, supported: [1, 2], dropped: {} },
@@ -186,10 +191,11 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
   },
   config: { current: 1, supported: [1], dropped: {} },
   state: {
-    current: 8,
-    supported: [1, 2, 3, 4, 5, 7, 8],
+    current: 9,
+    supported: [1, 2, 3, 4, 5, 7, 9],
     dropped: {
       6: "Sandbox sessions no longer expose core identity and mutable networking is provider-specific.",
+      8: "SandboxSession no longer exposes setNetworkPolicy; pass the configured environment to ctx.getSandbox(environment) to access network policy capabilities",
     },
   },
 } as const satisfies Record<string, ExtensionCapabilityContract>;

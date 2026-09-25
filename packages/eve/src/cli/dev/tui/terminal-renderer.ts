@@ -48,7 +48,7 @@ import {
 } from "./prompt-commands.js";
 import {
   enterBadge,
-  renderFlowPanel,
+  renderFlowDrawer,
   flowMessageRows,
   renderAcknowledgeQuestion,
   renderSelectQuestion,
@@ -182,6 +182,8 @@ import {
 
 type SetupOptionPanelState = Exclude<SetupSelectPanelState, { kind: "actions" }>;
 
+const ARGUMENT_CATALOG_LOADING_DELAY_MS = 500;
+
 export type TerminalInput = {
   isTTY?: boolean;
   on(event: "data", listener: (chunk: Buffer) => void): TerminalInput;
@@ -293,8 +295,10 @@ export type TerminalRendererOptions = {
   diagnostics?: DevDiagnostics;
   /** Slash commands available in this local or remote session. */
   availablePromptCommands?: readonly PromptCommandSpec[];
-  /** Catalog entries available to inline `/model` and `/add` completion. */
-  argumentSuggestions?: (command: "model" | "add") => Promise<readonly PromptArgumentSuggestion[]>;
+  /** Catalog entries available to inline `/model`, `/add`, and `/login` completion. */
+  argumentSuggestions?: (
+    command: "model" | "add" | "login",
+  ) => Promise<readonly PromptArgumentSuggestion[]>;
   onExitRequest?: () => void;
 };
 
@@ -482,7 +486,12 @@ export class TerminalRenderer implements AgentTUIRenderer {
   readonly #argumentSuggestions?: TerminalRendererOptions["argumentSuggestions"];
   readonly #argumentCatalogs = new Map<
     ArgumentTypeaheadState["command"],
-    { kind: "loading" } | { kind: "ready"; suggestions: readonly PromptArgumentSuggestion[] }
+    | { kind: "loading"; visible: boolean }
+    | { kind: "ready"; suggestions: readonly PromptArgumentSuggestion[] }
+  >();
+  readonly #argumentCatalogLoadingTimers = new Map<
+    ArgumentTypeaheadState["command"],
+    ReturnType<typeof setTimeout>
   >();
   /**
    * Whether the empty input row invites with a rotating placeholder. Only
@@ -687,11 +696,25 @@ export class TerminalRenderer implements AgentTUIRenderer {
     }
     const catalog = this.#argumentCatalogs.get(query.command);
     if (catalog === undefined) {
-      this.#argumentCatalogs.set(query.command, { kind: "loading" });
-      void this.#argumentSuggestions(query.command)
+      this.#argumentCatalogs.set(query.command, { kind: "loading", visible: false });
+      const command = query.command;
+      this.#argumentCatalogLoadingTimers.set(
+        command,
+        setTimeout(() => {
+          this.#argumentCatalogLoadingTimers.delete(command);
+          const pending = this.#argumentCatalogs.get(command);
+          if (pending?.kind !== "loading") return;
+          this.#argumentCatalogs.set(command, { kind: "loading", visible: true });
+          this.#paint();
+        }, ARGUMENT_CATALOG_LOADING_DELAY_MS),
+      );
+      void this.#argumentSuggestions(command)
         .catch(() => [])
         .then((suggestions) => {
-          this.#argumentCatalogs.set(query.command, { kind: "ready", suggestions });
+          const timer = this.#argumentCatalogLoadingTimers.get(command);
+          if (timer !== undefined) clearTimeout(timer);
+          this.#argumentCatalogLoadingTimers.delete(command);
+          this.#argumentCatalogs.set(command, { kind: "ready", suggestions });
           if (this.#inputActive) this.#syncTypeahead(this.#inputText);
           this.#paint();
         });
@@ -712,7 +735,7 @@ export class TerminalRenderer implements AgentTUIRenderer {
   #typeaheadDrawerRows(width: number): string[] {
     const query = argumentTypeaheadQuery(this.#inputText);
     const catalog = query === undefined ? undefined : this.#argumentCatalogs.get(query.command);
-    if (catalog?.kind === "loading" && query !== undefined) {
+    if (catalog?.kind === "loading" && catalog.visible && query !== undefined) {
       return [
         clip(
           this.#theme.colors.dim(`Loading ${argumentTypeaheadLoadingLabel(query.command)}…`),
@@ -1008,7 +1031,7 @@ export class TerminalRenderer implements AgentTUIRenderer {
               argumentOpen === undefined &&
               selected !== undefined &&
               this.#argumentSuggestions !== undefined &&
-              (selected.name === "add" || selected.name === "model")
+              (selected.name === "add" || selected.name === "login" || selected.name === "model")
             ) {
               apply(lineOf(typeaheadCompletion(selected)));
               break;
@@ -2078,6 +2101,7 @@ export class TerminalRenderer implements AgentTUIRenderer {
     const flow = this.#beginSetupQuestion(opts.message);
     const multiple = isMultiSelectRequest(opts);
     const searchAction = opts.kind === "search" ? opts.searchAction : undefined;
+    const searchableField = opts.kind === "search" && opts.layout === undefined;
     let selectOptions: readonly SetupPanelOption[] = opts.options;
 
     const plannerNavigation = opts.navigation?.kind === "planner";
@@ -2164,83 +2188,89 @@ export class TerminalRenderer implements AgentTUIRenderer {
       if (notices !== undefined && notices.length > 0) state.notices = notices;
       if (error !== undefined) state.error = error;
       if (loading) state.loadingFrame = this.#spinnerFrame();
+      if (searchableField) state.caretVisible = this.#caretVisible;
       return state;
     };
     flow.question = (width) => renderSelectQuestion(panelState(), this.#theme, width);
+    if (searchableField) this.#startCaretBlink();
     this.#paint();
 
-    const question = this.#captureSetupQuestion<SetupSelectResult>((key, settle) => {
-      const close = (value: SetupSelectResult): void => {
-        searchVersion += 1;
-        settle(value);
-      };
-      if (loading) {
-        if (key.type === "ctrl-c") close(undefined);
-        else if (key.type === "escape") clearSearch();
-        else if (key.type === "ctrl-r") this.#paint();
-        return;
-      }
-
-      const plannerStep = opts.navigation?.kind === "planner" ? opts.navigation : undefined;
-      const plannerDirection =
-        key.type === "left" &&
-        (plannerStep?.activeStep ?? 0) > (plannerStep?.firstNavigableStep ?? 0)
-          ? "back"
-          : key.type === "right" &&
-              plannerStep !== undefined &&
-              plannerStep.activeStep >= (plannerStep.firstNavigableStep ?? 0) &&
-              plannerStep.activeStep < plannerStep.steps.length - 1
-            ? "forward"
-            : undefined;
-      if (plannerDirection !== undefined) {
-        close({
-          kind: "navigate",
-          direction: plannerDirection,
-          values: multiple ? orderedSelection(selectOptions, select.selected) : [],
-        });
-        return;
-      }
-
-      const base = { key, options: selectOptions, searchAction, select };
-      const result = multiple
-        ? reduceSetupSelectInput({
-            ...base,
-            kind: opts.kind,
-            required: opts.required,
-            plannerNavigation: plannerNavigation || undefined,
-          })
-        : reduceSetupSelectInput({ ...base, kind: opts.kind });
-      switch (result.kind) {
-        case "cancel":
-          close(undefined);
-          return;
-        case "repaint":
-          this.#paint();
-          return;
-        case "update":
-          select = result.select;
-          error = undefined;
-          this.#paint();
-          return;
-        case "submit": {
-          const query = searchActionQuery(result.values[0] ?? "");
-          const load = searchAction?.load;
-          if (query === undefined || load === undefined) {
-            close(result.values);
-            return;
-          }
-
-          void loadSearch(query, load);
+    const question = this.#captureSetupQuestion<SetupSelectResult>(
+      (key, settle) => {
+        const close = (value: SetupSelectResult): void => {
+          searchVersion += 1;
+          settle(value);
+        };
+        if (loading) {
+          if (key.type === "ctrl-c") close(undefined);
+          else if (key.type === "escape") clearSearch();
+          else if (key.type === "ctrl-r") this.#paint();
           return;
         }
-        case "error":
-          error = result.message;
-          this.#paint();
+
+        const plannerStep = opts.navigation?.kind === "planner" ? opts.navigation : undefined;
+        const plannerDirection =
+          key.type === "left" &&
+          (plannerStep?.activeStep ?? 0) > (plannerStep?.firstNavigableStep ?? 0)
+            ? "back"
+            : key.type === "right" &&
+                plannerStep !== undefined &&
+                plannerStep.activeStep >= (plannerStep.firstNavigableStep ?? 0) &&
+                plannerStep.activeStep < plannerStep.steps.length - 1
+              ? "forward"
+              : undefined;
+        if (plannerDirection !== undefined) {
+          close({
+            kind: "navigate",
+            direction: plannerDirection,
+            values: multiple ? orderedSelection(selectOptions, select.selected) : [],
+          });
           return;
-        case "ignore":
-          return;
-      }
-    });
+        }
+
+        const base = { key, options: selectOptions, searchAction, select };
+        const result = multiple
+          ? reduceSetupSelectInput({
+              ...base,
+              kind: opts.kind,
+              required: opts.required,
+              plannerNavigation: plannerNavigation || undefined,
+            })
+          : reduceSetupSelectInput({ ...base, kind: opts.kind });
+        switch (result.kind) {
+          case "cancel":
+            close(undefined);
+            return;
+          case "repaint":
+            this.#paint();
+            return;
+          case "update":
+            select = result.select;
+            error = undefined;
+            if (searchableField) this.#showCaret();
+            this.#paint();
+            return;
+          case "submit": {
+            const query = searchActionQuery(result.values[0] ?? "");
+            const load = searchAction?.load;
+            if (query === undefined || load === undefined) {
+              close(result.values);
+              return;
+            }
+
+            void loadSearch(query, load);
+            return;
+          }
+          case "error":
+            error = result.message;
+            this.#paint();
+            return;
+          case "ignore":
+            return;
+        }
+      },
+      searchableField ? () => this.#stopCaretBlink() : undefined,
+    );
     return await question.promise;
   }
 
@@ -2992,6 +3022,8 @@ export class TerminalRenderer implements AgentTUIRenderer {
 
   shutdown(): void {
     this.#stop();
+    for (const timer of this.#argumentCatalogLoadingTimers.values()) clearTimeout(timer);
+    this.#argumentCatalogLoadingTimers.clear();
     // The parting line: the boot banner's dim counterpart, written after the
     // terminal is restored so it lands as the session's last scrollback row.
     // Gated on the session having ever gone live (Ctrl-C stops the terminal
@@ -4353,7 +4385,7 @@ export class TerminalRenderer implements AgentTUIRenderer {
       } else {
         content = { kind: "idle", indicator };
       }
-      const state: Parameters<typeof renderFlowPanel>[0] = {
+      const state: Parameters<typeof renderFlowDrawer>[0] = {
         title: flow.title,
         navigation: flow.navigation,
         lines:
@@ -4370,7 +4402,12 @@ export class TerminalRenderer implements AgentTUIRenderer {
               ],
         content,
       };
-      rows.push(...renderFlowPanel(state, this.#theme, width));
+      const drawer = renderFlowDrawer(state, this.#theme, width);
+      // Setup owns the footer while open. Do not lead it with the ordinary
+      // transcript spacer: the drawer begins directly below the command echo.
+      if (rows.length === 1 && rows[0] === "") rows.length = 0;
+      rows.push(...drawer.rows);
+      if (drawer.controls.length > 0) rows.push(...drawer.controls);
       this.#pushRemoteStatusLine(rows, width);
       return rows;
     }

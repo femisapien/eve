@@ -82,7 +82,7 @@ import {
   appendPendingInputBatch,
 } from "#harness/input-requests.js";
 import { activeTurnId } from "#harness/active-turn-id.js";
-import { registerWorkflowToolRun } from "#harness/workflow-tool-runs.js";
+import { recordWorkflowTaskView, registerWorkflowToolRun } from "#harness/workflow-tool-runs.js";
 import { getPendingCoordinationBatch } from "#harness/coordination.js";
 import { AGENT_HANDLES_STATE_KEY } from "#subagents/handles/store.js";
 import { BackgroundToolExecutorKey } from "#harness/background-tools.js";
@@ -935,8 +935,7 @@ function createGatewayModelCallError(input: {
 describe("createToolLoopHarness", () => {
   it("keeps a scheduled task session alive across individual results until all tasks settle", async () => {
     const { SessionInputQueue } = await import("#execution/session/input-queue.js");
-    const { getSessionTaskCohorts } = await import("#tasks/session-task-cohorts.js");
-    const { recordWorkflowTaskView, findBackgroundWorkflowToolRun } =
+    const { recordWorkflowTaskView, getBackgroundTasks } =
       await import("#harness/workflow-tool-runs.js");
     const { resolveTaskDeliveryContext } = await import("#tasks/delivery-context.js");
     const { backgroundToolExecutionProvider } =
@@ -956,12 +955,8 @@ describe("createToolLoopHarness", () => {
       taskDeliveryId: "A:ready:completed",
       payloads: [{ message: "A completed" }],
     });
-    expect(
-      queue.takeNext(getSessionTaskCohorts(session.state), { taskDeliveryPolicy: "cohort" }),
-    ).toBeUndefined();
-    expect(
-      queue.takeNext(getSessionTaskCohorts(session.state), { taskDeliveryPolicy: "auto" })?.kind,
-    ).toBe("turn");
+    expect(queue.takeNext(session.state, { taskDeliveryPolicy: "cohort" })).toBeUndefined();
+    expect(queue.takeNext(session.state, { taskDeliveryPolicy: "auto" })?.kind).toBe("turn");
     session = {
       ...session,
       state: recordWorkflowTaskView(session.state, {
@@ -969,7 +964,7 @@ describe("createToolLoopHarness", () => {
         metadata: { kind: "report-probe", name: "A" },
         status: "completed",
         lastOutput: { type: "result", data: "Report A" },
-      }),
+      }).state,
     };
     const report = resolveTaskDeliveryContext({
       state: session.state,
@@ -988,7 +983,7 @@ describe("createToolLoopHarness", () => {
     const result = await contextStorage.run(ctx, () =>
       runStep(session, { message: "A completed", context: [report.context] }),
     );
-    expect(findBackgroundWorkflowToolRun(result.session.state, "B")?.task.outcome).toBeUndefined();
+    expect(getBackgroundTasks(result.session.state).get("B")?.status).toBe("working");
     expect(result.next).toBeNull();
 
     session = {
@@ -998,7 +993,7 @@ describe("createToolLoopHarness", () => {
         metadata: { kind: "report-probe", name: "B" },
         status: "completed",
         lastOutput: { type: "result", data: "Report B" },
-      }),
+      }).state,
     };
     const finalReport = resolveTaskDeliveryContext({
       state: session.state,
@@ -3256,6 +3251,46 @@ describe("createToolLoopHarness", () => {
     expect(events.at(-1)?.type).toBe("session.waiting");
   });
 
+  it("parks a task turn without completing the session while durable background work is pending", async () => {
+    setupMockAgent({
+      finishReason: "stop",
+      response: { messages: [{ content: "Still working.", role: "assistant" }] },
+      text: "Still working.",
+      toolCalls: [],
+      toolResults: [],
+    });
+    const { emit, events } = createEventCollector();
+    const runStep = createToolLoopHarness(createTestConfig("task", emit));
+
+    const result = await contextStorage.run(new ContextContainer(), () =>
+      runStep(recordBackgroundTask(createTestSession()), { message: "Continue" }),
+    );
+
+    expect(result.next).toBeNull();
+    expect(result.settledTurn).toEqual({ output: "Still working." });
+    expect(events.some((event) => event.type === "session.completed")).toBe(false);
+    expect(events.at(-1)?.type).toBe("session.waiting");
+
+    const completed = await contextStorage.run(new ContextContainer(), () =>
+      runStep(
+        {
+          ...result.session,
+          state: recordWorkflowTaskView(result.session.state, {
+            lastOutput: { data: "MCP-CHILD-ANSWER", type: "result" },
+            metadata: { kind: "report-probe", name: "analysis" },
+            status: "completed",
+            taskId: "analysis",
+          }),
+        },
+        { message: "Background work finished." },
+      ),
+    );
+
+    expect(completed.next).toEqual({ done: true, output: "Still working." });
+    expect(events.filter((event) => event.type === "session.completed")).toHaveLength(1);
+    expect(events.at(-1)?.type).toBe("session.completed");
+  });
+
   it("fails a task turn as an error when structured output is not produced", async () => {
     setupMockAgent({
       finishReason: "stop",
@@ -3580,7 +3615,9 @@ describe("createToolLoopHarness", () => {
     const result = await runStep(session, { message: "What's the weather in NY?" });
 
     expect(result.next).toBeNull();
-    expect(result.settledTurn).toEqual({ output: "It is 41 F in New York right now." });
+    expect(result.settledTurn).toEqual({
+      output: "It is 41 F in New York right now.",
+    });
     expect(result.session.history).toEqual([
       { content: "What's the weather in NY?", kind: "user" as const, role: "user" },
       {
@@ -5140,7 +5177,10 @@ describe("createToolLoopHarness", () => {
     // session parks (`next: null`) so the user can follow up in the
     // same thread rather than the whole run being torn down.
     expect(result.next).toBeNull();
-    expect(result.settledTurn).toEqual({ isError: true, output: "Model blew up" });
+    expect(result.settledTurn).toEqual({
+      isError: true,
+      output: "Model blew up",
+    });
     expect(result.session.outputSchema).toBeUndefined();
 
     const types = events.map((e) => e.type);
@@ -6951,6 +6991,30 @@ describe("createToolLoopHarness", () => {
         ),
       ).toHaveLength(1);
     });
+  });
+
+  it("dispatches model selection with the active turn ID when a continuation has no turn input", async () => {
+    setupMockAgent({
+      finishReason: "stop",
+      response: { messages: [{ content: "Done", role: "assistant" }] },
+      text: "Done",
+      toolCalls: [],
+      toolResults: [],
+    });
+
+    const dispatchDynamicModelEvent = vi.fn();
+    const { emit } = createEventCollector();
+    const harness = createToolLoopHarness(
+      createTestConfig("conversation", emit, { dispatchDynamicModelEvent, tools: new Map() }),
+    );
+
+    await contextStorage.run(new ContextContainer(), () => harness(createTestSession()));
+
+    expect(dispatchDynamicModelEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: expect.objectContaining({ data: expect.objectContaining({ turnId: "turn_0" }) }),
+      }),
+    );
   });
 
   it("persists the SDK's accumulated approval-resume messages into session history", async () => {
@@ -13308,7 +13372,10 @@ describe("boundary event failures", () => {
         message: "Denied request",
       });
       expect(result.next).toBeNull();
-      expect(result.settledTurn).toEqual({ isError: true, output: "admission denied" });
+      expect(result.settledTurn).toEqual({
+        isError: true,
+        output: "admission denied",
+      });
       expect(result.session.outputSchema).toBeUndefined();
       expect(ToolLoopAgent).not.toHaveBeenCalled();
       expect(events.filter((event) => event.type === "turn.failed")).toMatchObject([
