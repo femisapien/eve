@@ -1,4 +1,5 @@
 import type { DurableSessionState } from "#execution/durable-session-store.js";
+import type { SessionEventTarget } from "#execution/publish-session-events.js";
 import { sessionHookTokens } from "#execution/session/hook-tokens.js";
 import type { SessionInboxOwnership } from "#execution/session-inbox/inbox.js";
 import type { TurnStepInput, TurnStepPayload } from "#execution/session/turn-step-types.js";
@@ -49,6 +50,15 @@ export class SessionStateCursor {
     await this.inbox.claimSessionHooks(sessionHookTokens({ serializedContext, sessionState }));
     this.currentSerializedContext = serializedContext;
     this.currentSessionState = sessionState;
+  }
+
+  /** The session's stream and current state, for a step that publishes events. */
+  eventTarget(): SessionEventTarget {
+    return {
+      serializedContext: this.currentSerializedContext,
+      sessionState: this.currentSessionState,
+      sessionWritable: this.sessionWritable,
+    };
   }
 
   createStepInput(

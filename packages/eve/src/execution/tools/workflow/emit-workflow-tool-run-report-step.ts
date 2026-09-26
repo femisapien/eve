@@ -1,17 +1,20 @@
+import {
+  publishSessionEvents,
+  type PublishedSessionEvents,
+  type SessionEventTarget,
+} from "#execution/publish-session-events.js";
 import type { WorkflowToolRunRef } from "#execution/tools/workflow/messages.js";
 import { createRuntimeToolResultFromValue } from "#harness/action-result-helpers.js";
-import {
-  createActionPartialEvent,
-  encodeMessageStreamEvent,
-  stampMessageStreamEvent,
-} from "#protocol/message.js";
+import { createActionPartialEvent } from "#protocol/message.js";
 import type { JsonValue } from "#shared/json.js";
 
-export async function emitWorkflowToolRunReportStep(input: {
-  readonly from: WorkflowToolRunRef;
-  readonly sessionWritable: WritableStream<Uint8Array>;
-  readonly update: JsonValue;
-}): Promise<void> {
+/** Publishes a workflow tool run's `ctx.report()` update as `action.partial`. */
+export async function emitWorkflowToolRunReportStep(
+  input: SessionEventTarget & {
+    readonly from: WorkflowToolRunRef;
+    readonly update: JsonValue;
+  },
+): Promise<PublishedSessionEvents> {
   "use step";
 
   const event = createActionPartialEvent({
@@ -24,10 +27,5 @@ export async function emitWorkflowToolRunReportStep(input: {
     stepIndex: input.from.stepIndex,
     turnId: input.from.turnId,
   });
-  const writer = input.sessionWritable.getWriter();
-  try {
-    await writer.write(encodeMessageStreamEvent(stampMessageStreamEvent(event)));
-  } finally {
-    writer.releaseLock();
-  }
+  return await publishSessionEvents(input, [event]);
 }

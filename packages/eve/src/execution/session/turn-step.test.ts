@@ -338,6 +338,7 @@ describe("routeProxiedDeliverStep", () => {
     installSessionStoreMocks([session]);
 
     await routeProxiedDeliverStep({
+      serializedContext: {},
       sessionWritable: createTestWritable(),
       delivery: {
         kind: "deliver",
@@ -365,7 +366,7 @@ describe("routeProxiedDeliverStep", () => {
         [
           "ask-1",
           {
-            answerHook: { question: { allowFreeform: true, dismissible: true }, runId: "run-1" },
+            answerHook: { question: { allowFreeform: true }, runId: "run-1" },
             childContinuationToken: "answer-token",
             kind: "question",
           },
@@ -377,6 +378,7 @@ describe("routeProxiedDeliverStep", () => {
     installSessionStoreMocks([session]);
 
     const result = await routeProxiedDeliverStep({
+      serializedContext: {},
       delivery: {
         kind: "deliver",
         payloads: [{ message: "Use the canary pool." }, { message: "Also check the logs." }],
@@ -419,7 +421,6 @@ describe("routeProxiedDeliverStep", () => {
             answerHook: {
               question: {
                 allowFreeform: false,
-                dismissible: false,
                 options: [{ id: "approve", label: "Approve" }],
               },
               runId: "run-1",
@@ -469,6 +470,7 @@ describe("routeProxiedDeliverStep", () => {
     installSessionStoreMocks([session]);
 
     const result = await routeProxiedDeliverStep({
+      serializedContext: {},
       sessionWritable: createTestWritable(),
       delivery: {
         kind: "deliver",
@@ -546,6 +548,7 @@ describe("routeProxiedDeliverStep", () => {
     };
 
     const result = await routeProxiedDeliverStep({
+      serializedContext: {},
       delivery,
       sessionWritable: createTestWritable(),
       sessionState: createStubSessionState({ hasProxyInputRequests: true }),

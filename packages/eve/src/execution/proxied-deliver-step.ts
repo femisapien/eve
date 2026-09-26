@@ -7,20 +7,13 @@ import {
   readDurableSession,
   replaceDurableSessionSnapshot,
 } from "#execution/durable-session-store.js";
+import { relaySessionEvents, type SessionEventTarget } from "#execution/publish-session-events.js";
 import { routeDeliverPayload } from "#subagents/hitl-proxy.js";
 import { resumeSessionInbox } from "#execution/session-inbox/resume.js";
-import {
-  resumeWorkflowToolRunAnswers,
-  resumeWorkflowToolRunDismissal,
-} from "#execution/tools/workflow/answer.js";
+import { resumeWorkflowToolRunAnswers } from "#execution/tools/workflow/answer.js";
 import { getPendingCoordinationBatch } from "#harness/coordination.js";
 import type { AnswerHookRoute } from "#harness/proxy-input-requests.js";
-import {
-  createInputResolvedEvent,
-  encodeMessageStreamEvent,
-  type InputResolution,
-  stampMessageStreamEvent,
-} from "#protocol/message.js";
+import { createInputResolvedEvent, type InputResolution } from "#protocol/message.js";
 import type { InputResponse } from "#shared/input.js";
 import { retireProxyInputRequests } from "#harness/proxy-input-requests.js";
 
@@ -41,19 +34,19 @@ interface ChildBucket {
   readonly answerHook?: AnswerHookRoute;
   readonly childContinuationToken: string;
   readonly childSessionInbox?: SessionInboxAddress;
-  readonly dismissedRequestIds: string[];
   readonly metadata: NonNullable<DeliverHookPayload["deliveryMetadata"]>[number][];
   readonly payloads: DeliverPayload[];
   readonly retireRequestIds: string[];
 }
 
-/** Splits an envelope and forwards descendant input to the child that asked for it. */
-export async function routeProxiedDeliverStep(input: {
-  readonly delivery: DeliverHookPayload;
-  readonly sessionWritable: WritableStream<Uint8Array>;
-  readonly serializedContext?: Record<string, unknown>;
-  readonly sessionState: DurableSessionState;
-}): Promise<RoutedDeliverResult> {
+/**
+ * Splits an envelope and forwards descendant input to the child that asked for
+ * it. A `ctx.ask()` question is resolved by its workflow, not the harness, so
+ * this session relays its `input.resolved` once the answer is on its way down.
+ */
+export async function routeProxiedDeliverStep(
+  input: SessionEventTarget & { readonly delivery: DeliverHookPayload },
+): Promise<RoutedDeliverResult> {
   "use step";
   let durableSession = readDurableSession(input.sessionState);
   const sourceDelivery = input.delivery;
@@ -62,8 +55,7 @@ export async function routeProxiedDeliverStep(input: {
   let parentAction: { readonly kind: "cancel-turn" } | undefined;
   // Only a person's own message may answer or skip a pending question.
   const resolveMessage =
-    !hasDelegatedSessionContext(input.serializedContext ?? {}) &&
-    sourceDelivery.caller === undefined;
+    !hasDelegatedSessionContext(input.serializedContext) && sourceDelivery.caller === undefined;
   // Every payload routes against the same state, so an answer-hook request
   // resolved by an earlier payload is hidden from later ones; its hook accepts
   // one answer, and later messages must reach the parent instead.
@@ -91,14 +83,12 @@ export async function routeProxiedDeliverStep(input: {
         answerHook: forChild.answerHook,
         childContinuationToken: forChild.childContinuationToken,
         childSessionInbox: forChild.childSessionInbox,
-        dismissedRequestIds: [],
         metadata: [],
         payloads: [],
         retireRequestIds: [],
       };
       const childPayloadIndex = child.payloads.length;
       child.payloads.push(forChild.payload);
-      child.dismissedRequestIds.push(...(forChild.dismissedRequestIds ?? []));
       child.retireRequestIds.push(...forChild.retireRequestIds);
       if (routed.forSelf === undefined && childIndex === 0) {
         for (const metadata of sourceDelivery.deliveryMetadata ?? []) {
@@ -112,20 +102,13 @@ export async function routeProxiedDeliverStep(input: {
   }
 
   let retired = false;
+  const answered: InputResolution[] = [];
   for (const child of children.values()) {
     if (child.answerHook !== undefined) {
       const responses = coalesceDeliverPayloads(child.payloads).inputResponses ?? [];
       await resumeWorkflowToolRunAnswers(child.childContinuationToken, responses);
-      if (child.dismissedRequestIds.length > 0) {
-        await resumeWorkflowToolRunDismissal(child.childContinuationToken);
-      }
       if (child.answerHook.question !== undefined) {
-        await emitQuestionResolutions({
-          dismissedRequestIds: child.dismissedRequestIds,
-          responses,
-          sessionState: durableSession.state,
-          sessionWritable: input.sessionWritable,
-        });
+        answered.push(...responses.map(toAnsweredResolution));
       }
       durableSession = retireProxyInputRequests(durableSession, child.retireRequestIds);
       retired = true;
@@ -147,12 +130,21 @@ export async function routeProxiedDeliverStep(input: {
     retired = true;
   }
 
-  const context = {
-    serializedContext: input.serializedContext ?? {},
-    sessionState: retired
-      ? replaceDurableSessionSnapshot({ session: durableSession, state: input.sessionState })
-      : input.sessionState,
-  };
+  // A blocking run starts from the pending coordination batch, which carries
+  // the coordinates of its request.
+  const requested = getPendingCoordinationBatch(durableSession.state)?.event;
+  const context = await relaySessionEvents(
+    {
+      serializedContext: input.serializedContext,
+      sessionState: retired
+        ? replaceDurableSessionSnapshot({ session: durableSession, state: input.sessionState })
+        : input.sessionState,
+      sessionWritable: input.sessionWritable,
+    },
+    requested === undefined || answered.length === 0
+      ? []
+      : [createInputResolvedEvent({ resolutions: answered, ...requested })],
+  );
   if (parentAction !== undefined) return { ...context, ...parentAction };
   const orderedParentPayloads = [...parentPayloads].sort(([a], [b]) => a - b);
   const parentMetadata = orderedParentPayloads.flatMap(([sourcePayloadIndex], payloadIndex) =>
@@ -171,39 +163,6 @@ export async function routeProxiedDeliverStep(input: {
   return { ...context, kind: "continue", remainder };
 }
 
-// A `ctx.ask()` question is resolved by its workflow, not the harness, so the
-// parent announces the resolution. A blocking run starts from the pending
-// coordination batch, which carries the coordinates of its request.
-async function emitQuestionResolutions(input: {
-  readonly dismissedRequestIds: readonly string[];
-  readonly responses: readonly InputResponse[];
-  readonly sessionState: Parameters<typeof getPendingCoordinationBatch>[0];
-  readonly sessionWritable: WritableStream<Uint8Array>;
-}): Promise<void> {
-  const event = getPendingCoordinationBatch(input.sessionState)?.event;
-  if (event === undefined) return;
-  const resolutions: InputResolution[] = [
-    ...input.responses.map((response) => ({
-      kind: "question" as const,
-      outcome: "answered" as const,
-      requestId: response.requestId,
-      response,
-    })),
-    ...input.dismissedRequestIds.map((requestId) => ({
-      kind: "question" as const,
-      outcome: "ignored" as const,
-      requestId,
-    })),
-  ];
-  if (resolutions.length === 0) return;
-  const writer = input.sessionWritable.getWriter();
-  try {
-    await writer.write(
-      encodeMessageStreamEvent(
-        stampMessageStreamEvent(createInputResolvedEvent({ resolutions, ...event })),
-      ),
-    );
-  } finally {
-    writer.releaseLock();
-  }
+function toAnsweredResolution(response: InputResponse): InputResolution {
+  return { kind: "question", outcome: "answered", requestId: response.requestId, response };
 }

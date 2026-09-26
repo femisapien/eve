@@ -68,7 +68,10 @@ import { consumeDeferredStepInput } from "#harness/pending-input-batches.js";
 import type { HandleEventFn, HarnessSession, StepInput, StepResult } from "#harness/types.js";
 import type { DurableStepResult, TurnStepInput } from "#execution/session/turn-step-types.js";
 import { resolveSessionStepResult } from "#execution/session/turn-step-result.js";
-import { createSessionEventSink, type SessionEventSink } from "#execution/session/event-sink.js";
+import {
+  createSessionEventSink,
+  type SessionEventSink,
+} from "#execution/publish-session-events.js";
 import { derivePendingState } from "#execution/session/pending-turn-state.js";
 import {
   createAuthorizationCompletedEvent,
@@ -235,7 +238,6 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
     await instrumentation?.flush();
   };
   const sink = createSessionEventSink({
-    adapter,
     ctx,
     sessionWritable: input.sessionWritable,
     sessionId: initialSession.sessionId,
