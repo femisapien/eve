@@ -3,7 +3,6 @@ import { expect, it } from "vitest";
 import { replaceDurableSessionSnapshot } from "#execution/durable-session-store.js";
 import { emitWorkflowToolRunReportStep } from "#execution/tools/workflow/emit-workflow-tool-run-report-step.js";
 import { withdrawWorkflowToolRunQuestionStep } from "#execution/tools/workflow/withdraw-step.js";
-import { setPendingCoordinationBatch } from "#harness/coordination.js";
 import { upsertProxyInputRequests } from "#harness/proxy-input-requests.js";
 import type { HarnessSession } from "#harness/types.js";
 import { createTestRuntime } from "#internal/testing/app-harness.js";
@@ -84,24 +83,20 @@ it("publishes a session step's action.partial to the stream and its hooks", asyn
 it("relays a withdrawn workflow question's input.resolved to the stream and its hooks", async () => {
   const { hooked, runtime, sessionWritable, streamed } = await createPublishingRuntime();
   const base = createTestSessionState();
-  const asked = setPendingCoordinationBatch({
-    event: { sequence: 1, stepIndex: 0, turnId: "turn-1" },
-    responseMessages: [],
-    session: upsertProxyInputRequests({
-      entries: [
-        [
-          "ask-1",
-          {
-            workflowAsk: { control: "control", question: {}, runId: "run-1" },
-            childContinuationToken: "ask-1",
-            kind: "question",
-          },
-        ],
+  const asked = upsertProxyInputRequests({
+    entries: [
+      [
+        "ask-1",
+        {
+          workflowAsk: { control: "control", question: {}, runId: "run-1" },
+          childContinuationToken: "ask-1",
+          event: { sequence: 1, stepIndex: 0, turnId: "turn-1" },
+          kind: "question",
+        },
       ],
-      forChildContinuationToken: "ask-1",
-      session: base.snapshot.session as HarnessSession,
-    }),
-    tasks: [],
+    ],
+    forChildContinuationToken: "ask-1",
+    session: base.snapshot.session as HarnessSession,
   });
 
   await runtime.run(async () => {

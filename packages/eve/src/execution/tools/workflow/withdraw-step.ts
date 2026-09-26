@@ -11,7 +11,6 @@ import {
 import type { WorkflowToolRunControlMessage } from "#execution/tools/workflow/messages.js";
 import { ignoreGoneTarget } from "#execution/tasks/workflow-target.js";
 import { resumeHook } from "#internal/workflow/runtime.js";
-import { getPendingCoordinationBatch } from "#harness/coordination.js";
 import { getProxyInputRequests, retireProxyInputRequests } from "#harness/proxy-input-requests.js";
 import { createInputResolvedEvent, type UnstampedMessageStreamEvent } from "#protocol/message.js";
 
@@ -62,19 +61,15 @@ export function withdrawWorkflowAsks(
   session: DurableSession,
   select: (requestId: string, runId: string) => boolean,
 ): { readonly events: readonly UnstampedMessageStreamEvent[]; readonly session: DurableSession } {
-  // A blocking run starts from the pending coordination batch, which carries
-  // the coordinates of its request.
-  const requested = getPendingCoordinationBatch(session.state)?.event;
   const requestIds: string[] = [];
   const events: UnstampedMessageStreamEvent[] = [];
   for (const [requestId, route] of getProxyInputRequests(session.state)) {
     if (route.workflowAsk === undefined || !select(requestId, route.workflowAsk.runId)) continue;
     requestIds.push(requestId);
-    if (requested === undefined) continue;
     events.push(
       createInputResolvedEvent({
         resolutions: [{ kind: "question", outcome: "cancelled", requestId }],
-        ...requested,
+        ...route.event,
       }),
     );
   }

@@ -27,6 +27,8 @@ import type { HarnessSession } from "#harness/types.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import { isRuntimeWorkflowToolAction } from "#shared/action-types.js";
 
+const REQUEST_EVENT = { sequence: 0, stepIndex: 0, turnId: "turn_0" };
+
 const CHILD_SESSION_ID = "local-child-123456789012";
 const CHILD_CONTINUATION_TOKEN = "subagent:private-token";
 const ZERO_USAGE = {
@@ -432,7 +434,14 @@ describe("resolvePendingCoordination", () => {
   it("clears the child's proxy-input entries before settling its handle", async () => {
     const session = upsertProxyInputRequests({
       entries: [
-        ["request-1", { childContinuationToken: CHILD_CONTINUATION_TOKEN, kind: "question" }],
+        [
+          "request-1",
+          {
+            childContinuationToken: CHILD_CONTINUATION_TOKEN,
+            event: REQUEST_EVENT,
+            kind: "question",
+          },
+        ],
       ],
       forChildContinuationToken: CHILD_CONTINUATION_TOKEN,
       session: createSessionWithRunningChild(),
@@ -486,7 +495,14 @@ describe("resolvePendingCoordination", () => {
     const answerToken = "eve:workflow-tool-run-answer:run-1:0";
     const session = upsertProxyInputRequests({
       entries: [
-        ["other-request", { childContinuationToken: CHILD_CONTINUATION_TOKEN, kind: "question" }],
+        [
+          "other-request",
+          {
+            childContinuationToken: CHILD_CONTINUATION_TOKEN,
+            event: REQUEST_EVENT,
+            kind: "question",
+          },
+        ],
       ],
       forChildContinuationToken: CHILD_CONTINUATION_TOKEN,
       session: upsertProxyInputRequests({
@@ -496,6 +512,7 @@ describe("resolvePendingCoordination", () => {
             {
               workflowAsk: { control: "control", question: {}, runId: "run-1" },
               childContinuationToken: answerToken,
+              event: REQUEST_EVENT,
               kind: "question",
             },
           ],

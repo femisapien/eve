@@ -33,11 +33,12 @@ export interface DeriveRunFactsOptions {
 }
 
 /**
- * Event types that only close out a turn. When the last meaningful event
- * before this epilogue is `input.requested`, the run ended parked on
- * unanswered HITL input.
+ * Event types that only park or close out a turn. When the last meaningful
+ * event before them is `input.requested`, the run ended parked on unanswered
+ * HITL input.
  */
-const TURN_EPILOGUE_EVENT_TYPES: ReadonlySet<MessageStreamEvent["type"]> = new Set([
+const PARKING_EVENT_TYPES: ReadonlySet<MessageStreamEvent["type"]> = new Set([
+  "turn.waiting",
   "turn.completed",
   "session.waiting",
   "session.completed",
@@ -221,14 +222,15 @@ export function createEmptyDerivedFacts(): EveEvalDerivedFacts {
 }
 
 /**
- * A run ended parked when the last event before the turn epilogue
- * (`turn.completed` → `session.waiting`) is `input.requested`: the harness
- * surfaced HITL requests and stopped without resolving them.
+ * A run ended parked when the last event before its parking events is
+ * `input.requested`: either the turn ended on the request (`turn.completed` →
+ * `session.waiting`), or a call the turn runs asked and the open turn parked
+ * (`turn.waiting`).
  */
 function endedParkedOnInput(events: readonly MessageStreamEvent[]): boolean {
   for (let i = events.length - 1; i >= 0; i--) {
     const event = events[i];
-    if (event === undefined || TURN_EPILOGUE_EVENT_TYPES.has(event.type)) continue;
+    if (event === undefined || PARKING_EVENT_TYPES.has(event.type)) continue;
     return event.type === "input.requested";
   }
   return false;

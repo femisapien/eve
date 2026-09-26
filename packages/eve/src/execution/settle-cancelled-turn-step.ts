@@ -10,11 +10,7 @@ import { reconcileSessionContinuationToken } from "#execution/reconcile-session-
 import { emitCancelledTurn } from "#harness/cancelled-turn-emission.js";
 import { clearPendingSessionLimitPrompt } from "#harness/input-requests.js";
 import { getHarnessEmissionState, setHarnessEmissionState } from "#harness/emission.js";
-import {
-  clearAllProxyInputRequests,
-  getProxyInputRequests,
-  hasProxyInputRequests,
-} from "#harness/proxy-input-requests.js";
+import { clearAllProxyInputRequests } from "#harness/proxy-input-requests.js";
 import {
   abandonAgentInvocationOwners,
   abandonRunningAgentTurns,
@@ -48,26 +44,10 @@ export async function settleCancelledTurnStep(input: {
 
   const durableSession = readDurableSession(input.sessionState);
   const ctx = await deserializeContext(input.serializedContext);
-
-  // A descendant HITL wait already streamed this turn's waiting boundary
-  // (the proxy epilogue clears the turn id); re-emitting would fabricate
-  // a turn id and duplicate the boundary.
-  const proxyRequests = getProxyInputRequests(durableSession.state);
-  const stoppedAtDescendantLimit = [...proxyRequests.values()].some(
-    (request) => request.kind === "session-limit",
-  );
-  const initialEmissionState = getHarnessEmissionState(durableSession.state);
-  const alreadyEpilogued =
-    initialEmissionState.turnId === "" &&
-    hasProxyInputRequests(durableSession.state) &&
-    !stoppedAtDescendantLimit;
-
   const emitted = await withSessionEventEmitter(
     { ctx, durableSession, origin: "own", sessionWritable: input.sessionWritable },
     async (emit, scopedSession) => ({
-      result: alreadyEpilogued
-        ? initialEmissionState
-        : await emitCancelledTurn(emit, initialEmissionState),
+      result: await emitCancelledTurn(emit, getHarnessEmissionState(durableSession.state)),
       session: scopedSession,
     }),
   );

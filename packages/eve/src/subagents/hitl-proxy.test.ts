@@ -4,6 +4,8 @@ import { upsertProxyInputRequests } from "#harness/proxy-input-requests.js";
 import type { HarnessSession } from "#harness/types.js";
 import { routeDeliverPayload } from "#subagents/hitl-proxy.js";
 
+const REQUEST_EVENT = { sequence: 0, stepIndex: 0, turnId: "turn_0" };
+
 function createSession(state?: Record<string, unknown>): HarnessSession {
   return {
     agent: {
@@ -28,6 +30,7 @@ describe("routeDeliverPayload", () => {
           {
             childContinuationToken: "child-alias",
             childSessionInbox: { sessionId: "child-a" },
+            event: REQUEST_EVENT,
             kind: "question",
           },
         ],
@@ -36,6 +39,7 @@ describe("routeDeliverPayload", () => {
           {
             childContinuationToken: "child-alias",
             childSessionInbox: { sessionId: "child-b" },
+            event: REQUEST_EVENT,
             kind: "question",
           },
         ],
@@ -70,10 +74,20 @@ describe("routeDeliverPayload", () => {
 
   it("routes responses to matching descendants and keeps unknown ones on forSelf", () => {
     const session = upsertProxyInputRequests({
-      entries: [["req-a", { childContinuationToken: "child-a", kind: "tool-approval" }]],
+      entries: [
+        [
+          "req-a",
+          { childContinuationToken: "child-a", event: REQUEST_EVENT, kind: "tool-approval" },
+        ],
+      ],
       forChildContinuationToken: "child-a",
       session: upsertProxyInputRequests({
-        entries: [["req-b", { childContinuationToken: "child-b", kind: "tool-approval" }]],
+        entries: [
+          [
+            "req-b",
+            { childContinuationToken: "child-b", event: REQUEST_EVENT, kind: "tool-approval" },
+          ],
+        ],
         forChildContinuationToken: "child-b",
         session: createSession(),
       }),
@@ -117,7 +131,12 @@ describe("routeDeliverPayload", () => {
 
   it("returns forSelf as undefined when every response routes to a descendant", () => {
     const session = upsertProxyInputRequests({
-      entries: [["req-a", { childContinuationToken: "child-a", kind: "tool-approval" }]],
+      entries: [
+        [
+          "req-a",
+          { childContinuationToken: "child-a", event: REQUEST_EVENT, kind: "tool-approval" },
+        ],
+      ],
       forChildContinuationToken: "child-a",
       session: createSession(),
     });
@@ -135,7 +154,12 @@ describe("routeDeliverPayload", () => {
 
   it("asks the parent to cancel after routing Stop to a descendant session-limit request", () => {
     const session = upsertProxyInputRequests({
-      entries: [["req-limit", { childContinuationToken: "child-a", kind: "session-limit" }]],
+      entries: [
+        [
+          "req-limit",
+          { childContinuationToken: "child-a", event: REQUEST_EVENT, kind: "session-limit" },
+        ],
+      ],
       forChildContinuationToken: "child-a",
       session: createSession(),
     });
@@ -151,7 +175,17 @@ describe("routeDeliverPayload", () => {
       {
         childContinuationToken: "child-a",
         payload: { inputResponses: [{ optionId: "stop", requestId: "req-limit" }] },
-        retireRequestIds: ["req-limit"],
+        resolved: {
+          event: REQUEST_EVENT,
+          resolutions: [
+            {
+              kind: "session-limit",
+              outcome: "answered",
+              requestId: "req-limit",
+              response: { optionId: "stop", requestId: "req-limit" },
+            },
+          ],
+        },
       },
     ]);
     expect(routed.parentAction).toEqual({ kind: "cancel-turn" });
@@ -181,6 +215,7 @@ describe("routeDeliverPayload message resolution", () => {
                 control: `control-${requestId}`,
               },
               childContinuationToken: `hook-${requestId}`,
+              event: REQUEST_EVENT,
               kind: "question",
             },
           ],
@@ -204,7 +239,7 @@ describe("routeDeliverPayload message resolution", () => {
       {
         childContinuationToken: "hook-ask-1",
         payload: { inputResponses: [{ optionId: "2", requestId: "ask-1" }] },
-        retireRequestIds: ["ask-1"],
+        resolved: { resolutions: [{ outcome: "answered", requestId: "ask-1" }] },
       },
     ]);
   });
@@ -238,7 +273,12 @@ describe("routeDeliverPayload message resolution", () => {
 
   it("does not answer a question while a subagent question is also pending", () => {
     const session = upsertProxyInputRequests({
-      entries: [["child-ask", { childContinuationToken: "child-token", kind: "question" }]],
+      entries: [
+        [
+          "child-ask",
+          { childContinuationToken: "child-token", event: REQUEST_EVENT, kind: "question" },
+        ],
+      ],
       forChildContinuationToken: "child-token",
       session: askSession([["ask-1", { allowFreeform: true }]]),
     });

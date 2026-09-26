@@ -76,6 +76,8 @@ function turnStep(input: Omit<TurnStepInput, "input"> & { readonly input?: Legac
 import { routeProxiedDeliverStep } from "#execution/proxied-deliver-step.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
 
+const REQUEST_EVENT = { sequence: 0, stepIndex: 0, turnId: "turn_0" };
+
 // The harness runs outside a workflow body here, where run attributes cannot
 // be written; the attribute contract is covered by emit.test.ts.
 vi.mock("#runtime/attributes/emit.js", () => ({ setEveAttributes: vi.fn(async () => {}) }));
@@ -325,6 +327,7 @@ describe("routeProxiedDeliverStep", () => {
           {
             childContinuationToken: "stale-alias",
             childSessionInbox: { sessionId: "original-child" },
+            event: REQUEST_EVENT,
             kind: "question",
           },
         ],
@@ -338,7 +341,7 @@ describe("routeProxiedDeliverStep", () => {
     installSessionStoreMocks([session]);
 
     await routeProxiedDeliverStep({
-      serializedContext: {},
+      serializedContext: createSerializedContext(),
       sessionWritable: createTestWritable(),
       delivery: {
         kind: "deliver",
@@ -358,6 +361,26 @@ describe("routeProxiedDeliverStep", () => {
         payloads: [{ inputResponses: [{ requestId: "request-1", text: "yes" }] }],
       }),
     );
+    // The parent emitted the child's question, so it announces the answer too.
+    const writes = workflowWritesByNamespace.get(DEFAULT_WORKFLOW_STREAM_NAMESPACE) ?? [];
+    expect(
+      writes.map((chunk) => JSON.parse(new TextDecoder().decode(chunk as Uint8Array))),
+    ).toEqual([
+      expect.objectContaining({
+        data: {
+          ...REQUEST_EVENT,
+          resolutions: [
+            {
+              kind: "question",
+              outcome: "answered",
+              requestId: "request-1",
+              response: { requestId: "request-1", text: "yes" },
+            },
+          ],
+        },
+        type: "input.resolved",
+      }),
+    ]);
   });
 
   it("answers a root question once when one delivery carries several messages", async () => {
@@ -368,6 +391,7 @@ describe("routeProxiedDeliverStep", () => {
           {
             workflowAsk: { control: "control", question: { allowFreeform: true }, runId: "run-1" },
             childContinuationToken: "ask-1",
+            event: REQUEST_EVENT,
             kind: "question",
           },
         ],
@@ -378,7 +402,7 @@ describe("routeProxiedDeliverStep", () => {
     installSessionStoreMocks([session]);
 
     const result = await routeProxiedDeliverStep({
-      serializedContext: {},
+      serializedContext: createSerializedContext(),
       delivery: {
         kind: "deliver",
         payloads: [{ message: "Use the canary pool." }, { message: "Also check the logs." }],
@@ -427,6 +451,7 @@ describe("routeProxiedDeliverStep", () => {
               runId: "run-1",
             },
             childContinuationToken: "ask-1",
+            event: REQUEST_EVENT,
             kind: "question",
           },
         ],
@@ -459,8 +484,14 @@ describe("routeProxiedDeliverStep", () => {
     };
     const session = upsertProxyInputRequests({
       entries: [
-        ["request-1", { childContinuationToken: "child-token", kind: "tool-approval" }],
-        ["request-2", { childContinuationToken: "child-token", kind: "tool-approval" }],
+        [
+          "request-1",
+          { childContinuationToken: "child-token", event: REQUEST_EVENT, kind: "tool-approval" },
+        ],
+        [
+          "request-2",
+          { childContinuationToken: "child-token", event: REQUEST_EVENT, kind: "tool-approval" },
+        ],
       ],
       forChildContinuationToken: "child-token",
       session: createStubSession({
@@ -471,7 +502,7 @@ describe("routeProxiedDeliverStep", () => {
     installSessionStoreMocks([session]);
 
     const result = await routeProxiedDeliverStep({
-      serializedContext: {},
+      serializedContext: createSerializedContext(),
       sessionWritable: createTestWritable(),
       delivery: {
         kind: "deliver",
@@ -512,12 +543,23 @@ describe("routeProxiedDeliverStep", () => {
     };
     const session = upsertProxyInputRequests({
       entries: [
-        ["child-a", { childContinuationToken: "child-token-a", kind: "question" }],
-        ["child-b", { childContinuationToken: "child-token-b", kind: "question" }],
+        [
+          "child-a",
+          { childContinuationToken: "child-token-a", event: REQUEST_EVENT, kind: "question" },
+        ],
+        [
+          "child-b",
+          { childContinuationToken: "child-token-b", event: REQUEST_EVENT, kind: "question" },
+        ],
       ],
       forChildContinuationToken: "child-token-a",
       session: upsertProxyInputRequests({
-        entries: [["child-b", { childContinuationToken: "child-token-b", kind: "question" }]],
+        entries: [
+          [
+            "child-b",
+            { childContinuationToken: "child-token-b", event: REQUEST_EVENT, kind: "question" },
+          ],
+        ],
         forChildContinuationToken: "child-token-b",
         session: createStubSession(),
       }),
@@ -549,7 +591,7 @@ describe("routeProxiedDeliverStep", () => {
     };
 
     const result = await routeProxiedDeliverStep({
-      serializedContext: {},
+      serializedContext: createSerializedContext(),
       delivery,
       sessionWritable: createTestWritable(),
       sessionState: createStubSessionState({ hasProxyInputRequests: true }),
@@ -2818,11 +2860,10 @@ describe("runProxySubagentEventStep", () => {
 
     // The step writes the outgoing `input.requested` event to the
     // durable stream so channel-side UI (Slack Block Kit buttons,
-    // HTTP stream consumers) sees the prompt, then follows it with a
-    // `turn.completed` + `session.waiting` boundary pair so clients
-    // stop draining the stream and prompt the user for HITL input.
+    // HTTP stream consumers) sees the prompt, then follows it with
+    // `turn.waiting`, where clients stop and prompt the user for HITL input.
     const writes = workflowWritesByNamespace.get(DEFAULT_WORKFLOW_STREAM_NAMESPACE) ?? [];
-    expect(writes).toHaveLength(3);
+    expect(writes).toHaveLength(2);
   });
 
   it("returns every continuation address claimed by the input.requested handler", async () => {

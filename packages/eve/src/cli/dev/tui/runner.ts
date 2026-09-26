@@ -187,7 +187,7 @@ export type AgentTUIStreamEvent =
 
 export type AgentTUITurnState = {
   aborted?: boolean;
-  boundaryEvent?: "session.completed" | "session.failed" | "session.waiting";
+  boundaryEvent?: "session.completed" | "session.failed" | "session.waiting" | "turn.waiting";
   pendingApprovals: AgentTUIToolApprovalRequest[];
   pendingQuestions: InputRequest[];
   sawSessionFailure: boolean;
@@ -2499,6 +2499,22 @@ async function* eveEventsToTUIStream(
 
       case "session.waiting":
       case "session.completed":
+        turnState.boundaryEvent = event.type;
+        yield* closeOpenParts(textParts, "assistant-complete", stepEpoch);
+        yield* closeOpenParts(reasoningParts, "reasoning-complete", stepEpoch);
+        yield {
+          type: "finish",
+          usage: latestStepUsage,
+        };
+        sentFinish = true;
+        return;
+
+      case "turn.waiting":
+        // The turn stays open; it ends this stream only when a call it runs
+        // asked something the person must answer first.
+        if (turnState.pendingApprovals.length === 0 && turnState.pendingQuestions.length === 0) {
+          break;
+        }
         turnState.boundaryEvent = event.type;
         yield* closeOpenParts(textParts, "assistant-complete", stepEpoch);
         yield* closeOpenParts(reasoningParts, "reasoning-complete", stepEpoch);
