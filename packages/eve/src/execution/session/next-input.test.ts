@@ -214,6 +214,36 @@ describe("nextTurnDelivery", () => {
     expect(input.queue.pendingCount).toBe(0);
   });
 
+  it("batches one delegated call's queued messages and stops at another call", async () => {
+    const auth = slackAuth("alice");
+    const fromCall = (message: string, callId: string): DeliverHookPayload => ({
+      ...authenticatedDelivery(message, auth),
+      caller: {
+        callId,
+        replyTo: { kind: "hook", token: `${message}-reply` },
+        subagentName: "keeper",
+      },
+    });
+    const input = batchingInputFor([
+      fromCall("first", "call-1"),
+      fromCall("correction", "call-1"),
+      fromCall("other", "call-2"),
+    ]);
+
+    // The turn answers the latest message's reply address.
+    await expect(nextTurnDelivery(input)).resolves.toMatchObject({
+      delivery: {
+        caller: { callId: "call-1", replyTo: { token: "correction-reply" } },
+        payloads: [{ message: "first" }, { message: "correction" }],
+      },
+      kind: "turn",
+    });
+    await expect(nextTurnDelivery(input)).resolves.toMatchObject({
+      delivery: { caller: { callId: "call-2" }, payloads: [{ message: "other" }] },
+      kind: "turn",
+    });
+  });
+
   it.each([{ authenticator: "other" }, { issuer: "other" }, { principalType: "service" }])(
     "does not batch when the principal changes: %j",
     async (change) => {

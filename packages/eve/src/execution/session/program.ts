@@ -243,7 +243,9 @@ async function runSessionLoop(
       });
     }
     progress.turnId = `turn_${String(turnIndex++)}`;
-    return await execution.runTurn(payload);
+    const outcome = await execution.runTurn(payload, { caller });
+    if (outcome.caller !== undefined) progress.caller = outcome.caller;
+    return outcome;
   };
   const runDeliveredTurn = async (
     next: Extract<NextTurnInstruction, { kind: "turn" }>,
