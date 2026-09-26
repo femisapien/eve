@@ -144,6 +144,8 @@ export const ActivityRootTurnIdKey = new ContextKey<string>("eve.activityRootTur
 export const ActivityPendingBlockersKey = new ContextKey<readonly string[]>(
   "eve.activityPendingBlockers",
 );
+/** Call IDs of the tasks the current turn started, whose receipts leave their activity running. */
+export const ActivityTaskCallsKey = new ContextKey<readonly string[]>("eve.activityTaskCalls");
 
 /**
  * Optional framework-owned caller callback captured when the session is created.
