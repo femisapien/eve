@@ -32,6 +32,7 @@ import {
   AuthKey,
   HistoryStateKey,
   ParentSessionKey,
+  ScheduleIdKey,
   SessionCallbackKey,
   StaticModelReferenceKey,
 } from "#context/keys.js";
@@ -65,6 +66,7 @@ import {
   createInputRequestedEvent,
   createResultCompletedEvent,
   createSessionWaitingEvent,
+  createTurnWaitingEvent,
   type UnstampedMessageStreamEvent,
 } from "#protocol/message.js";
 import type { RuntimeTraceContext } from "#protocol/message.js";
@@ -511,6 +513,9 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     const callback = store?.get(SessionCallbackKey);
     const taskPrincipal = principalOf(store?.get(AuthKey));
     const hasDelegatedCaller = parent !== undefined || callback !== undefined;
+    // A child's caller and a schedule hear only the turn's real end, so a held
+    // turn's text isn't posted as their reply. A person reads a root session.
+    const hidesHeldText = hasDelegatedCaller || store?.get(ScheduleIdKey) !== undefined;
     let activeAttemptScope: InstrumentationAttempt | undefined;
     const instrumentedEmit =
       stepInstrumentation?.createHandleEvent({
@@ -1653,7 +1658,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
             interruptStreamOnFailure(streamResult.fullStream, generation.signal),
             {
               excludedActionToolNames,
-              holdsTurn: workingTaskIds(session, taskPrincipal).length > 0,
+              hidesHeldText: hidesHeldText && workingTaskIds(session, taskPrincipal).length > 0,
               tools: advertisedHarnessTools,
             },
           );
@@ -2854,8 +2859,19 @@ async function handleStepResult(input: {
       nextSession = setHarnessEmissionState(nextSession, emissionState);
     }
     // The turn rule: no turn ends while its tasks work. The session waits for
-    // one to settle, then calls the model again in the same turn.
-    if (holdsTurn) return { held: { taskIds: workingTasks }, next: null, session: nextSession };
+    // one to settle, then calls the model again in the same turn. The turn
+    // stays open, so it parks with `turn.waiting` rather than completing.
+    if (holdsTurn) {
+      if (emit) {
+        await emit(
+          createTurnWaitingEvent({
+            sequence: emissionState.sequence,
+            turnId: emissionState.turnId,
+          }),
+        );
+      }
+      return { held: { taskIds: workingTasks }, next: null, session: nextSession };
+    }
     return { next: runStep, session: nextSession };
   }
 

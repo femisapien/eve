@@ -76,6 +76,8 @@ import { PendingSkillAnnouncementKey } from "#context/dynamic-skill-lifecycle.js
 import { deserializeContext, serializeContext } from "#context/serialize.js";
 import { stashToolInterrupt } from "#harness/tool-interrupts.js";
 import { appendMissingToolResultMessages, createToolLoopHarness } from "#harness/tool-loop.js";
+import { ANONYMOUS_PRINCIPAL } from "#execution/tasks/principal.js";
+import { createTask, writeTaskTable } from "#execution/tasks/table.js";
 import { SessionLimitDeclinedError, TurnCancelledError } from "#harness/turn-cancellation.js";
 import {
   getSessionUsageLimitViolation,
@@ -4432,6 +4434,41 @@ describe("createToolLoopHarness", () => {
         message: "No endpoints found for anthropic/claude-3.5-haiku",
       }),
     );
+  });
+
+  it("parks a delegated turn held by its working tasks with turn.waiting", async () => {
+    setupMockAgent({
+      finishReason: "stop",
+      response: { messages: [{ content: "Checking now.", role: "assistant" }] },
+      text: "Checking now.",
+      toolCalls: [],
+      toolResults: [],
+    });
+    const { emit, events } = createEventCollector();
+    const runStep = createToolLoopHarness(createTestConfig(emit));
+    const ctx = new ContextContainer();
+    setDelegatedParent(ctx);
+    const { table } = createTask(
+      { tasks: [] },
+      { callId: "call-task", creator: ANONYMOUS_PRINCIPAL, name: "research", turnId: "turn_0" },
+    );
+
+    const result = await contextStorage.run(ctx, () =>
+      runStep(writeTaskTable(createTestSession(), table), { message: "Delegated turn" }),
+    );
+
+    expect(result.held).toBeDefined();
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        data: expect.objectContaining({ finishReason: "tool-calls", message: "Checking now." }),
+        type: "message.completed",
+      }),
+    );
+    expect(events.at(-1)).toEqual({
+      data: { sequence: 0, turnId: "turn_0" },
+      type: "turn.waiting",
+    });
+    expect(events.map((event) => event.type)).not.toContain("session.waiting");
   });
 
   it("emits the full terminal failure cascade on an explicit Gateway invalid-request error", async () => {
