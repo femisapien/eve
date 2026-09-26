@@ -181,26 +181,28 @@ export class SessionInputQueue {
   }
 
   /**
-   * One authenticated principal's consecutive deliveries share a turn, with at
-   * most one caller, as they would steer it. Claims may change between them;
-   * the turn runs with the latest.
+   * Consecutive deliveries of one authenticated principal and one delegated
+   * call share a turn, as they would steer it. Claims may change between
+   * them; the turn runs with the latest.
    */
   private takeFollowingDeliveriesFrom(first: QueuedDelivery, index: number): QueuedDelivery[] {
     const principal = principalOf(first.delivery.auth);
     const following: QueuedDelivery[] = [];
-    let caller = first.delivery.caller;
+    let callId = first.delivery.caller?.callId;
     while (this.entries.length > index) {
       const next = this.entries[index];
       if (
         next?.kind !== "delivery" ||
         principal === ANONYMOUS_PRINCIPAL ||
         principalOf(next.delivery.auth) !== principal ||
-        (caller !== undefined && next.delivery.caller !== undefined)
+        (callId !== undefined &&
+          next.delivery.caller !== undefined &&
+          next.delivery.caller.callId !== callId)
       ) {
         break;
       }
       following.push(this.entries.splice(index, 1)[0] as QueuedDelivery);
-      caller ??= next.delivery.caller;
+      callId ??= next.delivery.caller?.callId;
     }
     return following;
   }
@@ -213,7 +215,7 @@ export class SessionInputQueue {
 
 /** The running turn a delivery may steer. */
 export interface SteeringTurn {
-  /** The delegated caller's call id, when a caller started the turn. */
+  /** The call id of the delegated caller the turn answers, if any. */
   readonly callerCallId: string | undefined;
   readonly principal: string;
 }

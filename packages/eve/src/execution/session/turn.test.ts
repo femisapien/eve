@@ -7,7 +7,7 @@ import { SessionExecution } from "#execution/session/turn.js";
 import { SessionStateCursor } from "#execution/session/state-cursor.js";
 import { cancelDescendantTurnsStep } from "#execution/cancel-descendant-turns-step.js";
 import { turnStep } from "#execution/session/turn-step.js";
-import type { DeliverHookPayload, SessionCapabilities } from "#channel/types.js";
+import type { DeliverHookPayload, SessionCapabilities, TurnCaller } from "#channel/types.js";
 import { dispatchCoordinationStep } from "#execution/coordination-dispatch-step.js";
 import { routeDeliverToChildren } from "#execution/route-child-delivery.js";
 import { publishTurnWaitingStep } from "#execution/session/turn-waiting-step.js";
@@ -256,6 +256,67 @@ describe("SessionExecution checkpoints", () => {
       execution.runTurn({ delivery: { kind: "deliver", payloads: [{ message: "2026?" }] } }),
     ).resolves.toMatchObject({ kind: "done", output: "Corrected" });
     expect(cancelDescendantTurnsStep).not.toHaveBeenCalled();
+  });
+
+  it("lets its caller's next message steer a turn whose input carries no caller", async () => {
+    // A delegated session's first turn starts from its initial message; the
+    // session binds the caller beside it.
+    const firstCall: TurnCaller = {
+      callId: "call-1",
+      replyTo: { kind: "hook", token: "reply-1" },
+      subagentName: "keeper",
+    };
+    const correction: DeliverHookPayload = {
+      caller: { ...firstCall, replyTo: { kind: "hook", token: "reply-2" } },
+      kind: "deliver",
+      payloads: [{ message: "Alice meant the blue notebook." }],
+    };
+    let notify: (payload: SessionInboxPayload) => void = () => {};
+    const pending: SessionInboxPayload[] = [];
+    const inbox: SessionInbox = {
+      claimedTokens: [],
+      claimSessionHook: vi.fn(),
+      claimSessionHooks: vi.fn(),
+      drain: () => pending.splice(0),
+      hasPending: () => pending.length > 0,
+      whenPending: () => new Promise<void>(() => {}),
+      next: vi.fn(),
+      restore: vi.fn(),
+      onAnnouncement: () => () => {},
+      onInterrupt: () => () => {},
+      onDelivery: (handler) => {
+        notify = handler;
+        return () => {};
+      },
+    };
+    vi.mocked(turnStep)
+      .mockReset()
+      .mockImplementationOnce(async (input) => {
+        pending.push(correction);
+        notify(correction);
+        expect(input.steeringSignal?.aborted).toBe(true);
+        return {
+          action: "steered",
+          serializedContext: input.serializedContext,
+          sessionState: input.sessionState,
+        };
+      })
+      .mockImplementationOnce(async (input) => {
+        expect(input.input?.delivery?.payloads).toEqual(correction.payloads);
+        return {
+          action: "done",
+          serializedContext: input.serializedContext,
+          sessionState: input.sessionState,
+        };
+      });
+
+    await expect(
+      createExecution({ inbox, sessionState: state("") }).runTurn(
+        { delivery: { kind: "deliver", payloads: [{ message: "Fill Alice's notebook." }] } },
+        { caller: firstCall },
+      ),
+    ).resolves.toMatchObject({ caller: correction.caller, kind: "done" });
+    expect(turnStep).toHaveBeenCalledTimes(2);
   });
 
   it.each([

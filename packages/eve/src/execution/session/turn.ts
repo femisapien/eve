@@ -2,6 +2,7 @@ import type {
   DeliverHookPayload,
   SessionAuthContext,
   SessionCapabilities,
+  TurnCaller,
 } from "#channel/types.js";
 import { cancelDescendantTurnsStep } from "#execution/cancel-descendant-turns-step.js";
 import { dispatchCoordinationStep } from "#execution/coordination-dispatch-step.js";
@@ -88,9 +89,18 @@ export class SessionExecution {
     return this.input.cursor;
   }
 
-  async runTurn(delivery: TurnStepPayload | undefined): Promise<TurnOutcome> {
+  async runTurn(
+    delivery: TurnStepPayload | undefined,
+    options: {
+      /**
+       * The delegated caller the turn answers. The session binds it before the
+       * turn, including for a first turn whose input carries no caller.
+       */
+      readonly caller?: TurnCaller;
+    } = {},
+  ): Promise<TurnOutcome> {
     const turn = new ActiveTurn(this.input, {
-      callerCallId: delivery?.delivery?.caller?.callId,
+      caller: options.caller,
       principal: resolveTurnPrincipal(delivery, this.input.cursor.serializedContext),
     });
     try {
@@ -102,7 +112,7 @@ export class SessionExecution {
       if (outcome.kind === "park" && outcome.settled !== undefined) {
         await this.tasks.cancelWorking(turn.principal);
       }
-      return outcome;
+      return turn.caller === undefined ? outcome : { ...outcome, caller: turn.caller };
     } finally {
       turn.dispose();
     }
@@ -454,10 +464,16 @@ class ActiveTurn {
   private readonly unsubscribe: () => void;
   private unsubscribeDelivery: () => void;
   private steeringController = new AbortController();
+  /** The delegated caller of the latest message the turn read. */
+  caller: TurnCaller | undefined;
 
-  constructor(input: SessionExecutionInput, identity: SteeringTurn) {
+  constructor(
+    input: SessionExecutionInput,
+    owner: { readonly caller: TurnCaller | undefined; readonly principal: string },
+  ) {
     this.input = input;
-    this.identity = identity;
+    this.caller = owner.caller;
+    this.identity = { callerCallId: owner.caller?.callId, principal: owner.principal };
     this.expectedTurnId = activeTurnId(input.cursor.sessionState.emissionState);
     this.announcements = new StepAnnouncements(input.inbox);
     this.unsubscribe = input.inbox.onInterrupt((payload) => {
@@ -529,7 +545,9 @@ class ActiveTurn {
       if (routed.kind === "turn") steering.push(routed.delivery);
     }
     if (steering.length === 0) return undefined;
-    return steering.length === 1 ? steering[0] : coalesceDeliveries(steering);
+    const delivery = steering.length === 1 ? steering[0]! : coalesceDeliveries(steering);
+    if (delivery.caller !== undefined) this.caller = delivery.caller;
+    return delivery;
   }
 
   /** Removes the admitted events the task kernel applies at once. */
