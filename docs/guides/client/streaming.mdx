@@ -67,6 +67,11 @@ runs asks a question, such as a workflow tool's `ctx.ask()`, `result()` returns
 its `input.resolved`, which the session you answer on also emits for a
 subagent's or workflow tool's question.
 
+A turn that waits on its [tasks](/docs/tools/workflows#run-calls-as-tasks-task)
+also emits `turn.waiting` without a pending request. The text the model wrote
+before the wait is not the reply: `result()` resolves with the final reply
+after the tasks finish.
+
 `result()` closes that HTTP stream, including when fetch instrumentation clones
 the response for tracing. The durable session remains available for follow-up
 turns after `session.waiting`.
@@ -84,7 +89,7 @@ for await (const event of response) {
   }
 
   if (event.type === "message.completed" && event.data.finishReason !== "tool-calls") {
-    console.log("\nfinal:", event.data.message);
+    console.log("\nmessage:", event.data.message);
   }
 }
 ```
