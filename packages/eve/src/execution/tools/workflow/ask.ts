@@ -19,6 +19,10 @@ const WORKFLOW_TOOL_RUN_CONTEXT = Symbol.for("eve.workflow-tool-run.context");
 
 export interface WorkflowToolRunContext {
   readonly canRequestInput?: boolean;
+  /**
+   * The ref of the call the run serves now, which questions and sign-ins come
+   * from. A `serve` task's changes with each call, so read it when sending.
+   */
   readonly from: WorkflowToolRunRef;
   readonly owner: WorkflowToolRunOwner;
 }

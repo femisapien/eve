@@ -664,6 +664,7 @@ describe("SessionExecution checkpoints", () => {
       callId: "task-call",
       creator: ANONYMOUS_PRINCIPAL,
       name: "research",
+      resumable: false,
       turnId: "turn_0",
     });
     const sessionState: DurableSessionState = {

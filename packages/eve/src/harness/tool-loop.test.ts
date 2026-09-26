@@ -4450,7 +4450,13 @@ describe("createToolLoopHarness", () => {
     setDelegatedParent(ctx);
     const { table } = createTask(
       { tasks: [] },
-      { callId: "call-task", creator: ANONYMOUS_PRINCIPAL, name: "research", turnId: "turn_0" },
+      {
+        callId: "call-task",
+        creator: ANONYMOUS_PRINCIPAL,
+        name: "research",
+        resumable: false,
+        turnId: "turn_0",
+      },
     );
 
     const result = await contextStorage.run(ctx, () =>

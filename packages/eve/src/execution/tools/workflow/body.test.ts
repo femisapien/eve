@@ -1,7 +1,7 @@
 import { expect, it, vi } from "vitest";
 import type { ToolContext } from "#tools/definition.js";
 import type { WorkflowToolContext } from "#tools/workflow-definition.js";
-import { executeWorkflowBody, type WorkflowBodyInput } from "#execution/tools/workflow/body.js";
+import { startCallBody, type WorkflowBodyInput } from "#execution/tools/workflow/body.js";
 import { readWorkflowToolRunRef } from "#execution/tools/workflow/ask.js";
 import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
 import { AgentSessions } from "#execution/agent-sessions/session.js";
@@ -13,49 +13,15 @@ vi.mock("#execution/tools/workflow/ask.js", async (importOriginal) => ({
   ask: mocks.ask,
 }));
 
-const agentContext = { capabilities: { requestInput: true } } as AgentSessionContext;
-const agentSessions = new AgentSessions({
-  context: agentContext,
-  from: {} as never,
-  inbox: "inbox",
-});
-vi.spyOn(agentSessions, "open").mockImplementation(mocks.openAgent);
-
-it("defaults agent metadata to an empty registry for older workflow payloads", async () => {
-  mocks.execute.mockImplementation(async (_input, ctx: WorkflowToolContext) => {
-    expect(ctx.agents).toEqual({});
-    return null;
-  });
-  await executeWorkflowBody(
-    {
-      agentContext,
-      callId: "legacy-call",
-      entry: { entryPoint: "execute" },
-      input: {},
-      session: {
-        auth: { current: null, initiator: null },
-        id: "session",
-        turn: { id: "turn", sequence: 1 },
-      },
-      stepIndex: 0,
-      toolName: "legacy",
-      workflowId: "workflow//test//legacy",
-      owner: { inbox: "inbox" },
-      runId: "run",
-    },
-    {
-      abortSignal: new AbortController().signal,
-      agentSessions,
-      interruptSignal: new AbortController().signal,
-    },
-  );
-});
+const agentContext = {
+  agents: { reviewer: { description: "Review deployments." } },
+  capabilities: { requestInput: true },
+} as Partial<AgentSessionContext> as AgentSessionContext;
+vi.spyOn(AgentSessions.prototype, "open").mockImplementation(mocks.openAgent);
 
 it("binds workflow-only methods to the run context", async () => {
-  const signal = new AbortController().signal;
   const input = {
     agentContext,
-    agents: { reviewer: { description: "Review deployments." } },
     callId: "call",
     entry: { entryPoint: "execute" },
     input: {},
@@ -69,15 +35,16 @@ it("binds workflow-only methods to the run context", async () => {
     workflowId: "workflow//test//execute",
     owner: { inbox: "inbox" },
     runId: "run",
-  } as WorkflowBodyInput & { runId: string };
+  } as WorkflowBodyInput;
   const question = { prompt: "Continue?" };
   const target = "reviewer";
   const session = { send: vi.fn() };
   mocks.ask.mockResolvedValue({ optionId: "yes" });
   mocks.openAgent.mockReturnValue(session);
+  let abortSignal: AbortSignal | undefined;
   mocks.execute.mockImplementation(async (_input, ctx: WorkflowToolContext & ToolContext) => {
     expect(readWorkflowToolRunRef(ctx).runId).toBe("run");
-    expect(ctx.abortSignal).toBe(signal);
+    abortSignal = ctx.abortSignal;
     expect(ctx.agents).toEqual({ reviewer: { description: "Review deployments." } });
     expect(Object.isFrozen(ctx.agents)).toBe(true);
     expect(Object.isFrozen(ctx.agents.reviewer)).toBe(true);
@@ -87,11 +54,10 @@ it("binds workflow-only methods to the run context", async () => {
     expect(mocks.openAgent).toHaveBeenCalledWith(target);
     return { answer };
   });
-  const interruptSignal = new AbortController().signal;
-  await expect(
-    executeWorkflowBody(input, { abortSignal: signal, agentSessions, interruptSignal }),
-  ).resolves.toEqual({
+  const started = startCallBody(input);
+  await expect(started.result).resolves.toEqual({
+    messageCount: 0,
     outcome: { status: "completed", output: { answer: { optionId: "yes" } } },
-    reportCount: 0,
   });
+  expect(abortSignal).toBe(started.control.runSignal);
 });

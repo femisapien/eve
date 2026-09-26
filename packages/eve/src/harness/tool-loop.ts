@@ -2891,7 +2891,7 @@ function isDeferredHarnessTool(tool: HarnessToolDefinition | undefined): boolean
 }
 
 /**
- * Sorts a step's deferred calls into workflow runs and kernel calls, and
+ * Sorts a step's deferred calls into workflow requests and kernel calls, and
  * commits a task record for each call that starts a task.
  */
 function collectDeferredCalls(input: {
@@ -2926,6 +2926,10 @@ function collectDeferredCalls(input: {
     const committed = commitCallEntry(session, {
       callId: toolCall.toolCallId,
       definition,
+      input: resolveToolCallInputObject(toolCall.input, {
+        callId: toolCall.toolCallId,
+        toolName: toolCall.toolName,
+      }),
       principal: input.principal,
       toolName: toolCall.toolName,
       turnId: input.turnId,
@@ -2934,6 +2938,7 @@ function collectDeferredCalls(input: {
     workflowRequests.push(
       createCoordinationRequestFromToolCall({
         entry: committed.entry,
+        input: committed.input,
         toolCall,
         tools: input.tools,
       }),

@@ -1,6 +1,7 @@
 import { createHook, type Hook } from "#compiled/@workflow/core/index.js";
 
 import type { RuntimeActionResultHookPayload } from "#channel/types.js";
+import type { SessionAuth } from "#context/session-context.js";
 import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
 import {
   forwardAgentSessionRequest,
@@ -13,6 +14,7 @@ import {
   sendAgentSessionMessageStep,
   type AgentSessionAddress,
   type AgentSessionMessage,
+  type OpenedAgentSession,
 } from "#execution/agent-sessions/steps.js";
 import { disposeHook } from "#execution/hook-ownership.js";
 import type {
@@ -29,9 +31,23 @@ import type {
   AgentSession,
 } from "#tools/workflow-definition.js";
 
-/** What a run's sessions need from the run that owns them. */
+/**
+ * What a run's sessions need from the run that owns them. Each member
+ * describes the call the run serves now, which a `serve` task changes with
+ * each call, so read them when they are used.
+ */
 export interface AgentSessionOwner {
+  /** The auth of the call the run serves now, which a message sent now carries. */
+  readonly auth: SessionAuth;
+  /**
+   * The context of the call the run serves now, which a session opened now
+   * binds as its lineage. Read it when opening.
+   */
   readonly context: AgentSessionContext;
+  /**
+   * The ref of the call the run serves now, which `agent.started` and
+   * forwarded questions come from. Read it when sending.
+   */
   readonly from: WorkflowToolRunRef;
   /** The run's inbox, which relays questions and `agent.started` to its session. */
   readonly inbox: string;
@@ -50,7 +66,7 @@ type AgentTurnEnd =
  */
 export class AgentSessions {
   readonly #owner: AgentSessionOwner;
-  readonly #opened: AgentSessionAddress[] = [];
+  readonly #opened: OpenedAgentSession[] = [];
   #handles = 0;
   #announcements = 0;
 
@@ -75,16 +91,19 @@ export class AgentSessions {
   /** Ends every session the run opened, cancelling any turn still running. */
   async end(): Promise<void> {
     if (this.#opened.length === 0) return;
-    await endAgentSessionsStep({ context: this.#owner.context, sessions: this.#opened });
+    await endAgentSessionsStep({ sessions: this.#opened });
   }
 
-  /** Records an opened session and has the run's session publish `agent.started`. */
-  async started(address: AgentSessionAddress): Promise<void> {
-    this.#opened.push(address);
+  /**
+   * Records an opened session and has the run's session publish
+   * `agent.started` from the call that opened it.
+   */
+  async started(session: OpenedAgentSession, from: WorkflowToolRunRef): Promise<void> {
+    this.#opened.push(session);
     await resumeHookStep(this.#owner.inbox, {
-      from: this.#owner.from,
+      from,
       kind: "agent-started",
-      session: toStartedAgentSession(address),
+      session: toStartedAgentSession(session.address),
     });
     this.#announcements += 1;
   }
@@ -101,7 +120,7 @@ class RunAgentSession implements AgentSession {
   readonly #name: string;
   readonly #owner: AgentSessionOwner;
   readonly #sessions: AgentSessions;
-  #address: Promise<AgentSessionAddress> | undefined;
+  #opened: Promise<OpenedAgentSession> | undefined;
   #turn: AgentTurn | undefined;
 
   constructor(input: {
@@ -128,7 +147,7 @@ class RunAgentSession implements AgentSession {
     const turn = running ?? this.#startTurn(outputSchema !== undefined);
     try {
       await this.#deliver({
-        context: this.#owner.context,
+        auth: this.#owner.auth,
         message,
         outputSchema,
         replyTo: turn.hook.token,
@@ -193,22 +212,34 @@ class RunAgentSession implements AgentSession {
   }
 
   async #deliver(message: AgentSessionMessage): Promise<void> {
-    if (this.#address === undefined) {
-      this.#address = this.#open(message);
-      await this.#address;
+    if (this.#opened === undefined) {
+      this.#opened = this.#open(message);
+      await this.#opened;
       return;
     }
-    const address = await this.#address;
-    await sendAgentSessionMessageStep({ ...message, address });
+    const opened = await this.#opened;
+    await sendAgentSessionMessageStep({ ...message, ...opened });
   }
 
-  async #open(message: AgentSessionMessage): Promise<AgentSessionAddress> {
+  /**
+   * Opens the session as a child of the call the run serves now. Its lineage
+   * and trace come from that call, and its later messages keep them even when
+   * the run serves another call by then; each message carries its own auth.
+   */
+  async #open(message: AgentSessionMessage): Promise<OpenedAgentSession> {
+    const { context, from } = this.#owner;
     try {
-      const address = await openAgentSessionStep({ ...message, key: this.#key, name: this.#name });
-      await this.#sessions.started(address);
-      return address;
+      const address = await openAgentSessionStep({
+        ...message,
+        context,
+        key: this.#key,
+        name: this.#name,
+      });
+      const opened = { address, context };
+      await this.#sessions.started(opened, from);
+      return opened;
     } catch (error) {
-      this.#address = undefined;
+      this.#opened = undefined;
       throw error;
     }
   }
@@ -216,10 +247,8 @@ class RunAgentSession implements AgentSession {
   /** Aborting cancels only the turn the message went to, never a later one. */
   #cancelTurnOnAbort(turn: AgentTurn, signal: AbortSignal): void {
     const cancel = (): void => {
-      if (this.#turn !== turn || this.#address === undefined) return;
-      void this.#address
-        .then((address) => cancelAgentSessionTurnStep({ address, context: this.#owner.context }))
-        .catch(() => {});
+      if (this.#turn !== turn || this.#opened === undefined) return;
+      void this.#opened.then((opened) => cancelAgentSessionTurnStep(opened)).catch(() => {});
     };
     if (signal.aborted) {
       cancel();

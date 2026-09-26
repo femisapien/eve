@@ -1,4 +1,6 @@
 import type { SubagentAuthorizationEventHookPayload } from "#channel/types.js";
+import type { SessionAuth } from "#context/session-context.js";
+import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
 import type {
   AgentInvocationRequest,
   AgentSettlementRequest,
@@ -106,6 +108,13 @@ export interface WorkflowToolRunAgentStartedMessage {
   readonly session: StartedAgentSession;
 }
 
+/** A `serve` body's reply, sent once for each call it settles. */
+export interface WorkflowToolRunReplyMessage {
+  /** The call the reply settles. */
+  readonly from: WorkflowToolRunRef;
+  readonly output: JsonValue;
+}
+
 /** A task's run can take commands: its control hook is registered. */
 export interface WorkflowToolRunStartedMessage {
   readonly from: WorkflowToolRunRef;
@@ -115,24 +124,82 @@ export type WorkflowToolRunMessage =
   | ({ readonly kind: "agent-started" } & WorkflowToolRunAgentStartedMessage)
   | ({ readonly kind: "started" } & WorkflowToolRunStartedMessage)
   | ({ readonly kind: "report" } & WorkflowToolRunReport)
+  | ({ readonly kind: "reply" } & WorkflowToolRunReplyMessage)
   | ({ readonly kind: "request" } & WorkflowToolRunRequestMessage)
   | ({ readonly kind: "withdraw" } & WorkflowToolRunWithdrawMessage)
   | ({ readonly kind: "outcome" } & WorkflowToolRunOutcomeMessage);
 
 /**
- * Commands the session sends a run on its control hook. `cancel` aborts the
- * call's `abortSignal`; `interrupt` aborts its `interruptSignal`, because
- * steering arrived while the turn waits on the call.
+ * A later call to a `serve` task, which its run hands to `receive()`. It
+ * carries everything the session knew of the call when it admitted it, as a
+ * run's input does for the call that started it: the coordinates of the model
+ * step that made it, the caller's auth, and the context of sessions opened
+ * for it, with the agents it may open. Everything the run does while serving
+ * the call comes from these.
+ */
+export interface WorkflowToolRunCall extends Pick<
+  WorkflowToolRunRef,
+  "callId" | "sequence" | "stepIndex" | "turnId"
+> {
+  /** Sessions opened while serving the call are its children, in its trace. */
+  readonly agentContext: AgentSessionContext;
+  /** The caller's auth the session admitted the call with, which messages sent while serving it carry. */
+  readonly auth: SessionAuth;
+  readonly executeInput?: JsonValue;
+  /** The call's input, without the `taskId` that named the task. */
+  readonly input: JsonObject;
+}
+
+/**
+ * Commands the session sends a run on its control hook.
+ *
+ * - `cancel` stops the current work: an `execute` or `task` call's run, or a
+ *   `serve` task's current stretch of work, after which it waits for more calls.
+ * - `end` stops the run for good, because the session ended.
+ * - `interrupt` aborts an `execute` call's `interruptSignal`, because steering
+ *   arrived while the turn waits on the call.
+ * - `call` delivers a later call to a `serve` task.
  */
 export type WorkflowToolRunControlMessage =
+  | { readonly kind: "call"; readonly call: WorkflowToolRunCall }
   | { readonly kind: "cancel"; readonly reason: string }
+  | { readonly kind: "end"; readonly reason: string }
   | { readonly kind: "interrupt" };
 
 export function isWorkflowToolRunControlMessage(
   value: unknown,
 ): value is WorkflowToolRunControlMessage {
   if (typeof value !== "object" || value === null) return false;
-  const { kind, reason } = value as { kind?: unknown; reason?: unknown };
-  if (kind === "interrupt") return true;
-  return kind === "cancel" && typeof reason === "string";
+  const { call, kind, reason } = value as { call?: unknown; kind?: unknown; reason?: unknown };
+  switch (kind) {
+    case "interrupt":
+      return true;
+    case "cancel":
+    case "end":
+      return typeof reason === "string";
+    case "call":
+      return isWorkflowToolRunCall(call);
+    default:
+      return false;
+  }
+}
+
+function isWorkflowToolRunCall(value: unknown): value is WorkflowToolRunCall {
+  if (typeof value !== "object" || value === null) return false;
+  const { agentContext, auth, callId, input, sequence, stepIndex, turnId } = value as Record<
+    string,
+    unknown
+  >;
+  return (
+    typeof agentContext === "object" &&
+    agentContext !== null &&
+    typeof auth === "object" &&
+    auth !== null &&
+    typeof callId === "string" &&
+    typeof input === "object" &&
+    input !== null &&
+    typeof sequence === "number" &&
+    typeof stepIndex === "number" &&
+    typeof turnId === "string"
+  );
 }
