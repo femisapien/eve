@@ -137,6 +137,8 @@ The most common UI events are:
 | `actions.requested`     | Show tool calls as the model requests them, before execution.                  |
 | `action.partial`        | Update a generator tool's provisional output snapshot.                         |
 | `action.result`         | Show tool call results.                                                        |
+| `task.started`          | Show a call that runs as a task; its `action.result` is only a receipt.        |
+| `task.settled`          | Show the task's result, error, or cancellation for the call's `callId`.        |
 | `input.requested`       | Pause the UI for approval or a question answer.                                |
 | `input.resolved`        | Record the server-accepted outcome and response for each human-input request.  |
 | `result.completed`      | Read structured output from an [output schema](./output-schema).               |
@@ -147,6 +149,8 @@ The most common UI events are:
 For the complete event table, see [Sessions, runs & streaming](../../concepts/sessions-runs-and-streaming).
 
 For `action.input.appended`, the default message reducer accumulates accepted deltas into a `dynamic-tool` part with `state: "input-streaming"`; its `inputText` field contains cumulative raw text that may be incomplete JSON. The matching `actions.requested` event upgrades the same `toolCallId` to `state: "input-available"` and puts the validated value in `input`.
+
+A call to a tool that runs as a [task](/docs/tools/workflows#run-calls-as-tasks-task) returns a receipt as its `action.result` and settles later with `task.settled`, matched by `callId`. The model receives the result as a message in its history, but the stream reports it only as `task.settled`, so render the result from that event.
 
 When a submitted message includes attachments, `message.received.data.message` stays the
 flattened compatibility summary, while `message.received.data.parts` carries renderable text and
