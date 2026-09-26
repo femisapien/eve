@@ -229,7 +229,7 @@ Each delegated subagent spins up its own child session and stream. The parent st
 
 Every invocation emits `subagent.called` after dispatch and `subagent.completed` after the parent records successful completion. Completion carries the actual output and identifies the same invocation by `callId`; the child session can remain available for reuse. Failure and cancellation do not emit `subagent.completed`; the failed tool result carries the error.
 
-A session an authored workflow tool opens with `ctx.agent` is announced with `agent.started` instead, which carries the workflow tool call's `callId` and `turnId`, the agent `name`, the child's `sessionId`, and a `streamPath` that `session.streamSubagent()` also accepts. Its questions and sign-ins reach the root session the same way.
+A session an authored workflow tool opens with `ctx.agent` is announced with `agent.started` instead, which carries the workflow tool call's `callId` and `turnId`, its `taskId` when the call runs as a task, the agent `name`, the child's `sessionId`, and a `streamPath` that `session.streamSubagent()` also accepts. Its questions and sign-ins reach the root session the same way.
 
 Channels with activity reporting show a subagent's tool activity beneath that subagent's progress item. Activity reporting is best-effort and does not change execution or result delivery.
 
