@@ -26,9 +26,9 @@ import {
 } from "#execution/tools/workflow/start.js";
 import { createRuntimeToolResultFromValue } from "#harness/action-result-helpers.js";
 import { createLogger, logError } from "#internal/logging.js";
+import type { HarnessSession } from "#harness/types.js";
 import { createTaskStartedEvent, type TaskStartedStreamEvent } from "#protocol/message.js";
 import type { RuntimeToolResultActionResult, WorkflowToolRunEntry } from "#shared/action-types.js";
-import type { RuntimeSession } from "#subagents/handle-dispatch.js";
 
 const log = createLogger("execution.tasks");
 
@@ -37,7 +37,7 @@ type TaskDispatchInput = StartWorkflowTaskInput & { readonly taskId: string };
 /** The call's answer, and the `task.started` event the dispatch step publishes for it. */
 interface TaskDispatchResult {
   readonly result: RuntimeToolResultActionResult;
-  readonly session: RuntimeSession;
+  readonly session: HarnessSession;
   readonly started?: TaskStartedStreamEvent;
 }
 

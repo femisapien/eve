@@ -12,7 +12,7 @@ import { sendToTask, startTaskRun } from "#execution/tasks/start.js";
 import { captureAgentSessionContext } from "#execution/agent-sessions/context.js";
 import type { TaskStartedStreamEvent } from "#protocol/message.js";
 import type { RuntimeActionResult } from "#shared/action-types.js";
-import type { RuntimeSession } from "#subagents/handle-dispatch.js";
+import type { HarnessSession } from "#harness/types.js";
 
 type CoordinationDispatchStepInput = CoordinationDispatchInput & {
   readonly action: "park";
@@ -76,7 +76,7 @@ export async function dispatchCoordinationStep(
  */
 async function dispatchWorkflowCall(start: StartWorkflowTaskInput): Promise<{
   readonly result?: RuntimeActionResult;
-  readonly session: RuntimeSession;
+  readonly session: HarnessSession;
   readonly started?: TaskStartedStreamEvent;
 }> {
   const { entry } = start.task;
