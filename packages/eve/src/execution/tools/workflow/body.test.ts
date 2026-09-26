@@ -27,6 +27,7 @@ it("defaults agent metadata to an empty registry for older workflow payloads", a
     {
       agentContext,
       callId: "legacy-call",
+      entry: { entryPoint: "execute" },
       hookToken: "control",
       input: {},
       session: {
@@ -54,6 +55,7 @@ it("binds workflow-only methods to the run context", async () => {
     agentContext,
     agents: { reviewer: { description: "Review deployments." } },
     callId: "call",
+    entry: { entryPoint: "execute" },
     hookToken: "control",
     input: {},
     session: {

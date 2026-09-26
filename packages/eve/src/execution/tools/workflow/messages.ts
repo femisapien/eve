@@ -59,6 +59,8 @@ export interface WorkflowToolRunRef {
   readonly runId: string;
   readonly sequence: number;
   readonly stepIndex: number;
+  /** Set when the run does a task's work; the session routes its messages by it. */
+  readonly taskId?: string;
   readonly toolName: string;
   readonly turnId: string;
 }
@@ -106,8 +108,14 @@ export interface WorkflowToolRunAgentStartedMessage {
   readonly session: AgentSessionAddress;
 }
 
+/** A task's run can take commands: its control hook is registered. */
+export interface WorkflowToolRunStartedMessage {
+  readonly from: WorkflowToolRunRef;
+}
+
 export type WorkflowToolRunMessage =
   | ({ readonly kind: "agent-started" } & WorkflowToolRunAgentStartedMessage)
+  | ({ readonly kind: "started" } & WorkflowToolRunStartedMessage)
   | ({ readonly kind: "report" } & WorkflowToolRunReport)
   | ({ readonly kind: "request" } & WorkflowToolRunRequestMessage)
   | ({ readonly kind: "withdraw" } & WorkflowToolRunWithdrawMessage)

@@ -18,6 +18,7 @@ import {
   createBlockingWorkflow,
   type BlockingWorkflowOwner,
 } from "#execution/tools/workflow/workflow-owner-blocking.js";
+import { resumeHookStep } from "#execution/tools/workflow/resume-hook-step.js";
 import type { WorkflowToolRunInput } from "#execution/tools/workflow/types.js";
 
 /** Owns command intake, body execution, and settlement for one workflow tool call. */
@@ -28,6 +29,7 @@ export async function workflowToolRunWorkflow(input: WorkflowToolRunInput): Prom
   const owner = createBlockingWorkflow(input, asks);
   const { signal } = owner;
   const inbox = openWorkflowToolRunOwnerInbox();
+  if (input.entry.entryPoint === "task") await reportTaskStarted(input);
   const started = startWorkflowBody(
     { ...input, owner: inbox.owner },
     { abortSignal: signal, interruptSignal: owner.interruptSignal },
@@ -122,6 +124,19 @@ export async function workflowToolRunWorkflow(input: WorkflowToolRunInput): Prom
       result: outcome,
     });
   }
+}
+
+/**
+ * Tells the session a task's run can take commands. Sending suspends the run,
+ * which registers its control hook before the session hears of it, so a cancel
+ * the session held until now reaches the body.
+ */
+async function reportTaskStarted(input: WorkflowToolRunInput): Promise<void> {
+  await resumeHookStep(
+    input.owner.inbox,
+    { from: createWorkflowBodyRef(input), kind: "started" },
+    { ifPresent: true },
+  );
 }
 
 /**
