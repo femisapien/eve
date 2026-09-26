@@ -2,7 +2,7 @@ import { expect, it, vi } from "vitest";
 
 import type { SessionAuth, SessionContext, SessionTurn } from "#context/session-context.js";
 import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
-import { readWorkflowToolRunRef } from "#execution/tools/workflow/ask.js";
+import { findWorkflowToolRunContext } from "#execution/tools/workflow/ask.js";
 import type { WorkflowBodyInput } from "#execution/tools/workflow/body.js";
 import { WORKFLOW_CANCELLATION_CLEANUP_MS } from "#execution/tools/workflow/cancellation-policy.js";
 import type {
@@ -133,7 +133,7 @@ it("serves every call to its task, one stretch of work at a time, until the sess
   let servingSecond:
     | {
         agents: WorkflowServeContext["agents"];
-        ref: WorkflowToolRunRef;
+        ref: WorkflowToolRunRef | undefined;
         session: SessionContext["session"];
       }
     | undefined;
@@ -147,7 +147,7 @@ it("serves every call to its task, one stretch of work at a time, until the sess
       received.push(await pending);
       servingSecond = {
         agents: ctx.agents,
-        ref: readWorkflowToolRunRef(ctx as never),
+        ref: findWorkflowToolRunContext(ctx)?.from,
         session: ctx.session,
       };
       await review.send("Check the rollback step.");

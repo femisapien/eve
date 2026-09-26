@@ -72,14 +72,6 @@ export function findWorkflowToolRunContext(value: unknown): WorkflowToolRunConte
     : undefined;
 }
 
-export function readWorkflowToolRunRef(ctx: ToolContext): WorkflowToolRunRef {
-  return readWorkflowToolRunContext(ctx, "agent").from;
-}
-
-export function readWorkflowToolRunOwner(ctx: ToolContext): WorkflowToolRunInbox {
-  return readWorkflowToolRunContext(ctx, "agent").owner;
-}
-
 const CANCELLED: ToolInputResponse = { status: "cancelled" };
 const UNAVAILABLE: ToolInputResponse = { status: "unavailable" };
 

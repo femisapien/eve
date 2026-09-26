@@ -5,14 +5,11 @@ import { readForwardedParentSessionBaggage } from "#protocol/baggage.js";
 import {
   cancelRemoteAgentTurn,
   continueRemoteAgentSession,
-  isAmbiguousRemoteAgentContinueError,
-  isRetryableRemoteAgentCancelError,
-  isRetryableRemoteAgentContinueError,
   resetRemoteAgentSession,
   resolveRemoteAgentForAction,
   resolveRemoteAgentStreamHeaders,
   startRemoteAgentSession,
-} from "#subagents/remote-dispatch.js";
+} from "#execution/agent-sessions/remote.js";
 import type { RuntimeRemoteAgentDispatchRequest } from "#shared/action-types.js";
 import type { ResolvedRuntimeRemoteAgentNode } from "#runtime/types.js";
 
@@ -428,37 +425,6 @@ describe("startRemoteAgentSession", () => {
     const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
     expect(body.outputSchema).toEqual(outputSchema);
     expect(body.capabilities).toEqual({});
-  });
-
-  it("ignores an empty requested outputSchema instead of forwarding it", async () => {
-    // An empty schema constrains nothing, but forwarding it flips the remote
-    // child into structured-output mode and discards its text reply; local
-    // subagent dispatch already drops it, and remote must match.
-    const fetchMock = vi.fn().mockResolvedValue(
-      new Response(
-        JSON.stringify({
-          ok: true,
-          protocolVersion: 2,
-          sessionId: "remote-session",
-          status: "accepted",
-        }),
-        {
-          status: 202,
-        },
-      ),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-
-    const action = createAction();
-    await startRemoteAgentSession({
-      action: { ...action, input: { ...action.input, outputSchema: {} } },
-      callbackBaseUrl: "https://caller.example.com",
-      remote: createRemoteAgent(),
-      session: { continuationToken: "eve:parent-token" },
-    });
-
-    const body = JSON.parse(fetchMock.mock.calls[0]?.[1]?.body as string);
-    expect(body).not.toHaveProperty("outputSchema");
   });
 
   it("targets an active turn inbox when a callback token is supplied", async () => {
@@ -911,7 +877,7 @@ describe("continueRemoteAgentSession", () => {
     });
   });
 
-  it("suggests receiver version skew without making a forwarded continuation permanent", async () => {
+  it("suggests receiver version skew when a forwarded continuation is rejected", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response(null, { status: 400 })));
     const current: SessionAuthContext = {
       attributes: { user_id: "U456" },
@@ -939,55 +905,6 @@ describe("continueRemoteAgentSession", () => {
       message:
         'Remote agent "research" continue-session request failed with HTTP 400. The receiver may support forwarded principals only on session creation; upgrade it before retrying.',
     });
-    expect(isRetryableRemoteAgentContinueError(error)).toBe(true);
-  });
-
-  it("classifies only missing-session continue failures as permanent", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(new Response(null, { status: 503 }))
-      .mockResolvedValueOnce(new Response(null, { status: 401 }))
-      .mockResolvedValueOnce(
-        new Response(JSON.stringify({ code: "SESSION_NOT_RESUMABLE" }), { status: 410 }),
-      )
-      .mockResolvedValueOnce(new Response(null, { status: 404 }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    const continueInput = () => ({
-      auth: null,
-      callback: {
-        callId: "call-next",
-        subagentName: "research",
-        token: "parent-inbox",
-        url: "https://caller.example.com/eve/v1/callback/parent-inbox",
-      },
-      message: "follow up",
-      remote: createRemoteAgent(),
-      sessionId: "remote-session",
-    });
-    const transient = await continueRemoteAgentSession(continueInput()).catch(
-      (error: unknown) => error,
-    );
-    const rejected = await continueRemoteAgentSession(continueInput()).catch(
-      (error: unknown) => error,
-    );
-    const sessionNotResumable = await continueRemoteAgentSession(continueInput()).catch(
-      (error: unknown) => error,
-    );
-    const missing = await continueRemoteAgentSession(continueInput()).catch(
-      (error: unknown) => error,
-    );
-
-    expect(isRetryableRemoteAgentContinueError(transient)).toBe(true);
-    expect(isAmbiguousRemoteAgentContinueError(transient)).toBe(true);
-    expect(isRetryableRemoteAgentContinueError(rejected)).toBe(true);
-    expect(isAmbiguousRemoteAgentContinueError(rejected)).toBe(false);
-    expect(isRetryableRemoteAgentContinueError(sessionNotResumable)).toBe(false);
-    expect(isAmbiguousRemoteAgentContinueError(sessionNotResumable)).toBe(false);
-    expect(isRetryableRemoteAgentContinueError(missing)).toBe(false);
-    expect(isAmbiguousRemoteAgentContinueError(missing)).toBe(false);
-    expect(isRetryableRemoteAgentContinueError(new TypeError("network unavailable"))).toBe(true);
-    expect(isAmbiguousRemoteAgentContinueError(new TypeError("network unavailable"))).toBe(true);
   });
 });
 
@@ -1038,26 +955,6 @@ describe("cancelRemoteAgentTurn", () => {
     });
   });
 
-  it("sends the observed child turn guard", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        Response.json({ ok: true, sessionId: "child-1", status: "accepted" }, { status: 202 }),
-      );
-    vi.stubGlobal("fetch", fetchMock);
-
-    await cancelRemoteAgentTurn({
-      remote: createRemoteAgent(),
-      sessionId: "child-1",
-      turnId: "turn_child_7",
-    });
-
-    expect(fetchMock).toHaveBeenCalledWith(
-      "https://remote.example.com/eve/v1/session/child-1/cancel",
-      expect.objectContaining({ body: JSON.stringify({ turnId: "turn_child_7" }), method: "POST" }),
-    );
-  });
-
   it("preserves a prefixed remote base path on cancel-turn requests", async () => {
     const fetchMock = vi
       .fn()
@@ -1104,28 +1001,6 @@ describe("cancelRemoteAgentTurn", () => {
     }).catch((caught: unknown) => caught);
 
     expect(error).toBeInstanceOf(Error);
-    expect(isRetryableRemoteAgentCancelError(error)).toBe(false);
-  });
-
-  it("classifies only propagation and transient HTTP failures as retryable", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(new Response(null, { status: 503 }))
-      .mockResolvedValueOnce(new Response(null, { status: 404 }));
-    vi.stubGlobal("fetch", fetchMock);
-
-    const transient = await cancelRemoteAgentTurn({
-      remote: createRemoteAgent(),
-      sessionId: "remote-session",
-    }).catch((error: unknown) => error);
-    const permanent = await cancelRemoteAgentTurn({
-      remote: createRemoteAgent(),
-      sessionId: "remote-session",
-    }).catch((error: unknown) => error);
-
-    expect(isRetryableRemoteAgentCancelError(transient)).toBe(true);
-    expect(isRetryableRemoteAgentCancelError(permanent)).toBe(false);
-    expect(isRetryableRemoteAgentCancelError(new TypeError("network unavailable"))).toBe(true);
   });
 });
 
@@ -1147,6 +1022,7 @@ describe("resetRemoteAgentSession", () => {
 
     await expect(
       resetRemoteAgentSession({
+        reason: "Parent session ended",
         remote: {
           ...createRemoteAgent(),
           url: "https://remote.example.com/eve/researcher/",
@@ -1182,10 +1058,18 @@ describe("resetRemoteAgentSession", () => {
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(
-      resetRemoteAgentSession({ remote: createRemoteAgent(), sessionId: "remote-session" }),
+      resetRemoteAgentSession({
+        reason: "Parent session ended",
+        remote: createRemoteAgent(),
+        sessionId: "remote-session",
+      }),
     ).resolves.toEqual({ ok: true, status: "no_active_session" });
     await expect(
-      resetRemoteAgentSession({ remote: createRemoteAgent(), sessionId: "remote-session" }),
+      resetRemoteAgentSession({
+        reason: "Parent session ended",
+        remote: createRemoteAgent(),
+        sessionId: "remote-session",
+      }),
     ).rejects.toThrow("response was invalid");
   });
 });

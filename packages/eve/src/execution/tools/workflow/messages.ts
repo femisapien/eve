@@ -2,10 +2,6 @@ import type { SubagentAuthorizationEventHookPayload } from "#channel/types.js";
 import type { SessionAuth } from "#context/session-context.js";
 import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
 import type { AgentSessionAddress } from "#execution/agent-sessions/steps.js";
-import type {
-  AgentInvocationRequest,
-  AgentSettlementRequest,
-} from "#execution/tools/subagent/invoke-agent.js";
 import type { InputRequest } from "#shared/input.js";
 import type { JsonObject, JsonValue } from "#shared/json.js";
 import type { ToolInputRequest, ToolInputResponse } from "#tools/definition.js";
@@ -13,12 +9,6 @@ import type { ToolInputRequest, ToolInputResponse } from "#tools/definition.js";
 export interface WorkflowToolRunOwner {
   readonly inbox: string;
 }
-
-/**
- * Requests the owner applies for the model's agent tools because they touch
- * owner-held state: spawning an agent and releasing its handle afterwards.
- */
-export type WorkflowToolAgentRequest = AgentInvocationRequest | AgentSettlementRequest;
 
 /**
  * A child authorization event the owner should display. Unlike input requests
@@ -48,7 +38,6 @@ export interface WorkflowToolInputRequestBatch {
 }
 
 export type WorkflowToolRequest =
-  | WorkflowToolAgentRequest
   | WorkflowToolAuthorizationRequest
   | WorkflowToolAskRequest
   | InputRequest

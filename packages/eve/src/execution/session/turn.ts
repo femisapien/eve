@@ -1,4 +1,4 @@
-import { getWorkflowMetadata, sleep } from "#compiled/@workflow/core/index.js";
+import { sleep } from "#compiled/@workflow/core/index.js";
 
 import type {
   DeliverHookPayload,
@@ -43,7 +43,6 @@ import type {
   TurnOutcome,
   TurnStepPayload,
 } from "#execution/session/turn-step-types.js";
-import { resolveWorkflowCallbackBaseUrl } from "#execution/workflow-callback-url.js";
 import { StepAgentStarts } from "#execution/session/step-agent-starts.js";
 import { turnStep } from "#execution/session/turn-step.js";
 import { activeTurnId } from "#harness/active-turn-id.js";
@@ -54,7 +53,6 @@ import {
   findBlockingWorkflowToolRun,
   isInboxToolResultFromRecordedWorkflowToolRun,
 } from "#harness/workflow-tool-runs.js";
-import { isInboxSubagentResultFromRunningHandle } from "#subagents/handles/query.js";
 import { resolveRuntimeActionResultsForCallIds } from "#runtime/actions/results.js";
 import type { RuntimeActionResult } from "#shared/action-types.js";
 
@@ -174,7 +172,6 @@ export class SessionExecution {
       if (pendingCallIds !== undefined && result.action === "park") {
         const dispatchResult = await dispatchCoordinationStep({
           action: result.action,
-          callbackBaseUrl: resolveWorkflowCallbackBaseUrl(getWorkflowMetadata().url),
           workflowToolRunOwner: {
             inbox: sessionInboxHookToken(sessionCommandHookToken(this.input.sessionId)),
           },
@@ -226,7 +223,6 @@ export class SessionExecution {
       return undefined;
     }
     return await handleWorkflowToolRunMessage({
-      callbackMetadataUrl: getWorkflowMetadata().url,
       cursor: this.input.cursor,
       message,
     });
@@ -236,7 +232,6 @@ export class SessionExecution {
   private async finishCancelledTurn(): Promise<TurnOutcome> {
     const { cursor } = this.input;
     await cancelDescendantTurnsStep({
-      serializedContext: cursor.serializedContext,
       sessionState: cursor.sessionState,
     });
     await cancelWorkingTasks(cursor);
@@ -322,15 +317,11 @@ export class SessionExecution {
       }
       if (next.kind === "runtime-action-result") {
         const snapshot = this.input.cursor.sessionState.snapshot.session.state;
-        const accepted = next.results.filter((result) => {
-          if (result.kind === "tool-result") {
-            return isInboxToolResultFromRecordedWorkflowToolRun(snapshot, result);
-          }
-          if (result.kind !== "subagent-result") return false;
-          return (
-            result.origin === "child" && isInboxSubagentResultFromRunningHandle(snapshot, result)
-          );
-        });
+        const accepted = next.results.filter(
+          (result) =>
+            result.kind === "tool-result" &&
+            isInboxToolResultFromRecordedWorkflowToolRun(snapshot, result),
+        );
         if (accepted.length > 0) {
           const acceptedAtMs = Date.now();
           results.push(...accepted);

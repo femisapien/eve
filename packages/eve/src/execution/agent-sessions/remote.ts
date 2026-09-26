@@ -2,7 +2,6 @@ import { FatalError } from "#compiled/@workflow/core/index.js";
 import { z } from "#compiled/zod/index.js";
 import { CancelTurnResponseSchema } from "#protocol/cancel-turn.js";
 import { ResetResponseSchema, type ResetResponse } from "#protocol/reset-session.js";
-import { AgentHandleError } from "#protocol/agent-handle-error.js";
 import {
   REMOTE_AGENT_PROTOCOL_MISMATCH,
   REMOTE_AGENT_PROTOCOL_VERSION,
@@ -27,11 +26,7 @@ import type { HeadersValue } from "#client/types.js";
 import { createWorkflowCallbackUrl } from "#execution/workflow-callback-url.js";
 import { createRemoteAgentRouteUrl } from "#subagents/remote-route-url.js";
 import { formatTraceparent, writeAgentDispatchTracestate } from "#protocol/traceparent.js";
-import {
-  formatSubagentInput,
-  normalizeRequestedOutputSchema,
-  type SubagentParentContext,
-} from "#subagents/invocation.js";
+import { formatSubagentInput, type SubagentParentContext } from "#subagents/invocation.js";
 import type { HarnessSession } from "#harness/types.js";
 import type { RuntimeRemoteAgentDispatchRequest } from "#shared/action-types.js";
 import type { RuntimeSubagentRegistry } from "#runtime/subagents/registry.js";
@@ -57,16 +52,6 @@ const CreateSessionResponseSchema = z.object({
 type RemoteAgentSessionCoordinates = {
   readonly sessionId: string;
 };
-
-class RemoteAgentCancelRequestError extends Error {
-  readonly retryable: boolean;
-
-  constructor(message: string, options: { readonly retryable: boolean }) {
-    super(message);
-    this.name = "RemoteAgentCancelRequestError";
-    this.retryable = options.retryable;
-  }
-}
 
 export async function startRemoteAgentSession(input: {
   readonly action: RuntimeRemoteAgentDispatchRequest;
@@ -127,7 +112,8 @@ export async function startRemoteAgentSession(input: {
       action: input.action,
       remote: input.remote,
     }),
-    outputSchema: normalizeRequestedOutputSchema(input.action.input.outputSchema),
+    // `ctx.agent` already dropped an empty schema, so what arrives is one to honor.
+    outputSchema: input.action.input.outputSchema as JsonObject | undefined,
     protocolVersion: REMOTE_AGENT_PROTOCOL_VERSION,
   };
   if (input.activityObserver !== undefined) requestBody.activityObserver = input.activityObserver;
@@ -281,79 +267,14 @@ export async function continueRemoteAgentSession(input: {
   });
 
   if (!response.ok) {
-    const responseCode = await readRemoteAgentErrorCode(response);
-    const permanent =
-      response.status === 404 || responseCode === AgentHandleError.SessionNotResumable.code;
     const compatibilityHint =
       response.status === 400 && forwardedPrincipal !== undefined
         ? " The receiver may support forwarded principals only on session creation; upgrade it before retrying."
         : "";
-    throw new RemoteAgentContinueRequestError(
-      `Remote agent "${input.remote.name}" continue-session request failed${
-        permanent ? " permanently" : ""
-      } with HTTP ${response.status}.${compatibilityHint}`,
-      {
-        deliveryAmbiguous: isAmbiguousRemoteContinueStatus(response.status),
-        retryable: !permanent,
-      },
+    throw new Error(
+      `Remote agent "${input.remote.name}" continue-session request failed with HTTP ${response.status}.${compatibilityHint}`,
     );
   }
-}
-
-/**
- * Failure of a continue-session request, classified at the HTTP boundary.
- * Exported so tests can exercise {@link isRetryableRemoteAgentContinueError}
- * with real instances instead of re-encoding the classification.
- */
-export class RemoteAgentContinueRequestError extends Error {
-  readonly deliveryAmbiguous: boolean;
-  readonly retryable: boolean;
-
-  constructor(
-    message: string,
-    options: { readonly deliveryAmbiguous: boolean; readonly retryable: boolean },
-  ) {
-    super(message);
-    this.name = "RemoteAgentContinueRequestError";
-    this.deliveryAmbiguous = options.deliveryAmbiguous;
-    this.retryable = options.retryable;
-  }
-}
-
-/**
- * Returns true when a failed continue request may be retried. Only a
- * session that no longer exists (404 / SESSION_NOT_RESUMABLE) is permanent;
- * transient HTTP and network failures stay retryable so the dispatch step
- * keeps the agent handle and surfaces a retryable error instead of
- * discarding it — the model decides whether to try the same agentId again
- * (the step itself never re-sends: the callee may have accepted a delivery
- * whose response was lost).
- */
-export function isRetryableRemoteAgentContinueError(error: unknown): boolean {
-  return !(error instanceof RemoteAgentContinueRequestError) || error.retryable;
-}
-
-/** Whether the callee may have accepted the continuation before delivery failed. */
-export function isAmbiguousRemoteAgentContinueError(error: unknown): boolean {
-  return !(error instanceof RemoteAgentContinueRequestError) || error.deliveryAmbiguous;
-}
-
-function isAmbiguousRemoteContinueStatus(status: number): boolean {
-  return status === 408 || status === 425 || status >= 500;
-}
-
-async function readRemoteAgentErrorCode(response: Response): Promise<string | undefined> {
-  let body: unknown;
-  try {
-    body = await response.json();
-  } catch {
-    return undefined;
-  }
-  if (body === null || typeof body !== "object") {
-    return undefined;
-  }
-  const code = Reflect.get(body, "code");
-  return typeof code === "string" ? code : undefined;
 }
 
 function buildForwardedPrincipalField(input: {
@@ -379,22 +300,17 @@ function buildForwardedPrincipalField(input: {
 }
 
 export async function cancelRemoteAgentTurn(input: {
-  readonly headers?: Record<string, string>;
   readonly remote: Pick<ResolvedRuntimeRemoteAgentNode, "auth" | "headers" | "name" | "url">;
   readonly sessionId: string;
-  readonly turnId?: string;
 }): Promise<CancelTurnResult> {
-  const headers = input.headers ?? (await resolveRemoteAgentRequestHeaders(input.remote));
   const response = await fetch(createRemoteAgentCancelTurnUrl(input.remote, input.sessionId), {
-    body: input.turnId === undefined ? undefined : JSON.stringify({ turnId: input.turnId }),
-    headers,
+    headers: await resolveRemoteAgentRequestHeaders(input.remote),
     method: "POST",
   });
 
   if (!response.ok) {
-    throw new RemoteAgentCancelRequestError(
+    throw new Error(
       `Remote agent "${input.remote.name}" cancel-turn request failed with HTTP ${response.status}.`,
-      { retryable: isRetryableRemoteCancelStatus(response.status) },
     );
   }
 
@@ -402,10 +318,7 @@ export async function cancelRemoteAgentTurn(input: {
   try {
     body = await response.json();
   } catch {
-    throw new RemoteAgentCancelRequestError(
-      `Remote agent "${input.remote.name}" cancel-turn response was not valid JSON.`,
-      { retryable: false },
-    );
+    throw new Error(`Remote agent "${input.remote.name}" cancel-turn response was not valid JSON.`);
   }
 
   const result = CancelTurnResponseSchema.safeParse(body);
@@ -413,10 +326,7 @@ export async function cancelRemoteAgentTurn(input: {
     !result.success ||
     (result.data.status === "accepted" && result.data.sessionId !== input.sessionId)
   ) {
-    throw new RemoteAgentCancelRequestError(
-      `Remote agent "${input.remote.name}" cancel-turn response was invalid.`,
-      { retryable: false },
-    );
+    throw new Error(`Remote agent "${input.remote.name}" cancel-turn response was invalid.`);
   }
 
   return result.data.status === "accepted"
@@ -438,16 +348,15 @@ function setHeader(headers: Record<string, string>, name: string, value: string 
 
 /** Retires one exact remote child session through eve's authenticated reset route. */
 export async function resetRemoteAgentSession(input: {
-  readonly headers?: Record<string, string>;
-  readonly reason?: string;
+  readonly reason: string;
   readonly remote: Pick<ResolvedRuntimeRemoteAgentNode, "auth" | "headers" | "name" | "url">;
   readonly sessionId: string;
 }): Promise<ResetResponse> {
-  const headers = input.headers ?? (await resolveRemoteAgentRequestHeaders(input.remote));
+  const headers = await resolveRemoteAgentRequestHeaders(input.remote);
   const response = await fetch(
     createRemoteAgentRouteUrl(input.remote.url, createEveSessionResetRoutePath(input.sessionId)),
     {
-      body: JSON.stringify({ reason: input.reason ?? "Parent session ended" }),
+      body: JSON.stringify({ reason: input.reason }),
       headers: { "content-type": "application/json", ...headers },
       method: "POST",
     },
@@ -465,10 +374,6 @@ export async function resetRemoteAgentSession(input: {
     throw new Error(`Remote agent "${input.remote.name}" reset-session response was invalid.`);
   }
   return result.data;
-}
-
-export function isRetryableRemoteAgentCancelError(error: unknown): boolean {
-  return !(error instanceof RemoteAgentCancelRequestError) || error.retryable;
 }
 
 export function resolveRemoteAgentForAction(input: {
@@ -529,8 +434,8 @@ export function resolveRemoteAgentForAction(input: {
 /**
  * Resolves authored outbound headers for a server-authored remote child event.
  *
- * `resolverId` is the key persisted on the `subagent.called` event (see
- * `SubagentCalledStreamEvent`): it identifies the authored credential
+ * `resolverId` is the key persisted on the `agent.started` event (see
+ * `AgentStartedStreamEvent`): it identifies the authored credential
  * functions, never their resolved values. Lookup order mirrors how dispatch
  * chose the key — first as a subagent node id (static remote definition),
  * then as a `credentialsStepId` in the step registry (dynamic remote
@@ -638,10 +543,6 @@ function createRemoteAgentContinueUrl(
   sessionId: string,
 ): string {
   return createRemoteAgentRouteUrl(remote.url, createEveSessionRoutePath(sessionId));
-}
-
-function isRetryableRemoteCancelStatus(status: number): boolean {
-  return status === 408 || status === 425 || status === 429 || status >= 500;
 }
 
 async function resolveRemoteAgentRequestHeaders(

@@ -2,7 +2,7 @@ import { expect, it, vi } from "vitest";
 import type { ToolContext } from "#tools/definition.js";
 import type { WorkflowToolContext } from "#tools/workflow-definition.js";
 import { startCallBody, type WorkflowBodyInput } from "#execution/tools/workflow/body.js";
-import { readWorkflowToolRunRef } from "#execution/tools/workflow/ask.js";
+import { findWorkflowToolRunContext } from "#execution/tools/workflow/ask.js";
 import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
 
 const mocks = vi.hoisted(() => ({ execute: vi.fn(), openAgent: vi.fn(), ask: vi.fn() }));
@@ -45,7 +45,7 @@ it("binds workflow-only methods to the run context", async () => {
   mocks.openAgent.mockReturnValue(session);
   let abortSignal: AbortSignal | undefined;
   mocks.execute.mockImplementation(async (_input, ctx: WorkflowToolContext & ToolContext) => {
-    expect(readWorkflowToolRunRef(ctx).runId).toBe("run");
+    expect(findWorkflowToolRunContext(ctx)?.from.runId).toBe("run");
     abortSignal = ctx.abortSignal;
     expect(ctx.agents).toEqual({ reviewer: { description: "Review deployments." } });
     expect(Object.isFrozen(ctx.agents)).toBe(true);
