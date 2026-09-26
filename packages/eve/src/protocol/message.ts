@@ -27,7 +27,7 @@ export const EVE_STREAM_TAIL_INDEX_HEADER = "x-eve-stream-tail-index";
 export const EVE_STREAM_VERSION_HEADER = "x-eve-stream-version";
 export const EVE_MESSAGE_STREAM_CONTENT_TYPE = "application/x-ndjson; charset=utf-8";
 export const EVE_MESSAGE_STREAM_FORMAT = "ndjson";
-export const EVE_MESSAGE_STREAM_VERSION = "25";
+export const EVE_MESSAGE_STREAM_VERSION = "26";
 
 /** Version of transport control records understood by this eve release. */
 export const EVE_STREAM_CONTROL_VERSION = "1";
@@ -391,6 +391,34 @@ export interface SubagentCalledStreamEvent {
 }
 
 /**
+ * Stream event emitted when a workflow run opens a session with `ctx.agent`.
+ * `callId` and `turnId` name the tool call whose run opened it; follow the
+ * session with `session.streamSubagent(event)`.
+ */
+export interface AgentStartedStreamEvent {
+  data: {
+    callId: string;
+    /** The turn of the call whose run opened the session. */
+    turnId: string;
+    name: string;
+    /** The opened session's id. */
+    sessionId: string;
+    /** A local session's stream route, or the parent-origin proxy for a remote one. */
+    streamPath: string;
+    /**
+     * Where a remote session runs, read by the parent's stream proxy. As on
+     * `subagent.called`, `resolverId` keys the authored credential functions,
+     * never resolved header values.
+     */
+    remote?: {
+      resolverId?: string;
+      url: string;
+    };
+  };
+  type: "agent.started";
+}
+
+/**
  * Stream event emitted when an inline subagent execution starts.
  */
 export interface SubagentStartedStreamEvent {
@@ -579,6 +607,20 @@ export interface TurnCompletedStreamEvent {
 }
 
 /**
+ * Stream event emitted each time an open turn parks, such as when a call it is
+ * running asks a question. The turn stays open: the next `step.started` with
+ * the same `turnId` means it resumed, and only `turn.completed`,
+ * `turn.failed`, or `turn.cancelled` end it.
+ */
+export interface TurnWaitingStreamEvent {
+  data: {
+    sequence: number;
+    turnId: string;
+  };
+  type: "turn.waiting";
+}
+
+/**
  * Stream event emitted when one turn fails.
  */
 export interface TurnFailedStreamEvent {
@@ -751,6 +793,7 @@ export interface SessionCompletedStreamEvent {
  */
 export type UnstampedMessageStreamEvent =
   | ActionInputAppendedStreamEvent
+  | AgentStartedStreamEvent
   | ApprovalCandidateStreamEvent
   | ApprovalSettledStreamEvent
   | ContextClearedStreamEvent
@@ -783,7 +826,8 @@ export type UnstampedMessageStreamEvent =
   | TurnCancelledStreamEvent
   | TurnCompletedStreamEvent
   | TurnFailedStreamEvent
-  | TurnStartedStreamEvent;
+  | TurnStartedStreamEvent
+  | TurnWaitingStreamEvent;
 
 /**
  * Stream events that represent an unrecovered turn/session failure.
@@ -1382,6 +1426,38 @@ export function createSubagentCalledEvent(input: {
 }
 
 /**
+ * Creates the `agent.started` event for one session a workflow run opened.
+ */
+export function createAgentStartedEvent(input: {
+  readonly callId: string;
+  readonly name: string;
+  readonly parentSessionId: string;
+  readonly remote?: {
+    readonly resolverId?: string;
+    readonly url: string;
+  };
+  readonly sessionId: string;
+  readonly turnId: string;
+}): AgentStartedStreamEvent {
+  const data: AgentStartedStreamEvent["data"] = {
+    callId: input.callId,
+    turnId: input.turnId,
+    name: input.name,
+    sessionId: input.sessionId,
+    streamPath: createEveSessionStreamRoutePath(input.sessionId),
+  };
+  if (input.remote !== undefined) {
+    data.remote = input.remote;
+    data.streamPath = createEveSubagentStreamRoutePath({
+      callId: input.callId,
+      childSessionId: input.sessionId,
+      parentSessionId: input.parentSessionId,
+    });
+  }
+  return { data, type: "agent.started" };
+}
+
+/**
  * Creates the `message.appended` event for one streamed assistant text delta.
  */
 export function createMessageAppendedEvent(input: {
@@ -1577,6 +1653,22 @@ export function createTurnCompletedEvent(input: {
       turnId: input.turnId,
     },
     type: "turn.completed",
+  };
+}
+
+/**
+ * Creates the `turn.waiting` event for one open turn that parked.
+ */
+export function createTurnWaitingEvent(input: {
+  readonly sequence: number;
+  readonly turnId: string;
+}): TurnWaitingStreamEvent {
+  return {
+    data: {
+      sequence: input.sequence,
+      turnId: input.turnId,
+    },
+    type: "turn.waiting",
   };
 }
 

@@ -46,15 +46,11 @@ describe("workflow step authorization failures", () => {
         ]);
         const stream = captureTurnEvents(run);
         try {
-          const events = [];
-          for (
-            let i = 0;
-            i < 5 && filterEventsByType(events, "authorization.required").length === 0;
-            i++
-          )
-            events.push(...(await stream.nextTurn()));
+          // The sign-in parks the open turn; the run keeps waiting for its callback.
+          const events = await stream.nextUntil((event) => event.type === "turn.waiting");
+          expect(events.at(-2)?.type).toBe("authorization.required");
+          expect(filterEventsByType(events, "turn.completed")).toHaveLength(0);
           const required = filterEventsByType(events, "authorization.required")[0]!;
-          expect(required).toBeDefined();
           const url = new URL(required.data.webhookUrl!);
           const token = decodeURIComponent(url.pathname.split("/").at(-1)!);
           const world = await getWorld();

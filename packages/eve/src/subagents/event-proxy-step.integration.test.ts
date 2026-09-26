@@ -17,7 +17,7 @@ import {
 import { emitProxiedSubagentEvent } from "#subagents/event-proxy-step.js";
 import { routeDeliverPayload } from "#subagents/hitl-proxy.js";
 
-function fixture(turnId = "parent-turn") {
+function fixture() {
   const order: string[] = [];
   const events: MessageStreamEvent[] = [];
   const typed = vi.fn(async (event: MessageStreamEvent, _ctx: HookContext) => {
@@ -33,12 +33,6 @@ function fixture(turnId = "parent-turn") {
       ctx.state.pendingRequests = data.requests;
       ctx.session.continuation?.alias("parent-thread");
     },
-    "turn.completed"() {
-      order.push("channel:turn.completed");
-    },
-    "session.waiting"() {
-      order.push("channel:session.waiting");
-    },
   };
   const turnAgent = { id: "parent", model: { id: "unused" }, tools: [] };
   const bundle: CompiledBundle = {
@@ -49,8 +43,7 @@ function fixture(turnId = "parent-turn") {
       {
         events: {
           "input.requested": typed,
-          "turn.completed": typed,
-          "session.waiting": typed,
+          "turn.waiting": typed,
           "*": wildcard,
         },
         logicalPath: "hooks/audit.ts",
@@ -76,7 +69,12 @@ function fixture(turnId = "parent-turn") {
     history: [],
     sessionId: "parent-session",
     state: {
-      "eve.harness.emission": { turnId, sequence: 1, stepIndex: 0, sessionStarted: true },
+      "eve.harness.emission": {
+        turnId: "parent-turn",
+        sequence: 1,
+        stepIndex: 0,
+        sessionStarted: true,
+      },
     },
   };
   const request = createSessionLimitContinuationRequest({
@@ -112,50 +110,59 @@ function fixture(turnId = "parent-turn") {
 }
 
 describe("proxied stream hooks", () => {
-  it.each([{ turnId: "parent-turn" }, { turnId: "" }] as const)(
-    "publishes hooks in parent context (turn=$turnId)",
-    async ({ turnId }) => {
-      const f = fixture(turnId);
-      const result = await emitProxiedSubagentEvent(f);
-      const types = ["input.requested", "turn.completed", "session.waiting"];
-      expect(f.events.map((event) => event.type)).toEqual(types);
-      expect(f.order).toEqual(
-        types.flatMap((type) => [
-          `channel:${type}`,
-          `stream:${type}`,
-          `typed:${type}`,
-          `wildcard:${type}`,
-        ]),
-      );
-      expect(f.typed.mock.calls.map(([event]) => event)).toEqual(f.events);
-      expect(f.wildcard.mock.calls.map(([event]) => event)).toEqual(f.events);
-      for (const [, ctx] of [...f.typed.mock.calls, ...f.wildcard.mock.calls]) {
-        expect(ctx).toMatchObject({
-          session: { id: "parent-session", turn: { id: turnId || "turn_1" } },
-          agent: { name: "parent", nodeId: "parent" },
-          channel: { kind: "proxy-hook-test", continuationToken: "http:parent-thread" },
-        });
-      }
-      expect(f.events[0]).toMatchObject({ data: f.hookPayload.event });
-      expect(result.serializedContext[ChannelKey.name]).toMatchObject({
-        state: { pendingRequests: [f.request] },
+  it("publishes the request and parks the open turn in parent context", async () => {
+    const f = fixture();
+    const result = await emitProxiedSubagentEvent(f);
+    expect(f.events.map((event) => event.type)).toEqual(["input.requested", "turn.waiting"]);
+    expect(f.events[1]).toMatchObject({ data: { sequence: 1, turnId: "parent-turn" } });
+    expect(f.order).toEqual([
+      "channel:input.requested",
+      "stream:input.requested",
+      "typed:input.requested",
+      "wildcard:input.requested",
+      "stream:turn.waiting",
+      "typed:turn.waiting",
+      "wildcard:turn.waiting",
+    ]);
+    expect(f.typed.mock.calls.map(([event]) => event)).toEqual(f.events);
+    expect(f.wildcard.mock.calls.map(([event]) => event)).toEqual(f.events);
+    for (const [, ctx] of [...f.typed.mock.calls, ...f.wildcard.mock.calls]) {
+      expect(ctx).toMatchObject({
+        session: { id: "parent-session", turn: { id: "parent-turn" } },
+        agent: { name: "parent", nodeId: "parent" },
+        channel: { kind: "proxy-hook-test", continuationToken: "http:parent-thread" },
       });
-      expect(result.sessionState.continuationToken).toBe("http:parent-thread");
-      expect(result.sessionState.hasProxyInputRequests).toBe(true);
-      const routed = routeDeliverPayload({
+    }
+    expect(f.events[0]).toMatchObject({ data: f.hookPayload.event });
+    expect(result.serializedContext[ChannelKey.name]).toMatchObject({
+      state: { pendingRequests: [f.request] },
+    });
+    expect(result.sessionState.continuationToken).toBe("http:parent-thread");
+    expect(result.sessionState.hasProxyInputRequests).toBe(true);
+    expect(result.sessionState.emissionState).toMatchObject({ sequence: 1, turnId: "parent-turn" });
+    const routed = routeDeliverPayload({
+      payload: { inputResponses: [{ requestId: f.request.requestId, optionId: "continue" }] },
+      state: result.sessionState.snapshot.session.state,
+    });
+    expect(routed.forSelf).toBeUndefined();
+    expect(routed.forChildren).toEqual([
+      {
+        childContinuationToken: "child-token",
         payload: { inputResponses: [{ requestId: f.request.requestId, optionId: "continue" }] },
-        state: result.sessionState.snapshot.session.state,
-      });
-      expect(routed.forSelf).toBeUndefined();
-      expect(routed.forChildren).toEqual([
-        {
-          childContinuationToken: "child-token",
-          payload: { inputResponses: [{ requestId: f.request.requestId, optionId: "continue" }] },
-          retireRequestIds: [f.request.requestId],
+        resolved: {
+          event: { sequence: 7, stepIndex: 2, turnId: "child-turn" },
+          resolutions: [
+            {
+              kind: "session-limit",
+              outcome: "answered",
+              requestId: f.request.requestId,
+              response: { requestId: f.request.requestId, optionId: "continue" },
+            },
+          ],
         },
-      ]);
-    },
-  );
+      },
+    ]);
+  });
 
   it("propagates hook failures after publication and releases the writer", async () => {
     const f = fixture();

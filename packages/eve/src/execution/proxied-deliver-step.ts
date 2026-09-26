@@ -11,10 +11,13 @@ import { relaySessionEvents, type SessionEventTarget } from "#execution/publish-
 import { routeDeliverPayload } from "#subagents/hitl-proxy.js";
 import { resumeSessionInbox } from "#execution/session-inbox/resume.js";
 import { resumeWorkflowToolRunAnswers } from "#execution/tools/workflow/answer.js";
-import { getPendingCoordinationBatch } from "#harness/coordination.js";
+import type { PendingInputBatchEvent } from "#harness/pending-input-batches.js";
 import type { AnswerHookRoute } from "#harness/proxy-input-requests.js";
-import { createInputResolvedEvent, type InputResolution } from "#protocol/message.js";
-import type { InputResponse } from "#shared/input.js";
+import {
+  createInputResolvedEvent,
+  type InputResolution,
+  type UnstampedMessageStreamEvent,
+} from "#protocol/message.js";
 import { retireProxyInputRequests } from "#harness/proxy-input-requests.js";
 
 export type RoutedDeliverResult =
@@ -34,15 +37,17 @@ interface ChildBucket {
   readonly answerHook?: AnswerHookRoute;
   readonly childContinuationToken: string;
   readonly childSessionInbox?: SessionInboxAddress;
+  readonly event: PendingInputBatchEvent;
   readonly metadata: NonNullable<DeliverHookPayload["deliveryMetadata"]>[number][];
   readonly payloads: DeliverPayload[];
-  readonly retireRequestIds: string[];
+  /** Keyed by request id: a request resolves once however many payloads answer it. */
+  readonly resolutions: Map<string, InputResolution>;
 }
 
 /**
  * Splits an envelope and forwards descendant input to the child that asked for
- * it. A `ctx.ask()` question is resolved by its workflow, not the harness, so
- * this session relays its `input.resolved` once the answer is on its way down.
+ * it. This session relayed each forwarded request's `input.requested`, so it
+ * also relays their `input.resolved` once the answers are on their way down.
  */
 export async function routeProxiedDeliverStep(
   input: SessionEventTarget & { readonly delivery: DeliverHookPayload },
@@ -73,23 +78,28 @@ export async function routeProxiedDeliverStep(
 
     for (const [childIndex, forChild] of routed.forChildren.entries()) {
       if (forChild.answerHook !== undefined) {
-        for (const requestId of forChild.retireRequestIds) resolvedQuestions.add(requestId);
+        for (const { requestId } of forChild.resolved.resolutions) resolvedQuestions.add(requestId);
       }
       const key = [
         forChild.childContinuationToken,
         forChild.childSessionInbox?.sessionId ?? "",
       ].join("\0");
-      const child = children.get(key) ?? {
+      const child: ChildBucket = children.get(key) ?? {
         answerHook: forChild.answerHook,
         childContinuationToken: forChild.childContinuationToken,
         childSessionInbox: forChild.childSessionInbox,
+        event: forChild.resolved.event,
         metadata: [],
         payloads: [],
-        retireRequestIds: [],
+        resolutions: new Map(),
       };
       const childPayloadIndex = child.payloads.length;
       child.payloads.push(forChild.payload);
-      child.retireRequestIds.push(...forChild.retireRequestIds);
+      for (const resolution of forChild.resolved.resolutions) {
+        if (!child.resolutions.has(resolution.requestId)) {
+          child.resolutions.set(resolution.requestId, resolution);
+        }
+      }
       if (routed.forSelf === undefined && childIndex === 0) {
         for (const metadata of sourceDelivery.deliveryMetadata ?? []) {
           if (metadata.payloadIndex === sourcePayloadIndex) {
@@ -102,37 +112,33 @@ export async function routeProxiedDeliverStep(
   }
 
   let retired = false;
-  const answered: InputResolution[] = [];
+  const resolvedEvents: UnstampedMessageStreamEvent[] = [];
   for (const child of children.values()) {
     if (child.answerHook !== undefined) {
       const responses = coalesceDeliverPayloads(child.payloads).inputResponses ?? [];
       await resumeWorkflowToolRunAnswers(child.childContinuationToken, responses);
-      if (child.answerHook.question !== undefined) {
-        answered.push(...responses.map(toAnsweredResolution));
-      }
-      durableSession = retireProxyInputRequests(durableSession, child.retireRequestIds);
-      retired = true;
-      continue;
+    } else {
+      const childDelivery: DeliverHookPayload = {
+        ...sourceDelivery,
+        deliveryMetadata: child.metadata.length === 0 ? undefined : child.metadata,
+        payloads: child.payloads,
+      };
+      await resumeSessionInbox(
+        child.childSessionInbox ?? child.childContinuationToken,
+        childDelivery,
+      );
     }
-
-    const childDelivery: DeliverHookPayload = {
-      ...sourceDelivery,
-      deliveryMetadata: child.metadata.length === 0 ? undefined : child.metadata,
-      payloads: child.payloads,
-    };
-    await resumeSessionInbox(
-      child.childSessionInbox ?? child.childContinuationToken,
-      childDelivery,
-    );
+    if (child.resolutions.size > 0) {
+      resolvedEvents.push(
+        createInputResolvedEvent({ resolutions: [...child.resolutions.values()], ...child.event }),
+      );
+    }
     // Successfully forwarded request IDs are retired so later deliveries
     // cannot route through stale entries.
-    durableSession = retireProxyInputRequests(durableSession, child.retireRequestIds);
+    durableSession = retireProxyInputRequests(durableSession, [...child.resolutions.keys()]);
     retired = true;
   }
 
-  // A blocking run starts from the pending coordination batch, which carries
-  // the coordinates of its request.
-  const requested = getPendingCoordinationBatch(durableSession.state)?.event;
   const context = await relaySessionEvents(
     {
       serializedContext: input.serializedContext,
@@ -141,9 +147,7 @@ export async function routeProxiedDeliverStep(
         : input.sessionState,
       sessionWritable: input.sessionWritable,
     },
-    requested === undefined || answered.length === 0
-      ? []
-      : [createInputResolvedEvent({ resolutions: answered, ...requested })],
+    resolvedEvents,
   );
   if (parentAction !== undefined) return { ...context, ...parentAction };
   const orderedParentPayloads = [...parentPayloads].sort(([a], [b]) => a - b);
@@ -161,8 +165,4 @@ export async function routeProxiedDeliverStep(
           payloads: orderedParentPayloads.map(([, payload]) => payload),
         };
   return { ...context, kind: "continue", remainder };
-}
-
-function toAnsweredResolution(response: InputResponse): InputResolution {
-  return { kind: "question", outcome: "answered", requestId: response.requestId, response };
 }

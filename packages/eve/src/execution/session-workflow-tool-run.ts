@@ -1,5 +1,8 @@
 import { deliverWorkflowAuthorization } from "#execution/tools/workflow/owner.js";
-import { emitWorkflowToolRunReportStep } from "#execution/tools/workflow/emit-workflow-tool-run-report-step.js";
+import {
+  emitAgentStartedStep,
+  emitWorkflowToolRunReportStep,
+} from "#execution/tools/workflow/emit-workflow-tool-run-report-step.js";
 import type {
   WorkflowToolRunMessage,
   WorkflowToolRunOutcomeMessage,
@@ -51,6 +54,11 @@ export async function handleWorkflowToolRunMessage(
           from: message.from,
           update: message.update,
         }),
+      );
+      return undefined;
+    case "agent-started":
+      await input.cursor.apply(
+        await emitAgentStartedStep({ ...input.cursor.eventTarget(), message }),
       );
       return undefined;
   }
@@ -203,8 +211,6 @@ function createAnswerHookRoute(message: WorkflowToolRunRequestMessage): AnswerHo
 function requestContext(input: HandlerInput<unknown>) {
   return {
     callbackBaseUrl: resolveWorkflowCallbackBaseUrl(input.callbackMetadataUrl),
-    sessionWritable: input.cursor.sessionWritable,
-    serializedContext: input.cursor.serializedContext,
-    sessionState: input.cursor.sessionState,
+    ...input.cursor.eventTarget(),
   };
 }

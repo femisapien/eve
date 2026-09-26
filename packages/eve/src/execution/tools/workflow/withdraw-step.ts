@@ -7,7 +7,6 @@ import {
   type PublishedSessionEvents,
   type SessionEventTarget,
 } from "#execution/publish-session-events.js";
-import { getPendingCoordinationBatch } from "#harness/coordination.js";
 import { getProxyInputRequests, retireProxyInputRequests } from "#harness/proxy-input-requests.js";
 import { createInputResolvedEvent } from "#protocol/message.js";
 
@@ -29,9 +28,6 @@ export async function withdrawWorkflowToolRunQuestionStep(
     return { serializedContext: input.serializedContext, sessionState: input.sessionState };
   }
 
-  // A blocking run starts from the pending coordination batch, which carries
-  // the coordinates of its request.
-  const requested = getPendingCoordinationBatch(session.state)?.event;
   const retired = retireProxyInputRequests(session, [input.requestId]);
   return await relaySessionEvents(
     {
@@ -39,13 +35,11 @@ export async function withdrawWorkflowToolRunQuestionStep(
       sessionState: replaceDurableSessionSnapshot({ session: retired, state: input.sessionState }),
       sessionWritable: input.sessionWritable,
     },
-    requested === undefined
-      ? []
-      : [
-          createInputResolvedEvent({
-            resolutions: [{ kind: "question", outcome: "cancelled", requestId: input.requestId }],
-            ...requested,
-          }),
-        ],
+    [
+      createInputResolvedEvent({
+        resolutions: [{ kind: "question", outcome: "cancelled", requestId: input.requestId }],
+        ...route.event,
+      }),
+    ],
   );
 }

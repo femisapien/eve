@@ -1,4 +1,5 @@
 import type { SubagentInputRequestHookPayload } from "#channel/types.js";
+import type { PendingInputBatchEvent } from "#harness/pending-input-batches.js";
 import type { HarnessSession, SessionStateMap } from "#harness/types.js";
 import { inputOptionSchema, type InputOption, type InputRequestKind } from "#shared/input.js";
 import {
@@ -37,6 +38,11 @@ export interface ProxyInputRequest {
   readonly batch?: ProxyInputRequestBatch;
   readonly childContinuationToken: string;
   readonly childSessionInbox?: SessionInboxAddress;
+  /**
+   * Coordinates of the `input.requested` this session emitted for the request;
+   * the `input.resolved` it emits once it routes the answer repeats them.
+   */
+  readonly event: PendingInputBatchEvent;
   readonly kind: InputRequestKind;
   /** Question metadata lets the human-facing parent resolve plain text before proxying by ID. */
   readonly question?: AnswerHookQuestion;
@@ -196,15 +202,22 @@ export function toProxyInputRequestEntries(
     ),
     requestIds: payload.event.requests.map((request) => request.requestId),
   };
+  const event: PendingInputBatchEvent = {
+    sequence: payload.event.sequence,
+    stepIndex: payload.event.stepIndex,
+    turnId: payload.event.turnId,
+  };
   return payload.event.requests.map((request) => {
     const route: {
       readonly childContinuationToken: string;
       childSessionInbox?: SessionInboxAddress;
+      readonly event: PendingInputBatchEvent;
       readonly kind: InputRequestKind;
       question?: AnswerHookQuestion;
     } & { readonly batch: ProxyInputRequestBatch } = {
       batch,
       childContinuationToken: payload.childContinuationToken,
+      event,
       kind: request.kind,
     };
     if (request.kind === "question") {
@@ -266,6 +279,8 @@ function parseProxyInputRequest(value: unknown, requestId: string): ProxyInputRe
   if (typeof value.childContinuationToken !== "string" || !isInputRequestKind(value.kind)) {
     return undefined;
   }
+  const event = "event" in value ? parseInputRequestEvent(value.event) : undefined;
+  if (event === undefined) return undefined;
   const batch = "batch" in value ? parseProxyInputRequestBatch(value.batch) : undefined;
   const answerHook = "answerHook" in value ? parseAnswerHookRoute(value.answerHook) : undefined;
   if ("answerHook" in value && answerHook === undefined) return undefined;
@@ -279,10 +294,12 @@ function parseProxyInputRequest(value: unknown, requestId: string): ProxyInputRe
     batch?: ProxyInputRequestBatch;
     readonly childContinuationToken: string;
     childSessionInbox?: SessionInboxAddress;
+    readonly event: PendingInputBatchEvent;
     readonly kind: InputRequestKind;
     question?: AnswerHookQuestion;
   } = {
     childContinuationToken: value.childContinuationToken,
+    event,
     kind: value.kind,
   };
   if (answerHook !== undefined) request.answerHook = answerHook;
@@ -290,6 +307,16 @@ function parseProxyInputRequest(value: unknown, requestId: string): ProxyInputRe
   if (batch !== undefined && batch.requestIds.includes(requestId)) request.batch = batch;
   if (question !== undefined) request.question = question;
   return request;
+}
+
+function parseInputRequestEvent(value: unknown): PendingInputBatchEvent | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const sequence = Reflect.get(value, "sequence");
+  const stepIndex = Reflect.get(value, "stepIndex");
+  const turnId = Reflect.get(value, "turnId");
+  if (typeof sequence !== "number" || typeof stepIndex !== "number") return undefined;
+  if (typeof turnId !== "string") return undefined;
+  return { sequence, stepIndex, turnId };
 }
 
 function parseAnswerHookRoute(value: unknown): AnswerHookRoute | undefined {

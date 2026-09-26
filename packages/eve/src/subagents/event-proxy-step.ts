@@ -15,16 +15,9 @@ import {
   type SessionEventTarget,
 } from "#execution/publish-session-events.js";
 import { reconcileSessionContinuationToken } from "#execution/reconcile-session-continuation-token.js";
-import {
-  emitTurnEpilogue,
-  getHarnessEmissionState,
-  setHarnessEmissionState,
-} from "#harness/emission.js";
-import { emitProxiedInputRequest } from "#subagents/hitl-proxy.js";
+import { emitProxiedAuthorizationEvent, emitProxiedInputRequest } from "#subagents/hitl-proxy.js";
 import { upsertProxyInputRequests } from "#harness/proxy-input-requests.js";
 import type { AnswerHookRoute } from "#harness/proxy-input-requests.js";
-import type { HarnessSession } from "#harness/types.js";
-import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 
 type SubagentEventHookPayload =
   | SubagentAuthorizationEventHookPayload
@@ -69,19 +62,12 @@ export async function emitProxiedSubagentEvent(input: {
     },
     async (emit, session) => {
       if (hookPayload.kind === "subagent-authorization-event") {
-        await emit(hookPayload.event);
-        return {
-          result: undefined,
-          session: await closeStandaloneAuthorizationEvent({
-            emit,
-            eventType: hookPayload.event.type,
-            session,
-          }),
-        };
+        await emitProxiedAuthorizationEvent({ emit, hookPayload, session });
+        return { result: undefined, session };
       }
 
-      const proxyResult = await emitProxiedInputRequest({ emit, hookPayload, session });
-      return { result: proxyResult.entries, session: proxyResult.session };
+      const entries = await emitProxiedInputRequest({ emit, hookPayload, session });
+      return { result: entries, session };
     },
   );
 
@@ -104,21 +90,4 @@ export async function emitProxiedSubagentEvent(input: {
     serializedContext: serializeContext(ctx),
     sessionState: createDurableSessionState({ session: nextSession }),
   };
-}
-
-async function closeStandaloneAuthorizationEvent(input: {
-  readonly emit: (event: UnstampedMessageStreamEvent) => Promise<void>;
-  readonly eventType: SubagentAuthorizationEventHookPayload["event"]["type"];
-  readonly session: HarnessSession;
-}): Promise<HarnessSession> {
-  if (
-    input.eventType !== "authorization.required" &&
-    input.eventType !== "authorization.completed"
-  ) {
-    return input.session;
-  }
-
-  const state = getHarnessEmissionState(input.session.state);
-  const nextState = await emitTurnEpilogue(input.emit, state);
-  return setHarnessEmissionState(input.session, nextState);
 }
