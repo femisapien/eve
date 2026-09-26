@@ -10,6 +10,9 @@ import { turnStep } from "#execution/session/turn-step.js";
 import type { DeliverHookPayload, SessionCapabilities } from "#channel/types.js";
 import { dispatchCoordinationStep } from "#execution/coordination-dispatch-step.js";
 import { routeDeliverToChildren } from "#execution/route-child-delivery.js";
+import { publishTurnWaitingStep } from "#execution/session/turn-waiting-step.js";
+import { ANONYMOUS_PRINCIPAL } from "#execution/tasks/principal.js";
+import { createTask, readTaskTable, writeTaskTable } from "#execution/tasks/table.js";
 
 vi.mock("#compiled/@workflow/core/index.js", async (importOriginal) => ({
   ...(await importOriginal()),
@@ -25,6 +28,12 @@ vi.mock("#execution/cancel-descendant-turns-step.js", () => ({
 }));
 vi.mock("#execution/route-child-delivery.js", () => ({
   routeDeliverToChildren: vi.fn(),
+}));
+vi.mock("#execution/session/turn-waiting-step.js", () => ({
+  publishTurnWaitingStep: vi.fn(async ({ serializedContext, sessionState }) => ({
+    serializedContext,
+    sessionState,
+  })),
 }));
 
 beforeEach(() => {
@@ -47,9 +56,11 @@ describe("SessionExecution checkpoints", () => {
       claimSessionHooks: vi.fn(),
       drain: () => [],
       hasPending: () => false,
+      whenPending: () => new Promise<void>(() => {}),
       next: vi.fn(),
       restore: vi.fn(),
       onDelivery: () => () => {},
+      onAnnouncement: () => () => {},
       onInterrupt: () => () => {},
     };
     let signal: AbortSignal | undefined;
@@ -86,12 +97,14 @@ describe("SessionExecution checkpoints", () => {
         claimSessionHooks: vi.fn(),
         drain: () => pending.splice(0),
         hasPending: () => pending.length > 0,
+        whenPending: () => new Promise<void>(() => {}),
         next: vi.fn(),
         restore: vi.fn(),
         onDelivery: (handler) => {
           deliver = handler;
           return () => {};
         },
+        onAnnouncement: () => () => {},
         onInterrupt: (handler) => {
           interrupt = handler;
           return () => {};
@@ -146,8 +159,10 @@ describe("SessionExecution checkpoints", () => {
         return snapshot;
       },
       hasPending: () => pending.length > 0,
+      whenPending: () => new Promise<void>(() => {}),
       next: vi.fn(),
       restore: vi.fn(),
+      onAnnouncement: () => () => {},
       onInterrupt: () => () => {},
       onDelivery: (handler) => {
         notify = handler;
@@ -196,8 +211,10 @@ describe("SessionExecution checkpoints", () => {
       claimSessionHooks: vi.fn(),
       drain: () => pending.splice(0),
       hasPending: () => pending.length > 0,
+      whenPending: () => new Promise<void>(() => {}),
       next: vi.fn(),
       restore: vi.fn(),
+      onAnnouncement: () => () => {},
       onInterrupt: () => () => {},
       onDelivery: (handler) => {
         notify = handler;
@@ -258,8 +275,10 @@ describe("SessionExecution checkpoints", () => {
         claimSessionHooks: vi.fn(),
         drain: () => [],
         hasPending: () => false,
+        whenPending: () => new Promise<void>(() => {}),
         next: vi.fn(),
         restore: vi.fn(),
+        onAnnouncement: () => () => {},
         onInterrupt: () => () => {},
         onDelivery: (handler) => {
           notify = handler;
@@ -291,8 +310,10 @@ describe("SessionExecution checkpoints", () => {
         .mockReturnValueOnce([{ kind: "cancel" }])
         .mockReturnValue([]),
       hasPending: vi.fn(() => false),
+      whenPending: () => new Promise<void>(() => {}),
       next: vi.fn(() => new Promise<never>(() => {})),
       onDelivery: vi.fn(() => () => {}),
+      onAnnouncement: () => () => {},
       onInterrupt: vi.fn(() => () => {}),
       restore: vi.fn(),
     };
@@ -309,6 +330,7 @@ describe("SessionExecution checkpoints", () => {
       });
     vi.mocked(dispatchCoordinationStep).mockResolvedValue({
       results: [],
+      serializedContext: {},
       sessionState,
     });
 
@@ -340,8 +362,10 @@ describe("SessionExecution checkpoints", () => {
         .mockReturnValueOnce([followUp, { kind: "cancel" }])
         .mockReturnValue([]),
       hasPending: vi.fn(() => false),
+      whenPending: () => new Promise<void>(() => {}),
       next: vi.fn(() => new Promise<never>(() => {})),
       onDelivery: vi.fn(() => () => {}),
+      onAnnouncement: () => () => {},
       onInterrupt: vi.fn((handler) => {
         interrupt = handler;
         return () => {};
@@ -387,8 +411,10 @@ describe("SessionExecution checkpoints", () => {
       claimSessionHooks: vi.fn(),
       drain: vi.fn().mockReturnValueOnce([steering]).mockReturnValue([]),
       hasPending: vi.fn(() => false),
+      whenPending: () => new Promise<void>(() => {}),
       next: vi.fn(() => new Promise<never>(() => {})),
       onDelivery: vi.fn(() => () => {}),
+      onAnnouncement: () => () => {},
       onInterrupt: vi.fn(() => () => {}),
       restore: vi.fn(),
     };
@@ -413,6 +439,7 @@ describe("SessionExecution checkpoints", () => {
       .mockReset()
       .mockResolvedValue({
         results: [actionResult],
+        serializedContext: {},
         sessionState,
       });
 
@@ -443,8 +470,10 @@ describe("SessionExecution checkpoints", () => {
       claimSessionHooks: vi.fn(),
       drain: vi.fn().mockReturnValueOnce([followUp]).mockReturnValue([]),
       hasPending: vi.fn(() => false),
+      whenPending: () => new Promise<void>(() => {}),
       next: vi.fn(() => new Promise<never>(() => {})),
       onDelivery: vi.fn(() => () => {}),
+      onAnnouncement: () => () => {},
       onInterrupt: vi.fn(() => () => {}),
       restore: vi.fn(),
     };
@@ -490,8 +519,10 @@ describe("SessionExecution checkpoints", () => {
         claimSessionHooks: vi.fn(),
         drain: vi.fn(() => []),
         hasPending: vi.fn(() => false),
+        whenPending: () => new Promise<void>(() => {}),
         next: vi.fn(() => new Promise<never>(() => {})),
         onDelivery: vi.fn(() => () => {}),
+        onAnnouncement: () => () => {},
         onInterrupt: vi.fn(() => () => {}),
         restore: vi.fn(),
       };
@@ -537,9 +568,11 @@ describe("SessionExecution checkpoints", () => {
       claimSessionHooks: vi.fn(),
       drain: vi.fn().mockReturnValueOnce([cancel, followUp]).mockReturnValue([]),
       hasPending: () => false,
+      whenPending: () => new Promise<void>(() => {}),
       next: vi.fn(),
       restore: vi.fn(),
       onDelivery: () => () => {},
+      onAnnouncement: () => () => {},
       onInterrupt: (handler) => {
         interrupt = handler;
         return () => {};
@@ -585,8 +618,10 @@ describe("SessionExecution checkpoints", () => {
       claimSessionHooks: vi.fn(),
       drain: vi.fn(() => []),
       hasPending: vi.fn(() => false),
+      whenPending: () => new Promise<void>(() => {}),
       next: vi.fn(async () => runtimePayloads.shift()),
       onDelivery: vi.fn(() => () => {}),
+      onAnnouncement: () => () => {},
       onInterrupt: vi.fn(() => () => {}),
       restore: vi.fn(),
     };
@@ -601,6 +636,7 @@ describe("SessionExecution checkpoints", () => {
     });
     vi.mocked(dispatchCoordinationStep).mockResolvedValue({
       results: [],
+      serializedContext: {},
       sessionState,
     });
     vi.mocked(routeDeliverToChildren).mockResolvedValue({
@@ -620,6 +656,63 @@ describe("SessionExecution checkpoints", () => {
       expect.objectContaining({ delivery: answer }),
     );
     expect(queue.pendingCount).toBe(0);
+  });
+
+  it("reports turn.waiting once when task_wait parks on a working task", async () => {
+    const base = state("");
+    const working = createTask(readTaskTable(undefined), {
+      callId: "task-call",
+      creator: ANONYMOUS_PRINCIPAL,
+      name: "research",
+      turnId: "turn_0",
+    });
+    const sessionState: DurableSessionState = {
+      ...base,
+      snapshot: { session: writeTaskTable(base.snapshot.session, working.table) },
+    };
+    // An unrelated result keeps the wait going for a second pass before the cancel.
+    const runtimePayloads: SessionInboxPayload[] = [
+      { kind: "runtime-action-result", results: [] },
+      { kind: "cancel" },
+    ];
+    const inbox: SessionInbox = {
+      claimedTokens: [],
+      claimSessionHook: vi.fn(),
+      claimSessionHooks: vi.fn(),
+      drain: vi.fn(() => []),
+      hasPending: vi.fn(() => false),
+      whenPending: () => new Promise<void>(() => {}),
+      next: vi.fn(async () => runtimePayloads.shift()),
+      onDelivery: vi.fn(() => () => {}),
+      onAnnouncement: () => () => {},
+      onInterrupt: vi.fn(() => () => {}),
+      restore: vi.fn(),
+    };
+    vi.mocked(turnStep)
+      .mockReset()
+      .mockResolvedValue({
+        action: "park",
+        hasPendingAuthorization: false,
+        hasPendingInputBatch: false,
+        pendingCoordinationCallIds: ["wait-call"],
+        pendingKernelCalls: [{ callId: "wait-call", kind: "task_wait" }],
+        serializedContext: {},
+        sessionState,
+      });
+    vi.mocked(dispatchCoordinationStep).mockResolvedValue({
+      results: [],
+      serializedContext: {},
+      sessionState,
+    });
+
+    await expect(
+      createExecution({ inbox, sessionState }).runTurn({
+        delivery: { kind: "deliver", payloads: [{ message: "Wait for the research." }] },
+      }),
+    ).resolves.toEqual({ cancelled: true, kind: "park" });
+
+    expect(publishTurnWaitingStep).toHaveBeenCalledTimes(1);
+    expect(publishTurnWaitingStep).toHaveBeenCalledWith(expect.objectContaining({ sessionState }));
   });
 });
 

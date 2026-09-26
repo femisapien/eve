@@ -58,9 +58,10 @@ export interface CoordinationDispatchInput {
   readonly sessionState: DurableSessionState;
 }
 
-/** Owner-side results and the updated session. */
+/** Owner-side results and the updated context and session. */
 export interface CoordinationDispatchResult {
   readonly results: readonly RuntimeActionResult[];
+  readonly serializedContext: Record<string, unknown>;
   readonly sessionState: DurableSessionState;
 }
 

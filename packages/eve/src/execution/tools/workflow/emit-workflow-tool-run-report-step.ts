@@ -48,6 +48,7 @@ export async function emitAgentStartedStep(
     parentSessionId: input.sessionState.sessionId,
     remote: session.remote,
     sessionId: session.sessionId,
+    ...(from.taskId !== undefined && { taskId: from.taskId }),
     turnId: from.turnId,
   });
   return await publishSessionEvents(input, [event]);
