@@ -8,15 +8,19 @@ last_updated: "2026-09-27"
 
 ## Summary
 
-eve replaces `connection_search` with one code tool, `execute`. The model
-writes a short JavaScript program that calls connection tools (plus any
-authored tools that opt in) through a typed `tools` object and composes the
-results. Those tools never enter the provider `tools` array. Connecting,
+eve replaces `connection_search` and the `workflow()` tool with one code
+tool, `execute`. The model writes a short JavaScript program that calls
+connection tools, spawns subagents, and calls any authored tools that opt
+in, all through a typed `tools` object, and then composes the results.
+Those tools never enter the provider `tools` array. Connecting,
 authorizing, or discovering them never breaks the prompt cache. Today, every
 successful `connection_search` breaks the whole cached prefix.
 
 - **Scope.** This ships as default behavior, with no flag. Framework tools
   stay direct.
+- **Subagents.** `workflow()` merges into `execute`. Everything it covers
+  moves to `tools.agents.<name>(...)`, and `workflow()` is removed in the
+  same release, so models never see two JavaScript tools.
 - **Catalog.** The catalog arrives as append-only conversation messages, and
   the `execute` description never changes.
 - **Nested calls** go through the existing harness tool path: connection
@@ -95,17 +99,17 @@ Sources:
 - `@ai-sdk/code-mode`: `vercel/ai` at `5d12eaa`, 1.0.75. It has the same API
   as eve's 1.0.62. See the [docs](https://ai-sdk.dev/docs/ai-sdk-core/code-mode).
 
-|                   | opencode v2                                        | AI SDK code mode                                      | eve (proposed)                              |
-| ----------------- | -------------------------------------------------- | ----------------------------------------------------- | ------------------------------------------- |
-| Model surface     | `execute` plus direct built-in tools               | one code tool, routed by `experimental_toolCallers`   | `execute` plus direct framework tools       |
-| Routed into code  | all MCP tools by default; opt-out per server       | tools whose callers include code mode                 | connection tools; opted-in authored tools   |
-| Runtime           | in-process acorn AST interpreter                   | QuickJS in worker threads (`run`)                     | AI SDK runtime                              |
-| Catalog placement | session baseline plus appended deltas              | tool description (default) or appended full catalog   | appended baseline plus deltas               |
-| Discovery         | budgeted inline listing plus `search()` in program | full declarations; `toolSearch()` outside the program | budgeted listing plus `search()` in program |
-| Unknown outputs   | `Promise<unknown>`                                 | `Promise<unknown>`                                    | `Promise<unknown>`                          |
-| Nested approvals  | same permission path as direct calls               | callback, or signed interrupt (undocumented)          | harness approval path; parks durably        |
-| Limits            | none set by core                                   | 30 s, 64 MB, 256 calls, 1 MB result                   | AI SDK defaults                             |
-| Nested visibility | progress on the parent call                        | none                                                  | protocol actions with `parentCallId`        |
+|                   | opencode v2                                        | AI SDK code mode                                      | eve (proposed)                                       |
+| ----------------- | -------------------------------------------------- | ----------------------------------------------------- | ---------------------------------------------------- |
+| Model surface     | `execute` plus direct built-in tools               | one code tool, routed by `experimental_toolCallers`   | `execute` plus direct framework tools                |
+| Routed into code  | all MCP tools by default; opt-out per server       | tools whose callers include code mode                 | connection tools; subagents; opted-in authored tools |
+| Runtime           | in-process acorn AST interpreter                   | QuickJS in worker threads (`run`)                     | AI SDK runtime                                       |
+| Catalog placement | session baseline plus appended deltas              | tool description (default) or appended full catalog   | appended baseline plus deltas                        |
+| Discovery         | budgeted inline listing plus `search()` in program | full declarations; `toolSearch()` outside the program | budgeted listing plus `search()` in program          |
+| Unknown outputs   | `Promise<unknown>`                                 | `Promise<unknown>`                                    | `Promise<unknown>`                                   |
+| Nested approvals  | same permission path as direct calls               | callback, or signed interrupt (undocumented)          | harness approval path; parks durably                 |
+| Limits            | none set by core                                   | 30 s, 64 MB, 256 calls, 1 MB result                   | AI SDK defaults                                      |
+| Nested visibility | progress on the parent call                        | none                                                  | protocol actions with `parentCallId`                 |
 
 **opencode v2**
 
@@ -186,15 +190,19 @@ Sources:
 - **Fixed description.** The description is fixed per eve version. It states
   the runtime rules, tells the model to prefer connected services over web
   search or general knowledge, and never names a tool or connection.
-- **Presence.** `execute` exists when the agent declares any connection,
-  dynamic connection resolver, or code-mode tool. The compiler decides this,
-  so `execute` never appears or disappears mid-session. An empty catalog
-  says so.
+- **Presence.** `execute` exists when the agent declares any of these:
+  a connection, a dynamic connection resolver, a subagent, a dynamic
+  subagent resolver, or a code-mode tool. The compiler decides this, so
+  `execute` never appears or disappears mid-session. An empty catalog says
+  so.
 - **Closed and required.** `execute` replaces `connection_search` in the
-  required framework slot. It cannot be disabled or overridden. An authored
-  `agent/tools/execute.ts` is a compile error. So is
-  `agent/tools/connection_search.ts`, whose error names `execute` as the
-  replacement.
+  required framework slot. It cannot be disabled or overridden.
+  - An authored `agent/tools/execute.ts` is a compile error.
+  - So is `agent/tools/connection_search.ts`, whose error names `execute` as
+    the replacement.
+  - `workflow()` and the `eve/tools/workflow` export are removed. An agent
+    that still imports it gets a compile error naming `tools.agents.*` in
+    `execute` as the replacement.
 - **Naming in docs.** Docs call it "the code mode `execute` tool" to
   distinguish it from a tool definition's `execute` function.
 
@@ -215,10 +223,21 @@ Sources:
   `tools.linear.list_issues`?", or the available namespaces when a
   connection name is wrong.
 
-**Direct tools.** Every framework tool stays direct and unchanged: `bash`,
-`read_file`, `write_file`, `glob`, `grep`, `web_fetch`, `web_search`,
-`load_skill`, subagent tools, `workflow()`, `ask_question`, `task_cancel`, and
-the final output tool. No tool is reachable both directly and from code.
+**Direct tools.** Every other framework tool stays direct and unchanged:
+
+- `bash`, `read_file`, `write_file`, `glob`, and `grep`,
+- `web_fetch` and `web_search`,
+- `load_skill`,
+- subagent tools,
+- `ask_question` and `task_cancel`,
+- the final output tool.
+
+No tool is reachable both directly and from code. Subagents are the one
+case with two forms, and they serve different purposes:
+
+- A direct subagent tool starts a background task and returns a receipt.
+- `tools.agents.<name>(...)` blocks the program until the child's output is
+  available to compose.
 
 **Skills** keep their listing and `load_skill`. Skill-list updates follow the
 same append-only rule as the catalog. `load_skill`'s hint for connection
@@ -228,11 +247,36 @@ names points to `search({ namespace })` inside `execute`.
 
 **Namespaces** derive from file paths, and collisions are compile errors.
 
-| Source            | Path                        |
-| ----------------- | --------------------------- |
-| Connection tools  | `tools.<connection>.<tool>` |
-| Opted-in authored | `tools.<tool>`              |
-| Extension tools   | `tools.<extension>.<tool>`  |
+| Source            | Path                                                        |
+| ----------------- | ----------------------------------------------------------- |
+| Connection tools  | `tools.<connection>.<tool>`                                 |
+| Subagents         | `tools.agents.<name>({ message, agentId?, outputSchema? })` |
+| Opted-in authored | `tools.<tool>`                                              |
+| Extension tools   | `tools.<extension>.<tool>`                                  |
+
+`agents` is a reserved namespace. A connection or tool named `agents` is a
+compile error.
+
+**Subagents in `execute`** cover everything `workflow()` does today:
+
+- **Returns output.** A call resolves directly to the child's
+  JSON-serializable output, with no metadata wrapper. When `outputSchema` is
+  given, the output is validated against it.
+- **Continues a child.** Passing an `agentId` from the conversation's
+  `<agents>` block continues that child. Omitting it starts a new child
+  session.
+- **Same checks.** The owning agent resolves the target and applies its
+  existing availability and authorization checks. That covers local,
+  remote, and dynamic subagents. Dynamic subagents arrive as catalog deltas.
+- **Durable.** Every agent call interrupts. The program parks until the
+  child settles, then resumes from the ledger. Calls started together with
+  `Promise.all` run concurrently.
+- **Cap.** Each `execute` call can make at most 100 agent calls, the current
+  `workflow()` default. Over the cap, the call fails with the existing
+  `WORKFLOW_PROGRAM_SUBAGENT_LIMIT_REACHED` error, renamed for `execute`.
+  The cap is fixed because code mode has no settings.
+- **Failures are catchable.** A child failure reaches the program as a
+  thrown error the program can catch.
 
 **Signatures** are TypeScript rendered from JSON Schema, with JSDoc from the
 schema descriptions. Outputs without a schema render as `Promise<unknown>`.
@@ -302,8 +346,8 @@ model ── execute({ js }) ──▶ program step (QuickJS, pure)
                                 ▼
                      harness tool path (validation, approval policy,
                      connection auth, tracing, protocol events)
-                        │ runs now             │ must wait (approval,
-                        ▼                      ▼  OAuth, durable wait)
+                        │ runs now             │ must wait (approval, OAuth,
+                        ▼                      ▼  subagent, durable wait)
                  result to program      interrupt ─▶ execute call parks
                                                   ─▶ resume: ledger replay,
                                                      completed calls not re-run
@@ -328,8 +372,8 @@ model.
 
 **Parking**
 
-- Calls run inline unless they must wait for a person, a sign-in, or a
-  durable wait.
+- Calls run inline unless they must wait for a person, a sign-in, a
+  subagent, or a durable wait.
 - A call that must wait interrupts, and the `execute` call parks the same way
   a tool approval does.
 - On resume, the ledger skips every completed call.
@@ -339,7 +383,8 @@ whole program, and the ledger protects only across interrupts. The
 idempotency guidance for `defineTool` applies unchanged.
 
 **Limits.** The AI SDK defaults become eve's defaults. Continuation signing
-reuses the `workflow` tool's durable key step.
+reuses the durable key step `workflow()` uses today
+(`execution/dynamic-workflow/security-step.ts`).
 
 ### Nested calls on the protocol
 
@@ -422,7 +467,8 @@ skill sets design.
 This ships all at once, and there is no flag. Validation happens before
 merge.
 
-**Baseline.** Measure the current `connection_search` path on `main`:
+**Baseline.** Measure the current `connection_search` and `workflow()`
+paths on `main`:
 
 - cache read ratio per step,
 - input tokens and cost per task,
@@ -436,9 +482,11 @@ merge.
 - nested approvals and authorization,
 - `parentCallId`,
 - OpenAPI output schemas,
+- `tools.agents.*`,
 - `codeMode: true` for authored tools.
 
-It also removes `connection_search`. Its docs move to `execute`:
+It also removes `connection_search` and `workflow()`. Their docs move to
+`execute`:
 
 - `connections/overview`,
 - `connections/mcp`,
@@ -446,8 +494,13 @@ It also removes `connection_search`. Its docs move to `execute`:
 - `guides/dynamic-capabilities`,
 - `tools/workflows`.
 
-The e2e evals move too, in `agent-workflow-tools` and
-`agent-openapi-swagger`.
+Their e2e fixtures move too:
+
+- `agent-workflow-tools` and `agent-openapi-swagger` for connections,
+- `agent-subagents` and `agent-cancellation` for `workflow()`.
+
+The `agent-subagents` limit test currently uses `maxSubagents: 3`. It moves
+to the fixed cap of 100.
 
 **New evals**
 
@@ -457,11 +510,14 @@ The e2e evals move too, in `agent-workflow-tools` and
 - OAuth mid-program,
 - approval mid-program,
 - an MCP server with untyped outputs,
-- a dynamic connection resolving mid-session.
+- a dynamic connection resolving mid-session,
+- a program that fans out to parallel subagents and combines their outputs
+  with connection data,
+- cancelling a turn while subagents run inside `execute`.
 
 **Ship gate.** Compared with the baseline, the branch must show:
 
-- no task-success regression on connection evals,
+- no task-success regression on connection or subagent evals,
 - a clearly higher cache read ratio on discovery-heavy sessions,
 - fewer model calls on composition tasks,
 - no new nondeterminism in world-suite e2e runs.
@@ -475,19 +531,20 @@ adding round trips or lowering task success.
 
 ## Decisions and alternatives considered
 
-| Decision                       | Chosen                                                                | Rejected                                                                                       |
-| ------------------------------ | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
-| Rollout                        | Ship as default, replacing `connection_search`; gated by evals        | An `experimental.codeMode` flag (root-only or per agent)                                       |
-| Tool name                      | `execute`, matching opencode v2                                       | `code_mode`, `code`, `run_code`                                                                |
-| Framework tools                | Always direct, as in opencode v2                                      | Code-only under code mode                                                                      |
-| `workflow()`                   | Unchanged; a direct framework tool                                    | Merging into `execute` as `tools.agents.*`                                                     |
-| `execute` presence             | Decided at compile time from declared connections and code-mode tools | Always present; present only while connections are registered (flips the `tools` array)        |
-| Outputs without schemas        | `Promise<unknown>`; `Opaque` tested after ship                        | Rejecting tools without schemas; `Opaque` from day one                                         |
-| Skills in `search()`           | Tools only; skills move in with a future deferred-skills design       | Skill hits in `search()`; `tools.skills.load()`                                                |
-| Authoring API                  | `defineTool({ codeMode: true })`                                      | `defineCodeModeTool`, a second definition kind to fold back later                              |
-| Authored tools without schemas | `outputSchema` required and validated at runtime                      | Build-time TypeScript extraction (needs a type checker and adds nothing at runtime); `unknown` |
-| Nested call visibility         | Protocol actions with `parentCallId`                                  | Progress only (breaks `t.calledTool` and approval correlation)                                 |
-| System prompt Connections list | Removed; namespace entries carry descriptions                         | Keeping it alongside the catalog                                                               |
+| Decision                       | Chosen                                                                 | Rejected                                                                                       |
+| ------------------------------ | ---------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| Rollout                        | Ship as default, replacing `connection_search`; gated by evals         | An `experimental.codeMode` flag (root-only or per agent)                                       |
+| Tool name                      | `execute`, matching opencode v2                                        | `code_mode`, `code`, `run_code`                                                                |
+| Framework tools                | Always direct, as in opencode v2                                       | Code-only under code mode                                                                      |
+| `workflow()`                   | Merged into `execute` as `tools.agents.*`; removed in the same release | Keeping it as a separate direct tool; a transition period with both                            |
+| Agent-call cap                 | Fixed at 100 per `execute` call, the current `workflow()` default      | A configurable `maxSubagents` (code mode has no settings)                                      |
+| `execute` presence             | Decided at compile time from declared connections and code-mode tools  | Always present; present only while connections are registered (flips the `tools` array)        |
+| Outputs without schemas        | `Promise<unknown>`; `Opaque` tested after ship                         | Rejecting tools without schemas; `Opaque` from day one                                         |
+| Skills in `search()`           | Tools only; skills move in with a future deferred-skills design        | Skill hits in `search()`; `tools.skills.load()`                                                |
+| Authoring API                  | `defineTool({ codeMode: true })`                                       | `defineCodeModeTool`, a second definition kind to fold back later                              |
+| Authored tools without schemas | `outputSchema` required and validated at runtime                       | Build-time TypeScript extraction (needs a type checker and adds nothing at runtime); `unknown` |
+| Nested call visibility         | Protocol actions with `parentCallId`                                   | Progress only (breaks `t.calledTool` and approval correlation)                                 |
+| System prompt Connections list | Removed; namespace entries carry descriptions                          | Keeping it alongside the catalog                                                               |
 
 ## Evidence limits
 
