@@ -48,11 +48,17 @@ export default defineEval({
       { data: { callId: "signoff-note" }, type: "task.settled" },
     ]);
 
+    // The watched stream repeats the session's events, so count distinct calls.
     t.eventsSatisfy("every call reaches the one task the sign-off started", (events) => {
-      const taskIds = events.flatMap((event) =>
-        event.type === "task.started" ? [event.data.taskId] : [],
+      const starts = events.flatMap((event) => (event.type === "task.started" ? [event.data] : []));
+      const callIds = new Set(starts.map((start) => start.callId));
+      const taskIds = new Set(starts.map((start) => start.taskId));
+      return (
+        callIds.size === 2 &&
+        callIds.has("signoff") &&
+        callIds.has("signoff-note") &&
+        taskIds.size === 1
       );
-      return taskIds.length === 2 && new Set(taskIds).size === 1;
     });
     t.noFailedActions();
   },
