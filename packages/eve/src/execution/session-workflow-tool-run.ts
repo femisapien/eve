@@ -24,8 +24,6 @@ import {
 import { runProxySubagentEventStep } from "#subagents/event-proxy-step.js";
 import type { WorkflowAskRoute } from "#harness/proxy-input-requests.js";
 import type { RuntimeActionResult } from "#shared/action-types.js";
-import type { SessionStateMap } from "#harness/types.js";
-import { findTask, readTaskTable } from "#execution/tasks/table.js";
 
 interface HandlerInput<T> {
   readonly cursor: SessionStateCursor;
@@ -128,7 +126,6 @@ async function handleWorkflowToolRunWithdraw(
   input: HandlerInput<WorkflowToolRunWithdrawMessage>,
 ): Promise<void> {
   const { cursor, message } = input;
-  if (!isTrackedSender(cursor.sessionState.snapshot.session.state, message.from)) return;
   await cursor.apply(
     await withdrawWorkflowToolRunQuestionStep({
       ...cursor.stepState(),
@@ -137,15 +134,6 @@ async function handleWorkflowToolRunWithdraw(
       runId: message.from.runId,
     }),
   );
-}
-
-/**
- * Whether the session still tracks the task whose run sent a message. A run a
- * turn waits on always hears back, so its questions never wait on a decision.
- */
-function isTrackedSender(state: SessionStateMap | undefined, from: WorkflowToolRunRef): boolean {
-  if (from.taskId === undefined) return true;
-  return findTask(readTaskTable(state), from.taskId)?.run?.runId === from.runId;
 }
 
 function createWorkflowAskRoute(

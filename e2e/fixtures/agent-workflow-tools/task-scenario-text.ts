@@ -7,6 +7,9 @@ export const STAGE_INTERIM_MESSAGE = "Staging api now; I'll report back with the
 /** The root agent's text before its turn waits on `approve_rollout`. */
 export const ROLLOUT_INTERIM_MESSAGE = "Asked for approval to roll out api; I'll report back.";
 
+/** The root agent's text before its turn waits on `sign_off_plan`. */
+export const SIGN_OFF_INTERIM_MESSAGE = "Asked for sign-off on the api plan; I'll report back.";
+
 /** The root agent's text before its turn waits on the `workflow-stager` agent. */
 export const DELEGATE_INTERIM_MESSAGE = "Asked workflow-stager to stage api; I'll report back.";
 

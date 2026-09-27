@@ -135,7 +135,8 @@ messages. A body that wants to stop races or passes the signal. Tasks are never 
 **Anything that waits takes a `signal`.** `ctx.ask(request, { signal })` withdraws the request
 when the signal aborts: it resolves `{ status: "cancelled" }`, and `input.resolved` reports
 `outcome: "cancelled"` so channels update the question. Cancellation withdraws a pending ask the
-same way. An ask that should end when the conversation moves on passes `ctx.interruptSignal`,
+same way. The session decides between an answer and a withdrawal (§7), so an answer it accepted
+first still resolves the ask as `answered` after the signal aborts. An ask that should end when the conversation moves on passes `ctx.interruptSignal`,
 which replaces `dismissible`. The built-in tools do exactly this:
 
 ```ts
@@ -533,9 +534,14 @@ the model's history, and clients see outcomes through `task.settled`. The eval a
   Only later calls to a `serve` task use the run's private hook, created with a token derived
   from `taskId` before the body starts, because a Workflow SDK hook registers only when the run
   suspends.
-- **One inbox per run.** A run's signals and ask results are views over one ordered inbox, so
-  when an answer and an interrupt race, they resolve in inbox order: `ask_question` gets the
-  answer or `cancelled`, whichever its run's inbox received first.
+- **One inbox per run.** Everything the run receives (calls, answers, interrupt, cancel) is
+  delivered through one ordered inbox in the order the session accepted it. The inbox is the run's
+  control hook; only the session writes to it, and ask results and signals are views over it.
+  The session is the one authority on a question: it accepts an answer or a withdrawal at the
+  step that retires the question's route, emits `input.resolved` from that step, and sends its
+  decision (`answer` or `withdrawn`) on the control hook. An aborted signal only asks the session
+  to withdraw. `cancel` of an `execute` or `task()` call and `end` settle its pending asks as
+  `cancelled`, because the session retires their routes when it sends them.
 - **Start once.** The model step commits the task record, with an ID assigned by the session,
   alongside the tool call; the session then starts the task's run in one step keyed on `taskId`.
   Commands issued before the run reports started are held on the record.
@@ -744,6 +750,8 @@ suites under the fixtures they exercise.
 - A task's question during a hold emits `input.requested`, then `turn.waiting`, and the answered
   turn completes once.
 - A user-defined `serve()` tool is continued by `taskId`, cancelled, and continued again.
+- Cancelling a `serve()` task withdraws its pending question as `cancelled`, and the task serves
+  its next call.
 - An agent, local and remote, is continued by `taskId` across turns and after `task_cancel` with
   its conversation intact; a child's question is answered at the root.
 - Slack posts the text of a step whose only tool call is `task_wait`.
@@ -757,7 +765,8 @@ told there's no rush; doesn't use a side-effect tool before the result it depend
 duplicate settlement; a result before the run reports started; a cancel before it starts; a crash
 between the record and the start; a hard stop racing a result; a result settling as `task_wait`
 starts or ends; an agent message racing the end of its turn; a call arriving before a `serve`
-body's first `receive()`.
+body's first `receive()`; a person's answer the session accepts after the run asked to withdraw
+the question but before the session handled the request.
 
 ## 11. Risks and accepted costs
 

@@ -6,6 +6,7 @@ import {
 } from "#execution/durable-session-store.js";
 import {
   cancelTask,
+  findTask,
   finishTaskRun,
   markTaskRunStarted,
   readTaskTable,
@@ -18,9 +19,10 @@ import {
   type TaskRunCommands,
   type TaskTable,
 } from "#execution/tasks/table.js";
-import { isTaskWorkflowTargetGone } from "#execution/tasks/workflow-target.js";
+import { ignoreGoneTarget } from "#execution/tasks/workflow-target.js";
 import {
   publishSessionEvents,
+  relaySessionEvents,
   type PublishedSessionEvents,
   type SessionStepState,
 } from "#execution/publish-session-events.js";
@@ -30,6 +32,7 @@ import type {
   WorkflowToolRunOutcomeMessage,
 } from "#execution/tools/workflow/messages.js";
 import { workflowToolRunFailureOutput } from "#execution/tools/workflow/owner-inbox.js";
+import { withdrawWorkflowAsks } from "#execution/tools/workflow/withdraw-step.js";
 import { clearProxyInputRequestsWhere } from "#harness/proxy-input-requests.js";
 import { resumeHook } from "#internal/workflow/runtime.js";
 import { createTaskSettledEvent, type TaskSettledStreamEvent } from "#protocol/message.js";
@@ -88,6 +91,9 @@ export async function applyTaskRunMessageStep(
 /**
  * Cancels tasks: their calls settle as cancelled and their runs are told to
  * stop. A run ends itself within its cleanup deadline and reports cancelled.
+ * A `task()` run's cancel settles its questions, so the session withdraws
+ * them in the same step and accepts no answer after it. A `serve()` run
+ * withdraws its stretch's questions itself, and the session decides each one.
  */
 export async function cancelTasksStep(
   input: SessionStepState & { readonly taskIds: readonly string[] },
@@ -97,16 +103,22 @@ export async function cancelTasksStep(
   const session = readDurableSession(input.sessionState);
   let table = readTaskTable(session.state);
   const events: TaskSettledStreamEvent[] = [];
+  const stoppedRunIds = new Set<string>();
   for (const taskId of input.taskIds) {
+    const resumable = findTask(table, taskId)?.resumable;
     const cancelled = cancelTask(table, taskId);
     table = cancelled.table;
     events.push(...cancelled.settled.map((call) => taskSettledEvent(taskId, call, CANCELLED)));
-    if (cancelled.send !== undefined) await sendTaskRunCommands(cancelled.send);
+    if (cancelled.send === undefined) continue;
+    if (resumable === false) stoppedRunIds.add(cancelled.send.run.runId);
+    await sendTaskRunCommands(cancelled.send);
   }
-  return await publishSessionEvents(
-    { ...input, sessionState: saveTable(input.sessionState, session, table) },
-    events,
+  const withdrawn = withdrawWorkflowAsks(session, (_requestId, runId) => stoppedRunIds.has(runId));
+  const relayed = await relaySessionEvents(
+    { ...input, sessionState: saveTable(input.sessionState, withdrawn.session, table) },
+    withdrawn.events,
   );
+  return await publishSessionEvents({ ...input, ...relayed }, events);
 }
 
 const CANCELLED: TaskOutcome = { status: "cancelled" };
@@ -148,14 +160,6 @@ function toControlMessage(command: TaskRunCommand): WorkflowToolRunControlMessag
       return { kind: "cancel", reason: TASK_CANCEL_REASON };
     case "call":
       return { call: command.call, kind: "call" };
-  }
-}
-
-async function ignoreGoneTarget(pending: Promise<unknown>): Promise<void> {
-  try {
-    await pending;
-  } catch (error) {
-    if (!isTaskWorkflowTargetGone(error)) throw error;
   }
 }
 
