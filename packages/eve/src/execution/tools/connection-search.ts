@@ -56,7 +56,7 @@ const CONNECTION_SEARCH_INPUT_SCHEMA = defineJsonSchema<ConnectionSearchInput>({
   additionalProperties: false,
 });
 
-const CONNECTION_SEARCH_OUTPUT_SCHEMA = defineJsonSchema<ConnectionSearchResultItem[]>({
+const CONNECTION_SEARCH_OUTPUT_SCHEMA = defineJsonSchema<ConnectionSearchModelItem[]>({
   type: "array",
   items: {
     type: "object",
@@ -64,9 +64,7 @@ const CONNECTION_SEARCH_OUTPUT_SCHEMA = defineJsonSchema<ConnectionSearchResultI
       connection: { type: "string" },
       description: { type: "string" },
       error: { type: "string" },
-      inputSchema: { type: "object" },
       needsAuthorization: { type: "boolean" },
-      outputSchema: { type: "object" },
       qualifiedName: { type: "string" },
       tool: { type: "string" },
     },
@@ -106,6 +104,21 @@ interface ConnectionSearchResultItem {
   readonly outputSchema?: Record<string, unknown>;
   readonly tool?: string;
   readonly qualifiedName?: string;
+}
+
+/**
+ * Model-facing search match. Discovered tools are registered with their full
+ * schemas on the next step, so repeating the schemas in the result would
+ * charge for them twice on every later request.
+ */
+type ConnectionSearchModelItem = Omit<ConnectionSearchResultItem, "inputSchema" | "outputSchema">;
+
+function toModelItem({
+  inputSchema: _inputSchema,
+  outputSchema: _outputSchema,
+  ...item
+}: ConnectionSearchResultItem): ConnectionSearchModelItem {
+  return item;
 }
 
 function tokenize(text: string): string[] {
@@ -170,7 +183,7 @@ async function completePendingAuthorizations(
 
 async function executeConnectionSearch(
   input: ConnectionSearchInput,
-): Promise<ConnectionSearchResultItem[] | AuthorizationSignal> {
+): Promise<ConnectionSearchModelItem[] | AuthorizationSignal> {
   const ctx = loadContext();
   const registry = ctx.get(ConnectionRegistryKey);
   if (registry === undefined) {
@@ -296,7 +309,7 @@ async function executeConnectionSearch(
   const matched = results.slice(0, limit).map((r) => r.item);
 
   if (matched.length > 0) {
-    const allResults = [...matched, ...failedConnections];
+    const allResults = [...matched, ...failedConnections].map(toModelItem);
     const existing = ctx.get(ConnectionSearchResultsKey) ?? [];
     const merged = new Map(existing.map((r) => [r.qualifiedName, r]));
     for (const r of matched) {
