@@ -14,8 +14,10 @@ JavaScript program that calls connections and opted-in tools through a typed
 the provider `tools` array, so adding, discovering, or activating them never
 breaks the prompt cache.
 
-- Connections move behind `execute` first, replacing `connection_search`.
-  Today that tool breaks the whole cached prefix every time it succeeds.
+- One flag, `experimental: { codeMode: true }`, turns on the whole feature.
+  Connections and framework tools route through `execute`, and
+  `connection_search` is removed. Today every successful search breaks the
+  whole cached prefix.
 - The tool catalog is delivered as append-only conversation messages. The
   `execute` description never changes.
 - Nested calls go through the existing harness tool path: approvals,
@@ -25,8 +27,8 @@ breaks the prompt cache.
 - Authored tools opt in with `defineTool({ codeMode: true })` and must
   declare an `outputSchema`. Tools eve does not control, such as MCP servers
   without output schemas, are typed `unknown` rather than rejected.
-- Everything ships behind `experimental.codeMode`. Promotion to the default
-  depends on measured cache reuse, model calls, and task success.
+- Making code mode the default depends on measured cache reuse, model
+  calls, and task success.
 
 This is also the substrate for skill sets. Activating one appends a catalog
 namespace instead of rewriting the `tools` array.
@@ -92,17 +94,17 @@ Sources:
 - `@ai-sdk/code-mode`: `vercel/ai` at `5d12eaa`, 1.0.75. It has the same API
   as eve's 1.0.62. See the [docs](https://ai-sdk.dev/docs/ai-sdk-core/code-mode).
 
-|                   | opencode v2                                        | AI SDK code mode                                      | eve (proposed)                              |
-| ----------------- | -------------------------------------------------- | ----------------------------------------------------- | ------------------------------------------- |
-| Model surface     | `execute` plus direct tools                        | one code tool, routed by `experimental_toolCallers`   | `execute` plus direct tools                 |
-| Routed into code  | all MCP tools by default; opt-out per server       | tools whose callers include code mode                 | connections; opted-in tools                 |
-| Runtime           | in-process acorn AST interpreter                   | QuickJS in worker threads (`run`)                     | AI SDK runtime                              |
-| Catalog placement | session baseline plus appended deltas              | tool description (default) or appended full catalog   | appended baseline plus deltas               |
-| Discovery         | budgeted inline listing plus `search()` in program | full declarations; `toolSearch()` outside the program | budgeted listing plus `search()` in program |
-| Unknown outputs   | `Promise<unknown>`                                 | `Promise<unknown>`                                    | `Promise<unknown>`, with `Opaque` A/B       |
-| Nested approvals  | same permission path as direct calls               | callback, or signed interrupt (undocumented)          | harness approval path; parks durably        |
-| Limits            | none set by core                                   | 30 s, 64 MB, 256 calls, 1 MB result                   | AI SDK defaults                             |
-| Nested visibility | progress on the parent call                        | none                                                  | protocol actions with `parentCallId`        |
+|                   | opencode v2                                        | AI SDK code mode                                      | eve (proposed)                                        |
+| ----------------- | -------------------------------------------------- | ----------------------------------------------------- | ----------------------------------------------------- |
+| Model surface     | `execute` plus direct tools                        | one code tool, routed by `experimental_toolCallers`   | `execute` plus direct tools                           |
+| Routed into code  | all MCP tools by default; opt-out per server       | tools whose callers include code mode                 | connections, framework tools, opted-in authored tools |
+| Runtime           | in-process acorn AST interpreter                   | QuickJS in worker threads (`run`)                     | AI SDK runtime                                        |
+| Catalog placement | session baseline plus appended deltas              | tool description (default) or appended full catalog   | appended baseline plus deltas                         |
+| Discovery         | budgeted inline listing plus `search()` in program | full declarations; `toolSearch()` outside the program | budgeted listing plus `search()` in program           |
+| Unknown outputs   | `Promise<unknown>`                                 | `Promise<unknown>`                                    | `Promise<unknown>`, with `Opaque` A/B                 |
+| Nested approvals  | same permission path as direct calls               | callback, or signed interrupt (undocumented)          | harness approval path; parks durably                  |
+| Limits            | none set by core                                   | 30 s, 64 MB, 256 calls, 1 MB result                   | AI SDK defaults                                       |
+| Nested visibility | progress on the parent call                        | none                                                  | protocol actions with `parentCallId`                  |
 
 **opencode v2**
 
@@ -193,16 +195,15 @@ Sources:
   nested calls.
 - Errors are returned as data with suggestions, such as "Did you mean
   `tools.linear.list_issues`?".
-- Oversized results are covered in [Large outputs](#large-outputs).
 
 **Direct tools**
 
-- **Always direct:** `load_skill`, subagent tools, `ask_question`,
-  `task_cancel`, and the final output tool.
-- **Direct by default:** `bash`, `read_file`, `write_file`, `glob`, `grep`,
-  `web_fetch`, and `web_search`. The experiment knob `frameworkTools: true`
-  makes them callable only through `execute`.
-- No tool is reachable both ways in the same configuration.
+- **Direct tools stay limited to control-plane actions:** `load_skill`,
+  subagent tools, `ask_question`, `task_cancel`, and the final output tool.
+- **Framework tools become code-only:** `bash`, `read_file`, `write_file`,
+  `glob`, `grep`, `web_fetch`, and `web_search`. `web_search` gains an
+  `outputSchema` first, because every tool eve owns must declare its output.
+- No tool is reachable both directly and from code.
 
 **Skills** keep their listing and `load_skill`. Skill-list updates follow the
 same append-only rule as the catalog. With code mode on, `load_skill`'s
@@ -218,6 +219,7 @@ Namespaces derive from file paths, and collisions are compile errors.
 | Source              | Path                                                        |
 | ------------------- | ----------------------------------------------------------- |
 | Connection tools    | `tools.<connection>.<tool>`                                 |
+| Framework tools     | `tools.<tool>`, for example `tools.bash`                    |
 | Opted-in authored   | `tools.<tool>`                                              |
 | Extension tools     | `tools.<extension>.<tool>`                                  |
 | Subagents (Phase 2) | `tools.agents.<name>({ message, agentId?, outputSchema? })` |
@@ -340,45 +342,23 @@ its `execute` call.
 `parentCallId` is an additive public protocol change. It ships with
 protocol docs and a changeset.
 
-### Large outputs
-
-**Nested outputs**
-
-- Nested outputs enter the program at full size, up to a configurable
-  per-call cap (default 4 MB).
-- Larger outputs fail that call with `ToolOutputTooLarge`. The error names
-  the tool and suggests its filter or paging arguments.
-- Output types never depend on size.
-
-**`execute` results**
-
-`execute` results have a model-facing cap. `experimental.codeMode.oversizedResults`
-controls what happens when a result exceeds it:
-
-- **`"truncate"` (default).** Follows the `bash`, `read_file`, and
-  `web_fetch` convention: the head of the result, `truncated: true`, and a
-  marker telling the model to filter or paginate inside the program.
-- **`"sandbox"`.** Writes the full result to
-  `$HOME/.eve/results/<callId>.json` in the session sandbox, and returns the
-  path, the size, a preview, and `truncated: true`.
-  - Use it for bulk data, such as a SQL tool returning thousands of rows.
-  - The file is keyed by call id, so re-runs overwrite it.
-  - The sandbox starts only when a result overflows.
-
 ### Authoring API (experimental)
 
 ```ts title="agent/agent.ts"
 export default defineAgent({
   experimental: {
-    codeMode: true, // or { frameworkTools: true, oversizedResults: "sandbox" }
+    codeMode: true,
   },
 });
 ```
 
 **Enabling code mode**
 
-- Connections route only through `execute`, and `connection_search` is
-  removed.
+This one flag enables everything in this document. There are no other code
+mode settings.
+
+- Connections and framework tools route only through `execute`.
+- `connection_search` is removed.
 - Enabling code mode together with `workflow()` is a compile error until
   `tools.agents.*` ships. After that, `workflow()` and `eve/tools/workflow`
   are removed, a breaking change we accept pre-1.0.
@@ -452,22 +432,26 @@ skill sets design.
 - latency,
 - task success.
 
-**Phase 1: connections.**
+**Phase 1: connections and framework tools.**
 
-- Ship `experimental.codeMode` with the catalog, `search()`, nested approvals
-  and auth, protocol events, and OpenAPI output schemas.
+- Ship `experimental.codeMode` with:
+  - the catalog and `search()`,
+  - nested approvals and auth,
+  - protocol events,
+  - code-only framework tools,
+  - OpenAPI output schemas.
 - Evals:
   - a multi-connection correlation task (Alice reconciles orders against
     payments and support tickets),
   - discovery across 100+ tools,
   - OAuth mid-program,
   - approval mid-program,
-  - an MCP server with untyped outputs.
+  - an MCP server with untyped outputs,
+  - a sandbox task that reads, edits, and runs files through `tools.*`.
 
-**Phase 2: tools and agents.**
+**Phase 2: authored tools and agents.**
 
-- Ship `codeMode: true` for authored tools, and evaluate the
-  `frameworkTools` knob.
+- Ship `codeMode: true` for authored tools.
 - Ship `tools.agents.*`, port the `workflow()` fixtures, then remove
   `workflow()`.
 - A/B test `Promise<Opaque>` ("return it whole or pass it on; never read its
@@ -477,7 +461,7 @@ skill sets design.
 
 **Phase 3: defaults.** Code mode becomes the default when Phase 1 shows:
 
-- no task-success regression on connection evals,
+- no task-success regression on connection or sandbox evals,
 - a clearly higher cache read ratio on discovery-heavy sessions,
 - fewer model calls on composition tasks,
 - no new nondeterminism in world-suite e2e runs.
@@ -491,12 +475,12 @@ Otherwise it stays opt-in, and `connection_search` is fixed separately.
 | Tool name                      | `execute`, matching opencode v2                                          | `code_mode`, `code`, `run_code`                                                                |
 | Outputs without schemas        | `Promise<unknown>`; `Opaque` tested in Phase 2                           | Rejecting tools without schemas; `Opaque` from day one                                         |
 | `workflow()`                   | Merged into `execute` as `tools.agents.*`; mutually exclusive until then | Keeping both tools; letting them coexist during the experiment                                 |
-| Sandbox and web tools          | Direct by default; code-only under `frameworkTools`                      | Code-only by default; never code-callable                                                      |
+| Configuration                  | One flag, `experimental: { codeMode: true }`                             | Per-feature knobs such as a separate `frameworkTools` switch                                   |
+| Framework tools                | Code-only when code mode is on; control-plane tools stay direct          | Keeping sandbox and web tools direct, as opencode v2 does                                      |
 | Skills in `search()`           | Tools only; skills move in with a future deferred-skills design          | Skill hits in `search()`; `tools.skills.load()`                                                |
 | Authoring API                  | `defineTool({ codeMode: true })`                                         | `defineCodeModeTool`, a second definition kind to fold back later                              |
 | Authored tools without schemas | `outputSchema` required and validated at runtime                         | Build-time TypeScript extraction (needs a type checker and adds nothing at runtime); `unknown` |
 | Nested call visibility         | Protocol actions with `parentCallId`                                     | Progress only (breaks `t.calledTool` and approval correlation)                                 |
-| Oversized results              | Truncate by default; `"sandbox"` writes a result file                    | Always spilling to the sandbox; spilling only when a sandbox is running                        |
 
 ## Evidence limits
 
