@@ -218,6 +218,10 @@ A `serve` body runs once per task and gets its calls from `receive()` instead of
   cancelled any number of times. A body stays available only if it catches its stretch's abort
   and returns to `receive()`; an abort that escapes the body finishes the task. A body that ignores
   the signal keeps working, and its reply is dropped.
+- **The context follows the call.** `ctx.session` (its turn and auth) and `ctx.agents` describe
+  the call being served, from the moment `receive()` resolves it. An agent session the body opens
+  belongs to the call that opened it: its parent, turn, and trace come from that call. Each
+  message the body sends it carries the auth of the call being served when it is sent.
 - **Working and idle.** A resumable task is working while one of its calls has no result, and
   idle otherwise. An idle task holds no turn and doesn't count toward the cap.
 - **Finishing.** The task finishes when its body returns or throws, or when the session ends,
@@ -451,7 +455,8 @@ yet, and other channels are unchanged.
 **Principals.** Only the turn's own principal steers it; another principal's message waits for
 the turn to end, then starts that principal's turn. Calls with `taskId` and `task_cancel` accept
 only the task's creator principal, and `task_wait` and `[Tasks]` cover only the turn principal's
-tasks. Anonymous callers share one principal.
+tasks. Anonymous callers share one principal. Queued messages from one principal share a turn
+even when their claims differ, and the turn runs with the latest claims.
 
 **No task time limits.** `defineAgent`'s `limits.sessionTimeoutMs` keeps its meaning, the
 session lifetime (default 30 days), and bounds all work in the session; with `false`, tasks are
@@ -690,8 +695,9 @@ schedule turns.
 first call from the start input and later calls through the run's hook, `ctx.reply()`, return
 and throw settlement, `ctx.ask` throwing while no call waits, `taskId` on the model input and its
 build check, per-stretch `abortSignal`, idle tasks in the turn rule and `[Tasks]`, and cancel
-keeping the task. Each call carries its own turn, so `agent.started` and `task.settled` name the
-current call's `turnId` and the task's `taskId`.
+keeping the task. Each call carries its own turn, auth, and agent context, so `ctx.session`,
+`ctx.agents`, `agent.started`, and `task.settled` describe the current call, and a session the
+body opens belongs to the call that opened it.
 
 **8. Agents as tasks.** Agent tools rebuilt as `serve` tools on `ctx.agent`;
 `agentId` becomes `taskId`. Delete the old dispatch (`subagents/handle-dispatch.ts`,
