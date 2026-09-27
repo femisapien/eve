@@ -357,11 +357,25 @@ export default defineAgent({
 This one flag enables everything in this document. There are no other code
 mode settings.
 
-- Connections and framework tools route only through `execute`.
-- `connection_search` is removed.
-- Enabling code mode together with `workflow()` is a compile error until
-  `tools.agents.*` ships. After that, `workflow()` and `eve/tools/workflow`
-  are removed, a breaking change we accept pre-1.0.
+- **Root-only, and applies to the whole agent tree.** The flag is set only
+  on the root `agent.ts`, and it applies to the root and every local
+  subagent. Each agent in the tree still has its own `execute` tool and its
+  own catalog.
+  - Setting it in a subagent's `agent.ts` is a compile error, following the
+    existing `experimental.workflow.world` rule:
+
+    ```text
+    Code mode configuration is only supported on the root agent config.
+    Remove "experimental.codeMode" from "<agentId>".
+    ```
+
+  - Remote subagents are separate deployments. Their own root decides.
+- In every agent in the tree:
+  - Connections and framework tools route only through `execute`.
+  - `connection_search` is removed.
+- Enabling code mode is a compile error while any agent in the tree uses
+  `workflow()`, until `tools.agents.*` ships. After that, `workflow()` and
+  `eve/tools/workflow` are removed, a breaking change we accept pre-1.0.
 
 **Authored tools** opt in individually:
 
@@ -382,6 +396,20 @@ export default defineTool({
 - Outputs are validated at runtime. A mismatch reaches the program as
   `InvalidToolOutput`, so the catalog never advertises a shape the tool
   doesn't return.
+
+**Without the root flag**
+
+The tool-level `codeMode: true` only declares where a tool goes when code mode
+is on. Without the root flag:
+
+- The tool is an ordinary direct tool, and `outputSchema` is still required.
+- `eve build` and `eve dev` warn about each tool in the agent's own directory
+  that sets `codeMode: true`, naming the tool and the missing
+  `experimental.codeMode`.
+- Extension tools produce no warning. That lets an extension ship code-mode
+  tools that also work in agents without code mode.
+- When code mode becomes the default, these tools move into `execute` with no
+  author change.
 
 **OpenAPI connections** derive `outputSchema` from each operation's success
 response schema. `body` becomes typed. This is the cheapest large gain in
@@ -470,17 +498,19 @@ Otherwise it stays opt-in, and `connection_search` is fixed separately.
 
 ## Decisions and alternatives considered
 
-| Decision                       | Chosen                                                                   | Rejected                                                                                       |
-| ------------------------------ | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
-| Tool name                      | `execute`, matching opencode v2                                          | `code_mode`, `code`, `run_code`                                                                |
-| Outputs without schemas        | `Promise<unknown>`; `Opaque` tested in Phase 2                           | Rejecting tools without schemas; `Opaque` from day one                                         |
-| `workflow()`                   | Merged into `execute` as `tools.agents.*`; mutually exclusive until then | Keeping both tools; letting them coexist during the experiment                                 |
-| Configuration                  | One flag, `experimental: { codeMode: true }`                             | Per-feature knobs such as a separate `frameworkTools` switch                                   |
-| Framework tools                | Code-only when code mode is on; control-plane tools stay direct          | Keeping sandbox and web tools direct, as opencode v2 does                                      |
-| Skills in `search()`           | Tools only; skills move in with a future deferred-skills design          | Skill hits in `search()`; `tools.skills.load()`                                                |
-| Authoring API                  | `defineTool({ codeMode: true })`                                         | `defineCodeModeTool`, a second definition kind to fold back later                              |
-| Authored tools without schemas | `outputSchema` required and validated at runtime                         | Build-time TypeScript extraction (needs a type checker and adds nothing at runtime); `unknown` |
-| Nested call visibility         | Protocol actions with `parentCallId`                                     | Progress only (breaks `t.calledTool` and approval correlation)                                 |
+| Decision                                    | Chosen                                                                   | Rejected                                                                                       |
+| ------------------------------------------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------- |
+| Tool name                                   | `execute`, matching opencode v2                                          | `code_mode`, `code`, `run_code`                                                                |
+| Outputs without schemas                     | `Promise<unknown>`; `Opaque` tested in Phase 2                           | Rejecting tools without schemas; `Opaque` from day one                                         |
+| `workflow()`                                | Merged into `execute` as `tools.agents.*`; mutually exclusive until then | Keeping both tools; letting them coexist during the experiment                                 |
+| Configuration                               | One flag, `experimental: { codeMode: true }`                             | Per-feature knobs such as a separate `frameworkTools` switch                                   |
+| Flag scope                                  | Root-only; applies to the whole local agent tree                         | Per agent (like `workflow.modelCallsPerStep`); per agent with inheritance                      |
+| Tool `codeMode: true` without the root flag | Ordinary direct tool; build and dev warn for the agent's own tools       | Compile error (blocks extension tools); silent fallback                                        |
+| Framework tools                             | Code-only when code mode is on; control-plane tools stay direct          | Keeping sandbox and web tools direct, as opencode v2 does                                      |
+| Skills in `search()`                        | Tools only; skills move in with a future deferred-skills design          | Skill hits in `search()`; `tools.skills.load()`                                                |
+| Authoring API                               | `defineTool({ codeMode: true })`                                         | `defineCodeModeTool`, a second definition kind to fold back later                              |
+| Authored tools without schemas              | `outputSchema` required and validated at runtime                         | Build-time TypeScript extraction (needs a type checker and adds nothing at runtime); `unknown` |
+| Nested call visibility                      | Protocol actions with `parentCallId`                                     | Progress only (breaks `t.calledTool` and approval correlation)                                 |
 
 ## Evidence limits
 
