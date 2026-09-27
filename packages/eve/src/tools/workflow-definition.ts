@@ -135,7 +135,10 @@ export interface WorkflowServeCall<TInput = unknown> {
  * Resolves with the task's next call. The first `receive()` resolves at once
  * with the call that started the task; each later one with the next call made
  * with the task's `taskId`, in arrival order. A pending `receive()` is shared:
- * calling it again returns the same promise. It rejects when the session ends.
+ * calling it again returns the same promise. A call counts as received once its
+ * promise resolves, even if that promise lost a `Promise.race`, and the next
+ * `ctx.reply()` settles it, so keep a raced promise until you read its call.
+ * It rejects when the session ends.
  */
 export type WorkflowServeReceive<TInput = unknown> = () => Promise<WorkflowServeCall<TInput>>;
 

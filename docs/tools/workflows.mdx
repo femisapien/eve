@@ -331,7 +331,9 @@ limit [described above](#run-calls-as-tasks-task). What differs:
   the task, without a step or a durable wait, and replays deterministically. After that, it
   resolves with each call made with the task's `taskId`, in arrival order. Calls that arrive while
   the body isn't waiting are kept. A pending `receive()` is shared, so calling it again returns the
-  same promise and a `Promise.race` it loses never drops a call.
+  same promise. A call counts as received as soon as its promise resolves, even if that promise
+  lost a `Promise.race`, and the next `ctx.reply()` settles it. If you race `receive()`, keep its
+  promise until you read the call instead of calling `receive()` again.
 - **`taskId` on the model input:** eve adds an optional `taskId` to the tool's model input and
   appends a sentence explaining it to the description. A call without `taskId` starts a new task,
   whose receipt names it: `Started task release-plan-7k2m9q. Call release-plan again with taskId

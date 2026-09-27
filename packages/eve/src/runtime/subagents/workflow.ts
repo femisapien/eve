@@ -40,15 +40,32 @@ export async function agentToolServeWorkflow(
 
   const agent = ctx.agent(ctx.toolName);
   let turn = sendToAgent(agent, await receive());
+  let next = receive();
   for (;;) {
-    const event = await nextCallOrResult(receive, turn);
+    const event = await nextCallOrResult(next, turn);
     if (event.kind === "call") {
       turn = await forwardCall(agent, turn, event.call);
+      next = receive();
       continue;
     }
     // A cancel already settled the turn's calls, and the task stays available.
-    if (!turn.signal.aborted) replyWithResult(ctx, event.result);
-    turn = sendToAgent(agent, await receive());
+    if (!turn.signal.aborted) {
+      if (event.result.status === "failed") throw new Error("The agent's session ended.");
+      // `next` can take a call after the result wins the race, and the reply
+      // would settle that call unread. `receive()` returns `next` only while
+      // it's pending, so another promise means the agent reads that call
+      // first. Nothing may await between this check and the reply. The
+      // session's end aborts the turn, so `following` can't reject here.
+      const following = receive();
+      if (following !== next) {
+        turn = sendToAgent(agent, await next);
+        next = following;
+        continue;
+      }
+      ctx.reply(event.result.message ?? "");
+    }
+    turn = sendToAgent(agent, await next);
+    next = receive();
   }
 }
 
@@ -60,14 +77,14 @@ function sendToAgent(agent: AgentSession, call: AgentToolCall): AgentTurn {
   return { result, signal: call.abortSignal };
 }
 
-/** A pending `receive()` is shared, so a call that loses the race is received next time. */
+/** `next` may take a call even when the turn's result wins, so the loop keeps it until it's read. */
 async function nextCallOrResult(
-  receive: AgentToolReceive,
+  next: Promise<AgentToolCall>,
   turn: AgentTurn,
 ): Promise<AgentTurnEvent> {
   return await Promise.race([
     turn.result.then((result) => ({ kind: "result", result }) as const),
-    receive().then((call) => ({ call, kind: "call" }) as const),
+    next.then((call) => ({ call, kind: "call" }) as const),
   ]);
 }
 
@@ -83,9 +100,4 @@ async function forwardCall(
 ): Promise<AgentTurn> {
   if (turn.signal.aborted) await turn.result.catch(() => undefined);
   return sendToAgent(agent, call);
-}
-
-function replyWithResult(ctx: WorkflowServeContext<string>, result: AgentMessageResult): void {
-  if (result.status === "failed") throw new Error("The agent's session ended.");
-  ctx.reply(result.message ?? "");
 }
