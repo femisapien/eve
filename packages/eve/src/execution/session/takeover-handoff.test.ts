@@ -11,7 +11,7 @@ import type { SessionInboxHandle, SessionInboxPayload } from "#execution/session
 const isSessionIdleForHandoffStepMock = vi.fn(async (..._args: unknown[]) => true);
 const validateSessionCheckpointStepMock = vi.fn(async (..._args: unknown[]) => {});
 const forwardSessionInputStepMock = vi.fn(async (..._args: unknown[]) => true);
-const reportUnforwardedSessionInputStepMock = vi.fn(async (..._args: unknown[]) => {});
+const logSessionHandoffStepMock = vi.fn(async (..._args: unknown[]) => {});
 const supportsSessionTakeoverStepMock = vi.fn(async () => true);
 const startSessionOwnerStepMock = vi.fn();
 const createHookMock = vi.fn();
@@ -19,8 +19,7 @@ const createHookMock = vi.fn();
 vi.mock("#execution/session/handoff-steps.js", () => ({
   forwardSessionInputStep: (...args: unknown[]) => forwardSessionInputStepMock(...args),
   isSessionIdleForHandoffStep: (...args: unknown[]) => isSessionIdleForHandoffStepMock(...args),
-  reportUnforwardedSessionInputStep: (...args: unknown[]) =>
-    reportUnforwardedSessionInputStepMock(...args),
+  logSessionHandoffStep: (...args: unknown[]) => logSessionHandoffStepMock(...args),
   supportsSessionTakeoverStep: () => supportsSessionTakeoverStepMock(),
   validateSessionCheckpointStep: (...args: unknown[]) => validateSessionCheckpointStepMock(...args),
 }));
@@ -49,6 +48,8 @@ describe("TakeoverSessionHandoff", () => {
       createHandoff(createInbox()).tryTransfer(selection(deployment), state()),
     ).resolves.toEqual({ kind: "retained", reason });
     expect(startSessionOwnerStepMock).not.toHaveBeenCalled();
+    // Turns that never try to move stay free of extra steps.
+    expect(logSessionHandoffStepMock).not.toHaveBeenCalled();
   });
 
   it("retains ownership when the selection is not handoff-eligible", async () => {
@@ -100,6 +101,17 @@ describe("TakeoverSessionHandoff", () => {
     ]);
     expect(inbox.release).not.toHaveBeenCalled();
     expect(forwardSessionInputStepMock).not.toHaveBeenCalled();
+    expect(logSessionHandoffStepMock).toHaveBeenCalledWith({
+      fields: {
+        deploymentId: "deployment-a",
+        forwarded: 0,
+        protocol: "takeover",
+        sessionId: "session-1",
+        targetDeploymentId: "deployment-b",
+      },
+      level: "info",
+      message: "session handed off to another deployment",
+    });
     await expect(handoff.awaitAnchoredResult()).resolves.toEqual({ output: "done" });
   });
 
@@ -124,8 +136,11 @@ describe("TakeoverSessionHandoff", () => {
       createHandoff(createInbox(accepted)).tryTransfer(selection("deployment-b"), state()),
     ).resolves.toEqual({ kind: "transferred" });
     expect(forwardSessionInputStepMock).toHaveBeenCalledTimes(1);
-    expect(reportUnforwardedSessionInputStepMock).toHaveBeenCalledWith(
-      expect.objectContaining({ sessionId: "session-1", unforwarded: 2 }),
+    expect(logSessionHandoffStepMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fields: expect.objectContaining({ forwarded: 0, unforwarded: 2 }),
+        level: "warn",
+      }),
     );
   });
 
@@ -154,6 +169,15 @@ describe("TakeoverSessionHandoff", () => {
     );
     expect(vi.mocked(inbox.allowTakeover).mock.calls).toEqual([[true], [false]]);
     expect(forwardSessionInputStepMock).not.toHaveBeenCalled();
+    expect(logSessionHandoffStepMock).toHaveBeenCalledWith({
+      fields: expect.objectContaining({
+        error: expect.objectContaining({ message: "activation failed" }),
+        protocol: "takeover",
+        reason: "activation-failed",
+      }),
+      level: "warn",
+      message: "session handoff failed; the current owner kept the session",
+    });
   });
 
   it("holds the attempt fence itself when the successor start fails", async () => {
@@ -196,6 +220,12 @@ describe("TakeoverSessionHandoff", () => {
     ).resolves.toEqual({ kind: "transferred" });
     expect(inbox.release).toHaveBeenCalled();
     expect(inbox.allowTakeover).not.toHaveBeenCalled();
+    expect(logSessionHandoffStepMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        fields: expect.objectContaining({ protocol: "release" }),
+        level: "info",
+      }),
+    );
   });
 });
 

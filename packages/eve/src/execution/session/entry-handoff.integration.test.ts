@@ -22,7 +22,11 @@ import {
   handoffFollowUp,
   withTimeout,
 } from "#internal/testing/entry-test-helpers.js";
-import { captureConsoleOutput, workflowSdkNotice } from "#internal/testing/log-records.js";
+import {
+  captureConsoleOutput,
+  sessionHandoffFailedNotice,
+  workflowSdkNotice,
+} from "#internal/testing/log-records.js";
 
 describe("workflowEntry integration", () => {
   describe("deployment handoff", () => {
@@ -208,8 +212,13 @@ describe("workflowEntry integration", () => {
             expect.stringContaining(workflowSdkNotice.maxRetries),
           );
         }
+        expect(output.lines).toContainEqual(sessionHandoffFailedNotice);
         expect(
-          output.unexpected(workflowSdkNotice.unpinnedDelivery, workflowSdkNotice.maxRetries),
+          output.unexpected(
+            workflowSdkNotice.unpinnedDelivery,
+            workflowSdkNotice.maxRetries,
+            sessionHandoffFailedNotice,
+          ),
         ).toEqual([]);
       },
     );

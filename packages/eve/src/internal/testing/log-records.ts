@@ -26,6 +26,10 @@ export const workflowSdkNotice = {
     "[workflow-sdk] Queue message was delivered to a deployment it was not pinned to",
 } as const;
 
+/** Logged when a deployment handoff fails and the current owner keeps the session. */
+export const sessionHandoffFailedNotice =
+  "[eve:execution.session.handoff] session handoff failed; the current owner kept the session";
+
 /** Logged when a background task reports back after its parent session ended. */
 export const taskParentEndedNotice =
   "[eve:execution.tasks.run] task notification target is gone; the parent session already ended";

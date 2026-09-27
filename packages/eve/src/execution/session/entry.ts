@@ -20,6 +20,7 @@ import {
   sessionCommandHookToken,
 } from "#execution/session-inbox/address.js";
 import {
+  logSessionHandoffStep,
   signalSessionOwnerActivationStep,
   supportsSessionTakeoverStep,
 } from "#execution/session/handoff-steps.js";
@@ -176,19 +177,31 @@ async function bootHandoffOwner(
   const inbox = createSessionInbox(sessionId);
   const tokens = sessionHookTokens({ serializedContext, sessionState: checkpoint.sessionState });
   let legacy = isLegacyHandoff(input);
+  let heldAttempt = true;
   try {
     legacy ||= !(await supportsSessionTakeoverStep());
     if (legacy) await adoptReleasedSession(input, inbox, tokens);
-    else if (!(await takeOverSession(input, inbox, tokens))) return undefined;
-    await signalSessionOwnerActivationStep({
-      activation: { kind: "active" },
-      token: input.activationToken,
-    });
+    else heldAttempt = await takeOverSession(input, inbox, tokens);
+    if (heldAttempt) {
+      await signalSessionOwnerActivationStep({
+        activation: { kind: "active" },
+        token: input.activationToken,
+      });
+    }
   } catch (error) {
     const payloads = await inbox.release();
     await signalSessionOwnerActivationStep({
       activation: { error: normalizeSerializableError(error), kind: "failed", payloads },
       token: input.activationToken,
+    });
+    return undefined;
+  }
+  // The run holding the attempt reports to the source; this one must not.
+  if (!heldAttempt) {
+    await logSessionHandoffStep({
+      fields: { deploymentId: input.ownerDeploymentId, sessionId },
+      level: "info",
+      message: "handoff successor exited; another run already holds this attempt",
     });
     return undefined;
   }

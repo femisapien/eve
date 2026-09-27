@@ -14,7 +14,7 @@ import { normalizeSerializableError } from "#execution/workflow-errors.js";
 import {
   forwardSessionInputStep,
   isSessionIdleForHandoffStep,
-  reportUnforwardedSessionInputStep,
+  logSessionHandoffStep,
   supportsSessionTakeoverStep,
   validateSessionCheckpointStep,
 } from "#execution/session/handoff-steps.js";
@@ -25,6 +25,7 @@ import {
   type SessionCheckpoint,
   type SessionHandoff,
   type SessionHandoffInput,
+  type SessionHandoffProtocol,
   type SessionOwnerActivation,
   type SessionTransferOutcome,
 } from "#execution/session/handoff.js";
@@ -48,16 +49,25 @@ export class TakeoverSessionHandoff implements SessionHandoff {
     selection: TurnSelection,
     state: Pick<SessionCheckpoint, "serializedContext" | "sessionState">,
   ): Promise<SessionTransferOutcome> {
-    const { deploymentId, inbox, sessionId } = this.input;
     const targetDeploymentId = readAcceptedDeploymentId(selection.delivery);
     if (targetDeploymentId === undefined) return { kind: "retained", reason: "missing-deployment" };
-    if (targetDeploymentId === deploymentId) return { kind: "retained", reason: "same-deployment" };
+    if (targetDeploymentId === this.input.deploymentId)
+      return { kind: "retained", reason: "same-deployment" };
     if (!selection.handoffEligible) return { kind: "retained", reason: "busy" };
     this.supported ??= await supportsSessionTakeoverStep();
-    if (!this.supported) {
-      this.releaseFirst ??= new LegacySessionHandoff(this.input);
-      return await this.releaseFirst.tryTransfer(selection, state);
-    }
+    if (this.supported) return await this.takeOver(selection, state, targetDeploymentId);
+    this.releaseFirst ??= new LegacySessionHandoff(this.input);
+    const outcome = await this.releaseFirst.tryTransfer(selection, state);
+    await this.report({ outcome, protocol: "release", targetDeploymentId });
+    return outcome;
+  }
+
+  private async takeOver(
+    selection: TurnSelection,
+    state: Pick<SessionCheckpoint, "serializedContext" | "sessionState">,
+    targetDeploymentId: string,
+  ): Promise<SessionTransferOutcome> {
+    const { inbox, sessionId } = this.input;
     if (!(await isSessionIdleForHandoffStep(state)))
       return { kind: "retained", reason: "not-idle" };
     // A backlog is never transferred to salvage a handoff.
@@ -81,13 +91,78 @@ export class TakeoverSessionHandoff implements SessionHandoff {
     }
     if (outcome.kind === "failed") {
       await this.recover(outcome.payloads);
-      return { kind: "retained", reason: "activation-failed" };
+      const retained = { kind: "retained", reason: "activation-failed" } as const;
+      await this.report({
+        error: outcome.error,
+        outcome: retained,
+        protocol: "takeover",
+        targetDeploymentId,
+      });
+      return retained;
     }
     // The takeover ended every reader after it delivered what its hook had
     // accepted, so this is exactly what arrived before the successor owned the
     // session. It trails anything already sent to the successor directly.
-    await forwardAccepted(inbox.drain(), sessionId);
-    return { kind: "transferred" };
+    const forwarding = await forwardAccepted(inbox.drain(), sessionId);
+    const transferred = { kind: "transferred" } as const;
+    await this.report({
+      ...forwarding,
+      outcome: transferred,
+      protocol: "takeover",
+      targetDeploymentId,
+    });
+    return transferred;
+  }
+
+  /**
+   * Logs each attempted handoff. A turn that never tries to move, or defers
+   * because the session is busy, logs nothing and so costs no extra step.
+   */
+  private async report(input: {
+    readonly error?: unknown;
+    readonly forwarded?: number;
+    readonly outcome: SessionTransferOutcome;
+    readonly protocol: SessionHandoffProtocol;
+    readonly targetDeploymentId: string;
+    readonly unforwarded?: number;
+  }): Promise<void> {
+    const { outcome } = input;
+    const fields: Record<string, unknown> = {
+      deploymentId: this.input.deploymentId,
+      protocol: input.protocol,
+      sessionId: this.input.sessionId,
+      targetDeploymentId: input.targetDeploymentId,
+    };
+    if (input.forwarded !== undefined) fields.forwarded = input.forwarded;
+    if (input.unforwarded !== undefined) fields.unforwarded = input.unforwarded;
+    if (input.error !== undefined) fields.error = input.error;
+    if (outcome.kind === "transferred") {
+      await logSessionHandoffStep(
+        input.unforwarded === undefined
+          ? { fields, level: "info", message: "session handed off to another deployment" }
+          : {
+              fields,
+              level: "warn",
+              message:
+                "session handed off, but input accepted before the handoff could not be forwarded",
+            },
+      );
+      return;
+    }
+    fields.reason = outcome.reason;
+    if (outcome.reason === "activation-failed") {
+      await logSessionHandoffStep({
+        fields,
+        level: "warn",
+        message: "session handoff failed; the current owner kept the session",
+      });
+    } else if (outcome.reason === "accepted-during-release") {
+      await logSessionHandoffStep({
+        fields,
+        level: "info",
+        message: "session handoff deferred; input arrived while the addresses were released",
+      });
+    }
   }
 
   async awaitAnchoredResult(): Promise<WorkflowEntryResult> {
@@ -158,22 +233,30 @@ export class TakeoverSessionHandoff implements SessionHandoff {
   }
 }
 
+/** The successor already owns the session, so a forwarding failure is reported, not retried. */
 async function forwardAccepted(
   accepted: readonly SessionInboxPayload[],
   sessionId: string,
-): Promise<void> {
-  for (const [index, payload] of accepted.entries()) {
+): Promise<{
+  readonly error?: unknown;
+  readonly forwarded: number;
+  readonly unforwarded?: number;
+}> {
+  let forwarded = 0;
+  for (const payload of accepted) {
     try {
-      if (!(await forwardSessionInputStep({ payload, sessionId }))) return;
+      // A session that already ended has no one to receive the rest.
+      if (!(await forwardSessionInputStep({ payload, sessionId }))) break;
+      forwarded++;
     } catch (error) {
-      await reportUnforwardedSessionInputStep({
+      return {
         error: normalizeSerializableError(error),
-        sessionId,
-        unforwarded: accepted.length - index,
-      });
-      return;
+        forwarded,
+        unforwarded: accepted.length - forwarded,
+      };
     }
   }
+  return { forwarded };
 }
 
 function attemptFenceToken(activationToken: string, delivery: DeliverHookPayload): string {

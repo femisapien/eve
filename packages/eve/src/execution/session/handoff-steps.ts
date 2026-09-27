@@ -106,7 +106,7 @@ export async function validateSessionCheckpointStep(input: {
   }
 }
 
-const log = createLogger("eve:session-handoff");
+const log = createLogger("execution.session.handoff");
 
 /**
  * Takeover handoffs need forced hook claims to move each address and hook
@@ -140,18 +140,18 @@ export async function forwardSessionInputStep(input: {
   }
 }
 
-/** The successor already owns the session, so input it cannot receive is reported, not retried. */
-export async function reportUnforwardedSessionInputStep(input: {
-  readonly error: unknown;
-  readonly sessionId: string;
-  readonly unforwarded: number;
+/** Handoffs run in workflow code, which cannot reach the logger directly. */
+export async function logSessionHandoffStep(input: {
+  readonly level: "info" | "warn";
+  readonly message: string;
+  readonly fields: Readonly<Record<string, unknown>>;
 }): Promise<void> {
   "use step";
-  log.warn("session input accepted before a handoff could not be forwarded to the successor", {
-    error: formatError(input.error),
-    sessionId: input.sessionId,
-    unforwarded: input.unforwarded,
-  });
+  const { error, ...fields } = input.fields;
+  log[input.level](
+    input.message,
+    error === undefined ? fields : { ...fields, error: formatError(error) },
+  );
 }
 
 export async function signalSessionOwnerActivationStep(input: {

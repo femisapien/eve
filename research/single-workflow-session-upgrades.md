@@ -224,7 +224,9 @@ the candidate accepted after everything it already holds, and processes the trig
 itself. A failed start step may still have created the candidate, so the old owner then claims the
 attempt fence itself; if a candidate already holds it, the old owner waits for that candidate's
 activation instead. The old owner accepts a forced claim only while an attempt is in flight. Any
-other forced claim fails the session instead of reading as one with no more input.
+other forced claim fails the session instead of reading as one with no more input. Each attempted
+handoff logs its protocol and outcome, with the forwarded count or the failure; turns that never try
+to move log nothing, so they gain no step.
 
 The handoff version decides which protocol applies. A successor started by a version 2 source (or
 later) runs on a Workflow spec that can be taken from, and uses the takeover above for its own
