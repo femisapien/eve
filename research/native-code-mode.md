@@ -192,8 +192,8 @@ Sources:
 
 1. **Every tool is callable from code.** Direct tools keep their direct form,
    so models keep the behavior they are trained on, and scripts can compose
-   them with everything else. Connections and blocking subagent calls exist
-   only in code, so the `tools` array never grows with them. This follows
+   them with everything else. Connections and subagent calls that return the
+   child's output exist only in code, so the `tools` array never grows with them. This follows
    pi.
 2. **Catalog placement protects the cache, not code mode itself.** Three
    things must hold: a description that never changes, a catalog that only
@@ -272,8 +272,8 @@ Every tool the agent has, with two exceptions:
 - **Connection tools** are reachable only from scripts.
 - **Subagents** keep their direct tool, which starts a background task and
   returns a receipt. In scripts they appear only as
-  `tools.agents.<name>(...)`, which blocks until the child's output is
-  available to compose.
+  `tools.agents.<name>(...)`, which resolves to the child's output. The
+  `execute` call parks durably while the child runs, so no compute is held.
 - **Nested calls that need a person.** A nested `ask_question` parks the
   program until the person answers, the same way a nested approval does.
 
