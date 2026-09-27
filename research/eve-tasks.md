@@ -1,7 +1,7 @@
 ---
 issue: https://github.com/vercel/eve/issues/1084
 status: draft
-last_updated: "2026-09-26"
+last_updated: "2026-09-27"
 ---
 
 # eve tasks
@@ -201,8 +201,9 @@ A `serve` body runs once per task and gets its calls from `receive()` instead of
   validated by `inputSchema`. The first `receive()` resolves in memory from the call that started
   the task, with no step or hook. After that, it resolves with each call made with the task's
   `taskId`, in arrival order. Calls that arrive while the body isn't waiting are kept. A pending
-  `receive()` is shared: calling it again returns the same promise, so a `Promise.race` it loses
-  never drops a call.
+  `receive()` is shared: calling it again returns the same promise. A call counts as received once
+  its promise resolves, even if that promise lost a `Promise.race`, and the next `ctx.reply()`
+  settles it, so a body that races `receive()` keeps the promise until it reads the call.
 - **`ctx.reply(output)`** settles the calls received so far with `output`, and the task goes idle
   until the next call. A reply with no call left to settle is dropped, and `ctx.ask` throws while
   no call is waiting for a result.
@@ -265,23 +266,36 @@ async serve(receive, ctx) {
   "use workflow";
   const agent = ctx.agent(name);
   // A cancel aborts the call's abortSignal, which ends the agent's turn.
-  const send = ({ input, abortSignal }: Awaited<ReturnType<typeof receive>>) =>
-    agent
-      .send(input.message, { signal: abortSignal })
-      .then((response) => response.result());
-  let latest = send(await receive());
+  const send = ({ input, abortSignal }: Awaited<ReturnType<typeof receive>>) => ({
+    result: agent.send(input.message, { signal: abortSignal }).then((r) => r.result()),
+    signal: abortSignal,
+  });
+  let turn = send(await receive());
+  let next = receive(); // kept until its call is read, even after it loses the race
   for (;;) {
     const event = await Promise.race([
-      latest.then((result) => ({ result })),
-      receive().then((next) => ({ next })),
+      turn.result.then((result) => ({ result })),
+      next.then((call) => ({ call })),
     ]);
-    if ("next" in event) {
-      latest = send(event.next); // joins the running turn, or starts the next if it just ended
+    if ("call" in event) {
+      if (turn.signal.aborted) await turn.result.catch(() => {}); // a cancelled turn ends first
+      turn = send(event.call); // joins the running turn, or starts the next if it just ended
+      next = receive();
       continue;
     }
-    if (event.result.status === "failed") throw new Error("The agent's session ended.");
-    ctx.reply(toOutput(event.result)); // settles the calls received so far; dropped after a cancel
-    latest = send(await receive());
+    // After a cancel, the turn's calls are already settled.
+    if (!turn.signal.aborted) {
+      if (event.result.status === "failed") throw new Error("The agent's session ended.");
+      const following = receive();
+      if (following !== next) {
+        turn = send(await next); // `next` took a call as the turn ended: the agent reads it first
+        next = following;
+        continue;
+      }
+      ctx.reply(toOutput(event.result)); // settles the calls received so far
+    }
+    turn = send(await next);
+    next = receive();
   }
 }
 ```
