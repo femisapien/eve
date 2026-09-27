@@ -19,7 +19,10 @@ import {
   SESSION_INBOX_CONTEXT_KEY,
   sessionCommandHookToken,
 } from "#execution/session-inbox/address.js";
-import { signalSessionOwnerActivationStep } from "#execution/session/handoff-steps.js";
+import {
+  signalSessionOwnerActivationStep,
+  supportsSessionTakeoverStep,
+} from "#execution/session/handoff-steps.js";
 import { adoptReleasedSession, isLegacyHandoff } from "#execution/session/legacy-handoff.js";
 import { takeOverSession } from "#execution/session/takeover-handoff.js";
 import type {
@@ -162,6 +165,8 @@ async function bootInitialOwner(
  * Validates, owns the exact hook set, then tells the previous owner it may
  * exit. A version 1 source released its hooks and started this run on a spec
  * that cannot be taken from, so this owner stays on the release-first path.
+ * So does every owner on a World without takeover support, whose source
+ * released its hooks for the same reason.
  */
 async function bootHandoffOwner(
   input: HandoffWorkflowEntryInput,
@@ -170,8 +175,9 @@ async function bootHandoffOwner(
   const serializedContext = stampSessionIdentity(checkpoint.serializedContext, sessionId);
   const inbox = createSessionInbox(sessionId);
   const tokens = sessionHookTokens({ serializedContext, sessionState: checkpoint.sessionState });
-  const legacy = isLegacyHandoff(input);
+  let legacy = isLegacyHandoff(input);
   try {
+    legacy ||= !(await supportsSessionTakeoverStep());
     if (legacy) await adoptReleasedSession(input, inbox, tokens);
     else if (!(await takeOverSession(input, inbox, tokens))) return undefined;
     await signalSessionOwnerActivationStep({

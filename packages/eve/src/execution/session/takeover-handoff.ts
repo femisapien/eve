@@ -1,19 +1,24 @@
 import { createHook, getWorkflowMetadata, type Hook } from "#compiled/@workflow/core/index.js";
 
+import type { DeliverHookPayload } from "#channel/types.js";
 import { readAcceptedDeploymentId } from "#execution/session/accepted-deployment.js";
 import { claimHookOwnership, disposeHook, isHookConflictError } from "#execution/hook-ownership.js";
-import type { SessionInboxHandle } from "#execution/session-inbox/inbox.js";
+import type { SessionInboxHandle, SessionInboxPayload } from "#execution/session-inbox/inbox.js";
 import type { TurnSelection } from "#execution/session/input-queue.js";
 import type {
   HandoffWorkflowEntryInput,
   WorkflowEntryResult,
 } from "#execution/session/entry-input.js";
 import { startSessionOwnerStep } from "#execution/workflow-runtime.js";
+import { normalizeSerializableError } from "#execution/workflow-errors.js";
 import {
   forwardSessionInputStep,
   isSessionIdleForHandoffStep,
+  reportUnforwardedSessionInputStep,
+  supportsSessionTakeoverStep,
   validateSessionCheckpointStep,
 } from "#execution/session/handoff-steps.js";
+import { LegacySessionHandoff } from "#execution/session/legacy-handoff.js";
 import {
   SESSION_CHECKPOINT_VERSION,
   sessionAnchorToken,
@@ -26,11 +31,14 @@ import {
 
 /**
  * Keeps every hook while the successor force-claims them. Each forced claim
- * moves one token atomically, so the session is never unowned.
+ * moves one token atomically, so the session is never unowned. On a World that
+ * cannot force-claim or retain hooks, every handoff is release-first instead.
  */
 export class TakeoverSessionHandoff implements SessionHandoff {
   private readonly input: SessionHandoffInput;
   private anchor: Hook<WorkflowEntryResult> | undefined;
+  private releaseFirst: LegacySessionHandoff | undefined;
+  private supported: boolean | undefined;
 
   constructor(input: SessionHandoffInput) {
     this.input = input;
@@ -45,6 +53,11 @@ export class TakeoverSessionHandoff implements SessionHandoff {
     if (targetDeploymentId === undefined) return { kind: "retained", reason: "missing-deployment" };
     if (targetDeploymentId === deploymentId) return { kind: "retained", reason: "same-deployment" };
     if (!selection.handoffEligible) return { kind: "retained", reason: "busy" };
+    this.supported ??= await supportsSessionTakeoverStep();
+    if (!this.supported) {
+      this.releaseFirst ??= new LegacySessionHandoff(this.input);
+      return await this.releaseFirst.tryTransfer(selection, state);
+    }
     if (!(await isSessionIdleForHandoffStep(state)))
       return { kind: "retained", reason: "not-idle" };
     // A backlog is never transferred to salvage a handoff.
@@ -55,32 +68,30 @@ export class TakeoverSessionHandoff implements SessionHandoff {
       token: `${getWorkflowMetadata().workflowRunId}:handoff`,
     });
     await claimHookOwnership(activation);
+    inbox.allowTakeover(true);
+    let outcome: SessionOwnerActivation;
     try {
-      await startSessionOwnerStep({
-        activationToken: activation.token,
-        anchorRunId: sessionId,
+      outcome = await this.startAndActivate(activation, {
         checkpoint: { ...this.input.checkpoint, ...state, version: SESSION_CHECKPOINT_VERSION },
         delivery: selection.delivery,
         targetDeploymentId,
       });
-      if ((await activation).kind === "failed") {
-        return { kind: "retained", reason: "activation-failed" };
-      }
-    } catch {
-      // Nothing was taken before activation, so this owner keeps the session.
-      return { kind: "retained", reason: "activation-failed" };
     } finally {
       await disposeHook(activation);
+    }
+    if (outcome.kind === "failed") {
+      await this.recover(outcome.payloads);
+      return { kind: "retained", reason: "activation-failed" };
     }
     // The takeover ended every reader after it delivered what its hook had
     // accepted, so this is exactly what arrived before the successor owned the
     // session. It trails anything already sent to the successor directly.
-    const accepted = inbox.drain();
-    if (accepted.length > 0) await forwardSessionInputStep({ payloads: accepted, sessionId });
+    await forwardAccepted(inbox.drain(), sessionId);
     return { kind: "transferred" };
   }
 
   async awaitAnchoredResult(): Promise<WorkflowEntryResult> {
+    if (this.releaseFirst !== undefined) return await this.releaseFirst.awaitAnchoredResult();
     if (this.anchor === undefined) throw new Error("Session anchor was never claimed.");
     try {
       return await this.anchor;
@@ -90,10 +101,51 @@ export class TakeoverSessionHandoff implements SessionHandoff {
   }
 
   async disposeAnchor(): Promise<void> {
+    await this.releaseFirst?.disposeAnchor();
     if (this.anchor === undefined) return;
     const anchor = this.anchor;
     this.anchor = undefined;
     await disposeHook(anchor);
+  }
+
+  private async startAndActivate(
+    activation: Hook<SessionOwnerActivation>,
+    start: {
+      readonly checkpoint: SessionCheckpoint;
+      readonly delivery: DeliverHookPayload;
+      readonly targetDeploymentId: string;
+    },
+  ): Promise<SessionOwnerActivation> {
+    try {
+      await startSessionOwnerStep({
+        ...start,
+        activationToken: activation.token,
+        anchorRunId: this.input.sessionId,
+      });
+    } catch (error) {
+      // The failed start may still have created the successor. Holding its
+      // attempt fence keeps that run from ever taking the session; if it
+      // already holds the fence, it reports here.
+      const fence = createAttemptFence(attemptFenceToken(activation.token, start.delivery));
+      try {
+        await claimHookOwnership(fence);
+        return { error: normalizeSerializableError(error), kind: "failed", payloads: [] };
+      } catch (fenceError) {
+        if (!isHookConflictError(fenceError)) throw fenceError;
+      }
+    }
+    return await activation;
+  }
+
+  /**
+   * Takes back whatever a failed successor took. What it accepted arrived
+   * after everything this owner already holds.
+   */
+  private async recover(payloads: readonly SessionInboxPayload[]): Promise<void> {
+    const { inbox } = this.input;
+    inbox.enqueue(payloads);
+    if (inbox.takenTokens.length > 0) await inbox.claim(inbox.takenTokens);
+    inbox.allowTakeover(false);
   }
 
   private async ensureAnchor(): Promise<void> {
@@ -106,10 +158,39 @@ export class TakeoverSessionHandoff implements SessionHandoff {
   }
 }
 
+async function forwardAccepted(
+  accepted: readonly SessionInboxPayload[],
+  sessionId: string,
+): Promise<void> {
+  for (const [index, payload] of accepted.entries()) {
+    try {
+      if (!(await forwardSessionInputStep({ payload, sessionId }))) return;
+    } catch (error) {
+      await reportUnforwardedSessionInputStep({
+        error: normalizeSerializableError(error),
+        sessionId,
+        unforwarded: accepted.length - index,
+      });
+      return;
+    }
+  }
+}
+
+function attemptFenceToken(activationToken: string, delivery: DeliverHookPayload): string {
+  const deliveryId = delivery.deliveryMetadata?.[0]?.deliveryId;
+  if (deliveryId === undefined) throw new Error("A handoff trigger must carry a delivery id.");
+  return `${activationToken}:${deliveryId}`;
+}
+
+/** Retention keeps the fence taken after its holder ends, when later owners hold the session. */
+function createAttemptFence(token: string): Hook<never> {
+  return createHook<never>({ token, experimental_minRetention: "1d" });
+}
+
 /**
  * Takes every session hook from a source whose run supports forced claims.
- * Returns false when another start of this same attempt already won; that run
- * reports to the source.
+ * Returns false when another start of this same attempt, or the source
+ * itself, already holds the attempt; the holder reports to the source.
  */
 export async function takeOverSession(
   input: HandoffWorkflowEntryInput,
@@ -118,16 +199,10 @@ export async function takeOverSession(
 ): Promise<boolean> {
   // A re-run start step can boot this attempt twice, at any time, and forced
   // claims would let the second take the session from whoever owns it then.
-  // A plain claim on a token unique to the attempt fences them; retention keeps
-  // it taken after this run ends, when later owners hold the session. It is
-  // written in the same suspension as validation and read after validation
-  // returns, so validation still runs inline.
-  const deliveryId = input.delivery.deliveryMetadata?.[0]?.deliveryId;
-  if (deliveryId === undefined) throw new Error("A handoff trigger must carry a delivery id.");
-  const fence = createHook<never>({
-    token: `${input.activationToken}:${deliveryId}`,
-    experimental_minRetention: "1d",
-  });
+  // A plain claim on a token unique to the attempt fences them. It is written
+  // in the same suspension as validation and read after validation returns,
+  // so validation still runs inline.
+  const fence = createAttemptFence(attemptFenceToken(input.activationToken, input.delivery));
   await validateSessionCheckpointStep({ checkpoint: input.checkpoint });
   try {
     await claimHookOwnership(fence);
@@ -135,6 +210,7 @@ export async function takeOverSession(
     if (isHookConflictError(error)) return false;
     throw error;
   }
-  for (const token of tokens) inbox.claim(token);
+  // A refused claim must surface before the source is told to leave.
+  await inbox.claim(tokens);
   return true;
 }

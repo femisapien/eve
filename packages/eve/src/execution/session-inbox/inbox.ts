@@ -29,6 +29,8 @@ interface Source {
   registered?: Promise<void>;
   stopping: boolean;
   closed: boolean;
+  /** Another run took the token with a forced claim during an expected takeover. */
+  taken: boolean;
 }
 
 export interface SessionInboxReader {
@@ -63,10 +65,20 @@ export interface SessionInboxOwnership {
 export interface SessionInbox extends SessionInboxReader, SessionInboxOwnership {}
 export interface SessionInboxHandle extends SessionInbox {
   /**
-   * Takes a token from whichever run holds it, without waiting for the claim
-   * to register. The previous holder keeps what its hook accepted first.
+   * Takes every token from whichever run holds it; the previous holder keeps
+   * what its hook accepted first. A token this inbox lost to a takeover is
+   * taken back. Every claim settles before the first refusal propagates.
    */
-  claim(token: string): void;
+  claim(tokens: readonly string[]): Promise<void>;
+  /**
+   * Lets another run take these hooks. A forced claim at any other time fails
+   * the owner rather than reading as a session with no more input.
+   */
+  allowTakeover(allowed: boolean): void;
+  /** Tokens another run took while a takeover was allowed, in claim order. */
+  readonly takenTokens: readonly string[];
+  /** Queues payloads after everything this inbox has accepted so far. */
+  enqueue(payloads: readonly SessionInboxPayload[]): void;
   dispose(): Promise<void>;
   /** Disposes every hook and returns each payload the hooks accepted but the owner never read. */
   release(): Promise<SessionInboxPayload[]>;
@@ -90,6 +102,7 @@ export function createSessionInbox(sessionId: string): SessionInboxHandle {
   const interruptHandlers = new Set<(payload: SessionInboxPayload) => void>();
   const deliveryHandlers = new Set<(payload: SessionInboxPayload) => void>();
   let failure: { error: unknown } | undefined;
+  let takeoverAllowed = false;
 
   const notify = (): void => {
     for (const resolve of waiters) resolve();
@@ -116,7 +129,9 @@ export function createSessionInbox(sessionId: string): SessionInboxHandle {
     } catch (error) {
       // A forced claim ends a reader only after it delivered everything its
       // hook accepted; from then on the claiming run answers the token.
-      if (!source.stopping && !isHookForceClaimedError(error)) failure = { error };
+      if (source.stopping) return;
+      if (takeoverAllowed && isHookForceClaimedError(error)) source.taken = true;
+      else failure = { error };
     } finally {
       source.closed = true;
       notify();
@@ -133,23 +148,30 @@ export function createSessionInbox(sessionId: string): SessionInboxHandle {
     return accepted;
   };
 
-  const claimSessionHook = async (token: string): Promise<void> => {
+  const requireToken = (token: string): void => {
     if (!token) throw new Error("A session alias requires a nonempty continuation token.");
-    const existing = sources.find((source) => source.token === token);
-    if (existing !== undefined) return await existing.registered;
-    if (sources.length >= 256) throw new Error("A session may claim at most 256 addresses.");
+  };
+  const requireCapacity = (added: number): void => {
+    if (sources.length + added > 256) throw new Error("A session may claim at most 256 addresses.");
+  };
+
+  // The slot is reserved before registration settles: parallel claims retain
+  // deterministic order and duplicate calls cannot create another hook.
+  const register = async (token: string, options: { readonly force: boolean }): Promise<void> => {
     const source: Source = {
       token,
       hook: createHook<SessionInboxPayload>({
         token: sessionInboxHookToken(token),
         metadata: { sessionId },
+        experimental_force: options.force ? true : undefined,
       }),
       stopping: false,
       closed: false,
+      taken: false,
     };
-    // Reserve the slot before awaiting registration: parallel claims retain
-    // deterministic order and duplicate calls cannot create another hook.
-    sources.push(source);
+    const index = sources.findIndex((existing) => existing.token === token);
+    if (index === -1) sources.push(source);
+    else sources[index] = source;
     try {
       source.registered = claimHookOwnership(source.hook);
       await source.registered;
@@ -158,6 +180,14 @@ export function createSessionInbox(sessionId: string): SessionInboxHandle {
       sources.splice(sources.indexOf(source), 1);
       throw error;
     }
+  };
+
+  const claimSessionHook = async (token: string): Promise<void> => {
+    requireToken(token);
+    const existing = sources.find((source) => source.token === token);
+    if (existing !== undefined) return await existing.registered;
+    requireCapacity(1);
+    await register(token, { force: false });
   };
 
   return {
@@ -169,23 +199,30 @@ export function createSessionInbox(sessionId: string): SessionInboxHandle {
       const outcomes = await Promise.allSettled([...new Set(tokens)].map(claimSessionHook));
       for (const outcome of outcomes) if (outcome.status === "rejected") throw outcome.reason;
     },
-    claim(token) {
-      if (!token) throw new Error("A session alias requires a nonempty continuation token.");
-      if (sources.some((source) => source.token === token))
-        throw new Error(`Session address "${token}" is already claimed.`);
-      if (sources.length >= 256) throw new Error("A session may claim at most 256 addresses.");
-      const source: Source = {
-        token,
-        hook: createHook<SessionInboxPayload>({
-          token: sessionInboxHookToken(token),
-          metadata: { sessionId },
-          experimental_force: true,
-        }),
-        stopping: false,
-        closed: false,
-      };
-      sources.push(source);
-      void pump(source);
+    async claim(tokens) {
+      const unique = [...new Set(tokens)];
+      for (const token of unique) {
+        requireToken(token);
+        if (sources.some((source) => source.token === token && !source.taken))
+          throw new Error(`Session address "${token}" is already claimed.`);
+      }
+      requireCapacity(
+        unique.filter((token) => !sources.some((source) => source.token === token)).length,
+      );
+      const outcomes = await Promise.allSettled(
+        unique.map((token) => register(token, { force: true })),
+      );
+      for (const outcome of outcomes) if (outcome.status === "rejected") throw outcome.reason;
+    },
+    allowTakeover(allowed) {
+      takeoverAllowed = allowed;
+    },
+    get takenTokens() {
+      return sources.filter((source) => source.taken).map(({ token }) => token);
+    },
+    enqueue(payloads) {
+      queue.push(...payloads);
+      notify();
     },
     async next() {
       while (true) {

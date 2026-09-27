@@ -232,14 +232,17 @@ function createInbox(input: { released?: SessionInboxPayload[] } = {}): SessionI
     claimSessionHook: vi.fn(async () => {}),
     claimSessionHooks: vi.fn(async () => {}),
     claimedTokens: [],
+    allowTakeover: vi.fn(),
+    claim: vi.fn(async () => {}),
     dispose: vi.fn(async () => {}),
     drain: vi.fn(() => []),
-    claim: vi.fn(),
+    enqueue: vi.fn(),
     hasPending: vi.fn(() => false),
     next: vi.fn(),
     onDelivery: vi.fn(() => () => {}),
     onInterrupt: vi.fn(() => () => {}),
     release: vi.fn(async () => input.released ?? []),
     restore: vi.fn(),
+    takenTokens: [],
   };
 }

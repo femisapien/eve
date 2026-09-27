@@ -10,13 +10,18 @@ import type { SessionInboxHandle, SessionInboxPayload } from "#execution/session
 
 const isSessionIdleForHandoffStepMock = vi.fn(async (..._args: unknown[]) => true);
 const validateSessionCheckpointStepMock = vi.fn(async (..._args: unknown[]) => {});
-const forwardSessionInputStepMock = vi.fn(async (..._args: unknown[]) => {});
+const forwardSessionInputStepMock = vi.fn(async (..._args: unknown[]) => true);
+const reportUnforwardedSessionInputStepMock = vi.fn(async (..._args: unknown[]) => {});
+const supportsSessionTakeoverStepMock = vi.fn(async () => true);
 const startSessionOwnerStepMock = vi.fn();
 const createHookMock = vi.fn();
 
 vi.mock("#execution/session/handoff-steps.js", () => ({
   forwardSessionInputStep: (...args: unknown[]) => forwardSessionInputStepMock(...args),
   isSessionIdleForHandoffStep: (...args: unknown[]) => isSessionIdleForHandoffStepMock(...args),
+  reportUnforwardedSessionInputStep: (...args: unknown[]) =>
+    reportUnforwardedSessionInputStepMock(...args),
+  supportsSessionTakeoverStep: () => supportsSessionTakeoverStepMock(),
   validateSessionCheckpointStep: (...args: unknown[]) => validateSessionCheckpointStepMock(...args),
 }));
 vi.mock("#execution/workflow-runtime.js", () => ({
@@ -30,6 +35,8 @@ vi.mock("#compiled/@workflow/core/index.js", () => ({
 afterEach(() => {
   vi.resetAllMocks();
   isSessionIdleForHandoffStepMock.mockResolvedValue(true);
+  forwardSessionInputStepMock.mockResolvedValue(true);
+  supportsSessionTakeoverStepMock.mockResolvedValue(true);
 });
 
 describe("TakeoverSessionHandoff", () => {
@@ -96,38 +103,105 @@ describe("TakeoverSessionHandoff", () => {
     await expect(handoff.awaitAnchoredResult()).resolves.toEqual({ output: "done" });
   });
 
-  it("forwards input accepted before the takeover in order", async () => {
+  it("forwards input accepted before the takeover in order, one step per payload", async () => {
     const accepted = [send("Alice adds a detail."), send("Bob adds another.")];
     installActivation({ kind: "active" });
     startSessionOwnerStepMock.mockResolvedValue(undefined);
 
     await createHandoff(createInbox(accepted)).tryTransfer(selection("deployment-b"), state());
-    expect(forwardSessionInputStepMock).toHaveBeenCalledWith({
-      payloads: accepted,
-      sessionId: "session-1",
-    });
+    expect(forwardSessionInputStepMock.mock.calls).toEqual(
+      accepted.map((payload) => [{ payload, sessionId: "session-1" }]),
+    );
   });
 
-  it.each([
-    ["the candidate fails", () => undefined],
-    ["the start fails", () => startSessionOwnerStepMock.mockRejectedValue(new Error("down"))],
-  ])("keeps the session untouched when %s", async (_case, arrange) => {
-    const inbox = createInbox();
-    installActivation({ error: new Error("bundle mismatch"), kind: "failed", payloads: [] });
+  it("reports input it cannot forward instead of failing the transferred session", async () => {
+    const accepted = [send("Alice adds a detail."), send("Bob adds another.")];
+    installActivation({ kind: "active" });
     startSessionOwnerStepMock.mockResolvedValue(undefined);
-    arrange();
+    forwardSessionInputStepMock.mockRejectedValueOnce(new Error("queue unavailable"));
+
+    await expect(
+      createHandoff(createInbox(accepted)).tryTransfer(selection("deployment-b"), state()),
+    ).resolves.toEqual({ kind: "transferred" });
+    expect(forwardSessionInputStepMock).toHaveBeenCalledTimes(1);
+    expect(reportUnforwardedSessionInputStepMock).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: "session-1", unforwarded: 2 }),
+    );
+  });
+
+  it("takes back what a failed successor took and queues what it accepted", async () => {
+    const inbox = createInbox();
+    let takenTokens: string[] = [];
+    Object.defineProperty(inbox, "takenTokens", { get: () => takenTokens });
+    const accepted = [send("Alice writes while the successor boots.")];
+    installActivation({
+      error: new Error("activation failed"),
+      kind: "failed",
+      payloads: accepted,
+    });
+    // The successor took the stable hook before it failed.
+    startSessionOwnerStepMock.mockImplementation(async () => {
+      takenTokens = ["eve:session:session-1:inbox"];
+    });
 
     await expect(
       createHandoff(inbox).tryTransfer(selection("deployment-b"), state()),
     ).resolves.toEqual({ kind: "retained", reason: "activation-failed" });
-    expect(inbox.drain).not.toHaveBeenCalled();
+    expect(inbox.enqueue).toHaveBeenCalledWith(accepted);
+    expect(inbox.claim).toHaveBeenCalledWith(["eve:session:session-1:inbox"]);
+    expect(vi.mocked(inbox.enqueue).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(inbox.claim).mock.invocationCallOrder[0]!,
+    );
+    expect(vi.mocked(inbox.allowTakeover).mock.calls).toEqual([[true], [false]]);
     expect(forwardSessionInputStepMock).not.toHaveBeenCalled();
+  });
+
+  it("holds the attempt fence itself when the successor start fails", async () => {
+    const inbox = createInbox();
+    installActivation({ kind: "active" });
+    startSessionOwnerStepMock.mockRejectedValue(new Error("start timed out"));
+
+    await expect(
+      createHandoff(inbox).tryTransfer(selection("deployment-b"), state()),
+    ).resolves.toEqual({ kind: "retained", reason: "activation-failed" });
+    const fence = createHookMock.mock.results.find(
+      ({ value }) => value.token === "owner-1:handoff:delivery-deployment-b",
+    )?.value as { dispose: ReturnType<typeof vi.fn> };
+    expect(createHookMock).toHaveBeenCalledWith({
+      experimental_minRetention: "1d",
+      token: "owner-1:handoff:delivery-deployment-b",
+    });
+    // Released, the fence would let a successor the start created anyway take the session.
+    expect(fence.dispose).not.toHaveBeenCalled();
+    expect(inbox.claim).not.toHaveBeenCalled();
+  });
+
+  it("waits for a successor that already holds the fence when its start fails", async () => {
+    installActivation({ kind: "active" }, { fenceHolder: "wrun_successor" });
+    startSessionOwnerStepMock.mockRejectedValue(new Error("start timed out"));
+
+    await expect(
+      createHandoff(createInbox()).tryTransfer(selection("deployment-b"), state()),
+    ).resolves.toEqual({ kind: "transferred" });
+  });
+
+  it("hands off release-first on a World without takeover support", async () => {
+    const inbox = createInbox();
+    installActivation({ kind: "active" });
+    startSessionOwnerStepMock.mockResolvedValue(undefined);
+    supportsSessionTakeoverStepMock.mockResolvedValue(false);
+
+    await expect(
+      createHandoff(inbox).tryTransfer(selection("deployment-b"), state()),
+    ).resolves.toEqual({ kind: "transferred" });
+    expect(inbox.release).toHaveBeenCalled();
+    expect(inbox.allowTakeover).not.toHaveBeenCalled();
   });
 });
 
 describe("takeOverSession", () => {
   it("fences the attempt, validates, reads the fence, then force-claims every hook", async () => {
-    const inbox = { claim: vi.fn() };
+    const inbox = { claim: vi.fn(async () => {}) };
     const tokens = ["eve:session:session-1:inbox", "channel:current"];
     installFence(null);
 
@@ -136,7 +210,7 @@ describe("takeOverSession", () => {
       experimental_minRetention: "1d",
       token: "owner-1:handoff:delivery-deployment-b",
     });
-    expect(inbox.claim.mock.calls).toEqual(tokens.map((token) => [token]));
+    expect(inbox.claim).toHaveBeenCalledWith(tokens);
     // Reading the fence only after validation keeps validation inline.
     const fence = createHookMock.mock.results[0]?.value as {
       getConflict: ReturnType<typeof vi.fn>;
@@ -151,7 +225,7 @@ describe("takeOverSession", () => {
   });
 
   it("claims nothing when the trigger carries no delivery id", async () => {
-    const inbox = { claim: vi.fn() };
+    const inbox = { claim: vi.fn(async () => {}) };
     installFence(null);
     const input = handoffInput();
 
@@ -167,7 +241,7 @@ describe("takeOverSession", () => {
   });
 
   it("leaves the session to another start of the same attempt", async () => {
-    const inbox = { claim: vi.fn() };
+    const inbox = { claim: vi.fn(async () => {}) };
     installFence({ runId: "wrun_first_start" });
 
     await expect(takeOverSession(handoffInput(), inbox, ["token"])).resolves.toBe(false);
@@ -175,7 +249,7 @@ describe("takeOverSession", () => {
   });
 
   it("claims nothing when the checkpoint is rejected", async () => {
-    const inbox = { claim: vi.fn() };
+    const inbox = { claim: vi.fn(async () => {}) };
     installFence(null);
     validateSessionCheckpointStepMock.mockRejectedValue(new Error("unsupported checkpoint"));
 
@@ -186,13 +260,18 @@ describe("takeOverSession", () => {
   });
 });
 
-function installActivation(activation: SessionOwnerActivation): void {
-  createHookMock.mockImplementation((options: { token: string }) =>
-    Object.assign(
-      Promise.resolve(options.token.endsWith(":anchor") ? { output: "done" } : activation),
-      { dispose: vi.fn(), getConflict: vi.fn(async () => null), token: options.token },
-    ),
-  );
+function installActivation(
+  activation: SessionOwnerActivation,
+  options: { readonly fenceHolder?: string } = {},
+): void {
+  createHookMock.mockImplementation((hook: { token: string }) => {
+    const fence = hook.token.startsWith("owner-1:handoff:");
+    const conflict = fence && options.fenceHolder ? { runId: options.fenceHolder } : null;
+    return Object.assign(
+      Promise.resolve(hook.token.endsWith(":anchor") ? { output: "done" } : activation),
+      { dispose: vi.fn(), getConflict: vi.fn(async () => conflict), token: hook.token },
+    );
+  });
 }
 
 function installFence(conflict: { readonly runId: string } | null): void {
@@ -262,14 +341,17 @@ function createInbox(accepted: SessionInboxPayload[] = []): SessionInboxHandle {
     claimSessionHook: vi.fn(async () => {}),
     claimSessionHooks: vi.fn(async () => {}),
     claimedTokens: [],
+    allowTakeover: vi.fn(),
+    claim: vi.fn(async () => {}),
     dispose: vi.fn(async () => {}),
     drain: vi.fn(() => accepted),
-    claim: vi.fn(),
+    enqueue: vi.fn(),
     hasPending: vi.fn(() => false),
     next: vi.fn(),
     onDelivery: vi.fn(() => () => {}),
     onInterrupt: vi.fn(() => () => {}),
     release: vi.fn(async () => []),
     restore: vi.fn(),
+    takenTokens: [],
   };
 }

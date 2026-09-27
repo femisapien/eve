@@ -12,7 +12,8 @@ import {
   sessionInboxHookToken,
 } from "#execution/session-inbox/address.js";
 import type { SessionInboxPayload } from "#execution/session-inbox/inbox.js";
-import { resumeHook } from "#internal/workflow/runtime.js";
+import { createLogger, formatError } from "#internal/logging.js";
+import { getWorld, resumeHook } from "#internal/workflow/runtime.js";
 import { getResolvedRuntimeAgentNode } from "#runtime/graph.js";
 import { BundleKey } from "#runtime/sessions/runtime-context-keys.js";
 import { getSandboxEnvironmentRuntime } from "#shared/sandbox-environment.js";
@@ -105,24 +106,52 @@ export async function validateSessionCheckpointStep(input: {
   }
 }
 
+const log = createLogger("eve:session-handoff");
+
 /**
- * Delivers, in acceptance order, what the previous owner accepted before a
- * successor took its hooks. A session that already ended has no one to receive it.
+ * Takeover handoffs need forced hook claims to move each address and hook
+ * retention to fence each attempt. Any other World hands off release-first.
+ */
+export async function supportsSessionTakeoverStep(): Promise<boolean> {
+  "use step";
+  const { capabilities } = await getWorld();
+  return capabilities?.hookForceClaim === true && capabilities.hookRetention?.active === true;
+}
+
+/**
+ * Delivers one payload the previous owner accepted before a successor took its
+ * hooks. One payload per step keeps a retry from repeating earlier ones.
+ * Returns false once the session has ended and no one can receive it.
  */
 export async function forwardSessionInputStep(input: {
-  readonly payloads: readonly SessionInboxPayload[];
+  readonly payload: SessionInboxPayload;
   readonly sessionId: string;
+}): Promise<boolean> {
+  "use step";
+  try {
+    await resumeHook(
+      sessionInboxHookToken(sessionCommandHookToken(input.sessionId)),
+      input.payload,
+    );
+    return true;
+  } catch (error) {
+    if (HookNotFoundError.is(error)) return false;
+    throw error;
+  }
+}
+
+/** The successor already owns the session, so input it cannot receive is reported, not retried. */
+export async function reportUnforwardedSessionInputStep(input: {
+  readonly error: unknown;
+  readonly sessionId: string;
+  readonly unforwarded: number;
 }): Promise<void> {
   "use step";
-  const token = sessionInboxHookToken(sessionCommandHookToken(input.sessionId));
-  for (const payload of input.payloads) {
-    try {
-      await resumeHook(token, payload);
-    } catch (error) {
-      if (HookNotFoundError.is(error)) return;
-      throw error;
-    }
-  }
+  log.warn("session input accepted before a handoff could not be forwarded to the successor", {
+    error: formatError(input.error),
+    sessionId: input.sessionId,
+    unforwarded: input.unforwarded,
+  });
 }
 
 export async function signalSessionOwnerActivationStep(input: {

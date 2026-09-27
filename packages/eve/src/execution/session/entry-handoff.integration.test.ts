@@ -1,7 +1,7 @@
 import type { HandoffWorkflowEntryInput } from "#execution/session/entry-input.js";
 import type { RunCreatedEventRequest } from "@workflow/world";
 import { assert, describe, expect, it, vi } from "vitest";
-import { getRun, getWorld, resumeHook, start } from "#internal/workflow/runtime.js";
+import { getHookByToken, getRun, getWorld, resumeHook, start } from "#internal/workflow/runtime.js";
 import {
   dehydrateWorkflowArguments,
   hydrateStepReturnValue,
@@ -624,5 +624,153 @@ describe("workflowEntry integration", () => {
         }
       });
     });
+
+    it("keeps a recovered session when a failed attempt starts again later", async () => {
+      captureConsoleOutput();
+      const runtime = await createTestRuntime({ agent: { name: "handoff-late-duplicate" } });
+      await runtime.run(async () => {
+        const anchor = await start(workflowEntry, [
+          {
+            kind: "initial",
+            ownerDeploymentId: "dpl_a",
+            sessionTimeoutMs: false,
+            input: { message: "Alice opens a research session." },
+            serializedContext: buildSerializedContext({
+              acceptedDeploymentId: "dpl_a",
+              channelKind: "http",
+            }),
+          },
+        ]);
+        const stream = captureTurnEvents(anchor);
+        const world = await getWorld();
+        const workflowRuntime = createWorkflowRuntime({
+          compiledArtifactsSource: createBundledRuntimeCompiledArtifactsSource(),
+        });
+        const stableToken = sessionInboxHookToken(sessionCommandHookToken(anchor.runId));
+        // The first start of the attempt fails, standing in for any failure a
+        // later start of the same attempt would not repeat.
+        let firstCandidate: string | undefined;
+        let original: HandoffWorkflowEntryInput | undefined;
+        const rewritten = new Map<string, Promise<unknown>>();
+        const failFirst = (runId: string, encoded: unknown): Promise<unknown> => {
+          if (firstCandidate !== undefined && firstCandidate !== runId)
+            return Promise.resolve(encoded);
+          firstCandidate = runId;
+          let pending = rewritten.get(runId);
+          if (pending === undefined) {
+            pending = (async () => {
+              const args = (await hydrateWorkflowArguments(encoded, runId, undefined)) as [
+                HandoffWorkflowEntryInput,
+              ];
+              original ??= { ...args[0], checkpoint: { ...args[0].checkpoint } };
+              Object.assign(args[0].checkpoint, { version: 4 });
+              const operations: Promise<void>[] = [];
+              const result = await dehydrateWorkflowArguments(args, runId, undefined, operations);
+              await Promise.all(operations);
+              return result;
+            })();
+            rewritten.set(runId, pending);
+          }
+          return pending;
+        };
+        const createEvent = world.events.create.bind(world.events);
+        const created = vi.spyOn(world.events, "create").mockImplementation(async (...args) => {
+          const [runId] = args;
+          const event = args[1] as (typeof args)[1] | RunCreatedEventRequest;
+          if (event.eventType === "run_created" && event.eventData.deploymentId === "dpl_b") {
+            event.eventData.input = await failFirst(runId, event.eventData.input);
+          }
+          return createEvent(...args);
+        });
+        const queue = world.queue.bind(world);
+        const queued = vi.spyOn(world, "queue").mockImplementation(async (...args) => {
+          const message = args[1] as {
+            runId?: string;
+            runInput?: { deploymentId?: string; input: unknown };
+          };
+          if (message.runId !== undefined && message.runInput?.deploymentId === "dpl_b") {
+            message.runInput.input = await failFirst(message.runId, message.runInput.input);
+          }
+          return queue(...args);
+        });
+        try {
+          await stream.nextTurn();
+          await waitForParkedTurnStep(anchor.runId);
+          await workflowRuntime.dispatchSession({
+            command: handoffFollowUp("dpl_b", "Bob requests the next research step.", "trigger"),
+            sessionId: anchor.runId,
+          });
+          expect((await stream.nextTurn()).at(-1)?.type).toBe("session.waiting");
+          expect((await waitForCommandHookOwner(stableToken)).runId).toBe(anchor.runId);
+          await waitForParkedTurnStep(anchor.runId);
+
+          // A start step re-run after the first candidate already ended.
+          assert(original !== undefined);
+          const late = await start(workflowEntry, [original]);
+          await vi.waitFor(
+            async () => expect(["completed", "failed"]).toContain(await late.status),
+            { timeout: 30_000 },
+          );
+          expect(await late.status).toBe("completed");
+          expect((await getHookByToken(stableToken)).runId).toBe(anchor.runId);
+          expect(await anchor.status).toBe("running");
+        } finally {
+          created.mockRestore();
+          queued.mockRestore();
+          stream.dispose();
+          if ((await anchor.status) === "running") await anchor.cancel();
+        }
+      });
+    }, 60_000);
+
+    it("hands off release-first on a World without forced hook claims", async () => {
+      const runtime = await createTestRuntime({ agent: { name: "handoff-release-first" } });
+      await runtime.run(async () => {
+        const world = await getWorld();
+        const capabilities = world.capabilities;
+        world.capabilities = { ...capabilities, hookForceClaim: false };
+        const anchor = await start(workflowEntry, [
+          {
+            kind: "initial",
+            ownerDeploymentId: "dpl_a",
+            input: { message: "Alice opens a session." },
+            serializedContext: buildSerializedContext({
+              acceptedDeploymentId: "dpl_a",
+              channelKind: "http",
+            }),
+          },
+        ]);
+        const stream = captureTurnEvents(anchor);
+        const workflowRuntime = createWorkflowRuntime({
+          compiledArtifactsSource: createBundledRuntimeCompiledArtifactsSource(),
+        });
+        const stableToken = sessionInboxHookToken(sessionCommandHookToken(anchor.runId));
+        try {
+          expect((await stream.nextTurn()).at(-1)?.type).toBe("session.waiting");
+          await waitForParkedTurnStep(anchor.runId);
+          await workflowRuntime.dispatchSession({
+            command: handoffFollowUp("dpl_b", "Bob asks from the next deployment.", "move"),
+            sessionId: anchor.runId,
+          });
+          const turn = await stream.nextTurn();
+          expect(filterEventsByType(turn, "session.failed")).toEqual([]);
+          const successor = await waitForCommandHookOwner(stableToken);
+          expect(successor.runId).not.toBe(anchor.runId);
+          await waitForParkedTurnStep(successor.runId);
+
+          await workflowRuntime.dispatchSession({
+            command: handoffFollowUp("dpl_c", "Bob moves on again.", "move-again"),
+            sessionId: anchor.runId,
+          });
+          await stream.nextTurn();
+          const next = await waitForCommandHookOwner(stableToken);
+          expect([anchor.runId, successor.runId]).not.toContain(next.runId);
+        } finally {
+          world.capabilities = capabilities;
+          stream.dispose();
+          if ((await anchor.status) === "running") await anchor.cancel();
+        }
+      });
+    }, 60_000);
   });
 });

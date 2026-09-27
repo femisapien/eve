@@ -1,7 +1,7 @@
 ---
 issue: https://github.com/vercel/eve/issues/876
 status: implemented
-last_updated: "2026-09-24"
+last_updated: "2026-09-27"
 ---
 
 # Single-workflow sessions with ingress-driven upgrades
@@ -209,19 +209,22 @@ every address always resolves to a live owner.
    that loses the fence exits without touching the session. The fence token is retained for a day
    after the claiming run ends, so a start that boots after later handoffs still loses. It is
    written in the same suspension as validation and read after it, so validation still runs inline.
-4. The candidate force-claims that exact hook set and activates without waiting for the claims to
-   register: a version 2 or later source runs on a Workflow spec that can always be taken from.
-   The Workflow runtime commits every hook of a suspension before the activation step it schedules,
-   so the takeover precedes the old owner's activation signal. The candidate processes the
-   triggering delivery before any later arrival.
+4. The candidate force-claims that exact hook set and waits for every claim to register before it
+   activates, so a World that refuses to force surfaces the refusal while the old owner still
+   waits. The candidate processes the triggering delivery before any later arrival.
 5. On activation the old owner's readers have already delivered everything their hooks accepted
    before the takeover. The old owner forwards those commands to the successor in acceptance
-   order, then exits, or parks as the stream anchor if it is the original run. Forwarded commands
-   trail anything that reached the successor directly in the moment between takeover and
-   forwarding.
+   order, one step per command so a retry never repeats an earlier one, then exits, or parks as
+   the stream anchor if it is the original run. Forwarded commands trail anything that reached the
+   successor directly in the moment between takeover and forwarding. A command that cannot be
+   forwarded is logged; the successor already owns the session.
 
-On failure before activation nothing was taken, so the old owner keeps every hook and processes the
-triggering delivery itself.
+On failure before activation the old owner takes back every hook the candidate took, queues what
+the candidate accepted after everything it already holds, and processes the triggering delivery
+itself. A failed start step may still have created the candidate, so the old owner then claims the
+attempt fence itself; if a candidate already holds it, the old owner waits for that candidate's
+activation instead. The old owner accepts a forced claim only while an attempt is in flight. Any
+other forced claim fails the session instead of reading as one with no more input.
 
 The handoff version decides which protocol applies. A successor started by a version 2 source (or
 later) runs on a Workflow spec that can be taken from, and uses the takeover above for its own
@@ -229,7 +232,8 @@ handoffs. A successor of a version 1 source, or an imported pre-cutover session,
 older SDK and cannot be taken from. Those owners keep the unchanged release-first path in
 `session/legacy-handoff.ts` (see [The no-owner interval](#the-no-owner-interval)), and a version 1
 successor claims without force. A takeover source whose successor cannot force-claim, such as an
-older target during a rollback, fails activation and keeps the session.
+older target during a rollback, fails activation and keeps the session. A World without forced
+hook claims or hook retention hands off release-first on both sides.
 
 ## Stream lifetime
 
