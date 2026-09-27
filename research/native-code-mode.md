@@ -242,8 +242,8 @@ Sources:
 **Program globals**
 
 - `tools.<namespace>.<name>(input)` and `tools.<name>(input)`
-- A synchronous `search({ query?, namespace?, limit?, offset? })` over the
-  catalog.
+- An async `search({ query?, namespace?, limit?, offset? })` over the
+  catalog, called as `await search(...)`. See [Search](#search).
 - `console`
 - No `fetch`, filesystem, timers, or imports. HTTP and files go through tools
   that enforce eve's authorization, SSRF, and sandbox policies.
@@ -330,6 +330,8 @@ value and transform it in a later call.
 - Other signatures are inlined up to a fixed token budget, round-robin
   across namespaces.
 - `search()` reaches the rest.
+- Choosing which tools to show inline is deterministic, so the listing is
+  byte-stable for the same inputs. Only `search()` may use a model.
 
 **Placement**
 
@@ -350,6 +352,32 @@ value and transform it in a later call.
 - When the tail message is an approval response, the delta is deferred
   instead of falling back to a system message. This also fixes the leak in
   the skill-list channel.
+
+### Search
+
+`search()` returns ranked catalog entries (path, description, and
+signature), with a cursor for the next page. The contract is independent of
+how results are ranked.
+
+- **Async host call.** `search()` is an ordinary async host call, not a
+  synchronous binding. Programs can run searches concurrently with
+  `Promise.all`.
+- **Pausing.** A search can pause the program. For example, searching a
+  namespace that needs sign-in starts authorization. `run`'s synchronous
+  host functions cannot interrupt a run, and they hold the worker while
+  they settle.
+- **Call limit.** Searches count toward the per-program call limit.
+- **Default implementation.** Word matching over tool paths, descriptions,
+  and input property names, as in opencode.
+- **Future extension.** The implementation can be swapped for a
+  model-backed one with no model-facing change. For example, an evaluation
+  model such as Jev could rerank a capped set of word-match candidates,
+  following the `auto({ model })` pattern used for approvals.
+  - Results are recorded in the replay ledger, so a nondeterministic ranker
+    still replays identically after a pause.
+  - Results only appear in `execute` results, so any implementation is
+    cache-safe.
+  - How authors configure it belongs to that future design.
 
 ### Connections in `execute`
 
@@ -588,21 +616,22 @@ adding round trips or lowering task success.
 
 ## Decisions and alternatives considered
 
-| Decision                       | Chosen                                                                               | Rejected                                                                                         |
-| ------------------------------ | ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
-| Rollout                        | Ship as default, replacing `connection_search`; gated by evals                       | An `experimental.codeMode` flag (root-only or per agent)                                         |
-| Tool name                      | `execute`, matching opencode v2                                                      | `code_mode`, `code`, `run_code`                                                                  |
-| Input                          | Raw JavaScript via Lark grammar where supported, otherwise `{ code }`, as in pi      | JSON `{ js }` everywhere                                                                         |
-| What scripts can call          | Every tool except `execute` and final output; direct tools stay direct too, as in pi | Per-tool `codeMode: true` opt-in; direct-only built-ins (opencode v2); code-only framework tools |
-| `workflow()`                   | Merged into `execute` as `tools.agents.*`; removed in the same release               | Keeping it as a separate direct tool; a transition period with both                              |
-| Agent-call cap                 | Fixed at 100 per `execute` call, the current `workflow()` default                    | A configurable `maxSubagents` (code mode has no settings)                                        |
-| `execute` presence             | Always present                                                                       | Present only while connections are registered (flips the `tools` array)                          |
-| Outputs without schemas        | Callable and typed `Promise<unknown>`; `eve build` warns; `Opaque` tested after ship | Requiring schemas now; rejecting tools without them; `Opaque` from day one                       |
-| Authored tools without schemas | Warning now; a future version may require `outputSchema`                             | Build-time TypeScript extraction (needs a type checker and adds nothing at runtime)              |
-| Skills in `search()`           | Tools only; skills move in with a future deferred-skills design                      | Skill hits in `search()`; `tools.skills.load()`                                                  |
-| Nested call visibility         | Protocol actions with `parentCallId`                                                 | Progress only (breaks `t.calledTool` and approval correlation)                                   |
-| Catalog placement              | Appended messages, as in opencode v2                                                 | Tool description (pi, AI SDK default), which changes when servers connect                        |
-| System prompt Connections list | Removed; namespace entries carry descriptions                                        | Keeping it alongside the catalog                                                                 |
+| Decision                       | Chosen                                                                                                 | Rejected                                                                                         |
+| ------------------------------ | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------ |
+| Rollout                        | Ship as default, replacing `connection_search`; gated by evals                                         | An `experimental.codeMode` flag (root-only or per agent)                                         |
+| Tool name                      | `execute`, matching opencode v2                                                                        | `code_mode`, `code`, `run_code`                                                                  |
+| Input                          | Raw JavaScript via Lark grammar where supported, otherwise `{ code }`, as in pi                        | JSON `{ js }` everywhere                                                                         |
+| What scripts can call          | Every tool except `execute` and final output; direct tools stay direct too, as in pi                   | Per-tool `codeMode: true` opt-in; direct-only built-ins (opencode v2); code-only framework tools |
+| `workflow()`                   | Merged into `execute` as `tools.agents.*`; removed in the same release                                 | Keeping it as a separate direct tool; a transition period with both                              |
+| Agent-call cap                 | Fixed at 100 per `execute` call, the current `workflow()` default                                      | A configurable `maxSubagents` (code mode has no settings)                                        |
+| `execute` presence             | Always present                                                                                         | Present only while connections are registered (flips the `tools` array)                          |
+| Outputs without schemas        | Callable and typed `Promise<unknown>`; `eve build` warns; `Opaque` tested after ship                   | Requiring schemas now; rejecting tools without them; `Opaque` from day one                       |
+| Authored tools without schemas | Warning now; a future version may require `outputSchema`                                               | Build-time TypeScript extraction (needs a type checker and adds nothing at runtime)              |
+| Skills in `search()`           | Tools only; skills move in with a future deferred-skills design                                        | Skill hits in `search()`; `tools.skills.load()`                                                  |
+| `search()`                     | Async host call; word matching by default; replaceable later (for example, evaluation-model reranking) | Synchronous binding (cannot pause for sign-in, holds the worker, blocks model-backed search)     |
+| Nested call visibility         | Protocol actions with `parentCallId`                                                                   | Progress only (breaks `t.calledTool` and approval correlation)                                   |
+| Catalog placement              | Appended messages, as in opencode v2                                                                   | Tool description (pi, AI SDK default), which changes when servers connect                        |
+| System prompt Connections list | Removed; namespace entries carry descriptions                                                          | Keeping it alongside the catalog                                                                 |
 
 ## Evidence limits
 
