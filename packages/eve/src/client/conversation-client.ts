@@ -8,6 +8,7 @@ import { EveAgentProjection } from "#client/eve-agent-projection.js";
 import type { EveAgentReducerEvent } from "#client/reducer.js";
 import { createEventDeduper } from "#protocol/event-dedupe.js";
 import type { MessageStreamEvent } from "#protocol/message.js";
+import type { InputResponse } from "#shared/input.js";
 import {
   SessionEventStream,
   type SessionEventStreamOptions,
@@ -62,6 +63,26 @@ export class ConversationClient<TData = ConversationState> {
     const previousConversation = this.conversation;
     if (this.#conversation !== this.projection) this.#conversation.append(event);
     this.projection.append(event);
+    if (previous !== this.data) this.#onChange(this.data, previous);
+    else if (previousConversation !== this.conversation)
+      this.#onConversationChange?.(this.conversation, previousConversation);
+  }
+
+  /** Projects submitted answers; the returned callback withdraws them if the server never accepts. */
+  projectResponses(responses: readonly InputResponse[] | undefined): (() => void) | undefined {
+    if (!responses?.length) return undefined;
+    const event: EveAgentReducerEvent = {
+      data: { createdAt: Date.now(), responses },
+      type: "client.input.responded",
+    };
+    this.append(event);
+    return () => this.#retract(event);
+  }
+
+  #retract(event: EveAgentReducerEvent): void {
+    const previous = this.data;
+    const previousConversation = this.conversation;
+    for (const projection of this.projections) projection.remove((entry) => entry === event);
     if (previous !== this.data) this.#onChange(this.data, previous);
     else if (previousConversation !== this.conversation)
       this.#onConversationChange?.(this.conversation, previousConversation);

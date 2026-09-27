@@ -14,6 +14,7 @@ import {
   createMessageReceivedEvent,
   createSubagentCalledEvent,
   createTurnCancelledEvent,
+  createTurnFailedEvent,
   createTurnStartedEvent,
   type UnstampedMessageStreamEvent,
 } from "#protocol/message.js";
@@ -279,6 +280,10 @@ describe("ConversationTranscript", () => {
       called,
     );
     const transcript = new ConversationTranscript();
+    // Alice's parent turn can end while the followed child keeps working.
+    expect(transcript.project(view(called, false), options)[0]).toEqual(
+      expect.objectContaining({ kind: "subagent", live: true }),
+    );
     // The parent's completion report can precede the child's last events.
     expect(transcript.project(view(reported, false), options)).toEqual([
       expect.objectContaining({ kind: "subagent", title: "research", live: true }),
@@ -307,6 +312,28 @@ describe("ConversationTranscript", () => {
       expect.objectContaining({ kind: "subagent", status: "done", live: false }),
       expect.objectContaining({ kind: "subagent-step", live: false }),
     ]);
+
+    const failed = conversation(
+      [
+        createTurnFailedEvent({
+          code: "MODEL_CALL_FAILED",
+          message: "The model is unavailable.",
+          sequence: 2,
+          turnId: "child_turn",
+        }),
+        { type: "session.waiting", data: { continuationToken: "", wait: "next-user-message" } },
+      ].map((childEvent, index) => ({
+        type: "client.child.observed" as const,
+        data: {
+          callId: "call_1",
+          event: stampTestEvent(childEvent as UnstampedMessageStreamEvent, 95 + index),
+        },
+      })),
+      called,
+    );
+    expect(new ConversationTranscript().project(view(failed, false), options)[0]).toEqual(
+      expect.objectContaining({ kind: "subagent", status: "error", live: false }),
+    );
   });
 
   it("keeps same-name authorization attempts distinct and live until completed", () => {

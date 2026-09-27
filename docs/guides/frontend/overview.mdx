@@ -209,7 +209,7 @@ To steer an active turn with a follow-up, send the message with `turnPolicy: "st
 await agent.send(message, { turnPolicy: "steer" });
 ```
 
-Other message sends and HITL responses reject while the hook is processing a turn. The default `data.inputs` ledger keeps each request's originating `turnId` and `stepIndex`, response and settlement status, including requests left open after their originating turn ends; `data.activeTurnId` tracks the current root turn when known. `data.children[callId]` keeps the child's ledger separately. These fields describe observed events, not whether the server will accept an in-flight response. Call `cancel()` to stop the durable server-side turn without replacing it, and `reset()` to clear local state so the next send starts a fresh durable session.
+Other message sends reject while the hook is processing a turn. Answers to open input requests are accepted at any time; see [Human-in-the-loop prompts](#human-in-the-loop-prompts). The default `data.inputs` ledger keeps each request's originating `turnId` and `stepIndex`, response and settlement status, including requests left open after their originating turn ends; `data.activeTurnId` tracks the current root turn when known. `data.children[callId]` keeps the child's ledger separately. Call `cancel()` to stop the durable server-side turn without replacing it, and `reset()` to clear local state so the next send starts a fresh durable session.
 
 `cancel()` can be called as soon as `status` is `"submitted"`; the hook waits for the active response to identify its turn when necessary, sends one guarded cancellation request, and keeps the event stream attached. The promise resolves when eve accepts the request or reports that no turn is active, and rejects if the cancellation request fails. The turn then settles on the same stream as `turn.cancelled` followed by `session.waiting`, so the session is safe to continue.
 
@@ -234,7 +234,7 @@ import { openConversationInputs } from "eve/react";
 
 const pendingRequests = openConversationInputs(agent.data).map((input) => input.request);
 
-const inputDisabled = ["submitted", "streaming", "resuming"].includes(agent.status);
+const inputDisabled = agent.status === "resuming";
 
 return pendingRequests.map((request) => (
   <fieldset disabled={inputDisabled} key={request.requestId}>
@@ -259,7 +259,7 @@ return pendingRequests.map((request) => (
 ));
 ```
 
-For a question with `allowFreeform`, render a text input and send `{ requestId, text }`. The default reducer keeps each request pending until the server confirms its resolution through `input.resolved` or `approval.settled`. Disable input controls while the response is being processed; a refused approval attempt leaves the request answerable. Approved tools update again when eve streams their result.
+For a question with `allowFreeform`, render a text input and send `{ requestId, text }`. You can answer while other work runs. For example, when one model step asks to approve two tools, the first approval settles on its own and the second stays answerable while the batch waits for it. `respond()` marks each answered request `responded` in `data.inputs` until the server settles it through `approval.settled` or `input.resolved`, so `openConversationInputs()` no longer returns it. Answering a request that is no longer open rejects without contacting the server. A refused approval attempt, or a response that never reaches the server, reopens the request. Approved tools update again when eve streams their result.
 
 ## Authorization prompts
 

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { conversationReducer, reduceConversation } from "#client/conversation-reducer.js";
 import { openConversationInputs } from "#client/conversation-state.js";
 import { stampTestEvents } from "#internal/testing/events.js";
-import { createActionResultEvent } from "#protocol/message.js";
+import { createActionResultEvent, createActionsRequestedEvent } from "#protocol/message.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 
 function called(callId = "child-call", childSessionId = "child-session") {
@@ -225,6 +225,40 @@ describe("conversation reducer child calls", () => {
     );
     const completed = stampTestEvents([working])[0]!;
     expect(conversationReducer.reduce(state, completed).children["child-call"]).toMatchObject({
+      background: true,
+      parentStatus: "working",
+    });
+
+    // The built-in `agent` tool returns its receipt before it dispatches the child.
+    let early = conversationReducer.initial();
+    for (const event of [
+      ...stampTestEvents([
+        createActionsRequestedEvent({
+          actions: [{ callId: "child-call", input: {}, kind: "tool-call", toolName: "agent" }],
+          sequence: 0,
+          stepIndex: 0,
+          turnId: "root-turn",
+        }),
+        {
+          type: "action.result",
+          data: {
+            result: {
+              callId: "child-call",
+              kind: "tool-result",
+              output: { agentId: "agent", status: "working", taskId: "task" },
+              toolName: "agent",
+            },
+            sequence: 1,
+            status: "completed",
+            stepIndex: 0,
+            turnId: "root-turn",
+          },
+        } as UnstampedMessageStreamEvent,
+      ]),
+      called(),
+    ])
+      early = conversationReducer.reduce(early, event);
+    expect(early.children["child-call"]).toMatchObject({
       background: true,
       parentStatus: "working",
     });

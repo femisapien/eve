@@ -594,9 +594,13 @@ function renderSubagentHeader(
   const mark =
     block.status === "done"
       ? theme.colors.green(theme.glyph.subagent)
-      : context.activityPulse.trim().length > 0
-        ? theme.colors.orange(theme.glyph.subagent)
-        : theme.colors.dim(theme.glyph.subagent);
+      : block.status === "error"
+        ? theme.colors.red(theme.glyph.subagent)
+        : block.status === "denied"
+          ? theme.colors.dim(theme.glyph.subagent)
+          : context.activityPulse.trim().length > 0
+            ? theme.colors.orange(theme.glyph.subagent)
+            : theme.colors.dim(theme.glyph.subagent);
   let header = `${lead}${mark} subagent(${name}${ordinal})`;
   if (!isOrdinal && block.subtitle !== undefined && block.subtitle.length > 0) {
     header += ` ${theme.colors.dim(block.subtitle)}`;

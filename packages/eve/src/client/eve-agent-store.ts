@@ -25,7 +25,10 @@ import { dispatchSessionTurn } from "#client/session-turn-dispatch.js";
 import { isCurrentTurnBoundaryEvent, type MessageStreamEvent } from "#protocol/message.js";
 import {
   activeTurnForOptimisticFollowUp,
+  assertAnswerable,
   assertExclusiveTurnInput,
+  assertInFlightFollowUp,
+  validateFollowUp,
   countFollowUpDeliveries,
   createAbortSignal,
   createActiveTurn,
@@ -189,6 +192,7 @@ export class EveAgentStore<TData> {
     input: SendTurnPayload<TOutput>,
     prepareSend?: PrepareSend,
   ): Promise<void> {
+    assertAnswerable(input, this.#conversationClient.conversation);
     if (this.#activeTurn !== undefined) {
       if (this.#status === "resuming") {
         throw new Error("eve session is resuming.");
@@ -209,11 +213,12 @@ export class EveAgentStore<TData> {
 
     let reader: SessionEventReader | undefined;
     let submissionId: string | undefined;
+    let retractResponses: (() => void) | undefined;
     try {
       assertExclusiveTurnInput(input);
       // Echo the submission before preparation, which may wait on caller-owned work.
       submissionId = this.#messageSubmissions.submit(input, this.#events.length);
-      this.#projectInputResponses(input);
+      retractResponses = this.#conversationClient.projectResponses(input.inputResponses);
       this.#publish();
       const preparedInput = await (prepareSend === undefined
         ? input
@@ -230,6 +235,7 @@ export class EveAgentStore<TData> {
         signal: createAbortSignal(preparedInput.signal, turn.abortController.signal),
       };
       const dispatched = await this.#dispatchTurn(turnInput);
+      retractResponses = undefined;
       const response = dispatched.response;
       reader = dispatched.reader;
 
@@ -260,6 +266,7 @@ export class EveAgentStore<TData> {
       this.#status = this.#error === undefined ? "ready" : "error";
     } catch (error) {
       if (!this.#isActiveTurn(turn)) return;
+      retractResponses?.();
 
       if (isAbortError(error)) {
         this.#status = "ready";
@@ -434,22 +441,22 @@ export class EveAgentStore<TData> {
     input: SendTurnPayload<TOutput>,
     prepareSend?: PrepareSend,
   ): Promise<void> {
-    if (input.message === undefined || input.turnPolicy !== "steer") {
-      throw new Error(
-        'eve session is already processing a turn. Send a message with turnPolicy: "steer" to guide it at the next boundary.',
-      );
-    }
-
+    assertInFlightFollowUp(input);
     const generation = this.#prewarmGeneration;
     const signal = createAbortSignal(input.signal, turn.abortController.signal);
-    const preparedInput =
-      (await waitWithSignal(Promise.resolve(prepareSend?.(input)), signal)) ?? input;
+    // Answers close their requests before preparation so no one answers them twice.
+    let retractResponses = this.#conversationClient.projectResponses(input.inputResponses);
+    const preparedInput = await waitWithSignal(Promise.resolve(prepareSend?.(input)), signal)
+      .then((prepared) => validateFollowUp(prepared ?? input))
+      .catch((error: unknown) => {
+        retractResponses?.();
+        throw error;
+      });
     if (generation !== this.#prewarmGeneration) return;
-    assertExclusiveTurnInput(preparedInput);
-    if (preparedInput.message === undefined || preparedInput.turnPolicy !== "steer") {
-      throw new Error('An in-flight follow-up requires a message with turnPolicy: "steer".');
+    if (!this.#isActiveTurn(turn)) {
+      retractResponses?.();
+      return await this.#submit(preparedInput);
     }
-    if (!this.#isActiveTurn(turn)) return await this.#submit(preparedInput);
 
     const submissionId = this.#messageSubmissions.submit(
       preparedInput,
@@ -478,6 +485,9 @@ export class EveAgentStore<TData> {
             turn: { ...preparedInput, signal },
           })
         ).response;
+        retractResponses = undefined;
+        // Answers settle through the active turn's stream; only steered messages extend it.
+        if (preparedInput.message === undefined) return;
         turn.acceptedFollowUps += 1;
         if (
           this.#handleReconciliation(
@@ -493,6 +503,7 @@ export class EveAgentStore<TData> {
       } catch (error) {
         if (this.#isActiveTurn(turn)) {
           this.#messageSubmissions.fail(toError(error), submissionId);
+          retractResponses?.();
           this.#publish();
         }
         throw error;
@@ -606,14 +617,6 @@ export class EveAgentStore<TData> {
 
   #isActiveTurn(turn: ActiveTurn): boolean {
     return this.#activeTurn === turn;
-  }
-
-  #projectInputResponses(input: SendTurnPayload): void {
-    if (!input.inputResponses?.length) return;
-    this.#conversationClient.append({
-      data: { createdAt: Date.now(), responses: input.inputResponses },
-      type: "client.input.responded",
-    });
   }
 
   #acceptServerEvent(event: MessageStreamEvent): boolean {

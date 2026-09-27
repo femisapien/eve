@@ -55,7 +55,7 @@ export function AgentMessage({
   message,
   onInputResponses,
 }: {
-  readonly canRespond: boolean;
+  readonly canRespond: (requestId: string) => boolean;
   readonly isStreaming: boolean;
   readonly message: EveMessage;
   readonly onInputResponses: (responses: readonly AgentInputResponse[]) => void | Promise<void>;
@@ -96,7 +96,7 @@ function AgentMessagePart({
   part,
   showCaret,
 }: {
-  readonly canRespond: boolean;
+  readonly canRespond: (requestId: string) => boolean;
   readonly onInputResponses: (responses: readonly AgentInputResponse[]) => void | Promise<void>;
   readonly part: EveMessagePart;
   readonly showCaret: boolean;
@@ -126,7 +126,7 @@ function AgentMessagePart({
       if (inputRequest?.kind === "question") {
         return (
           <QuestionRequest
-            canRespond={canRespond}
+            canRespond={canRespond(inputRequest.requestId)}
             inputRequest={inputRequest}
             inputResponse={part.toolMetadata?.eve?.inputResponse}
             onInputResponses={onInputResponses}
@@ -331,7 +331,7 @@ function AuthorizationPrompt({ part }: { readonly part: EveAuthorizationPart }) 
           {shouldShowInstructions ? (
             <p className="text-muted-foreground text-sm">{instructions}</p>
           ) : null}
-          {part.state === "required" && part.authorization?.userCode ? (
+          {part.state !== "completed" && part.authorization?.userCode ? (
             <div className="flex flex-wrap items-center gap-2 text-sm">
               <span className="text-muted-foreground">Code</span>
               <code className="rounded-md bg-background px-2 py-1 font-mono">
@@ -339,7 +339,7 @@ function AuthorizationPrompt({ part }: { readonly part: EveAuthorizationPart }) 
               </code>
             </div>
           ) : null}
-          {part.state === "required" && part.authorization?.url ? (
+          {part.state !== "completed" && part.authorization?.url ? (
             <Button asChild size="sm">
               <a href={part.authorization.url} rel="noreferrer" target="_blank">
                 <ExternalLinkIcon className="size-4" />
@@ -354,7 +354,8 @@ function AuthorizationPrompt({ part }: { readonly part: EveAuthorizationPart }) 
 }
 
 function authorizationTitle(part: EveAuthorizationPart): string {
-  if (part.state === "required") {
+  // A pending attempt is parked on its OAuth callback and still needs the user to sign in.
+  if (part.state !== "completed") {
     return `Connect ${part.displayName}`;
   }
   if (part.outcome === "authorized") {
@@ -364,7 +365,7 @@ function authorizationTitle(part: EveAuthorizationPart): string {
 }
 
 function authorizationDescription(part: EveAuthorizationPart): string {
-  if (part.state === "required") {
+  if (part.state !== "completed") {
     return part.description;
   }
   if (part.outcome === "authorized") {
@@ -405,7 +406,7 @@ function InputRequestActions({
   onInputResponses,
   part,
 }: {
-  readonly canRespond: boolean;
+  readonly canRespond: (requestId: string) => boolean;
   readonly onInputResponses: (responses: readonly AgentInputResponse[]) => void | Promise<void>;
   readonly part: EveDynamicToolPart;
 }) {
@@ -418,19 +419,30 @@ function InputRequestActions({
   const selectedOption = inputRequest.options?.find(
     (option) => option.id === inputResponse?.optionId,
   );
+  // An approval can settle before its batch resolves, without an input response.
+  const settledApproval =
+    part.approval?.approved === undefined
+      ? undefined
+      : part.approval.approved
+        ? "Approved"
+        : "Denied";
 
   return (
     <div className="space-y-3 rounded-md border border-yellow-500/30 bg-yellow-500/5 p-3">
       <p className="text-muted-foreground text-sm">{inputRequest.prompt}</p>
-      {inputResponse ? (
+      {inputResponse || settledApproval ? (
         <p className="font-medium text-sm">
-          Responded: {selectedOption?.label ?? inputResponse.text ?? inputResponse.optionId}
+          Responded:{" "}
+          {selectedOption?.label ??
+            inputResponse?.text ??
+            inputResponse?.optionId ??
+            settledApproval}
         </p>
       ) : (
         <div className="flex flex-wrap gap-2">
           {inputRequest.options?.map((option) => (
             <Button
-              disabled={!canRespond}
+              disabled={!canRespond(inputRequest.requestId)}
               key={option.id}
               onClick={() => {
                 void onInputResponses([

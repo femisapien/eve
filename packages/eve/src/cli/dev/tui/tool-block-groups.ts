@@ -1,4 +1,4 @@
-import type { Block, DisplayBlock, ToolGroupItem } from "./blocks.js";
+import type { Block, DisplayBlock, ToolGroupItem, ToolStatus } from "./blocks.js";
 import { toolBaseName } from "./tool-presentation.js";
 
 export interface ToolBlockDisplayGroup {
@@ -34,6 +34,12 @@ export interface GroupToolBlocksOptions {
    */
   readonly logCoalescing?: "window" | "runs";
 }
+
+const SUBAGENT_OUTCOME_LABEL: Partial<Record<ToolStatus, string>> = {
+  done: "Done",
+  error: "Failed",
+  denied: "Cancelled",
+};
 
 export function groupToolBlocksForDisplay(
   blocks: readonly Block[],
@@ -329,7 +335,8 @@ function collectSubagentRun(
     // children fold into one counted footnote on the closing corner (the
     // parent's own reply carries the conclusion). Members still ride the
     // groups so they commit and clear by identity.
-    if (header.status === "done") {
+    const outcome = SUBAGENT_OUTCOME_LABEL[header.status ?? "running"];
+    if (outcome !== undefined) {
       const summary = condensedChildSummary(children);
       groups.push({ members: [header], display: headerDisplay });
       groups.push({
@@ -338,7 +345,7 @@ function collectSubagentRun(
           kind: "subagent-close",
           subagentCallId: header.subagentCallId!,
           live,
-          body: summary === undefined ? "Done" : `Done. ${summary}`,
+          body: summary === undefined ? outcome : `${outcome}. ${summary}`,
         },
       });
       continue;

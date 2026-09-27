@@ -886,11 +886,9 @@ export class EveTUIRunner {
     this.#onOnboardingStep?.({ flow: "onboarding", step: "first_response" });
   }
 
-  /** Open requests the user can answer now; the session must be waiting for them. */
+  /** Open requests the user can answer now, including while other work runs. */
   #answerableInputs(): readonly ConversationInput[] {
-    const snapshot = this.#store.snapshot;
-    if (isWorking(snapshot.status)) return [];
-    return openConversationInputs(snapshot.conversation).filter(
+    return openConversationInputs(this.#store.snapshot.conversation).filter(
       (input) => !this.#dismissedInputs.has(input.request.requestId),
     );
   }

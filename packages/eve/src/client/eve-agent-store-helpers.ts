@@ -37,6 +37,31 @@ export function hasPendingAuthorizations(conversation: ConversationState): boole
   );
 }
 
+/** A server ignores answers to requests it already settled, so the store never sends them. */
+export function assertAnswerable(input: SendTurnPayload, conversation: ConversationState): void {
+  for (const { requestId } of input.inputResponses ?? []) {
+    const status = conversation.inputs[requestId]?.status;
+    if (status !== undefined && status !== "open") {
+      throw new Error(`Input request ${requestId} was already answered.`);
+    }
+  }
+}
+
+export function assertInFlightFollowUp(input: SendTurnPayload): void {
+  if (input.inputResponses !== undefined) return;
+  if (input.message === undefined || input.turnPolicy !== "steer") {
+    throw new Error(
+      'eve session is already processing a turn. Send a message with turnPolicy: "steer" to guide it at the next boundary, or answer an open input request.',
+    );
+  }
+}
+
+export function validateFollowUp<T extends SendTurnPayload>(input: T): T {
+  assertExclusiveTurnInput(input);
+  assertInFlightFollowUp(input);
+  return input;
+}
+
 export function assertExclusiveTurnInput(input: SendTurnPayload): void {
   const hasMessage = input.message !== undefined;
   const hasResponses = input.inputResponses !== undefined;

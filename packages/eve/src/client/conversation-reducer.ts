@@ -1,5 +1,4 @@
 import type { ChildCall, ConversationState } from "#client/conversation-state.js";
-import { isJsonObjectValue } from "#shared/json.js";
 import { defaultMessageReducer } from "#client/message-reducer.js";
 import type { EveAgentReducer, EveAgentReducerEvent } from "#client/reducer.js";
 import type { MessageStreamEvent } from "#protocol/message.js";
@@ -22,13 +21,23 @@ function updateChild(
 function reduceChildCall(state: ConversationState, event: MessageStreamEvent): ConversationState {
   if (event.type === "subagent.called") {
     if (state.children[event.data.callId]) return state;
+    // The built-in `agent` tool returns its working receipt before the child session exists.
+    const background = state.messages.some((message) =>
+      message.parts.some(
+        (part) =>
+          part.type === "dynamic-tool" &&
+          part.toolCallId === event.data.callId &&
+          part.state === "output-available" &&
+          isWorkingReceiptOutput(part.output),
+      ),
+    );
     const child: ChildCall = {
       callId: event.data.callId,
       name: event.data.name,
       childSessionId: event.data.childSessionId,
       originTurnId: event.data.turnId,
-      background: false,
-      parentStatus: "dispatched",
+      background,
+      parentStatus: background ? "working" : "dispatched",
       observation: { status: "not-followed" },
     };
     return { ...state, children: { ...state.children, [child.callId]: child } };
@@ -75,13 +84,20 @@ function reduceChildCall(state: ConversationState, event: MessageStreamEvent): C
 }
 
 function isWorkingReceipt(event: Extract<MessageStreamEvent, { type: "action.result" }>): boolean {
-  const output = event.data.result.output;
+  return event.data.status === "completed" && isWorkingReceiptOutput(event.data.result.output);
+}
+
+function isWorkingReceiptOutput(output: unknown): boolean {
+  if (typeof output !== "object" || output === null) return false;
+  const receipt = output as {
+    readonly agentId?: unknown;
+    readonly status?: unknown;
+    readonly taskId?: unknown;
+  };
   return (
-    event.data.status === "completed" &&
-    isJsonObjectValue(output) &&
-    output.status === "working" &&
-    typeof output.taskId === "string" &&
-    typeof output.agentId === "string"
+    receipt.status === "working" &&
+    typeof receipt.taskId === "string" &&
+    typeof receipt.agentId === "string"
   );
 }
 

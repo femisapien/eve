@@ -42,6 +42,12 @@ type ToolState = {
  * settled prefix to scrollback. Built blocks are reused while their inputs are
  * unchanged, so file-diff bases observe each tool call once, in order.
  */
+const CHILD_OUTCOME_STATUS = {
+  completed: "done",
+  failed: "error",
+  cancelled: "denied",
+} as const satisfies Record<string, ToolStatus>;
+
 export class ConversationTranscript {
   #memo = new Map<string, { readonly key: readonly unknown[]; readonly block: Block }>();
   readonly #fileContents = new FileContentCache();
@@ -223,19 +229,23 @@ export class ConversationTranscript {
   ): Block[] {
     if (options.subagents === "hidden") return [];
     const ended = call.observation.status === "ended";
-    const provisional =
-      !ended &&
-      call.parentStatus === "reported-complete" &&
-      call.observation.status === "following";
+    // A followed child can still emit after the parent's turn ends, so only its own boundary settles it.
+    const following = call.observation.status === "following";
+    const provisional = following && call.parentStatus === "reported-complete";
     const background = !ended && call.background;
-    const active = !ended && (provisional || background || working);
+    const active = !ended && (following || background || working);
     const name = stripTerminalControls(call.name);
     const siblings = Object.values(conversation.children).filter(
       (candidate) => stripTerminalControls(candidate.name) === name,
     );
     const subtitle =
       siblings.length > 1 ? `#${siblings.findIndex((c) => c.callId === call.callId) + 1}` : "";
-    const status: ToolStatus | undefined = ended ? "done" : background ? "running" : undefined;
+    const status: ToolStatus | undefined =
+      call.observation.status === "ended"
+        ? CHILD_OUTCOME_STATUS[call.observation.outcome]
+        : background
+          ? "running"
+          : undefined;
     const header = this.#memoize(
       `subagent:${call.callId}:header`,
       [name, subtitle, status, active],

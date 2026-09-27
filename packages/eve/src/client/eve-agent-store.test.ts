@@ -8,8 +8,9 @@ import {
 import { Client } from "#client/client.js";
 import { defaultMessageReducer } from "#client/message-reducer.js";
 import { conversationReducer } from "#client/conversation-reducer.js";
-import { stampTestEvents } from "#internal/testing/events.js";
+import { stampTestEvent, stampTestEvents } from "#internal/testing/events.js";
 import {
+  createApprovalSettledEvent,
   createAuthorizationCompletedEvent,
   createAuthorizationRequiredEvent,
   createMessageAppendedEvent,
@@ -193,6 +194,34 @@ function preV20MessageCompletedEvent(): MessageStreamEvent {
 }
 
 const cleanupStores: Array<() => void> = [];
+function colorApprovalRequested(requestId: string): MessageStreamEvent {
+  return stampTestEvents([
+    {
+      type: "input.requested",
+      data: {
+        requests: [
+          {
+            action: {
+              callId: `${requestId}-call`,
+              input: {},
+              kind: "tool-call",
+              toolName: "random_color",
+            },
+            display: "confirmation",
+            kind: "tool-approval",
+            options: [{ id: "approve", label: "Approve" }],
+            prompt: "Approve color?",
+            requestId,
+          },
+        ],
+        sequence: 0,
+        stepIndex: 0,
+        turnId: "turn_1",
+      },
+    } as UnstampedMessageStreamEvent,
+  ])[0]!;
+}
+
 function createStore<TData>(
   init: ConstructorParameters<typeof EveAgentStore<TData>>[0],
 ): EveAgentStore<TData> {
@@ -1959,63 +1988,67 @@ describe("EveAgentStore session resume", () => {
 });
 
 describe("EveAgentStore steering", () => {
-  it("rejects approval responses while a turn is active, even when the request is visible", async () => {
+  it("answers an approval while a turn is active and settles it through that turn", async () => {
     const live = controlledStreamResponse();
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(startedResponse())
-      .mockResolvedValueOnce(live.response);
+      .mockResolvedValueOnce(live.response)
+      .mockResolvedValueOnce(startedResponse("delivery_2"));
     const store = createStore({ reducer: defaultMessageReducer() });
-    const first = store.send({ message: "Get a color and start the number task" });
+    const first = store.send({ message: "Alice asks for two colors" });
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
-    const requested = stampTestEvents([
-      {
-        type: "input.requested",
-        data: {
-          requests: [
-            {
-              action: {
-                callId: "color-call",
-                input: {},
-                kind: "tool-call",
-                toolName: "random_color",
-              },
-              display: "confirmation",
-              kind: "tool-approval",
-              options: [{ id: "approve", label: "Approve" }],
-              prompt: "Approve color?",
-              requestId: "color-approval",
-            },
-          ],
-          sequence: 0,
+    live.emit(colorApprovalRequested("color-a"));
+    await vi.waitFor(() =>
+      expect(store.snapshot.conversation.inputs["color-a"]?.status).toBe("open"),
+    );
+
+    const answering = store.send({
+      inputResponses: [{ requestId: "color-a", optionId: "approve" }],
+    });
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(3));
+    expect(JSON.parse(String(fetchMock.mock.calls[2]![1]!.body))).toMatchObject({
+      inputResponses: [{ requestId: "color-a", optionId: "approve" }],
+    });
+    expect(store.snapshot.conversation.inputs["color-a"]?.status).toBe("responded");
+    await expect(
+      store.send({ inputResponses: [{ requestId: "color-a", optionId: "approve" }] }),
+    ).rejects.toThrow("Input request color-a was already answered.");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+
+    live.emit(
+      stampTestEvent(
+        createApprovalSettledEvent({
+          outcome: "approved",
+          requestId: "color-a",
+          responderPrincipalId: "alice",
+          sequence: 1,
           stepIndex: 0,
           turnId: "turn_1",
-        },
-      } as UnstampedMessageStreamEvent,
-    ])[0]!;
-    live.emit(requested);
-    await vi.waitFor(() =>
-      expect(
-        store.snapshot.data.messages.some((message) =>
-          message.parts.some(
-            (part) => part.type === "dynamic-tool" && part.state === "approval-requested",
-          ),
-        ),
-      ).toBe(true),
+        }),
+        1,
+      ),
     );
-    await expect(
-      store.send({ inputResponses: [{ requestId: "color-approval", optionId: "approve" }] }),
-    ).rejects.toThrow('Send a message with turnPolicy: "steer"');
-    expect(fetchMock).toHaveBeenCalledTimes(2);
-    live.emit(
-      stampTestEvents([
-        {
-          type: "session.waiting",
-          data: { continuationToken: "session-id", wait: "next-user-message" },
-        },
-      ])[0]!,
-    );
-    await first;
+    live.emit(stampTestEvent(createSessionWaitingEvent(), 2));
+    await Promise.all([first, answering]);
+    expect(store.snapshot.status).toBe("ready");
+    expect(store.snapshot.conversation.inputs["color-a"]?.status).toBe("settled");
+  });
+
+  it("leaves a request answerable when its answer never reaches the server", async () => {
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
+      if (init?.method === "POST") throw new TypeError("fetch failed");
+      return streamResponse([]);
+    });
+    const store = createStore({
+      initialEvents: [colorApprovalRequested("color-a")],
+      initialSession: { sessionId: "session_1", streamIndex: 1 },
+      reducer: defaultMessageReducer(),
+    });
+
+    await store.send({ inputResponses: [{ requestId: "color-a", optionId: "approve" }] });
+    expect(store.snapshot.error?.message).toBe("fetch failed");
+    expect(store.snapshot.conversation.inputs["color-a"]?.status).toBe("open");
   });
 
   it("steers a first turn that is still creating its session", async () => {
