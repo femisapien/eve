@@ -44,9 +44,8 @@ describe("LegacySessionHandoff", () => {
       activationToken: "owner-1:handoff",
       anchorRunId: "session-1",
       checkpoint: expect.objectContaining({
-        mode: "conversation",
         sessionTimeoutMs: 60_000,
-        version: 8,
+        version: 9,
       }),
       delivery: trigger.delivery,
       targetDeploymentId: "deployment-b",
@@ -220,7 +219,7 @@ function state(
 
 function createHandoff(inbox: SessionInboxHandle): LegacySessionHandoff {
   return new LegacySessionHandoff({
-    checkpoint: { mode: "conversation", sessionTimeoutMs: 60_000 },
+    checkpoint: { sessionTimeoutMs: 60_000 },
     deploymentId: "deployment-a",
     inbox,
     isInitialOwner: true,

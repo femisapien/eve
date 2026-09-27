@@ -83,7 +83,7 @@ describe("TakeoverSessionHandoff", () => {
     expect(startSessionOwnerStepMock).toHaveBeenCalledWith({
       activationToken: "owner-1:handoff",
       anchorRunId: "session-1",
-      checkpoint: expect.objectContaining({ mode: "conversation", version: 8 }),
+      checkpoint: expect.objectContaining({ version: 9 }),
       delivery: trigger.delivery,
       targetDeploymentId: "deployment-b",
     });
@@ -237,7 +237,7 @@ function state() {
 function handoffInput(): HandoffWorkflowEntryInput {
   return {
     activationToken: "owner-1:handoff",
-    checkpoint: { ...state(), mode: "conversation", sessionTimeoutMs: 60_000, version: 8 },
+    checkpoint: { ...state(), sessionTimeoutMs: 60_000, version: 9 },
     delivery: selection("deployment-b").delivery,
     handoffVersion: 2,
     kind: "handoff",
@@ -249,7 +249,7 @@ function handoffInput(): HandoffWorkflowEntryInput {
 
 function createHandoff(inbox: SessionInboxHandle): TakeoverSessionHandoff {
   return new TakeoverSessionHandoff({
-    checkpoint: { mode: "conversation", sessionTimeoutMs: 60_000 },
+    checkpoint: { sessionTimeoutMs: 60_000 },
     deploymentId: "deployment-a",
     inbox,
     isInitialOwner: true,

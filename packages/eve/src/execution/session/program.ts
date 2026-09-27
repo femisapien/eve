@@ -1,6 +1,5 @@
 import type { DeliverHookPayload, SessionCapabilities, TurnCaller } from "#channel/types.js";
 import type { AgentWorkflowRetentionDefinition } from "#shared/agent-definition.js";
-import type { RunMode } from "#shared/run-mode.js";
 import {
   bindTurnCallerContextStep,
   notifyCancelledTaskCallerStep,
@@ -57,7 +56,6 @@ export interface SessionBoot {
   readonly initialInput: DeliverHookPayload | undefined;
   /** Parks on the inbox before any session-scoped lifecycle work. */
   readonly awaitFirstMessage: boolean;
-  readonly mode: RunMode;
   readonly retention?: AgentWorkflowRetentionDefinition;
   readonly serializedContext: Record<string, unknown>;
   readonly sessionId: string;
@@ -99,7 +97,6 @@ export async function runPreparedSession(
   const handoffInput = {
     checkpoint: {
       capabilities: boot.capabilities,
-      mode: boot.mode,
       retention: boot.retention,
       sessionTimeoutMs: boot.sessionTimeoutMs,
     },
@@ -128,7 +125,6 @@ export async function runPreparedSession(
     result = await finalizeSession(loop.outcome, {
       caller: progress.caller,
       cursor,
-      mode: boot.mode,
       sessionWritable: boot.sessionWritable,
     });
     progress.terminalEmitted = true;
@@ -137,7 +133,7 @@ export async function runPreparedSession(
     if (!progress.terminalEmitted) {
       await finalizeSession(
         { error, kind: "failed", turnId: progress.turnId },
-        { caller: progress.caller, cursor, mode: boot.mode, sessionWritable: boot.sessionWritable },
+        { caller: progress.caller, cursor, sessionWritable: boot.sessionWritable },
       );
     }
     throw createSafeOuterWorkflowError();
@@ -152,7 +148,6 @@ export async function runPreparedSession(
  */
 export async function failSession(input: {
   readonly error: unknown;
-  readonly mode: RunMode;
   readonly serializedContext: Record<string, unknown>;
   readonly sessionId: string;
   readonly sessionState: DurableSessionState | undefined;
@@ -172,7 +167,6 @@ export async function failSession(input: {
         serializedContext: input.serializedContext,
         sessionState: input.sessionState,
       },
-      mode: input.mode,
       sessionWritable: input.sessionWritable,
     },
   );
@@ -212,7 +206,6 @@ async function runSessionLoop(
     capabilities: boot.capabilities,
     cursor,
     inbox,
-    mode: boot.mode,
     queue,
     sessionId: boot.sessionId,
   });
@@ -230,7 +223,6 @@ async function runSessionLoop(
     while (true) {
       const next = await nextTurnDelivery({
         cursor,
-        deferDeliveries: boot.mode === "task" && expectedAttemptIds.size > 0,
         expectedAttemptIds,
         inbox,
         queue,
