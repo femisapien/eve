@@ -5,7 +5,7 @@ import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
 import { readWorkflowToolRunRef } from "#execution/tools/workflow/ask.js";
 import type { WorkflowBodyInput } from "#execution/tools/workflow/body.js";
 import type {
-  WorkflowToolRunControlMessage,
+  WorkflowBodyCommand,
   WorkflowToolRunMessage,
   WorkflowToolRunRef,
 } from "#execution/tools/workflow/messages.js";
@@ -77,6 +77,7 @@ const input: WorkflowBodyInput = {
   callId: "call-1",
   entry: { entryPoint: "serve", taskId: "plan-7k2m9q" },
   input: { request: "Draft the plan." },
+  hookToken: "control",
   owner: { inbox: "inbox" },
   runId: "run",
   session: {
@@ -90,7 +91,7 @@ const input: WorkflowBodyInput = {
 };
 
 /** A later call, made in its own turn, by Alice with the claims she has by then. */
-function call(callId: string, request: string): WorkflowToolRunControlMessage {
+function call(callId: string, request: string): WorkflowBodyCommand {
   const turn = { id: `turn-${callId}`, sequence: 2 };
   return {
     call: {

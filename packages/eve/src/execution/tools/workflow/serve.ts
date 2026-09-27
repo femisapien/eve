@@ -1,7 +1,11 @@
 import type { SessionContext } from "#context/session-context.js";
 import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
 import { AgentSessions } from "#execution/agent-sessions/session.js";
-import { ask, attachWorkflowToolRunContext } from "#execution/tools/workflow/ask.js";
+import {
+  ask,
+  attachWorkflowToolRunContext,
+  WorkflowToolRunAsks,
+} from "#execution/tools/workflow/ask.js";
 import {
   createAgentsView,
   createSharedContext,
@@ -15,8 +19,8 @@ import {
   type WorkflowBodyResult,
 } from "#execution/tools/workflow/body.js";
 import type {
+  WorkflowBodyCommand,
   WorkflowToolRunCall,
-  WorkflowToolRunControlMessage,
   WorkflowToolRunOutcome,
   WorkflowToolRunRef,
 } from "#execution/tools/workflow/messages.js";
@@ -70,6 +74,11 @@ interface PendingReceive {
  * aborts the stretch and keeps the run; `end` stops the run for good.
  */
 class WorkflowServeCalls implements WorkflowBodyControl {
+  /**
+   * The body's questions. A cancel keeps the run, so it withdraws them
+   * through the stretch's `abortSignal`, and the session decides each one.
+   */
+  readonly asks: WorkflowToolRunAsks;
   private readonly run = new AbortController();
   private readonly first: ServedCall;
   /** The run's ref and session; each served call replaces the fields that describe the call. */
@@ -94,6 +103,7 @@ class WorkflowServeCalls implements WorkflowBodyControl {
 
   constructor(input: WorkflowBodyInput) {
     this.runRef = createWorkflowBodyRef(input);
+    this.asks = new WorkflowToolRunAsks(this.runRef.runId);
     this.runSession = input.session;
     this.inbox = input.owner.inbox;
     this.toolName = input.toolName;
@@ -132,7 +142,7 @@ class WorkflowServeCalls implements WorkflowBodyControl {
     return this.latest;
   }
 
-  apply(command: WorkflowToolRunControlMessage): void {
+  apply(command: WorkflowBodyCommand): void {
     switch (command.kind) {
       case "call":
         this.accept(command.call);
@@ -221,6 +231,9 @@ class WorkflowServeCalls implements WorkflowBodyControl {
 
   /** The session ended: the work in progress aborts and no call arrives anymore. */
   private end(reason: Error): void {
+    // The session is gone and decides no question anymore; settle them before
+    // the aborts would ask to withdraw them.
+    this.asks.cancelAll();
     this.endedBy = reason;
     this.run.abort(reason);
     this.stretch?.abort(reason);
@@ -282,6 +295,7 @@ export function startServeBody(input: WorkflowBodyInput): StartedWorkflowBody {
   });
   return {
     agentSessions,
+    asks: calls.asks,
     control: calls,
     result: executeServeBody(input, calls, agentSessions),
   };
@@ -294,10 +308,12 @@ async function executeServeBody(
 ): Promise<WorkflowBodyResult> {
   const ctx = createServeContext(input, calls, agentSessions);
   attachWorkflowToolRunContext(ctx, {
+    asks: calls.asks,
     // A caller that can't reach a person resolves `ctx.ask()` as `unavailable`.
     get canRequestInput() {
       return calls.current.agentContext.capabilities?.requestInput === true;
     },
+    control: input.hookToken,
     get from() {
       return calls.current.from;
     },

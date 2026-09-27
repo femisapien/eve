@@ -11,7 +11,7 @@ import {
   getProxyInputRequests,
   toProxyInputRequestEntries,
 } from "#harness/proxy-input-requests.js";
-import type { AnswerHookRoute, ProxyInputRequest } from "#harness/proxy-input-requests.js";
+import type { WorkflowAskRoute, ProxyInputRequest } from "#harness/proxy-input-requests.js";
 import type { HarnessEmitFn, HarnessSession, SessionStateMap } from "#harness/types.js";
 import {
   createInputRequestedEvent,
@@ -78,7 +78,7 @@ async function emitTurnWaiting(emit: HarnessEmitFn, session: HarnessSession): Pr
 
 /** One proxied-child bucket of a routed deliver payload. */
 export interface RoutedChildDelivery {
-  readonly answerHook?: AnswerHookRoute;
+  readonly workflowAsk?: WorkflowAskRoute;
   readonly childContinuationToken: string;
   readonly childSessionInbox?: SessionInboxAddress;
   readonly payload: { readonly inputResponses: readonly InputResponse[] };
@@ -110,7 +110,7 @@ export interface RoutedDeliverPayload {
 
 /** In-progress accumulation for one `forChildren` bucket. */
 interface ChildResponseBucket {
-  readonly answerHook?: AnswerHookRoute;
+  readonly workflowAsk?: WorkflowAskRoute;
   readonly childContinuationToken: string;
   readonly childSessionInbox?: SessionInboxAddress;
   /** A child's routes all come from its latest batch, so they share coordinates. */
@@ -165,7 +165,7 @@ export function routeDeliverPayload(input: {
       ...(route.childSessionInbox !== undefined && {
         childSessionInbox: route.childSessionInbox,
       }),
-      ...(route.answerHook !== undefined && { answerHook: route.answerHook }),
+      ...(route.workflowAsk !== undefined && { workflowAsk: route.workflowAsk }),
     };
     responsesByChild.set(bucketKey, bucket);
     return bucket;
@@ -195,7 +195,7 @@ export function routeDeliverPayload(input: {
 
   const forChildren = [...responsesByChild.values()].map(
     ({
-      answerHook,
+      workflowAsk,
       childContinuationToken,
       childSessionInbox,
       event,
@@ -226,7 +226,7 @@ export function routeDeliverPayload(input: {
           resolutions: resolveRetiredRequests({ entries, responses, retireRequestIds }),
         },
         ...(childSessionInbox !== undefined && { childSessionInbox }),
-        ...(answerHook !== undefined && { answerHook }),
+        ...(workflowAsk !== undefined && { workflowAsk }),
       };
     },
   );
@@ -293,13 +293,13 @@ function resolveMessageAgainstQuestions(input: {
   if (!input.enabled || (input.payload.inputResponses?.length ?? 0) > 0) return none;
   if (input.payload.message === undefined) return none;
 
-  // Task and subagent questions carry no answer-hook metadata, so plain text
+  // Task and subagent questions carry no `ctx.ask()` metadata, so plain text
   // cannot resolve them, but they still make the message ambiguous.
   const pending = [...input.entries].filter(
     ([requestId, route]) => route.kind === "question" && input.routable(requestId, route),
   );
   const questions = pending.flatMap(([requestId, route]) => {
-    const question = route.answerHook?.question ?? route.question;
+    const question = route.workflowAsk?.question ?? route.question;
     return question !== undefined ? [{ requestId, ...question }] : [];
   });
   if (questions.length === 0) return none;

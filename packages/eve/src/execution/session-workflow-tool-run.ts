@@ -4,6 +4,7 @@ import {
   emitWorkflowToolRunReportStep,
 } from "#execution/tools/workflow/emit-workflow-tool-run-report-step.js";
 import type {
+  WorkflowToolAskRequest,
   WorkflowToolRunMessage,
   WorkflowToolRunOutcomeMessage,
   WorkflowToolRunRef,
@@ -21,10 +22,8 @@ import {
   isInboxToolResultFromRecordedWorkflowToolRun,
 } from "#harness/workflow-tool-runs.js";
 import { runProxySubagentEventStep } from "#subagents/event-proxy-step.js";
-import type { AnswerHookRoute } from "#harness/proxy-input-requests.js";
+import type { WorkflowAskRoute } from "#harness/proxy-input-requests.js";
 import type { RuntimeActionResult } from "#shared/action-types.js";
-import type { SessionStateMap } from "#harness/types.js";
-import { findTask, readTaskTable } from "#execution/tasks/table.js";
 
 interface HandlerInput<T> {
   readonly cursor: SessionStateCursor;
@@ -111,9 +110,9 @@ async function handleWorkflowToolRunRequest(
   }
   await cursor.apply(
     await runProxySubagentEventStep({
-      ...(message.requestCoordinates === undefined
-        ? { answerHook: createAnswerHookRoute(message) }
-        : {}),
+      ...(message.request.kind === "ask" && {
+        workflowAsk: createWorkflowAskRoute(message.from, message.request),
+      }),
       hookPayload: workflowToolRunRequestToInputRequestPayload(message),
       sessionWritable: cursor.sessionWritable,
       serializedContext: cursor.serializedContext,
@@ -122,37 +121,36 @@ async function handleWorkflowToolRunRequest(
   );
 }
 
-/** A run withdrew a `ctx.ask()` question: the channel stops offering it. */
+/**
+ * A run asks to withdraw a `ctx.ask()` question. The session decides: it
+ * withdraws the question unless it already accepted an answer or stopped
+ * offering it, and tells the run either way.
+ */
 async function handleWorkflowToolRunWithdraw(
   input: HandlerInput<WorkflowToolRunWithdrawMessage>,
 ): Promise<void> {
   const { cursor, message } = input;
-  if (!isTrackedSender(cursor.sessionState.snapshot.session.state, message.from)) return;
   await cursor.apply(
     await withdrawWorkflowToolRunQuestionStep({
       ...cursor.eventTarget(),
+      control: message.control,
       requestId: message.replyTo,
       runId: message.from.runId,
     }),
   );
 }
 
-/** Whether the session still tracks the run that sent a message: a task's, or one a turn waits on. */
-function isTrackedSender(state: SessionStateMap | undefined, from: WorkflowToolRunRef): boolean {
-  if (from.taskId !== undefined) {
-    return findTask(readTaskTable(state), from.taskId)?.run?.runId === from.runId;
-  }
-  return findBlockingWorkflowToolRun(state, from.callId, from.turnId)?.address.runId === from.runId;
-}
-
-function createAnswerHookRoute(message: WorkflowToolRunRequestMessage): AnswerHookRoute {
-  if (message.request.kind !== "ask") return { runId: message.from.runId };
-  const { allowFreeform, options } = message.request.request;
+function createWorkflowAskRoute(
+  from: WorkflowToolRunRef,
+  ask: WorkflowToolAskRequest,
+): WorkflowAskRoute {
+  const { allowFreeform, options } = ask.request;
   return {
+    control: ask.control,
     question: {
       ...(allowFreeform !== undefined && { allowFreeform }),
       ...(options !== undefined && { options: [...options] }),
     },
-    runId: message.from.runId,
+    runId: from.runId,
   };
 }

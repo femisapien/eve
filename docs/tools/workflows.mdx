@@ -473,6 +473,9 @@ if (answer === undefined) return { deployed: false, reason: "timed out" };
 - A response never steers. A new human message that does not answer a pending request follows the
   session's normal `turnPolicy`. A steering message also fires `ctx.interruptSignal`; pass it as
   `signal` to withdraw the question when the conversation moves on, as `ask_question` does.
+- An aborted `signal` asks the session to withdraw the question, and the session decides. If a
+  person's answer reached the session first, the ask resolves as `answered` even though the signal
+  aborted, and the channel shows it answered. Branch on `status`, not on the signal.
 
 Compare the [`approval`](/docs/human-in-the-loop) policy, which gates the call before `execute` runs
 and can only show the model's input. Both compose: `approval` before the run, `ctx.ask` inside it.

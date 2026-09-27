@@ -1,6 +1,5 @@
-import { createHook } from "#compiled/@workflow/core/index.js";
-
 import type {
+  WorkflowToolRunAskDecision,
   WorkflowToolRunOwner,
   WorkflowToolRunRef,
 } from "#execution/tools/workflow/messages.js";
@@ -18,7 +17,10 @@ import { workflowToolContextErrorMessage } from "#shared/workflow-tool-context.j
 const WORKFLOW_TOOL_RUN_CONTEXT = Symbol.for("eve.workflow-tool-run.context");
 
 export interface WorkflowToolRunContext {
+  readonly asks: WorkflowToolRunAsks;
   readonly canRequestInput?: boolean;
+  /** The run's control hook, where the session sends its decisions on the run's questions. */
+  readonly control: string;
   /**
    * The ref of the call the run serves now, which questions and sign-ins come
    * from. A `serve` task's changes with each call, so read it when sending.
@@ -69,10 +71,68 @@ export function readWorkflowToolRunOwner(ctx: ToolContext): WorkflowToolRunOwner
 const CANCELLED: ToolInputResponse = { status: "cancelled" };
 const UNAVAILABLE: ToolInputResponse = { status: "unavailable" };
 
+interface PendingAsk {
+  readonly resolve: (response: ToolInputResponse) => void;
+  readonly reject: (error: unknown) => void;
+}
+
+/**
+ * The run's pending `ctx.ask()` questions. The run names each one, and each
+ * resolves only from what the session decided about it, delivered in order on
+ * the run's control hook, or as `cancelled` once the session stops the work.
+ */
+export class WorkflowToolRunAsks {
+  private opened = 0;
+  private readonly pending = new Map<string, PendingAsk>();
+  private readonly runId: string;
+
+  constructor(runId: string) {
+    this.runId = runId;
+  }
+
+  /** Opens a question under a request ID that replays deterministically with the run. */
+  open(): { readonly answer: Promise<ToolInputResponse>; readonly requestId: string } {
+    this.opened += 1;
+    const requestId = `${this.runId}-ask-${String(this.opened)}`;
+    const answer = new Promise<ToolInputResponse>((resolve, reject) => {
+      this.pending.set(requestId, { reject, resolve });
+    });
+    return { answer, requestId };
+  }
+
+  isPending(requestId: string): boolean {
+    return this.pending.has(requestId);
+  }
+
+  /** Applies the session's decision. The first one wins; a repeated one is dropped. */
+  settle(decision: WorkflowToolRunAskDecision): void {
+    const response = decision.kind === "answer" ? decision.response : CANCELLED;
+    this.take(decision.requestId)?.resolve(response);
+  }
+
+  fail(requestId: string, error: unknown): void {
+    this.take(requestId)?.reject(error);
+  }
+
+  /** The session stopped the work, so it answers none of its questions anymore. */
+  cancelAll(): void {
+    for (const requestId of this.pending.keys()) {
+      this.take(requestId)?.resolve(CANCELLED);
+    }
+  }
+
+  private take(requestId: string): PendingAsk | undefined {
+    const pending = this.pending.get(requestId);
+    this.pending.delete(requestId);
+    return pending;
+  }
+}
+
 /**
  * Returns an answer which may be awaited or raced with another workflow
- * operation. When the call's `abortSignal` or `options.signal` aborts before
- * an answer arrives, the request is withdrawn and the answer is `cancelled`.
+ * operation. When the call's `abortSignal` or `options.signal` aborts, the run
+ * asks the session to withdraw the question. The answer is `cancelled` only if
+ * the session withdrew it before it accepted a person's answer.
  */
 export function ask(
   ctx: ToolContext,
@@ -85,47 +145,30 @@ export function ask(
   if (options.signal !== undefined) signals.push(options.signal);
   if (signals.some((signal) => signal.aborted)) return Promise.resolve(CANCELLED);
 
-  const answer = createHook<ToolInputResponse>();
-  const sent = resumeHookStep(context.owner.inbox, {
+  const { asks, control, owner } = context;
+  const { answer, requestId } = asks.open();
+  // A `serve` task's current call changes; the question stays the call's that asked it.
+  const from = context.from;
+  const sent = resumeHookStep(owner.inbox, {
     kind: "request",
-    from: context.from,
-    replyTo: answer.token,
-    request: { kind: "ask", request },
+    from,
+    replyTo: requestId,
+    request: { control, kind: "ask", request },
   });
-  const withdraw = async (): Promise<void> => {
-    // The request may still be in flight; the withdrawal must not overtake it.
-    await sent;
-    await resumeHookStep(context.owner.inbox, {
-      kind: "withdraw",
-      from: context.from,
-      replyTo: answer.token,
-    });
+  sent.catch((error: unknown) => asks.fail(requestId, error));
+
+  const requestWithdrawal = (): void => {
+    if (!asks.isPending(requestId)) return;
+    // The withdrawal must not overtake the request it withdraws.
+    const withdrawal = sent.then(() =>
+      resumeHookStep(owner.inbox, { control, from, kind: "withdraw", replyTo: requestId }),
+    );
+    withdrawal.catch((error: unknown) => asks.fail(requestId, error));
   };
-  return answerUnlessWithdrawn(answer, signals, withdraw);
-}
-
-/** Resolves with the answer, or as `cancelled` once a signal aborts first and the request is withdrawn. */
-function answerUnlessWithdrawn(
-  answer: PromiseLike<ToolInputResponse>,
-  signals: readonly AbortSignal[],
-  withdraw: () => Promise<void>,
-): Promise<ToolInputResponse> {
-  let answered = false;
-  const answering = Promise.resolve(answer).then((response) => {
-    answered = true;
-    return response;
-  });
-  const withdrawing = firstAbort(signals).then(async () => {
-    if (!answered) await withdraw();
-    return CANCELLED;
-  });
-  return Promise.race([answering, withdrawing]);
-}
-
-function firstAbort(signals: readonly AbortSignal[]): Promise<void> {
-  return new Promise((resolve) => {
-    for (const signal of signals) {
-      signal.addEventListener("abort", () => resolve(), { once: true });
-    }
+  for (const signal of signals) {
+    signal.addEventListener("abort", requestWithdrawal, { once: true });
+  }
+  return answer.finally(() => {
+    for (const signal of signals) signal.removeEventListener("abort", requestWithdrawal);
   });
 }

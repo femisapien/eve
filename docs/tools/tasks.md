@@ -108,7 +108,8 @@ A workflow tool body receives its signals from its context or, in a `serve` body
 - **`ctx.ask(request, { signal })`** withdraws the question when `signal` aborts. The answer
   resolves as `{ status: "cancelled" }`, and the stream reports `input.resolved` with
   `outcome: "cancelled"` so channels stop offering the question. The call's `abortSignal` withdraws
-  a pending question the same way.
+  a pending question the same way. A person's answer that reached the session first still wins:
+  the ask resolves as `answered`, so branch on `status`, not on the signal.
 
 Pass `ctx.interruptSignal` when a question should lapse once the conversation moves on. The
 provided `ask_question` tool does, so a steering message that doesn't answer its question

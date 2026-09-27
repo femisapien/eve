@@ -8,9 +8,13 @@ import type {
   WorkflowTaskContext,
   WorkflowToolContext,
 } from "#tools/workflow-definition.js";
-import { ask, attachWorkflowToolRunContext } from "#execution/tools/workflow/ask.js";
 import {
-  type WorkflowToolRunControlMessage,
+  ask,
+  attachWorkflowToolRunContext,
+  WorkflowToolRunAsks,
+} from "#execution/tools/workflow/ask.js";
+import {
+  type WorkflowBodyCommand,
   type WorkflowToolRunOutcome,
   type WorkflowToolRunOwner,
   type WorkflowToolRunRef,
@@ -39,6 +43,8 @@ export interface WorkflowBodyDefinition {
 }
 
 export interface WorkflowBodyInput extends WorkflowBodyDefinition {
+  /** The run's control hook, which the session answers the body's questions on. */
+  readonly hookToken: string;
   readonly owner: WorkflowToolRunOwner;
   readonly runId?: string;
 }
@@ -57,13 +63,15 @@ export interface WorkflowBodyResult {
 export interface WorkflowBodyControl {
   /** Aborts when the run stops for good; the run then settles as cancelled. */
   readonly runSignal: AbortSignal;
-  apply(command: WorkflowToolRunControlMessage): void;
+  apply(command: WorkflowBodyCommand): void;
 }
 
 /** A body the run started, how its commands reach it, and the sessions it opens. */
 export interface StartedWorkflowBody {
   /** Sessions the body opens with `ctx.agent`, announced from the call it serves. */
   readonly agentSessions: AgentSessions;
+  /** The body's pending questions, which the session's decisions settle. */
+  readonly asks: WorkflowToolRunAsks;
   readonly control: WorkflowBodyControl;
   readonly result: Promise<WorkflowBodyResult>;
 }
@@ -79,6 +87,11 @@ type WorkflowCallEntryPoint = (
 class WorkflowCallSignals implements WorkflowBodyControl {
   private readonly abort = new AbortController();
   private readonly interrupt = new AbortController();
+  private readonly asks: WorkflowToolRunAsks;
+
+  constructor(asks: WorkflowToolRunAsks) {
+    this.asks = asks;
+  }
 
   get runSignal(): AbortSignal {
     return this.abort.signal;
@@ -88,10 +101,14 @@ class WorkflowCallSignals implements WorkflowBodyControl {
     return this.interrupt.signal;
   }
 
-  apply(command: WorkflowToolRunControlMessage): void {
+  apply(command: WorkflowBodyCommand): void {
     switch (command.kind) {
       case "cancel":
       case "end":
+        // The session retired the call's questions when it stopped the call,
+        // so it accepts no answer after this; settle them before the abort
+        // would ask to withdraw them.
+        this.asks.cancelAll();
         this.abort.abort(new WorkflowToolRunCancelledError(command.reason));
         return;
       case "interrupt":
@@ -106,17 +123,20 @@ class WorkflowCallSignals implements WorkflowBodyControl {
 
 /** Starts the body of an `execute` or `task` call, which serves the call the run started with. */
 export function startCallBody(input: WorkflowBodyInput): StartedWorkflowBody {
-  const signals = new WorkflowCallSignals();
+  const from = createWorkflowBodyRef(input);
+  const asks = new WorkflowToolRunAsks(from.runId);
+  const signals = new WorkflowCallSignals(asks);
   const agentSessions = new AgentSessions({
     auth: input.session.auth,
     context: input.agentContext,
-    from: createWorkflowBodyRef(input),
+    from,
     inbox: input.owner.inbox,
   });
   return {
     agentSessions,
+    asks,
     control: signals,
-    result: executeCallBody(input, signals, agentSessions),
+    result: executeCallBody(input, signals, agentSessions, asks),
   };
 }
 
@@ -125,12 +145,15 @@ async function executeCallBody(
   input: WorkflowBodyInput,
   signals: WorkflowCallSignals,
   agentSessions: AgentSessions,
+  asks: WorkflowToolRunAsks,
 ): Promise<WorkflowBodyResult> {
   const from = createWorkflowBodyRef(input);
   const ctx = createCallContext(input, signals, agentSessions);
   attachWorkflowToolRunContext(ctx, {
+    asks,
     // A caller that can't reach a person resolves `ctx.ask()` as `unavailable`.
     canRequestInput: input.agentContext.capabilities?.requestInput === true,
+    control: input.hookToken,
     from,
     owner: input.owner,
   });

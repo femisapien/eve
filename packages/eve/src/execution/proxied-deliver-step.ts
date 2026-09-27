@@ -10,9 +10,9 @@ import {
 import { relaySessionEvents, type SessionEventTarget } from "#execution/publish-session-events.js";
 import { routeDeliverPayload } from "#subagents/hitl-proxy.js";
 import { resumeSessionInbox } from "#execution/session-inbox/resume.js";
-import { resumeWorkflowToolRunAnswers } from "#execution/tools/workflow/answer.js";
+import { sendWorkflowAskAnswers } from "#execution/tools/workflow/answer.js";
 import type { PendingInputBatchEvent } from "#harness/pending-input-batches.js";
-import type { AnswerHookRoute } from "#harness/proxy-input-requests.js";
+import type { WorkflowAskRoute } from "#harness/proxy-input-requests.js";
 import {
   createInputResolvedEvent,
   type InputResolution,
@@ -34,7 +34,7 @@ export type RoutedDeliverResult =
     };
 
 interface ChildBucket {
-  readonly answerHook?: AnswerHookRoute;
+  readonly workflowAsk?: WorkflowAskRoute;
   readonly childContinuationToken: string;
   readonly childSessionInbox?: SessionInboxAddress;
   readonly event: PendingInputBatchEvent;
@@ -61,8 +61,8 @@ export async function routeProxiedDeliverStep(
   // Only a person's own message may answer or skip a pending question.
   const resolveMessage =
     !hasDelegatedSessionContext(input.serializedContext) && sourceDelivery.caller === undefined;
-  // Every payload routes against the same state, so an answer-hook request
-  // resolved by an earlier payload is hidden from later ones; its hook accepts
+  // Every payload routes against the same state, so a `ctx.ask()` question
+  // resolved by an earlier payload is hidden from later ones; its run takes
   // one answer, and later messages must reach the parent instead.
   const resolvedQuestions = new Set<string>();
 
@@ -77,7 +77,7 @@ export async function routeProxiedDeliverStep(
     if (routed.forSelf !== undefined) parentPayloads.set(sourcePayloadIndex, routed.forSelf);
 
     for (const [childIndex, forChild] of routed.forChildren.entries()) {
-      if (forChild.answerHook !== undefined) {
+      if (forChild.workflowAsk !== undefined) {
         for (const { requestId } of forChild.resolved.resolutions) resolvedQuestions.add(requestId);
       }
       const key = [
@@ -85,7 +85,7 @@ export async function routeProxiedDeliverStep(
         forChild.childSessionInbox?.sessionId ?? "",
       ].join("\0");
       const child: ChildBucket = children.get(key) ?? {
-        answerHook: forChild.answerHook,
+        workflowAsk: forChild.workflowAsk,
         childContinuationToken: forChild.childContinuationToken,
         childSessionInbox: forChild.childSessionInbox,
         event: forChild.resolved.event,
@@ -114,9 +114,9 @@ export async function routeProxiedDeliverStep(
   let retired = false;
   const resolvedEvents: UnstampedMessageStreamEvent[] = [];
   for (const child of children.values()) {
-    if (child.answerHook !== undefined) {
+    if (child.workflowAsk !== undefined) {
       const responses = coalesceDeliverPayloads(child.payloads).inputResponses ?? [];
-      await resumeWorkflowToolRunAnswers(child.childContinuationToken, responses);
+      await sendWorkflowAskAnswers(child.workflowAsk, responses);
     } else {
       const childDelivery: DeliverHookPayload = {
         ...sourceDelivery,

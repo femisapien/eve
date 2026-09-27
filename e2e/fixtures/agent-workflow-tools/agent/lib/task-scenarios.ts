@@ -9,8 +9,10 @@ import type { MockModelRequest, MockModelResponse } from "eve/evals";
 import {
   DELEGATE_INTERIM_MESSAGE,
   ROLLOUT_INTERIM_MESSAGE,
+  SIGN_OFF_INTERIM_MESSAGE,
   STAGE_INTERIM_MESSAGE,
 } from "../../task-scenario-text.ts";
+import { SIGN_OFF_REQUEST } from "./plan.ts";
 import { HOLD_REQUEST } from "./plan-revisions.ts";
 
 type Scenario = (request: MockModelRequest) => MockModelResponse | string;
@@ -78,6 +80,39 @@ const SCENARIOS: Readonly<Record<string, Scenario>> = {
         { id: "plan-final-wait", name: "task_wait" },
       ],
       () => report("WORKFLOW-PLAN-RESULT", latestTaskResult(request, "revise_plan")),
+    ),
+
+  // Asks for sign-off in a resumable task, then ends the step so the turn holds on it.
+  "WORKFLOW-SIGNOFF-HOLD": (request) =>
+    playScript(
+      request,
+      [{ id: "signoff", input: () => ({ request: SIGN_OFF_REQUEST }), name: "sign_off_plan" }],
+      () =>
+        reportOnceSettled(
+          request,
+          "sign_off_plan",
+          "WORKFLOW-SIGNOFF-RESULT",
+          SIGN_OFF_INTERIM_MESSAGE,
+        ),
+    ),
+
+  // The plan changes: cancel the pending sign-off, then note the change on the same task.
+  "WORKFLOW-SIGNOFF-CANCEL": (request) =>
+    playScript(
+      request,
+      [
+        { id: "signoff-cancel", input: taskOf("signoff"), name: "task_cancel" },
+        {
+          id: "signoff-note",
+          input: (current) => ({
+            request: "rework the plan first",
+            taskId: taskIdFromReceipt(current, "signoff"),
+          }),
+          name: "sign_off_plan",
+        },
+        { id: "signoff-note-wait", name: "task_wait" },
+      ],
+      () => report("WORKFLOW-SIGNOFF-RESULT", latestTaskResult(request, "sign_off_plan")),
     ),
 
   "WORKFLOW-DELEGATE-STAGE": (request) =>

@@ -16,24 +16,26 @@ const PROXY_INPUT_REQUEST_KINDS = {
 } satisfies Readonly<Record<InputRequestKind, true>>;
 
 /**
- * Marks a continuation token as a bare hook a workflow tool run created for one
- * request, resumed with the plain response, rather than a child session inbox.
+ * Marks a request as a workflow tool run's `ctx.ask()` question, rather than a
+ * child session's. Its answer goes to the run's control hook, which carries
+ * every decision the session makes for the run, in order.
  */
-export interface AnswerHookRoute {
+export interface WorkflowAskRoute {
+  readonly control: string;
+  /** What a plain-text message may answer. */
+  readonly question: ProxyInputQuestion;
   readonly runId: string;
-  /** Present for a `ctx.ask()` question: what a plain-text message may answer. */
-  readonly question?: AnswerHookQuestion;
 }
 
 /** The parts of a `ctx.ask()` request a plain-text message is resolved against. */
-export interface AnswerHookQuestion {
+export interface ProxyInputQuestion {
   readonly allowFreeform?: boolean;
   readonly options?: readonly InputOption[];
 }
 
 /** Routing and control metadata for one descendant-owned input request. */
 export interface ProxyInputRequest {
-  readonly answerHook?: AnswerHookRoute;
+  readonly workflowAsk?: WorkflowAskRoute;
   /** Batch semantics are optional so sessions written before this field remain routable. */
   readonly batch?: ProxyInputRequestBatch;
   readonly childContinuationToken: string;
@@ -45,7 +47,7 @@ export interface ProxyInputRequest {
   readonly event: PendingInputBatchEvent;
   readonly kind: InputRequestKind;
   /** Question metadata lets the human-facing parent resolve plain text before proxying by ID. */
-  readonly question?: AnswerHookQuestion;
+  readonly question?: ProxyInputQuestion;
 }
 
 export interface ProxyInputRequestBatch {
@@ -199,7 +201,7 @@ export function toProxyInputRequestEntries(
       childSessionInbox?: SessionInboxAddress;
       readonly event: PendingInputBatchEvent;
       readonly kind: InputRequestKind;
-      question?: AnswerHookQuestion;
+      question?: ProxyInputQuestion;
     } & { readonly batch: ProxyInputRequestBatch } = {
       batch,
       childContinuationToken: payload.childContinuationToken,
@@ -268,27 +270,27 @@ function parseProxyInputRequest(value: unknown, requestId: string): ProxyInputRe
   const event = "event" in value ? parseInputRequestEvent(value.event) : undefined;
   if (event === undefined) return undefined;
   const batch = "batch" in value ? parseProxyInputRequestBatch(value.batch) : undefined;
-  const answerHook = "answerHook" in value ? parseAnswerHookRoute(value.answerHook) : undefined;
-  if ("answerHook" in value && answerHook === undefined) return undefined;
-  const question = "question" in value ? parseAnswerHookQuestion(value.question) : undefined;
+  const workflowAsk = "workflowAsk" in value ? parseWorkflowAskRoute(value.workflowAsk) : undefined;
+  if ("workflowAsk" in value && workflowAsk === undefined) return undefined;
+  const question = "question" in value ? parseProxyInputQuestion(value.question) : undefined;
   if ("question" in value && question === undefined) return undefined;
   const childSessionInbox = "childSessionInbox" in value ? value.childSessionInbox : undefined;
   if (childSessionInbox !== undefined && !isSessionInboxAddress(childSessionInbox))
     return undefined;
   const request: {
-    answerHook?: AnswerHookRoute;
+    workflowAsk?: WorkflowAskRoute;
     batch?: ProxyInputRequestBatch;
     readonly childContinuationToken: string;
     childSessionInbox?: SessionInboxAddress;
     readonly event: PendingInputBatchEvent;
     readonly kind: InputRequestKind;
-    question?: AnswerHookQuestion;
+    question?: ProxyInputQuestion;
   } = {
     childContinuationToken: value.childContinuationToken,
     event,
     kind: value.kind,
   };
-  if (answerHook !== undefined) request.answerHook = answerHook;
+  if (workflowAsk !== undefined) request.workflowAsk = workflowAsk;
   if (childSessionInbox !== undefined) request.childSessionInbox = childSessionInbox;
   if (batch !== undefined && batch.requestIds.includes(requestId)) request.batch = batch;
   if (question !== undefined) request.question = question;
@@ -305,15 +307,18 @@ function parseInputRequestEvent(value: unknown): PendingInputBatchEvent | undefi
   return { sequence, stepIndex, turnId };
 }
 
-function parseAnswerHookRoute(value: unknown): AnswerHookRoute | undefined {
-  if (value === null || typeof value !== "object" || !("runId" in value)) return undefined;
-  if (typeof value.runId !== "string" || value.runId.length === 0) return undefined;
-  if (!("question" in value) || value.question === undefined) return { runId: value.runId };
-  const question = parseAnswerHookQuestion(value.question);
-  return question === undefined ? undefined : { question, runId: value.runId };
+function parseWorkflowAskRoute(value: unknown): WorkflowAskRoute | undefined {
+  if (value === null || typeof value !== "object") return undefined;
+  const control = Reflect.get(value, "control");
+  const runId = Reflect.get(value, "runId");
+  if (typeof control !== "string" || control.length === 0) return undefined;
+  if (typeof runId !== "string" || runId.length === 0) return undefined;
+  const question = parseProxyInputQuestion(Reflect.get(value, "question"));
+  if (question === undefined) return undefined;
+  return { control, question, runId };
 }
 
-function parseAnswerHookQuestion(value: unknown): AnswerHookQuestion | undefined {
+function parseProxyInputQuestion(value: unknown): ProxyInputQuestion | undefined {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
   const question: {
     allowFreeform?: boolean;

@@ -74,6 +74,7 @@ const input: WorkflowBodyInput = {
   callId: "call-1",
   entry: { entryPoint: "serve", taskId: "reviewer-7k2m9q" },
   input: { message: "Review the release plan." },
+  hookToken: "control",
   owner: { inbox: "inbox" },
   runId: "run",
   session: { auth: alice, id: "session", turn: { id: "turn", sequence: 1 } },

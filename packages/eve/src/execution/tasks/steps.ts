@@ -7,6 +7,7 @@ import {
 import type { TaskHardStopWorkflowInput } from "#execution/tasks/hard-stop-workflow.js";
 import {
   cancelTask,
+  findTask,
   finishTaskRun,
   markTaskRunStarted,
   nextHardStopDue,
@@ -22,9 +23,10 @@ import {
   type TaskSettlement,
   type TaskTable,
 } from "#execution/tasks/table.js";
-import { isTaskWorkflowTargetGone } from "#execution/tasks/workflow-target.js";
+import { ignoreGoneTarget } from "#execution/tasks/workflow-target.js";
 import {
   publishSessionEvents,
+  relaySessionEvents,
   type PublishedSessionEvents,
   type SessionEventTarget,
 } from "#execution/publish-session-events.js";
@@ -34,6 +36,7 @@ import type {
   WorkflowToolRunOutcomeMessage,
 } from "#execution/tools/workflow/messages.js";
 import { workflowToolRunFailureOutput } from "#execution/tools/workflow/owner-inbox.js";
+import { withdrawWorkflowAsks } from "#execution/tools/workflow/withdraw-step.js";
 import {
   startWorkflowOnCurrentDeployment,
   taskHardStopWorkflowReference,
@@ -102,6 +105,9 @@ export async function applyTaskRunMessageStep(
 /**
  * Cancels tasks: their calls settle as cancelled, their runs are told to
  * stop, and the sleeper is armed to hard-stop any run that doesn't confirm.
+ * A `task()` run's cancel settles its questions, so the session withdraws
+ * them in the same step and accepts no answer after it. A `serve()` run
+ * withdraws its stretch's questions itself, and the session decides each one.
  */
 export async function cancelTasksStep(
   input: SessionEventTarget & {
@@ -115,17 +121,23 @@ export async function cancelTasksStep(
   const now = Date.now();
   let table = readTaskTable(session.state);
   const settlements: TaskSettlement[] = [];
+  const stoppedRunIds = new Set<string>();
   for (const taskId of input.taskIds) {
+    const resumable = findTask(table, taskId)?.resumable;
     const cancelled = cancelTask(table, taskId, now);
     table = cancelled.table;
     settlements.push(...cancelled.settlements);
-    if (cancelled.send !== undefined) await sendTaskRunCommands(cancelled.send);
+    if (cancelled.send === undefined) continue;
+    if (resumable === false) stoppedRunIds.add(cancelled.send.run.runId);
+    await sendTaskRunCommands(cancelled.send);
   }
   table = await armHardStop(table, input.inbox);
-  return await publishSessionEvents(
-    { ...input, sessionState: saveTable(input.sessionState, session, table) },
-    settlements.map(taskSettledEvent),
+  const withdrawn = withdrawWorkflowAsks(session, (_requestId, runId) => stoppedRunIds.has(runId));
+  const relayed = await relaySessionEvents(
+    { ...input, sessionState: saveTable(input.sessionState, withdrawn.session, table) },
+    withdrawn.events,
   );
+  return await publishSessionEvents({ ...input, ...relayed }, settlements.map(taskSettledEvent));
 }
 
 /** Hard-stops every cancelled run whose confirmation is overdue, then re-arms the sleeper. */
@@ -195,14 +207,6 @@ function toControlMessage(command: TaskRunCommand): WorkflowToolRunControlMessag
   }
 }
 
-async function ignoreGoneTarget(pending: Promise<unknown>): Promise<void> {
-  try {
-    await pending;
-  } catch (error) {
-    if (!isTaskWorkflowTargetGone(error)) throw error;
-  }
-}
-
 function toCallOutcome(message: WorkflowToolRunOutcomeMessage): TaskCallOutcome {
   switch (message.result.status) {
     case "completed":
@@ -224,7 +228,7 @@ function failureMessage(message: WorkflowToolRunOutcomeMessage): string {
 
 /** A finished run can no longer take answers, so its unanswered questions are dropped. */
 function forgetRunQuestions(session: DurableSession, runId: string): DurableSession {
-  return clearProxyInputRequestsWhere(session, (route) => route.answerHook?.runId === runId);
+  return clearProxyInputRequestsWhere(session, (route) => route.workflowAsk?.runId === runId);
 }
 
 function saveTable(

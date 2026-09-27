@@ -88,19 +88,20 @@ it("relays a withdrawn workflow question's input.resolved to the stream and its 
       [
         "ask-1",
         {
-          answerHook: { runId: "run-1" },
-          childContinuationToken: "answer-token",
+          workflowAsk: { control: "control", question: {}, runId: "run-1" },
+          childContinuationToken: "ask-1",
           event: { sequence: 1, stepIndex: 0, turnId: "turn-1" },
           kind: "question",
         },
       ],
     ],
-    forChildContinuationToken: "answer-token",
+    forChildContinuationToken: "ask-1",
     session: base.snapshot.session as HarnessSession,
   });
 
   await runtime.run(async () => {
     await withdrawWorkflowToolRunQuestionStep({
+      control: "control",
       requestId: "ask-1",
       runId: "run-1",
       serializedContext,

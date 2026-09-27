@@ -9,6 +9,7 @@ import {
   type WorkflowBodyResult,
 } from "#execution/tools/workflow/body.js";
 import {
+  isWorkflowToolRunAskDecision,
   isWorkflowToolRunControlMessage,
   type WorkflowToolRunMessage,
   type WorkflowToolRunOutcome,
@@ -92,8 +93,7 @@ export async function workflowToolRunWorkflow(input: WorkflowToolRunInput): Prom
         return;
       }
       if (read.channel === "control") {
-        const command = read.next.value;
-        if (isWorkflowToolRunControlMessage(command)) started.control.apply(command);
+        applyControlMessage(started, read.next.value);
         continue;
       }
       if (read.channel === "body") {
@@ -135,6 +135,20 @@ async function reportTaskStarted(input: WorkflowToolRunInput): Promise<void> {
     { from: createWorkflowBodyRef(input), kind: "started" },
     { ifPresent: true },
   );
+}
+
+/**
+ * Applies one message from the run's control hook. Decisions on questions and
+ * commands share the hook, so the body sees them in the order the session
+ * made them.
+ */
+function applyControlMessage(started: StartedWorkflowBody, message: unknown): void {
+  if (!isWorkflowToolRunControlMessage(message)) return;
+  if (isWorkflowToolRunAskDecision(message)) {
+    started.asks.settle(message);
+    return;
+  }
+  started.control.apply(message);
 }
 
 /** Starts the body the run's entry point names. */
