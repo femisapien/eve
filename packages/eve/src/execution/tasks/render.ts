@@ -3,7 +3,7 @@ import type { TaskWaitResult } from "#execution/tasks/calls.js";
 // Every string the model reads about tasks lives in this file.
 
 export const TASK_WAIT_DESCRIPTION =
-  "Wait until one of your tasks has a result, a new message arrives, or timeout (in milliseconds) passes. Results arrive in a <task_result> message right after this call returns. Waiting never stops a task. If a message you haven't answered asks you something, answer it in this response, before calling task_wait. Omit timeout to wait until a result or a message arrives; a timeout of 0 returns at once with any results that are ready.";
+  "Wait until one of your tasks has a result, a new message arrives, or timeout (in milliseconds) passes. Results arrive in a <task_result> message right after this call returns. Waiting never stops a task. Omit timeout to wait until a result or a message arrives; a timeout of 0 returns at once with any results that are ready.";
 
 export const TASK_WAIT_TIMEOUT_DESCRIPTION = "How long to wait, in milliseconds.";
 
@@ -38,6 +38,7 @@ export const UNREADABLE_TASK_ERROR = "The task's state could not be read.";
 
 const TASK_RESULTS_MAX_BYTES = 50 * 1024;
 const TASK_RESULTS_MAX_LINES = 2_000;
+const UNANSWERED_MESSAGE_REMINDER = "Also answer any message you haven't answered yet.";
 const TRUNCATED_MARKER = "[truncated]";
 
 /** The receipt for a call that starts a task; a resumable task's says how to reach it again. */
@@ -100,6 +101,8 @@ function renderSettledWait(
   if (working.length > 0) {
     sentences.push(`${capitalize(countWorking(working))}: ${working.join(", ")}.`);
   }
+  // A question the model put off until a result arrived is easy to lose behind that result.
+  if (settled.length > 0) sentences.push(UNANSWERED_MESSAGE_REMINDER);
   return sentences.join(" ");
 }
 
