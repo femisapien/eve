@@ -23,7 +23,7 @@ import {
 } from "#harness/workflow-tool-runs.js";
 import { normalizeToolModelOutput } from "#harness/tool-model-output.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
-import type { TaskToolCall } from "#execution/tasks/calls.js";
+import { pendingTaskToolCalls } from "#execution/tasks/calls.js";
 import { startsTasks } from "#execution/tasks/model-step.js";
 import {
   accumulateSessionUsage,
@@ -75,8 +75,6 @@ interface PendingCoordinationEventMetadata {
 export interface PendingCoordinationBatch {
   /** Authored-tool and subagent workflow tasks pending coordination. */
   readonly tasks: readonly RuntimeWorkflowTaskRequest[];
-  /** `task_wait` and `task_cancel` calls, which the session answers itself. */
-  readonly taskToolCalls?: readonly TaskToolCall[];
   readonly event: PendingCoordinationEventMetadata;
   readonly localFanoutSize?: number;
   readonly responseMessages: readonly ModelMessage[];
@@ -130,22 +128,18 @@ export function clearPendingCoordinationBatch(session: HarnessSession): HarnessS
 export function setPendingCoordinationBatch(input: {
   readonly tasks: readonly RuntimeWorkflowTaskRequest[];
   readonly event: PendingCoordinationEventMetadata;
-  readonly taskToolCalls?: readonly TaskToolCall[];
   readonly localFanoutSize?: number;
   readonly responseMessages: readonly ModelMessage[];
   readonly session: HarnessSession;
 }): HarnessSession {
-  const taskToolCalls = input.taskToolCalls ?? [];
-  assertUniqueCoordinationCallIds([...input.tasks, ...taskToolCalls]);
-  const batch: PendingCoordinationBatch = {
+  assertUniqueCoordinationCallIds(input.tasks);
+  const state = { ...input.session.state };
+  state[PENDING_COORDINATION_BATCH_KEY] = {
     tasks: [...input.tasks],
     event: input.event,
     localFanoutSize: input.localFanoutSize,
     responseMessages: [...input.responseMessages],
-  };
-  const state = { ...input.session.state };
-  state[PENDING_COORDINATION_BATCH_KEY] =
-    taskToolCalls.length === 0 ? batch : { ...batch, taskToolCalls: [...taskToolCalls] };
+  } satisfies PendingCoordinationBatch;
 
   return { ...input.session, state };
 }
@@ -198,7 +192,7 @@ function resolveResultsForCoordinationBatch(input: {
 
 /** Every call a pending batch waits on: workflow runs and task tool calls. */
 export function pendingCoordinationCallIds(batch: PendingCoordinationBatch): readonly string[] {
-  const taskToolCallIds = (batch.taskToolCalls ?? []).map((call) => call.callId);
+  const taskToolCallIds = pendingTaskToolCalls(batch.responseMessages).map((call) => call.callId);
   return [...batch.tasks.map((request) => request.callId), ...taskToolCallIds];
 }
 

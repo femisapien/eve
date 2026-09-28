@@ -70,7 +70,7 @@ import {
   appendPendingInputBatch,
 } from "#harness/input-requests.js";
 import { getDeferredStepInput } from "#harness/pending-input-batches.js";
-import { getPendingCoordinationBatch } from "#harness/coordination.js";
+import { getPendingCoordinationBatch, pendingCoordinationCallIds } from "#harness/coordination.js";
 import { AGENT_HANDLES_STATE_KEY } from "#subagents/handles/store.js";
 import { PendingSkillAnnouncementKey } from "#context/dynamic-skill-lifecycle.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
@@ -1771,6 +1771,87 @@ describe("createToolLoopHarness", () => {
     expect(JSON.stringify(toolMessages)).toContain("delegated-done");
     expect(events.filter((event) => event.type === "subagent.completed")).toHaveLength(1);
     expect(events.at(-1)?.type).toBe("session.waiting");
+  });
+
+  it("waits on a task_wait parked beside an approval, but not on an invalid task_cancel", async () => {
+    const gateToolCall = {
+      input: { action: "run" },
+      toolCallId: "gate-1",
+      toolName: "add",
+      type: "tool-call" as const,
+    };
+    const waitToolCall = {
+      input: {},
+      toolCallId: "wait-1",
+      toolName: "task_wait",
+      type: "tool-call" as const,
+    };
+    const invalidCancelToolCall = {
+      input: "not an object",
+      toolCallId: "cancel-1",
+      toolName: "task_cancel",
+      type: "tool-call" as const,
+    };
+    const assistantContent = [
+      gateToolCall,
+      { approvalId: "approval-gate", toolCallId: "gate-1", type: "tool-approval-request" as const },
+      waitToolCall,
+      invalidCancelToolCall,
+    ];
+    setupMockAgent({
+      content: assistantContent,
+      finishReason: "tool-calls",
+      response: { messages: [{ content: assistantContent, role: "assistant" }] },
+      responseMessages: [
+        {
+          content: [
+            {
+              output: { type: "text", value: "/workspace" },
+              toolCallId: "call-1",
+              toolName: "bash",
+              type: "tool-result",
+            },
+          ],
+          role: "tool",
+        },
+        { content: assistantContent, role: "assistant" },
+      ],
+      text: "",
+      toolCalls: [gateToolCall, waitToolCall, invalidCancelToolCall],
+      toolResults: [],
+    });
+    const workflowId = "workflow//./agent/tools/research//task";
+    const tools: ToolLoopHarnessConfig["tools"] = new Map([
+      ...createDelegationToolMap(),
+      [
+        "research",
+        {
+          behavior: {
+            availability: [],
+            handling: {
+              kind: "dispatch",
+              target: { entryPoint: "task", kind: "workflow-tool-call", workflowId },
+            },
+          },
+          description: "Research in the background.",
+          inputSchema: jsonSchema({ type: "object" }),
+          name: "research",
+          workflowId,
+        },
+      ],
+    ]);
+
+    const { emit } = createEventCollector();
+    const runStep = createToolLoopHarness(createTestConfig(emit, { tools }));
+    const parked = await runStep(createPendingBashApprovalSession(), {
+      inputResponses: [{ optionId: "approve", requestId: "approval-1" }],
+    });
+
+    expect(parked.next).toBeNull();
+    expect(hasPendingInputBatch(parked.session.state)).toBe(true);
+    const batch = getPendingCoordinationBatch(parked.session.state);
+    expect(batch?.tasks).toEqual([]);
+    expect(pendingCoordinationCallIds(batch!)).toEqual(["wait-1"]);
   });
 
   it("forwards the agent reasoning effort to the model call", async () => {

@@ -172,13 +172,11 @@ import {
   commitCallEntry,
   isTaskTool,
   taskSystemMessages,
-  toTaskToolCall,
   withTaskTools,
   workingTaskIds,
 } from "#execution/tasks/model-step.js";
 import { renderFinalOutputWhileWorkingError } from "#execution/tasks/render.js";
 import { principalOf } from "#execution/tasks/principal.js";
-import type { TaskToolCall } from "#execution/tasks/calls.js";
 import {
   classifyModelCallError,
   ContentFilteredModelResponseError,
@@ -205,7 +203,6 @@ import {
   createCoordinationRequestFromToolCall,
   getPendingCoordinationBatch,
   resolvePendingCoordination,
-  resolveToolCallInputObject,
   setPendingCoordinationBatch,
 } from "#harness/coordination.js";
 import type { RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
@@ -2631,9 +2628,8 @@ async function handleStepResult(input: {
     turnId: emissionState.turnId,
   });
   const tasks = deferred.workflowRequests;
-  const { taskToolCalls } = deferred;
 
-  if (tasks.length > 0 || taskToolCalls.length > 0) {
+  if (deferredToolCalls.length > 0) {
     // Stamp the live emission state onto the parked session so the
     // resume turn is classified as a continuation (turnId set), not a
     // fresh turn. Every other park path does this; without it the
@@ -2651,7 +2647,6 @@ async function handleStepResult(input: {
               stepIndex: emissionState.stepIndex,
               turnId: emissionState.turnId,
             },
-            taskToolCalls,
             responseMessages,
             session: { ...deferred.session, history: validateHarnessModelMessages(promptMessages) },
           }),
@@ -2667,7 +2662,6 @@ async function handleStepResult(input: {
         stepIndex: emissionState.stepIndex,
         turnId: emissionState.turnId,
       },
-      taskToolCalls,
       responseMessages: pendingResponseMessages,
       session: { ...deferred.session, history: parkedInputHistory },
     });
@@ -2875,8 +2869,9 @@ function isDeferredHarnessTool(tool: HarnessToolDefinition | undefined): boolean
 }
 
 /**
- * Sorts a step's deferred calls into workflow runs and task tool calls, and
- * commits a task record for each call that starts a task.
+ * Turns a step's deferred calls into workflow runs, committing a task record
+ * for each call that starts a task. Task tool calls stay in the response
+ * alone: the session reads them from there.
  */
 function collectDeferredCalls(input: {
   readonly principal: string;
@@ -2885,28 +2880,14 @@ function collectDeferredCalls(input: {
   readonly tools: HarnessToolMap;
   readonly turnId: string;
 }): {
-  readonly taskToolCalls: readonly TaskToolCall[];
   readonly session: HarnessSession;
   readonly workflowRequests: readonly RuntimeWorkflowTaskRequest[];
 } {
   let { session } = input;
-  const taskToolCalls: TaskToolCall[] = [];
   const workflowRequests: RuntimeWorkflowTaskRequest[] = [];
   for (const toolCall of input.toolCalls) {
     const definition = input.tools.get(toolCall.toolName);
-    if (definition !== undefined && isTaskTool(definition)) {
-      taskToolCalls.push(
-        toTaskToolCall({
-          callId: toolCall.toolCallId,
-          definition,
-          input: resolveToolCallInputObject(toolCall.input, {
-            callId: toolCall.toolCallId,
-            toolName: toolCall.toolName,
-          }),
-        }),
-      );
-      continue;
-    }
+    if (isTaskTool(definition)) continue;
     const committed = commitCallEntry(session, {
       callId: toolCall.toolCallId,
       definition,
@@ -2923,7 +2904,7 @@ function collectDeferredCalls(input: {
       }),
     );
   }
-  return { taskToolCalls, session, workflowRequests };
+  return { session, workflowRequests };
 }
 
 /** Answers a `final_output` call made while tasks work with an error naming them. */

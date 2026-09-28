@@ -1,10 +1,6 @@
 import type { ModelMessage, SystemModelMessage } from "ai";
 
-import {
-  TASK_CANCEL_TOOL_NAME,
-  TASK_WAIT_TOOL_NAME,
-  type TaskToolCall,
-} from "#execution/tasks/calls.js";
+import { TASK_CANCEL_TOOL_NAME, TASK_WAIT_TOOL_NAME } from "#execution/tasks/calls.js";
 import {
   renderModelOutputText,
   renderTaskResults,
@@ -25,7 +21,6 @@ import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import { createFrameworkUserMessage, type HarnessModelMessage } from "#harness/messages.js";
 import type { HarnessSession, HarnessToolMap } from "#harness/types.js";
 import type { WorkflowToolRunEntry } from "#shared/action-types.js";
-import type { JsonObject } from "#shared/json.js";
 import type { WorkflowToolEntryPoint } from "#tools/workflow-entry-point.js";
 import { taskCancelTool } from "#tools/provided/task-cancel.js";
 import { taskWaitTool } from "#tools/provided/task-wait.js";
@@ -109,20 +104,6 @@ export function commitCallEntry(
       };
     }
   }
-}
-
-export function toTaskToolCall(input: {
-  readonly callId: string;
-  readonly definition: HarnessToolDefinition;
-  readonly input: JsonObject;
-}): TaskToolCall {
-  if (input.definition.frameworkAction === "task-cancel") {
-    return { callId: input.callId, kind: "task_cancel", taskId: String(input.input.taskId) };
-  }
-  const timeout = input.input.timeout;
-  return typeof timeout === "number"
-    ? { callId: input.callId, kind: "task_wait", timeoutMs: timeout }
-    : { callId: input.callId, kind: "task_wait" };
 }
 
 export function workingTaskIds(session: HarnessSession, principal: string): readonly string[] {
