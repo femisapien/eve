@@ -261,7 +261,7 @@ The TUI's event translator, steering stream, idle-stream handoff, subagent pump,
 - Hooks (React/Vue/Svelte) and store snapshots gain a `conversation` field holding the canonical state, even with a custom reducer.
 - Hooks and the store gain `followSubagents` (default `false`). The store gains `client`, `compact()`, `clear()`, and `retire()`.
 - The store accepts answers during a running turn and rejects answers to requests that are no longer open.
-- The client and framework entry points export `conversationReducer`, `reduceConversation`, `openConversationInputs`, and the conversation types.
+- The client and framework entry points export `conversationReducer`, `openConversationInputs`, and the conversation types.
 
 ## What the tasks rewrite took off the table
 
