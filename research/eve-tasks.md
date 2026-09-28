@@ -487,7 +487,7 @@ shouldn't reach. Idle resumable tasks don't count.
 
 ```ts
 { type: "turn.waiting"; data: { turnId, sequence } }
-{ type: "task.started"; data: { taskId, callId, turnId, name } }
+{ type: "task.started"; data: { taskId, callId, turnId, name, kind: "agent" | "tool" } }
 { type: "task.settled"; data: { taskId, callId, turnId,
                                 status: "completed" | "failed" | "cancelled",
                                 output?: JsonValue, error?: { message: string } } }
@@ -500,7 +500,9 @@ shouldn't reach. Idle resumable tasks don't count.
   a task or reaches one by `taskId`, and when a reply, return, failure, or cancel settles it.
   `(taskId, callId)` identifies the call; `callId` is the tool call clients attach status to, and
   both events carry that call's `turnId`. For each invocation, `task.started` comes before the
-  sessions it announces and the calls it settles.
+  sessions it announces and the calls it settles. `kind` is `"agent"` for an agent tool's call and
+  `"tool"` for any authored tool, so clients tell agent calls apart without `agent.started`, which
+  only adds the child session.
 - **`agent.started`** comes once per session a workflow run opens with `ctx.agent`, including an
   agent tool's, with the `callId` and `turnId` of the call whose invocation opened it; for a
   `serve` task that is the current call, not the first. `taskId` is present when that invocation
