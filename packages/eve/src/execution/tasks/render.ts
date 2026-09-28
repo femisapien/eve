@@ -13,7 +13,7 @@ export const TASK_CANCEL_DESCRIPTION =
 export const TASK_CANCEL_TASK_ID_DESCRIPTION = "The id of the task to stop.";
 
 export const TASK_SYSTEM_BLOCK =
-  "Every subagent call and some tools start a task and return its id right away; the task keeps working while you continue. Results arrive in <task_result> messages. When you need a result to continue, call task_wait; it returns when any task has a result. Start independent tasks first, then wait. To correct or continue an agent, or any task that accepts more input, call its tool again with its taskId. If you don't need a task's result yet, reply now instead of calling task_wait: your turn stays open while your tasks work, and eve gives you their results when they finish. A new message never stops your tasks. If it asks you something, answer it in your next response, before any task_wait call; then decide whether it changes the work, and keep the tasks, correct an agent with taskId, or stop a task with task_cancel. Never use sleep to wait for a task.";
+  "Every subagent call and some tools start a task and return its id right away; the task keeps working while you continue. Results arrive in <task_result> messages. When you need a result to continue, call task_wait; it returns when any task has a result. Start independent tasks first, then wait. To correct or continue an agent, or any task that accepts more input, call its tool again with its taskId. If you don't need a task's result yet, reply now instead of calling task_wait: your turn stays open while your tasks work, and eve gives you their results when they finish. A new message never stops your tasks: answer it if it asks you something, decide whether it changes the work, then keep the tasks, correct an agent with taskId, or stop a task with task_cancel. Never use sleep to wait for a task.";
 
 /** Appended to a `serve` tool's description. */
 export const SERVE_TOOL_DESCRIPTION =
@@ -38,7 +38,6 @@ export const UNREADABLE_TASK_ERROR = "The task's state could not be read.";
 
 const TASK_RESULTS_MAX_BYTES = 50 * 1024;
 const TASK_RESULTS_MAX_LINES = 2_000;
-const UNANSWERED_MESSAGE_REMINDER = "Also answer any message you haven't answered yet.";
 const TRUNCATED_MARKER = "[truncated]";
 
 /** The receipt for a call that starts a task; a resumable task's says how to reach it again. */
@@ -101,8 +100,6 @@ function renderSettledWait(
   if (working.length > 0) {
     sentences.push(`${capitalize(countWorking(working))}: ${working.join(", ")}.`);
   }
-  // A question the model put off until a result arrived is easy to lose behind that result.
-  if (settled.length > 0) sentences.push(UNANSWERED_MESSAGE_REMINDER);
   return sentences.join(" ");
 }
 

@@ -162,7 +162,7 @@ waiting, and a `timeout` of `0` returns at once with any results that are ready.
 stops a task. The model reads which tasks settled and which are still working, for example:
 
 ```text
-deploy-4hd8sa completed; its result follows. 1 task is still working: researcher-7k2m9q. Also answer any message you haven't answered yet.
+deploy-4hd8sa completed; its result follows. 1 task is still working: researcher-7k2m9q.
 ```
 
 **`task_cancel({ taskId })`** stops a task's current work and returns `{ status: "cancelled" }`.
