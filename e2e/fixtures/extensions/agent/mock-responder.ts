@@ -16,6 +16,37 @@ export function respond(request: MockModelRequest): MockModelResponse | string {
       .join(" ");
   }
 
+  if (message.includes("Call toolkit__toolkit_lookup")) {
+    const calls = [
+      "toolkit__toolkit_lookup",
+      "toolkit-alt__toolkit_lookup",
+      "toolkit__toolkit_budget",
+      "toolkit__toolkit_budget",
+      "toolkit-alt__toolkit_budget",
+    ];
+    const completed = request.toolResults;
+    const next = calls.find((name, index) => {
+      if (name.endsWith("_budget")) {
+        const previousBudgetCalls = calls.slice(0, index).filter((call) => call === name).length;
+        const completedBudgetCalls = completed.filter((entry) => entry.name === name).length;
+        return completedBudgetCalls <= previousBudgetCalls;
+      }
+      return !completed.some((entry) => entry.name === name);
+    });
+    return next === undefined
+      ? "Both mounts kept their own configuration and budget."
+      : {
+          toolCalls: [
+            {
+              name: next,
+              input: next.endsWith("_lookup")
+                ? { account: next.startsWith("toolkit-alt") ? "secondary" : "primary" }
+                : {},
+            },
+          ],
+        };
+  }
+
   if (!message.includes(`Call \`${LAYOUT_TOOL}\``)) {
     return `Mock reply: ${message}`;
   }

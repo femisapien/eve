@@ -4,7 +4,12 @@ const owner = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("application") }).strict(),
   z.object({ feature: z.string(), kind: z.literal("framework") }).strict(),
   z
-    .object({ kind: z.literal("extension"), namespace: z.string(), packageName: z.string() })
+    .object({
+      kind: z.literal("extension"),
+      mountId: z.string().optional(),
+      namespace: z.string(),
+      packageName: z.string(),
+    })
     .strict(),
 ]);
 
@@ -12,6 +17,7 @@ const moduleBacking = z.discriminatedUnion("kind", [
   z
     .object({
       externalDependencies: z.array(z.string()),
+      mountId: z.string().optional(),
       extensionScope: z
         .object({ namespace: z.string(), sourceRoot: z.string() })
         .strict()
@@ -23,6 +29,7 @@ const moduleBacking = z.discriminatedUnion("kind", [
   z
     .object({
       dependencies: z.record(z.string(), z.string()).optional(),
+      mountId: z.string().optional(),
       kind: z.literal("programmatic"),
       moduleId: z.string(),
       parameters: z.record(z.string(), z.unknown()).optional(),

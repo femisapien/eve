@@ -45,7 +45,7 @@ async function compileRuntimeGraph(appRoot: string) {
  * mount and tool modules. Deterministic guard for the config-binding regression.
  */
 describe("mounted extension via authored-source loader", () => {
-  it("binds independent config for duplicate mounts and loaded application graphs", async () => {
+  it("binds independent config for duplicate mounts, authored subagents, and loaded application graphs", async () => {
     const app = await createAppRoot("eve-independent-extension-config-", {
       files: {
         "agent/agent.mjs": 'export default { model: "openai/gpt-5.4" };',
@@ -60,6 +60,14 @@ describe("mounted extension via authored-source loader", () => {
         ].join("\n"),
         "agent/extensions/two.mjs":
           'import ext from "@acme/crm"; export default ext({ account: "two" });',
+        "agent/subagents/research/agent.mjs":
+          'export default { model: "openai/gpt-5.4", description: "Research accounts" };',
+        "agent/subagents/research/extensions/crm.mjs":
+          'import ext from "@acme/crm"; export default ext({ account: "research" });',
+        "agent/subagents/support/agent.mjs":
+          'export default { model: "openai/gpt-5.4", description: "Support accounts" };',
+        "agent/subagents/support/extensions/crm.mjs":
+          'import ext from "@acme/crm"; export default ext({ account: "support" });',
         "node_modules/@acme/crm/package.json": JSON.stringify({
           name: "@acme/crm",
           type: "module",
@@ -141,6 +149,17 @@ describe("mounted extension via authored-source loader", () => {
       default: typeof first.moduleMap;
     };
     expect(read(generated.default, "two")).toBe("two");
+    for (const name of ["research", "support"]) {
+      const subagent = first.manifest.subagents.find((entry) => entry.name === name)!;
+      const tool = subagent.agent.tools.find((entry) => entry.name === "crm__account")!;
+      expect(tool.description).toBe(name);
+      for (const map of [first.moduleMap, second, generated.default]) {
+        const definition = map.nodes[subagent.nodeId]!.modules[tool.sourceId]!.default as {
+          execute: () => string;
+        };
+        expect(definition.execute()).toBe(name);
+      }
+    }
   });
 
   it("allocates a new authored-source graph on each load", async () => {
