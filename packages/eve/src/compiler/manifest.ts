@@ -1027,7 +1027,7 @@ const compiledSubagentNodeSchema: z.ZodType<CompiledSubagentNode> = z.union([
 /**
  * One mounted extension recorded on a compiled agent manifest. The runtime
  * evaluates {@link mountLogicalPath} at module-map load so the mount's factory
- * call binds the extension's config before any tool runs.
+ * call binds the extension's config on its instance handle before any tool runs.
  */
 export interface CompiledExtensionMount {
   /** Runtime packages this extension requires the consuming application to externalize. */
@@ -1037,12 +1037,12 @@ export interface CompiledExtensionMount {
   readonly packageName: string;
   /** Canonical path of this mount in the root agent tree. */
   readonly mountId: string;
-  /** Package-derived namespace used by the current extension loader. */
+  /** Legacy package-derived prefix for extension state keys. */
   readonly packageNamespace: string;
   /**
    * Absolute path to the extension's source root on disk. The extension-scope
    * bundler plugin treats any module under this root as extension-owned and
-   * rewrites its `eve/context`/`eve/extension` imports to bake in the namespace.
+   * rewrites `eve/context` imports to retain the legacy state prefix.
    */
   readonly sourceRoot: string;
   readonly mountSourceId: string;

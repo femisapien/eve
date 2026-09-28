@@ -76,7 +76,7 @@ async function loadCompiledBindingNamespace(input: {
   });
 }
 
-/** Derives the stable package-owned scope used while loading an extension module. */
+/** Derives the legacy package-owned state scope used while loading an extension module. */
 export function resolveCompiledModuleExtensionScopeNamespace(
   binding: AgentModuleBinding,
 ): string | undefined {

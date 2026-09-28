@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import type { CompiledAgentManifest } from "#compiler/manifest.js";
 import { createCompiledModuleMapSource } from "#compiler/module-map.js";
 import { createAuthoredAssetImportPlugin } from "#internal/authored-asset-import-plugin.js";
+import { createExtensionMountPlugin } from "#internal/bundler/extension-mount-plugin.js";
 import { authoredModuleConditions } from "#internal/authored-module-conditions.js";
 import { createAuthoredModuleBundleError } from "#internal/authored-module-bundle.js";
 import { createAuthoredModuleEvaluationError } from "#internal/authored-module-evaluation-error.js";
@@ -288,11 +289,16 @@ export async function bundleAuthoredModuleMapForGeneration(input: {
     moduleMapPath: input.moduleMapPath,
     programmaticLoaderImportSpecifier,
   });
+  const extensionMounts = [
+    input.manifest,
+    ...input.manifest.subagents.map((subagent) => subagent.agent),
+  ].flatMap((node) => node.extensionMounts);
   const extensionScopePlugin = createExtensionScopePlugin(
     [input.manifest, ...input.manifest.subagents.map((subagent) => subagent.agent)].flatMap(
       (node) =>
         node.extensionMounts.map((mount) => ({
           packageNamespace: mount.packageNamespace,
+          mountId: mount.mountId,
           sourceRoot: mount.sourceRoot,
         })),
     ),
@@ -310,6 +316,7 @@ export async function bundleAuthoredModuleMapForGeneration(input: {
       workflowFunctions: (id) => workflowSources.workflowFunctions(id),
     }),
     workflowSources.graphPlugin(),
+    createExtensionMountPlugin(extensionMounts),
     extensionScopePlugin,
     createAuthoredRelativeExtensionResolverPlugin({ extensions: RESOLVE_EXTENSIONS }),
     createAuthoredAssetImportPlugin({ packageRoot }),

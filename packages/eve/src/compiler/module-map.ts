@@ -38,6 +38,7 @@ interface BoundModule {
 }
 
 interface BoundNodeScope {
+  readonly mounts: CompiledAgentResources["extensionMounts"];
   readonly modules: readonly BoundModule[];
   readonly nodeId: string;
 }
@@ -61,6 +62,7 @@ export function createCompiledModuleMapSource(input: CreateCompiledModuleMapSour
   let index = 0;
   let usesProgrammaticLoader = false;
   const scopes: RenderedNodeScope[] = collectBoundNodeScopes(input.manifest).map((scope) => {
+    const mountIds = new Map(scope.mounts.map((mount) => [mount.mountSourceId, mount.mountId]));
     const bindingNames = new Map(
       scope.modules.map((module) => [module.sourceId, `module_${index++}`] as const),
     );
@@ -70,12 +72,27 @@ export function createCompiledModuleMapSource(input: CreateCompiledModuleMapSour
         if (binding.backing.kind === "filesystem") {
           return {
             bindingName,
-            importSpecifier: createImportSpecifier({
-              fromDirectory: moduleMapDirectory,
-              importSpecifierStyle,
-              targetPath: binding.backing.sourcePath,
-            }),
+            importSpecifier:
+              createImportSpecifier({
+                fromDirectory: moduleMapDirectory,
+                importSpecifierStyle,
+                targetPath: binding.backing.sourcePath,
+              }) +
+              (binding.owner.kind === "extension" || mountIds.has(sourceId)
+                ? `?eve-mount=${encodeURIComponent(binding.owner.kind === "extension" ? binding.owner.mountId : mountIds.get(sourceId)!)}`
+                : ""),
             initializer: `memoizeModuleNamespaceFactories(imported_${bindingName})`,
+            sourceId,
+          };
+        }
+        if (
+          mountIds.get(sourceId) === "extensions/self-modification" &&
+          binding.backing.registryId === "eve:development-extension:self-modification"
+        ) {
+          return {
+            bindingName,
+            importSpecifier: `eve/self-modification?eve-mount=${encodeURIComponent(mountIds.get(sourceId)!)}`,
+            initializer: `memoizeModuleNamespaceFactories({ default: imported_${bindingName}.default({ local: { enabled: true } }) })`,
             sourceId,
           };
         }
@@ -207,12 +224,14 @@ function collectBoundNodeScopes(manifest: CompiledAgentManifest): readonly Bound
   return [
     {
       modules: collectRuntimeModuleBindingsForManifest(manifest),
+      mounts: manifest.extensionMounts,
       nodeId: ROOT_COMPILED_AGENT_NODE_ID,
     },
     ...[...manifest.subagents]
       .sort((left, right) => left.nodeId.localeCompare(right.nodeId))
       .map((subagent) => ({
         modules: collectRuntimeModuleBindingsForManifest(subagent.agent),
+        mounts: subagent.agent.extensionMounts,
         nodeId: subagent.nodeId,
       })),
   ];
