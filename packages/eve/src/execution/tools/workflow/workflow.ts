@@ -6,21 +6,30 @@ import {
   executeWorkflowBody,
   type WorkflowBodyResult,
 } from "#execution/tools/workflow/body.js";
-import type { WorkflowToolRunOutcome } from "#execution/tools/workflow/messages.js";
+import { WorkflowToolRunAsks } from "#execution/tools/workflow/ask.js";
+import {
+  isWorkflowToolRunAskDecision,
+  isWorkflowToolRunControlMessage,
+  type WorkflowToolRunOutcome,
+} from "#execution/tools/workflow/messages.js";
 import {
   createChannelReader,
   raceChannelReads,
   type ChannelReader,
 } from "#execution/tools/workflow/owner-channels.js";
 import { openWorkflowToolRunOwnerInbox } from "#execution/tools/workflow/owner.js";
-import { createBlockingWorkflow } from "#execution/tools/workflow/workflow-owner-blocking.js";
+import {
+  createBlockingWorkflow,
+  type BlockingWorkflowOwner,
+} from "#execution/tools/workflow/workflow-owner-blocking.js";
 import type { WorkflowToolRunInput } from "#execution/tools/workflow/types.js";
 
 /** Owns command intake, body execution, and settlement for one workflow tool call. */
 export async function workflowToolRunWorkflow(input: WorkflowToolRunInput): Promise<void> {
   "use workflow";
 
-  const owner = createBlockingWorkflow(input);
+  const asks = new WorkflowToolRunAsks(createWorkflowBodyRef(input).runId);
+  const owner = createBlockingWorkflow(input, asks);
   const { signal } = owner;
   const inbox = openWorkflowToolRunOwnerInbox();
   const body: ChannelReader<"body", WorkflowBodyResult> = createChannelReader(
@@ -29,6 +38,7 @@ export async function workflowToolRunWorkflow(input: WorkflowToolRunInput): Prom
       executeWorkflowBody(
         { ...input, owner: inbox.owner },
         { abortSignal: signal, interruptSignal: owner.interruptSignal },
+        asks,
       ),
     ),
   );
@@ -83,7 +93,7 @@ export async function workflowToolRunWorkflow(input: WorkflowToolRunInput): Prom
       return;
     }
     if (read.channel === "control") {
-      owner.handleCommand(read.next.value);
+      applyControlMessage(owner, asks, read.next.value);
       continue;
     }
     if (read.channel === "body") {
@@ -108,6 +118,24 @@ export async function workflowToolRunWorkflow(input: WorkflowToolRunInput): Prom
       result: outcome,
     });
   }
+}
+
+/**
+ * Applies one message from the run's control hook. Decisions on questions and
+ * commands share the hook, so the body sees them in the order the session
+ * made them.
+ */
+function applyControlMessage(
+  owner: BlockingWorkflowOwner,
+  asks: WorkflowToolRunAsks,
+  message: unknown,
+): void {
+  if (!isWorkflowToolRunControlMessage(message)) return;
+  if (isWorkflowToolRunAskDecision(message)) {
+    asks.settle(message);
+    return;
+  }
+  owner.handleCommand(message);
 }
 
 async function* awaitBodyResult(

@@ -121,9 +121,10 @@ export interface ToolInputRequest {
 /**
  * The outcome of a {@link ToolInputRequest}.
  *
- * - `answered`: the user picked an option or typed an answer.
- * - `cancelled`: the request was withdrawn unanswered because the ask's
- *   `signal` or the call's `abortSignal` aborted.
+ * - `answered`: the user picked an option or typed an answer. An answer the
+ *   session accepted before a withdrawal wins, even after a signal aborted.
+ * - `cancelled`: the request was withdrawn before anyone answered it, because
+ *   the ask's `signal` or the call's `abortSignal` aborted.
  * - `unavailable`: the session cannot reach a human, such as a scheduled run,
  *   so the request resolved immediately without being shown.
  */
@@ -141,9 +142,10 @@ export type ToolInputResponse =
 /** Options for `ctx.ask` in a `defineWorkflowTool` executor. */
 export interface ToolInputRequestOptions {
   /**
-   * Withdraws the request when it aborts: the ask resolves as `cancelled`
-   * and the channel stops offering the question. Pass `ctx.interruptSignal`
-   * to stop asking once a new message arrives.
+   * Withdraws the request when it aborts: the channel stops offering the
+   * question and the ask resolves as `cancelled`, unless the session accepted
+   * an answer first, which the ask then resolves with. Pass
+   * `ctx.interruptSignal` to stop asking once a new message arrives.
    */
   readonly signal?: AbortSignal;
 }

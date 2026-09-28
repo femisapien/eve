@@ -1,6 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { ask, attachWorkflowToolRunContext } from "#execution/tools/workflow/ask.js";
+import {
+  ask,
+  attachWorkflowToolRunContext,
+  WorkflowToolRunAsks,
+} from "#execution/tools/workflow/ask.js";
 import type { WorkflowToolRunRef } from "#execution/tools/workflow/messages.js";
 import {
   agent,
@@ -74,6 +78,8 @@ describe("workflow agent invocation routing", () => {
     });
     const ctx = { abortSignal: controller.signal, callId: "call-1" } as ToolContext;
     attachWorkflowToolRunContext(ctx, {
+      asks: new WorkflowToolRunAsks("run-1"),
+      control: "control",
       from: {
         callId: "call-1",
         input: { message: "Find it" },
@@ -139,6 +145,8 @@ describe("workflow agent invocation routing", () => {
     };
     const ctx = { callId: "call-1" } as ToolContext;
     attachWorkflowToolRunContext(ctx, {
+      asks: new WorkflowToolRunAsks("run-1"),
+      control: "control",
       from,
       owner: {
         inbox: "owner-inbox",
@@ -196,6 +204,8 @@ describe("workflow agent invocation routing", () => {
     mocks.resumeHook.mockImplementation(async () => undefined);
     const ctx = { callId: "call-1" } as ToolContext;
     attachWorkflowToolRunContext(ctx, {
+      asks: new WorkflowToolRunAsks("run-1"),
+      control: "control",
       from: {
         callId: "call-1",
         input: {},
@@ -260,6 +270,8 @@ describe("workflow agent invocation routing", () => {
     });
     const ctx = { callId: "call-1" } as ToolContext;
     attachWorkflowToolRunContext(ctx, {
+      asks: new WorkflowToolRunAsks("run-1"),
+      control: "control",
       from: {
         callId: "call-1",
         input: { message: "Find it" },
@@ -313,6 +325,8 @@ describe("workflow agent invocation routing", () => {
       });
       const ctx = { callId: "call-1" } as ToolContext;
       attachWorkflowToolRunContext(ctx, {
+        asks: new WorkflowToolRunAsks("run-1"),
+        control: "control",
         from: {
           callId: "call-1",
           input: {},
@@ -377,6 +391,8 @@ describe("workflow agent invocation routing", () => {
     });
     const ctx = { callId: "call-1" } as ToolContext;
     attachWorkflowToolRunContext(ctx, {
+      asks: new WorkflowToolRunAsks("run-1"),
+      control: "control",
       from: {
         callId: "call-1",
         input: { message: "Find it" },
@@ -469,6 +485,8 @@ describe("workflow agent invocation routing", () => {
       };
       const ctx = { callId: "call-1" } as ToolContext;
       attachWorkflowToolRunContext(ctx, {
+        asks: new WorkflowToolRunAsks("run-1"),
+        control: "control",
         from,
         owner: {
           inbox: "owner-inbox",
@@ -553,6 +571,8 @@ describe("workflow agent invocation routing", () => {
     };
     const ctx = { callId: "call-1" } as ToolContext;
     attachWorkflowToolRunContext(ctx, {
+      asks: new WorkflowToolRunAsks("run-1"),
+      control: "control",
       from,
       owner: {
         inbox: "owner-inbox",

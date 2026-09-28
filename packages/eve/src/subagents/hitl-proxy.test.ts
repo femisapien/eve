@@ -169,7 +169,7 @@ describe("routeDeliverPayload message resolution", () => {
           [
             requestId,
             {
-              answerHook: {
+              workflowAsk: {
                 question: {
                   ...question,
                   options: [
@@ -178,6 +178,7 @@ describe("routeDeliverPayload message resolution", () => {
                   ],
                 },
                 runId: `run-${requestId}`,
+                control: `control-${requestId}`,
               },
               childContinuationToken: `hook-${requestId}`,
               kind: "question",

@@ -494,7 +494,7 @@ describe("resolvePendingCoordination", () => {
           [
             answerToken,
             {
-              answerHook: { runId: "run-1" },
+              workflowAsk: { control: "control", question: {}, runId: "run-1" },
               childContinuationToken: answerToken,
               kind: "question",
             },

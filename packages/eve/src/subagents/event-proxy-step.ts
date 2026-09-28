@@ -22,7 +22,7 @@ import {
 } from "#harness/emission.js";
 import { emitProxiedInputRequest } from "#subagents/hitl-proxy.js";
 import { upsertProxyInputRequests } from "#harness/proxy-input-requests.js";
-import type { AnswerHookRoute } from "#harness/proxy-input-requests.js";
+import type { WorkflowAskRoute } from "#harness/proxy-input-requests.js";
 import type { HarnessSession } from "#harness/types.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 
@@ -33,7 +33,7 @@ type SubagentEventHookPayload =
 /** Proxies one child event through its parent channel across a durable step boundary. */
 export async function runProxySubagentEventStep(
   input: SessionEventTarget & {
-    readonly answerHook?: AnswerHookRoute;
+    readonly workflowAsk?: WorkflowAskRoute;
     readonly hookPayload: SubagentEventHookPayload;
   },
 ): Promise<PublishedSessionEvents> {
@@ -43,7 +43,7 @@ export async function runProxySubagentEventStep(
   const ctx = await deserializeContext(input.serializedContext);
 
   return emitProxiedSubagentEvent({
-    answerHook: input.answerHook,
+    workflowAsk: input.workflowAsk,
     ctx,
     durableSession,
     hookPayload: input.hookPayload,
@@ -53,7 +53,7 @@ export async function runProxySubagentEventStep(
 
 /** Relays one child event through the parent session's channel. */
 export async function emitProxiedSubagentEvent(input: {
-  readonly answerHook?: AnswerHookRoute;
+  readonly workflowAsk?: WorkflowAskRoute;
   readonly ctx: ContextContainer;
   readonly durableSession: DurableSession;
   readonly hookPayload: SubagentEventHookPayload;
@@ -87,12 +87,12 @@ export async function emitProxiedSubagentEvent(input: {
 
   let scopedSession = relayed.session;
   if (relayed.result !== undefined && hookPayload.kind === "subagent-input-request") {
-    const answerHook = input.answerHook;
+    const workflowAsk = input.workflowAsk;
     scopedSession = upsertProxyInputRequests({
       entries:
-        answerHook === undefined
+        workflowAsk === undefined
           ? relayed.result
-          : relayed.result.map(([requestId, route]) => [requestId, { ...route, answerHook }]),
+          : relayed.result.map(([requestId, route]) => [requestId, { ...route, workflowAsk }]),
       forChildContinuationToken: hookPayload.childContinuationToken,
       session: scopedSession,
     });

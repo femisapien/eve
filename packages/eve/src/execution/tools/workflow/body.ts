@@ -3,7 +3,11 @@ import { getWorkflowMetadata } from "#compiled/@workflow/core/index.js";
 import type { SessionContext } from "#context/session-context.js";
 import { agent } from "#execution/tools/subagent/invoke-agent.js";
 import type { AgentInput, WorkflowToolContext } from "#tools/workflow-definition.js";
-import { ask, attachWorkflowToolRunContext } from "#execution/tools/workflow/ask.js";
+import {
+  ask,
+  attachWorkflowToolRunContext,
+  type WorkflowToolRunAsks,
+} from "#execution/tools/workflow/ask.js";
 import {
   type WorkflowToolRunOutcome,
   type WorkflowToolRunOwner,
@@ -35,6 +39,8 @@ export interface WorkflowBodyDefinition {
 }
 
 export interface WorkflowBodyInput extends WorkflowBodyDefinition {
+  /** The run's control hook, which the session answers the body's questions on. */
+  readonly hookToken: string;
   readonly owner: WorkflowToolRunOwner;
 }
 
@@ -58,12 +64,15 @@ type WorkflowToolExecute = (
 export async function executeWorkflowBody(
   input: WorkflowBodyInput & { readonly runId?: string },
   signals: WorkflowBodySignals,
+  asks: WorkflowToolRunAsks,
 ): Promise<WorkflowBodyResult> {
   const signal = signals.abortSignal;
   const from = createWorkflowBodyRef(input);
   const ctx = createWorkflowBodyContext(input, signals);
   attachWorkflowToolRunContext(ctx, {
+    asks,
     canRequestInput: input.canRequestInput,
+    control: input.hookToken,
     from,
     owner: input.owner,
   });

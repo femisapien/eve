@@ -366,13 +366,13 @@ describe("routeProxiedDeliverStep", () => {
         [
           "ask-1",
           {
-            answerHook: { question: { allowFreeform: true }, runId: "run-1" },
-            childContinuationToken: "answer-token",
+            workflowAsk: { control: "control", question: { allowFreeform: true }, runId: "run-1" },
+            childContinuationToken: "ask-1",
             kind: "question",
           },
         ],
       ],
-      forChildContinuationToken: "answer-token",
+      forChildContinuationToken: "ask-1",
       session: createStubSession(),
     });
     installSessionStoreMocks([session]);
@@ -388,10 +388,10 @@ describe("routeProxiedDeliverStep", () => {
     });
 
     expect(resumeHookMock).toHaveBeenCalledTimes(1);
-    expect(resumeHookMock).toHaveBeenCalledWith("answer-token", {
-      optionId: undefined,
-      status: "answered",
-      text: "Use the canary pool.",
+    expect(resumeHookMock).toHaveBeenCalledWith("control", {
+      kind: "answer",
+      requestId: "ask-1",
+      response: { optionId: undefined, status: "answered", text: "Use the canary pool." },
     });
     expect(result).toMatchObject({
       kind: "continue",
@@ -418,19 +418,20 @@ describe("routeProxiedDeliverStep", () => {
         [
           "ask-1",
           {
-            answerHook: {
+            workflowAsk: {
+              control: "control",
               question: {
                 allowFreeform: false,
                 options: [{ id: "approve", label: "Approve" }],
               },
               runId: "run-1",
             },
-            childContinuationToken: "answer-token",
+            childContinuationToken: "ask-1",
             kind: "question",
           },
         ],
       ],
-      forChildContinuationToken: "answer-token",
+      forChildContinuationToken: "ask-1",
       session: createStubSession(),
     });
     installSessionStoreMocks([session]);

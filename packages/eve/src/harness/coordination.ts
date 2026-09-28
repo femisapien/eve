@@ -270,7 +270,7 @@ export async function resolvePendingCoordination(input: {
     nextSession = removeBlockingWorkflowToolRuns(
       clearProxyInputRequestsWhere(
         nextSession,
-        (route) => route.answerHook?.runId === record.address.runId,
+        (route) => route.workflowAsk?.runId === record.address.runId,
       ),
       batch.event.turnId,
       record.callId,

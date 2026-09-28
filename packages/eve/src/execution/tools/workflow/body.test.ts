@@ -2,7 +2,7 @@ import { expect, it, vi } from "vitest";
 import type { ToolContext } from "#tools/definition.js";
 import type { WorkflowToolContext } from "#tools/workflow-definition.js";
 import { executeWorkflowBody, type WorkflowBodyInput } from "#execution/tools/workflow/body.js";
-import { readWorkflowToolRunRef } from "#execution/tools/workflow/ask.js";
+import { readWorkflowToolRunRef, WorkflowToolRunAsks } from "#execution/tools/workflow/ask.js";
 
 const mocks = vi.hoisted(() => ({ execute: vi.fn(), agent: vi.fn(), ask: vi.fn() }));
 vi.mock("#execution/workflow-registry.js", () => ({ readRegisteredWorkflow: () => mocks.execute }));
@@ -20,6 +20,7 @@ it("defaults agent metadata to an empty registry for older workflow payloads", a
   await executeWorkflowBody(
     {
       callId: "legacy-call",
+      hookToken: "control",
       input: {},
       session: {
         auth: { current: null, initiator: null },
@@ -33,6 +34,7 @@ it("defaults agent metadata to an empty registry for older workflow payloads", a
       runId: "run",
     },
     { abortSignal: new AbortController().signal, interruptSignal: new AbortController().signal },
+    new WorkflowToolRunAsks("run"),
   );
 });
 
@@ -41,6 +43,7 @@ it("binds workflow-only methods to the run context", async () => {
   const input = {
     agents: { reviewer: { description: "Review deployments." } },
     callId: "call",
+    hookToken: "control",
     input: {},
     session: {
       auth: { current: null, initiator: null },
@@ -72,7 +75,11 @@ it("binds workflow-only methods to the run context", async () => {
   });
   const interruptSignal = new AbortController().signal;
   await expect(
-    executeWorkflowBody(input, { abortSignal: signal, interruptSignal }),
+    executeWorkflowBody(
+      input,
+      { abortSignal: signal, interruptSignal },
+      new WorkflowToolRunAsks("run"),
+    ),
   ).resolves.toEqual({
     outcome: { status: "completed", output: { answer: { optionId: "yes" }, result: "reviewed" } },
     reportCount: 0,

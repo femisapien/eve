@@ -4,6 +4,7 @@ import type {
   WorkflowToolRunControlMessage,
   WorkflowToolRunMessage,
 } from "#execution/tools/workflow/messages.js";
+import { WorkflowToolRunAsks } from "#execution/tools/workflow/ask.js";
 import { workflowToolRunWorkflow } from "#execution/tools/workflow/workflow.js";
 
 const mocks = vi.hoisted(() => ({
@@ -110,6 +111,7 @@ it("emits every persisted report before the terminal outcome", async () => {
   expect(mocks.executeWorkflowBody).toHaveBeenCalledWith(
     expect.objectContaining({ owner: { inbox: "invocation-owner" } }),
     { abortSignal: expect.any(AbortSignal), interruptSignal: expect.any(AbortSignal) },
+    expect.any(WorkflowToolRunAsks),
   );
 });
 

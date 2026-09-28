@@ -1,12 +1,13 @@
 import { createHook } from "#compiled/@workflow/core/index.js";
+import type { WorkflowToolRunAsks } from "#execution/tools/workflow/ask.js";
 import {
   createChannelReader,
   type ChannelReader,
 } from "#execution/tools/workflow/owner-channels.js";
-import {
-  isWorkflowToolRunControlMessage,
-  type WorkflowToolRunMessage,
-  type WorkflowToolRunControlMessage,
+import type {
+  WorkflowBodyCommand,
+  WorkflowToolRunControlMessage,
+  WorkflowToolRunMessage,
 } from "#execution/tools/workflow/messages.js";
 import { resumeHookStep } from "#execution/tools/workflow/resume-hook-step.js";
 import type { WorkflowToolRunInput } from "#execution/tools/workflow/types.js";
@@ -16,12 +17,15 @@ export interface BlockingWorkflowOwner {
   /** The call's `interruptSignal`: steering arrived while the turn waits on the call. */
   readonly interruptSignal: AbortSignal;
   readonly signal: AbortSignal;
-  handleCommand(message: WorkflowToolRunControlMessage): void;
+  handleCommand(command: WorkflowBodyCommand): void;
   handleMessage(message: WorkflowToolRunMessage): Promise<void>;
 }
 
 /** Routes invocation messages to the waiting turn and accepts cancellation and interrupts. */
-export function createBlockingWorkflow(input: WorkflowToolRunInput): BlockingWorkflowOwner {
+export function createBlockingWorkflow(
+  input: WorkflowToolRunInput,
+  asks: WorkflowToolRunAsks,
+): BlockingWorkflowOwner {
   const controller = new AbortController();
   const interrupt = new AbortController();
   const hook = createHook<WorkflowToolRunControlMessage>({ token: input.hookToken });
@@ -29,13 +33,16 @@ export function createBlockingWorkflow(input: WorkflowToolRunInput): BlockingWor
     commands: createChannelReader("control", hook),
     interruptSignal: interrupt.signal,
     signal: controller.signal,
-    handleCommand(message: WorkflowToolRunControlMessage) {
-      if (!isWorkflowToolRunControlMessage(message)) return;
-      if (message.kind === "interrupt") {
+    handleCommand(command: WorkflowBodyCommand) {
+      if (command.kind === "interrupt") {
         interrupt.abort();
         return;
       }
-      controller.abort(new WorkflowToolRunCancelledError(message.reason));
+      // The session retired the call's questions when it stopped the call,
+      // so it accepts no answer after this; settle them before the abort
+      // would ask to withdraw them.
+      asks.cancelAll();
+      controller.abort(new WorkflowToolRunCancelledError(command.reason));
     },
     handleMessage(message: WorkflowToolRunMessage) {
       return resumeHookStep(input.owner.inbox, message, {

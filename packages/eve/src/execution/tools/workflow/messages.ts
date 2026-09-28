@@ -5,7 +5,7 @@ import type {
 } from "#execution/tools/subagent/invoke-agent.js";
 import type { InputRequest } from "#shared/input.js";
 import type { JsonObject, JsonValue } from "#shared/json.js";
-import type { ToolInputRequest } from "#tools/definition.js";
+import type { ToolInputRequest, ToolInputResponse } from "#tools/definition.js";
 
 export interface WorkflowToolRunOwner {
   readonly inbox: string;
@@ -29,6 +29,8 @@ export interface WorkflowToolAuthorizationRequest {
 
 /** A question authored with `ask()` from `eve/workflow`, before owner normalization. */
 export interface WorkflowToolAskRequest {
+  /** The run's control hook, where the session sends its decision on the question. */
+  readonly control: string;
   readonly kind: "ask";
   readonly request: ToolInputRequest;
 }
@@ -86,8 +88,13 @@ export interface WorkflowToolRunOutcomeMessage {
   readonly result: WorkflowToolRunOutcome;
 }
 
-/** A `ctx.ask()` request sent under `replyTo` was withdrawn before anyone answered it. */
+/**
+ * The run asks the session to withdraw the `ctx.ask()` question sent under
+ * `replyTo`. The session answers `withdrawn` on `control`, unless it accepted
+ * an answer first.
+ */
 export interface WorkflowToolRunWithdrawMessage {
+  readonly control: string;
   readonly from: WorkflowToolRunRef;
   readonly replyTo: string;
 }
@@ -98,20 +105,69 @@ export type WorkflowToolRunMessage =
   | ({ readonly kind: "withdraw" } & WorkflowToolRunWithdrawMessage)
   | ({ readonly kind: "outcome" } & WorkflowToolRunOutcomeMessage);
 
+/** A person's answer to a `ctx.ask()` question, as the session accepted it. */
+export type WorkflowToolRunAnswer = Extract<ToolInputResponse, { readonly status: "answered" }>;
+
 /**
- * Commands the session sends a run on its control hook. `cancel` aborts the
- * call's `abortSignal`; `interrupt` aborts its `interruptSignal`, because
- * steering arrived while the turn waits on the call.
+ * The session's decision on one `ctx.ask()` question: it accepted an answer,
+ * or it withdrew the question first. It decides once, and the ask resolves
+ * from that decision alone.
  */
-export type WorkflowToolRunControlMessage =
+export type WorkflowToolRunAskDecision =
+  | {
+      readonly kind: "answer";
+      readonly requestId: string;
+      readonly response: WorkflowToolRunAnswer;
+    }
+  | { readonly kind: "withdrawn"; readonly requestId: string };
+
+/**
+ * Commands the body applies, in the order the session sent them. `cancel`
+ * aborts the call's `abortSignal`; `interrupt` aborts its `interruptSignal`,
+ * because steering arrived while the turn waits on the call.
+ */
+export type WorkflowBodyCommand =
   | { readonly kind: "cancel"; readonly reason: string }
   | { readonly kind: "interrupt" };
+
+/**
+ * Everything the session sends a run, on the run's control hook: its one
+ * inbox. Only the session writes to it, so the run receives commands and
+ * decisions in the order the session made them.
+ */
+export type WorkflowToolRunControlMessage = WorkflowBodyCommand | WorkflowToolRunAskDecision;
 
 export function isWorkflowToolRunControlMessage(
   value: unknown,
 ): value is WorkflowToolRunControlMessage {
   if (typeof value !== "object" || value === null) return false;
-  const { kind, reason } = value as { kind?: unknown; reason?: unknown };
-  if (kind === "interrupt") return true;
-  return kind === "cancel" && typeof reason === "string";
+  const { kind, reason, requestId, response } = value as Record<string, unknown>;
+  switch (kind) {
+    case "interrupt":
+      return true;
+    case "cancel":
+      return typeof reason === "string";
+    case "answer":
+      return typeof requestId === "string" && isWorkflowToolRunAnswer(response);
+    case "withdrawn":
+      return typeof requestId === "string";
+    default:
+      return false;
+  }
+}
+
+export function isWorkflowToolRunAskDecision(
+  message: WorkflowToolRunControlMessage,
+): message is WorkflowToolRunAskDecision {
+  return message.kind === "answer" || message.kind === "withdrawn";
+}
+
+function isWorkflowToolRunAnswer(value: unknown): value is WorkflowToolRunAnswer {
+  if (typeof value !== "object" || value === null) return false;
+  const { optionId, status, text } = value as Record<string, unknown>;
+  return (
+    status === "answered" &&
+    (optionId === undefined || typeof optionId === "string") &&
+    (text === undefined || typeof text === "string")
+  );
 }

@@ -1,17 +1,22 @@
 import { describe, expect, it, vi } from "vitest";
 
-import { createHook } from "#compiled/@workflow/core/index.js";
-import { ask, attachWorkflowToolRunContext } from "#execution/tools/workflow/ask.js";
+import {
+  ask,
+  attachWorkflowToolRunContext,
+  WorkflowToolRunAsks,
+} from "#execution/tools/workflow/ask.js";
+import { resumeHookStep } from "#execution/tools/workflow/resume-hook-step.js";
 import type { ToolContext } from "#tools/definition.js";
 
-vi.mock("#compiled/@workflow/core/index.js", () => ({ createHook: vi.fn() }));
 vi.mock("#execution/tools/workflow/resume-hook-step.js", () => ({ resumeHookStep: vi.fn() }));
 
 describe("ask", () => {
   it("resolves as unavailable without waiting when the session cannot request input", async () => {
     const ctx = {} as ToolContext;
     attachWorkflowToolRunContext(ctx, {
+      asks: new WorkflowToolRunAsks("run"),
       canRequestInput: false,
+      control: "control",
       from: {
         callId: "call",
         input: {},
@@ -27,6 +32,6 @@ describe("ask", () => {
     await expect(ask(ctx, { prompt: "Which region?" })).resolves.toEqual({
       status: "unavailable",
     });
-    expect(createHook).not.toHaveBeenCalled();
+    expect(resumeHookStep).not.toHaveBeenCalled();
   });
 });
