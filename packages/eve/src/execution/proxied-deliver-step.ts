@@ -7,7 +7,7 @@ import {
   readDurableSession,
   replaceDurableSessionSnapshot,
 } from "#execution/durable-session-store.js";
-import { relaySessionEvents, type SessionEventTarget } from "#execution/publish-session-events.js";
+import { relaySessionEvents, type SessionStepState } from "#execution/publish-session-events.js";
 import { routeDeliverPayload } from "#subagents/hitl-proxy.js";
 import { resumeSessionInbox } from "#execution/session-inbox/resume.js";
 import { sendWorkflowAskAnswers } from "#execution/tools/workflow/answer.js";
@@ -45,7 +45,7 @@ interface ChildBucket {
  * this session relays its `input.resolved` once the answer is on its way down.
  */
 export async function routeProxiedDeliverStep(
-  input: SessionEventTarget & { readonly delivery: DeliverHookPayload },
+  input: SessionStepState & { readonly delivery: DeliverHookPayload },
 ): Promise<RoutedDeliverResult> {
   "use step";
   let durableSession = readDurableSession(input.sessionState);

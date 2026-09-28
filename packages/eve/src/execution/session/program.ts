@@ -248,9 +248,7 @@ async function runSessionLoop(
   };
   const settleCancelledTurn = async () => {
     const settled = await settleCancelledTurnStep({
-      sessionWritable: boot.sessionWritable,
-      serializedContext: cursor.serializedContext,
-      sessionState: cursor.sessionState,
+      ...cursor.stepState(),
     });
     await cursor.apply(settled);
     progress.caller = undefined;

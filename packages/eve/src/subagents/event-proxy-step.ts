@@ -12,7 +12,7 @@ import {
 import {
   withSessionEventEmitter,
   type PublishedSessionEvents,
-  type SessionEventTarget,
+  type SessionStepState,
 } from "#execution/publish-session-events.js";
 import { reconcileSessionContinuationToken } from "#execution/reconcile-session-continuation-token.js";
 import {
@@ -32,7 +32,7 @@ type SubagentEventHookPayload =
 
 /** Proxies one child event through its parent channel across a durable step boundary. */
 export async function runProxySubagentEventStep(
-  input: SessionEventTarget & {
+  input: SessionStepState & {
     readonly workflowAsk?: WorkflowAskRoute;
     readonly hookPayload: SubagentEventHookPayload;
   },

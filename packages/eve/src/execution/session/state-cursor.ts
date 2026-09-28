@@ -1,8 +1,7 @@
 import type { DurableSessionState } from "#execution/durable-session-store.js";
-import type { SessionEventTarget } from "#execution/publish-session-events.js";
+import type { SessionStepState } from "#execution/publish-session-events.js";
 import { sessionHookTokens } from "#execution/session/hook-tokens.js";
 import type { SessionInboxOwnership } from "#execution/session-inbox/inbox.js";
-import type { TurnStepInput, TurnStepPayload } from "#execution/session/turn-step-types.js";
 
 /** A durable-state transition; absent fields keep the cursor's current value. */
 export interface SessionStateTransition {
@@ -52,25 +51,12 @@ export class SessionStateCursor {
     this.currentSessionState = sessionState;
   }
 
-  /** The session's stream and current state, for a step that publishes events. */
-  eventTarget(): SessionEventTarget {
+  /** The session's stream and current state, spread into a step's input. */
+  stepState(): SessionStepState {
     return {
       serializedContext: this.currentSerializedContext,
       sessionState: this.currentSessionState,
       sessionWritable: this.sessionWritable,
-    };
-  }
-
-  createStepInput(
-    input: TurnStepPayload | undefined,
-    signals: Pick<TurnStepInput, "abortSignal" | "steeringSignal">,
-  ): TurnStepInput {
-    return {
-      ...signals,
-      input,
-      sessionWritable: this.sessionWritable,
-      serializedContext: this.currentSerializedContext,
-      sessionState: this.currentSessionState,
     };
   }
 }

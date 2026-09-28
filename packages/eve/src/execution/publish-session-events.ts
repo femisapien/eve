@@ -47,7 +47,7 @@ const log = createLogger("execution.publish-session-events");
 export type SessionEventOrigin = "own" | "relayed";
 
 /** The session a step publishes to: its stream and the state it starts from. */
-export interface SessionEventTarget {
+export interface SessionStepState {
   readonly serializedContext: Record<string, unknown>;
   readonly sessionState: DurableSessionState;
   readonly sessionWritable: WritableStream<Uint8Array>;
@@ -65,7 +65,7 @@ export interface PublishedSessionEvents {
  * and adopt the result: hooks run in the session's context and may change it.
  */
 export async function publishSessionEvents(
-  target: SessionEventTarget,
+  target: SessionStepState,
   events: readonly UnstampedMessageStreamEvent[],
 ): Promise<PublishedSessionEvents> {
   return await publishFromStep(target, "own", events);
@@ -73,14 +73,14 @@ export async function publishSessionEvents(
 
 /** Publishes events of an exchange this session relays; see {@link SessionEventOrigin}. */
 export async function relaySessionEvents(
-  target: SessionEventTarget,
+  target: SessionStepState,
   events: readonly UnstampedMessageStreamEvent[],
 ): Promise<PublishedSessionEvents> {
   return await publishFromStep(target, "relayed", events);
 }
 
 async function publishFromStep(
-  target: SessionEventTarget,
+  target: SessionStepState,
   origin: SessionEventOrigin,
   events: readonly UnstampedMessageStreamEvent[],
 ): Promise<PublishedSessionEvents> {

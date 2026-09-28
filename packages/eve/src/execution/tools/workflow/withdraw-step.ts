@@ -6,7 +6,7 @@ import {
 import {
   relaySessionEvents,
   type PublishedSessionEvents,
-  type SessionEventTarget,
+  type SessionStepState,
 } from "#execution/publish-session-events.js";
 import type { WorkflowToolRunControlMessage } from "#execution/tools/workflow/messages.js";
 import { ignoreGoneTarget } from "#execution/tasks/workflow-target.js";
@@ -23,7 +23,7 @@ import { createInputResolvedEvent, type UnstampedMessageStreamEvent } from "#pro
  * first, so the question resolves from the session's first decision.
  */
 export async function withdrawWorkflowToolRunQuestionStep(
-  input: SessionEventTarget & {
+  input: SessionStepState & {
     readonly control: string;
     readonly requestId: string;
     readonly runId: string;

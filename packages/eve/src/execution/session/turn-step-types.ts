@@ -1,5 +1,6 @@
 import type { DeliverHookPayload } from "#channel/types.js";
 import type { DurableSessionState } from "#execution/durable-session-store.js";
+import type { SessionStepState } from "#execution/publish-session-events.js";
 import type { SettledTurn } from "#harness/types.js";
 import type { RuntimeActionResult } from "#shared/action-types.js";
 import type { TokenUsage } from "#shared/token-usage.js";
@@ -22,13 +23,10 @@ export interface TurnStepPayload {
 }
 
 /** Input for one atomic, session-owner-executed turn step. */
-export interface TurnStepInput {
+export interface TurnStepInput extends SessionStepState {
   readonly abortSignal?: AbortSignal;
   readonly steeringSignal?: AbortSignal;
   readonly input: TurnStepPayload | undefined;
-  readonly sessionWritable: WritableStream<Uint8Array>;
-  readonly serializedContext: Record<string, unknown>;
-  readonly sessionState: DurableSessionState;
 }
 
 interface DurableStepResultFields {

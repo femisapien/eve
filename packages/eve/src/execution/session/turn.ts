@@ -90,12 +90,12 @@ export class SessionExecution {
 
     while (true) {
       const { cursor } = this.input;
-      const result: DurableStepResult = await turnStep(
-        cursor.createStepInput(nextStepInput, {
-          abortSignal: turn.signal,
-          steeringSignal: turn.steeringSignal,
-        }),
-      );
+      const result: DurableStepResult = await turnStep({
+        ...cursor.stepState(),
+        abortSignal: turn.signal,
+        input: nextStepInput,
+        steeringSignal: turn.steeringSignal,
+      });
       const pendingCallIds =
         result.action === "park" ? result.pendingCoordinationCallIds : undefined;
       const turnCompleted = result.action === "park" && result.settled !== undefined;
@@ -129,9 +129,7 @@ export class SessionExecution {
           workflowToolRunOwner: {
             inbox: sessionInboxHookToken(sessionCommandHookToken(this.input.sessionId)),
           },
-          sessionWritable: cursor.sessionWritable,
-          serializedContext: cursor.serializedContext,
-          sessionState: cursor.sessionState,
+          ...cursor.stepState(),
         });
         const initialAcceptedAtMs = dispatchResult.results.length === 0 ? undefined : Date.now();
         await cursor.apply(dispatchResult);
@@ -432,9 +430,7 @@ class ActiveTurn {
       this.routedToChildren.add(sequence);
       const routed = await routeDeliverToChildren({
         delivery,
-        sessionWritable: this.input.cursor.sessionWritable,
-        serializedContext: this.input.cursor.serializedContext,
-        sessionState: this.input.cursor.sessionState,
+        ...this.input.cursor.stepState(),
       });
       await this.input.cursor.apply(routed);
       if (routed.kind === "cancel-turn") {
