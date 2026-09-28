@@ -221,6 +221,62 @@ describe("proxied stream hooks", () => {
     }
   });
 
+  it("forwards a nested child's tool approval from a remote session", async () => {
+    const f = fixture();
+    const request = {
+      action: {
+        callId: "create-issue-call",
+        input: {},
+        kind: "tool-call" as const,
+        toolName: "create_issue",
+      },
+      kind: "tool-approval" as const,
+      options: [
+        { id: "approve", label: "Approve" },
+        { id: "cancel", label: "Cancel" },
+      ],
+      prompt: "Approve creating the issue?",
+      requestId: "approval-1",
+    };
+    const event = { ...f.hookPayload.event, requests: [request] };
+    f.ctx.set(SessionCallbackKey, {
+      callId: "parent-call",
+      subagentName: "remote-worker",
+      taskId: "parent-task",
+      token: "callback-token",
+      url: "https://parent.example/eve/v1/callback/callback-token",
+    });
+    const fetchMock = vi.fn(
+      async (_url: string, _options: RequestInit) => new Response(null, { status: 202 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await emitProxiedSubagentEvent({
+        ...f,
+        hookPayload: {
+          ...f.hookPayload,
+          childContinuationToken: "nested-child-token",
+          childSessionId: "nested-session",
+          event,
+          subagentName: "nested-child",
+        },
+      });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const [url, options] = fetchMock.mock.calls[0]!;
+      expect(url).toBe("https://parent.example/eve/v1/callback/callback-token");
+      expect(JSON.parse(options.body as string)).toMatchObject({
+        kind: "task.input-requested",
+        taskId: "parent-task",
+        childContinuationToken: "http:parent",
+        childSessionId: "parent-session",
+        event: { requests: [request] },
+      });
+      expect(f.events.map((published) => published.type)).not.toContain("input.requested");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("keeps nested input sources event-scoped and distinct for the same child", async () => {
     const f = fixture();
     const sources = ["nested-source-a", "nested-source-b", undefined];
