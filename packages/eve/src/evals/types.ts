@@ -1,6 +1,7 @@
 import type { Experimental_EvaluationModel as EvaluationModel } from "ai";
 
 import type { StandardSchemaV1 } from "#compiled/@standard-schema/spec/index.js";
+import type { ClientAgentSession } from "#client/agent-session.js";
 import type {
   RuntimeIdentity,
   RuntimeTraceContext,
@@ -13,7 +14,6 @@ import type {
   CreateSessionOptions,
   SendTurnInput,
   SendTurnOptions,
-  StreamOptions,
 } from "#client/types.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
 import type { JsonObject, JsonValue } from "#shared/json.js";
@@ -328,15 +328,18 @@ interface EveEvalSessionDriver {
   /** Send one text turn with a local file attached as a data URL. */
   sendFile(text: string, filePath: string, mediaType?: string): Promise<EveEvalTurn>;
   /**
-   * Follow one delegated child's stream through this parent session, with the
-   * eval client's credentials. Local children use their own stream route; remote
-   * children use the parent-origin proxy.
+   * The session an agent run opened, as this session's stream announced it with
+   * `agent.started`. Its `stream()` follows the child through this parent session
+   * with the eval client's credentials, and stops with the eval unless given a `signal`.
    */
-  streamSubagent(
-    started: AgentStartedStreamEvent,
-    options?: StreamOptions,
-  ): AsyncIterable<MessageStreamEvent>;
+  agent(started: AgentStartedStreamEvent): EveEvalAgentSession;
 }
+
+/** A session an agent run opened, reached through the parent eval session. */
+export type EveEvalAgentSession = Pick<
+  ClientAgentSession,
+  "name" | "sessionId" | "stream" | "taskId"
+>;
 
 /** One accepted session, exposed by `t.session()`, turns, and target attachment helpers. */
 export interface EveEvalSession

@@ -362,7 +362,7 @@ export interface ActionPartialStreamEvent {
 /**
  * Stream event emitted when a workflow run opens a session with `ctx.agent`.
  * `callId` and `turnId` name the tool call whose run opened it; follow the
- * session with `session.streamSubagent(event)`. For a task's run it comes
+ * session with `session.agent(event).stream()`. For a task's run it comes
  * after that call's `task.started`.
  */
 export interface AgentStartedStreamEvent {

@@ -32,6 +32,7 @@ import { createOutputAssertions, createScopedAssertions } from "#evals/assertion
 import { EvalRequirementFailed } from "#evals/control-flow.js";
 import { inputRequestMatches, matchesValue, toolCallMatches } from "#evals/match.js";
 import type {
+  EveEvalAgentSession,
   EveEvalAssertions,
   EveEvalDerivedFacts,
   EveEvalLiveTurn,
@@ -150,14 +151,16 @@ export class EvalSessionDriver implements EveEvalSession {
     return await this.#session.cancel();
   }
 
-  streamSubagent(
-    started: AgentStartedStreamEvent,
-    options: StreamOptions = {},
-  ): AsyncIterable<MessageStreamEvent> {
-    return this.#session.streamSubagent(started, {
-      ...options,
-      signal: options.signal ?? this.#signal,
-    });
+  agent(started: AgentStartedStreamEvent): EveEvalAgentSession {
+    const child = this.#session.agent(started);
+    const signal = this.#signal;
+    return {
+      name: child.name,
+      sessionId: child.sessionId,
+      stream: (options: StreamOptions = {}) =>
+        child.stream({ ...options, signal: options.signal ?? signal }),
+      taskId: child.taskId,
+    };
   }
 
   /** @internal */

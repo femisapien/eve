@@ -10,6 +10,7 @@ import {
   createEveSessionRoutePath,
   createEveSessionStreamRoutePath,
 } from "#protocol/routes.js";
+import { ClientAgentSession } from "#client/agent-session.js";
 import { ClientError } from "#client/client-error.js";
 import { MessageResponse } from "#client/message-response.js";
 import { followStreamIterable, sleep } from "#client/open-stream.js";
@@ -214,38 +215,13 @@ export class ClientSession {
   }
 
   /**
-   * Follows one delegated child's durable event stream through this parent session.
-   *
-   * Pass an `agent.started` event from this session. The client reads the
-   * child's stream path with this session's host and credentials: a local
-   * child's own stream route, or the parent-origin proxy for a remote child,
-   * which the parent deployment authenticates to the remote agent after
-   * checking that the parent recorded the child. Reading the child
-   * never advances this session's cursor. The child cursor starts at `0`; pass
-   * `startIndex` to resume. Stop at a child turn boundary with
-   * `isCurrentTurnBoundaryEvent`.
+   * The session an agent run opened, as this session's stream announced it.
+   * Pass an `agent.started` event from this session, then follow the child
+   * with `stream()`; reads use this session's host and credentials, for local
+   * and remote agents alike.
    */
-  streamSubagent(
-    started: AgentStartedStreamEvent,
-    options?: StreamOptions,
-  ): AsyncIterable<MessageStreamEvent> {
-    const path = started.data.streamPath;
-    const startIndex = options?.startIndex ?? 0;
-    if (options?.follow === false && startIndex < 0) {
-      throw new Error(
-        "streamSubagent({ follow: false }) requires a nonnegative startIndex; a tail-relative cursor cannot be bounded.",
-      );
-    }
-    return followStreamIterable({
-      follow: options?.follow,
-      host: this.#context.host,
-      path,
-      redirect: this.#context.redirect,
-      resolveHeaders: () => this.#context.resolveHeaders(),
-      signal: options?.signal,
-      startIndex,
-      streamReconnectPolicy: options?.streamReconnectPolicy,
-    });
+  agent(started: AgentStartedStreamEvent): ClientAgentSession {
+    return new ClientAgentSession(this.#context, started);
   }
 
   [followSession](options: FollowSessionOptions): AsyncIterable<MessageStreamEvent> {

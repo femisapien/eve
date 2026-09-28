@@ -507,8 +507,9 @@ shouldn't reach. Idle resumable tasks don't count.
 - **`output`** is a completed call's typed result; **`error.message`** explains a failed one.
   There are no error codes and no usage; either can be added later without breaking anyone.
 
-`session.streamSubagent(started)` takes an `agent.started` event and no longer checks the parent
-session ID; the proxy validates the parent and call. Hooks subscribe to the new events in place
+`session.agent(started)` takes an `agent.started` event and returns the child's handle, whose
+`stream()` follows it; the proxy validates the parent and call. It replaces
+`session.streamSubagent()`, and the handle leaves room for more child operations. Hooks subscribe to the new events in place
 of `subagent.*`. `input.requested` and `authorization.*` gain `taskId` when a task asks. A
 `task.result` message is not published as `message.received`: it stays a user-role message in
 the model's history, and clients see outcomes through `task.settled`. The eval assertion
