@@ -8,8 +8,10 @@ last_updated: "2026-09-28"
 
 ## Summary
 
-An agent that routes work to specialist agents today can only hand them whole tasks. The
-specialist runs its own model loop, and the router's model reads its prose. A prototype on branch
+An agent that routes work to specialist eve agents today can only hand them whole tasks. The
+specialist runs its own model loop, and the router's model reads its prose. The gap is on the
+server side. eve's MCP connections already send `tools/call` to any MCP server, but an eve agent
+publishes none of its tools: `mcpChannel` offers only the `agent_*` task tools. A prototype on branch
 `rui/vmcp` let an orchestrator call three specialists' tools directly instead. Replaying 24 cases
 from the specialists' own eval suites twice, it matched remote subagents on pass rate (94% each),
 halved median latency (15 s against 28 s), and used about a quarter of the tokens (25k against 92k).
@@ -66,7 +68,7 @@ interface RouteAgent {
   readonly description: string;
   introspect(): AgentIntrospection;
   invokeTool(name: string, input: unknown, options: InvokeToolOptions): Promise<InvokeToolResult>;
-  prepareSession(options: InvokeSessionOptions): void; // start the session's sandbox in the background
+  prewarm(options: InvokeSessionOptions): Promise<{ sessionId: string }>; // as client.sessions.create()
 }
 
 interface AgentIntrospection {
@@ -135,6 +137,20 @@ The tool sees the same `ctx` it sees in a turn:
 - `ctx.getToken()` resolves the user's grant, and returns `authorization-required` when a sign-in
   is needed.
 
+**Prewarm** is the same concept eve already gives clients with `client.sessions.create()` and
+`useEveAgent({ prewarm: true })`:
+
+- It prepares the session a caller is about to use, without running anything.
+- It resolves once the session is accepted, not when it is ready, and concurrent prewarms of one
+  session share the work.
+- It returns the session id, the same one later `invokeTool` calls with those identities and key
+  run in.
+
+What gets prepared differs. A conversation prewarm starts a workflow and parks before sandbox
+setup. A capability session has no workflow, so prewarm starts its sandbox, which is the setup a
+first tool call would otherwise wait for. A session without a key has nothing to prewarm. The
+provider's sandbox idle timeout bounds a prewarmed session that is never used.
+
 **Approval is evaluated on every call, and nothing carries over between calls.**
 
 1. The request policy runs.
@@ -185,7 +201,7 @@ The channel only maps MCP onto the primitives:
 
 | MCP                                                                                     | Primitive                                          |
 | --------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| `server/discover` (with a session key)                                                  | `prepareSession`                                   |
+| `server/discover` (with a session key)                                                  | `prewarm`                                          |
 | `tools/list`                                                                            | `introspect().tools`                               |
 | `resources/list`, `resources/read` for `skill://<agent>/<skill>/SKILL.md` and its files | `introspect().skills`, `readSkillFile`             |
 | `tools/call`                                                                            | `invokeTool`                                       |
@@ -215,9 +231,10 @@ speaks 2026-07-28: it calls `server/discover`, sends `Mcp-Method`, and falls bac
 `initialize` handshake for older servers (`protocolVersionDiscovery`). It does not support multi
 round-trip requests: an `input_required` result fails the call with "multi round-trip requests are
 not supported yet". It also has no tasks support, and eve's connections do not read resources or
-keep tool `_meta` (#2727). So a connection can list and call the channel's tools, but any
-approval or sign-in fails. The prototype's client was therefore userland: three tools in the
-orchestrator that call MCP directly.
+keep tool `_meta` (#2727). So a plain `tools/call` works today, and a connection could list and
+call the channel's tools once it exists, but any
+approval or sign-in fails. The prototype's client was userland because of these gaps: three
+tools in the orchestrator that call MCP directly.
 
 ### Changes
 
@@ -285,11 +302,13 @@ compose with this.
    extensions can use them too?
 2. Does `invokeTool` run inside a workflow when a tool needs to park, or stay request-scoped with
    durable attempts only?
-3. Server-minted session handles, which SEP-2567 recommends, or the `eve-capability-session`
-   header?
-4. Which fields of `ctx` stay unavailable outside a turn, such as `messages`, and how does a tool
+3. Server-issued session handles, as SEP-2567 recommends, or the `eve-capability-session` header?
+   `prewarm` already returns the session id, so it could become the handle MCP callers send back.
+4. Should prewarm stay a side effect of `server/discover`? MCP treats discover as a cacheable
+   capability probe, so a client that caches or skips it never prewarms.
+5. Which fields of `ctx` stay unavailable outside a turn, such as `messages`, and how does a tool
    learn it is invoked directly?
-5. Should the channel let authors choose which tools it exposes, beyond excluding them by kind?
+6. Should the channel let authors choose which tools it exposes, beyond excluding them by kind?
 
 ## References
 
