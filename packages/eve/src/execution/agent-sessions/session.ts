@@ -16,6 +16,7 @@ import {
 import { disposeHook } from "#execution/hook-ownership.js";
 import type { WorkflowToolRunContext } from "#execution/tools/workflow/ask.js";
 import type { RuntimeSubagentResult } from "#shared/action-types.js";
+import { normalizeRequestedOutputSchema } from "#subagents/invocation.js";
 import { serializeOutputSchema } from "#tools/schema-emission.js";
 import type {
   AgentMessageResult,
@@ -91,7 +92,11 @@ class RunAgentSession implements AgentSession {
     if (typeof message !== "string" || message.trim() === "") {
       throw new TypeError(`ctx.agent("${this.#name}").send() requires a non-empty message.`);
     }
-    const outputSchema = serializeOutputSchema(options.outputSchema);
+    // The reply's shape and the child's output mode must agree on whether a
+    // schema was requested, and an empty one requests none.
+    const outputSchema = normalizeRequestedOutputSchema(
+      serializeOutputSchema(options.outputSchema),
+    );
     const running = this.#turn;
     const turn = running ?? this.#startTurn(outputSchema !== undefined);
     try {
