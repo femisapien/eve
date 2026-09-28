@@ -134,11 +134,7 @@ import {
 import type { VercelStatusSnapshot } from "./vercel-status.js";
 import type { RemoteConnectionSnapshot } from "./remote-connection.js";
 import { groupToolBlocksForDisplay } from "./tool-block-groups.js";
-import {
-  renderInputContext,
-  renderQuestionChoices,
-  renderQuestionPanel,
-} from "./question-panel.js";
+import { inputContextLabel, renderQuestionChoices, renderQuestionPanel } from "./question-panel.js";
 import { TurnClock } from "./turn-clock.js";
 import { MessageQueue, renderMessageQueueRows } from "./message-queue.js";
 import { formatStoredDiagnostic, presentDiagnostic } from "./diagnostic-presentation.js";
@@ -1077,7 +1073,6 @@ export class TerminalRenderer implements AgentTUIRenderer {
     this.#hitlDrawer = (width) =>
       renderTransientDrawer(
         [
-          ...renderInputContext(request.context, this.#theme, width),
           `  ${this.#theme.colors.bold(`Approve ${formatToolApprovalTitle(request)}?`)}`,
           "",
           ...renderQuestionChoices(
@@ -1092,6 +1087,7 @@ export class TerminalRenderer implements AgentTUIRenderer {
         ["y yes · n no · Ctrl-C cancel"],
         this.#theme,
         width,
+        inputContextLabel(request.context, this.#theme),
       );
     this.#paint();
 
@@ -1181,7 +1177,6 @@ export class TerminalRenderer implements AgentTUIRenderer {
     const selectDrawer = (width: number) =>
       renderTransientDrawer(
         [
-          ...renderInputContext(question.context, this.#theme, width),
           ...renderQuestionPanel(
             {
               prompt: stripTerminalControls(question.prompt),
@@ -1198,6 +1193,7 @@ export class TerminalRenderer implements AgentTUIRenderer {
         ["↑/↓ move · enter to select · esc to dismiss"],
         this.#theme,
         width,
+        inputContextLabel(question.context, this.#theme),
       );
 
     const textPanel = (width: number) => {
@@ -1213,7 +1209,6 @@ export class TerminalRenderer implements AgentTUIRenderer {
       if (inputRows.at(-1) === "") inputRows.pop();
       return renderTransientDrawer(
         [
-          ...renderInputContext(question.context, this.#theme, width),
           `  ${this.#theme.colors.bold(stripTerminalControls(question.prompt))}`,
           "",
           ...inputRows.map((row) => `  ${row}`),
@@ -1221,6 +1216,7 @@ export class TerminalRenderer implements AgentTUIRenderer {
         ["Enter submit · Esc dismiss"],
         this.#theme,
         width,
+        inputContextLabel(question.context, this.#theme),
       );
     };
 
