@@ -568,8 +568,10 @@ the model's history, and clients see outcomes through `task.settled`. The eval a
   dynamic agent selections, and sandbox reference. `ctx.agent` opens its child, local or remote,
   in a step keyed on the run and the handle's position; `send` uses the child's existing deliver
   path with the run's `callId` as `caller.callId`; `result()` waits through a hook. The run sends
-  `agent.started` to the session like `action.partial`, and the session publishes both at its next
-  step boundary, never while a model step runs, because publishing can change session state.
+  `agent.started` to the session, which publishes it as it arrives, even while a model step runs,
+  so clients follow a child while it works. Publishing it changes no session state, so the step's
+  result, which replaces that state at the boundary, loses nothing. `action.partial` reaches
+  channel handlers, which can change state, so it waits for the step boundary.
 - **Questions go up, answers come down.** A child's `input.requested` and `authorization.*` travel
   up the owner chain to the root, where a person answers, and answers route down by request ID.
   The root emits `input.resolved` for each answer it routes, during a hold too. This is the only
