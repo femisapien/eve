@@ -277,6 +277,107 @@ describe("proxied stream hooks", () => {
     }
   });
 
+  it("keeps two nested tool approvals independently routable across a remote callback", async () => {
+    const f = fixture();
+    f.ctx.set(SessionCallbackKey, {
+      callId: "parent-call",
+      subagentName: "remote-worker",
+      taskId: "parent-task",
+      token: "callback-token",
+      url: "https://parent.example/eve/v1/callback/callback-token",
+    });
+    const fetchMock = vi.fn(
+      async (_url: string, _options: RequestInit) => new Response(null, { status: 202 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      let session = f.durableSession;
+      const children = ["alice", "bob"];
+      for (const child of children) {
+        const result = await emitProxiedSubagentEvent({
+          ...f,
+          durableSession: session,
+          hookPayload: {
+            ...f.hookPayload,
+            callId: `call-${child}`,
+            childContinuationToken: `child-${child}`,
+            childSessionId: `session-${child}`,
+            subagentName: child,
+            event: {
+              ...f.hookPayload.event,
+              requests: [
+                {
+                  action: {
+                    callId: `tool-${child}`,
+                    input: {},
+                    kind: "tool-call",
+                    toolName: "create_issue",
+                  },
+                  kind: "tool-approval",
+                  options: [{ id: "approve", label: "Approve" }],
+                  prompt: `Approve ${child}'s issue?`,
+                  requestId: `approval-${child}`,
+                },
+              ],
+            },
+          },
+        });
+        session = result.sessionState.snapshot.session;
+      }
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const callbacks = fetchMock.mock.calls.map(
+        ([, options]) =>
+          JSON.parse(options.body as string) as {
+            kind: string;
+            inputSource: string;
+            event: { requests: { requestId: string }[] };
+          },
+      );
+      expect(
+        callbacks.map(({ kind, event, inputSource }) => ({
+          kind,
+          requestId: event.requests[0]?.requestId,
+          inputSource,
+        })),
+      ).toEqual(
+        children.map((child) => ({
+          kind: "task.input-requested",
+          requestId: `approval-${child}`,
+          inputSource: JSON.stringify([`child-${child}`, null]),
+        })),
+      );
+      expect([...getProxyInputRequests(session.state).keys()].sort()).toEqual([
+        "approval-alice",
+        "approval-bob",
+      ]);
+      const routed = routeDeliverPayload({
+        payload: {
+          inputResponses: children.map((child) => ({
+            requestId: `approval-${child}`,
+            optionId: "approve",
+          })),
+        },
+        state: session.state,
+      });
+      expect(routed.forSelf).toBeUndefined();
+      expect(
+        routed.forChildren.map(({ childContinuationToken, payload }) => ({
+          childContinuationToken,
+          payload,
+        })),
+      ).toEqual(
+        children.map((child) => ({
+          childContinuationToken: `child-${child}`,
+          payload: { inputResponses: [{ requestId: `approval-${child}`, optionId: "approve" }] },
+        })),
+      );
+      expect(f.events.map((published) => published.type)).not.toContain("input.requested");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("keeps nested input sources event-scoped and distinct for the same child", async () => {
     const f = fixture();
     const sources = ["nested-source-a", "nested-source-b", undefined];
