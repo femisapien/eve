@@ -326,9 +326,9 @@ Approximate line changes in `packages/eve/src` against the tasks-10 base:
 
 ## Known gaps
 
-**Server side.** A partially answered approval batch sends no boundary, so the UI shows the agent as working until the whole batch is answered. Neither client can work around this.
+**Approvals in one model step wait for each other.** When one model step asks to approve two tools, eve runs neither tool and doesn't call the model again until both are answered. Answering the first emits `approval.settled` and nothing else, so the chat shows no progress until the last answer arrives. The TUI never shows this state because it collects every answer in a batch before sending, but the web chat does. The client has enough to render it: approvals from the same turn and step form one batch, so a UI can mark an answered approval as waiting on the rest. Running an approved call before the rest of its batch is answered would need a server change, and it would change what cancelling a partly approved batch means.
 
-**Client side:**
+**Other client follow-ups:**
 
 - `followSubagents` follows only the root's direct agent-tool sessions, with no cap on concurrent streams. The option leaves room for a predicate. Following is in memory only, so channels such as Slack have no durable way to follow agent sessions.
 - The SDK layer under the store (`ClientSession`, `MessageResponse`, and `summarizeTurnEvents`) still scans raw events for open requests and waiting sign-ins to decide where a response ends. It has no `ConversationState` and is the last duplicate answer to those questions.
