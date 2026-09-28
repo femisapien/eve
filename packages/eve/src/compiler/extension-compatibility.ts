@@ -22,8 +22,8 @@ interface ExtensionCapabilityContract {
 const EXTENSION_CAPABILITY_CONTRACTS = {
   extension: { current: 1, supported: [1], dropped: {} },
   tool: {
-    current: 62,
-    supported: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 29, 30, 31, 32, 34, 35, 54, 55, 62],
+    current: 63,
+    supported: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 29, 30, 31, 32, 34, 35, 54, 55, 63],
     dropped: {
       14: "TaskExec.delegated was removed; migrate to workflow-backed background tools",
       15: "TaskExec replaces stageEffect with send",
@@ -65,6 +65,7 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       59: "ctx.ask() no longer accepts dismissible and reports a withdrawn request as cancelled instead of dismissed; workflow tool contexts carry interruptSignal.",
       60: "ctx.agent(name) now returns a session handle: send() delivers a message and its response result() resolves the turn; ctx.agent(name, { message, agentId }) and AgentInput were removed. A ctx.ask() question parks the open turn with turn.waiting instead of ending it.",
       61: "Workflow tools define exactly one of execute(input, ctx) or task(input, ctx); a task() tool's calls return a receipt and run as tasks without interruptSignal, and stream events gained task.started and task.settled.",
+      62: "Workflow tools can define serve(receive, ctx), whose calls reach resumable tasks through receive() and whose model input gains taskId; defineWorkflowTool gained its serve overloads.",
     },
   },
   dynamicTool: {

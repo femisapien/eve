@@ -9,11 +9,13 @@ import {
   finishTaskRun,
   markTaskRunStarted,
   readTaskTable,
+  settleRemainingTaskCalls,
   settleTaskCall,
   writeTaskTable,
   type TaskCall,
   type TaskOutcome,
-  type TaskRunAddress,
+  type TaskRunCommand,
+  type TaskRunCommands,
   type TaskTable,
 } from "#execution/tasks/table.js";
 import { isTaskWorkflowTargetGone } from "#execution/tasks/workflow-target.js";
@@ -35,15 +37,12 @@ import { createTaskSettledEvent, type TaskSettledStreamEvent } from "#protocol/m
 /** The messages a task's run sends that change its record. */
 export type TaskRunMessage = Extract<
   WorkflowToolRunMessage,
-  { readonly kind: "outcome" | "started" }
+  { readonly kind: "outcome" | "reply" | "started" }
 >;
 
-const TASK_CANCEL_COMMAND: WorkflowToolRunControlMessage = {
-  kind: "cancel",
-  reason: "The task was cancelled.",
-};
+const TASK_CANCEL_REASON = "The task was cancelled.";
 
-/** Applies one message from a task's run: started, or the run's outcome. */
+/** Applies one message from a task's run: started, a reply, or the run's outcome. */
 export async function applyTaskRunMessageStep(
   input: SessionStepState & { readonly message: TaskRunMessage },
 ): Promise<PublishedSessionEvents> {
@@ -61,12 +60,19 @@ export async function applyTaskRunMessageStep(
     case "started": {
       const started = markTaskRunStarted(table, taskId, message.from.runId);
       table = started.table;
-      if (started.heldCancel !== undefined) await sendTaskCancel(started.heldCancel);
+      if (started.held !== undefined) await sendTaskRunCommands(started.held);
+      break;
+    }
+    case "reply": {
+      const outcome: TaskOutcome = { output: message.output, status: "completed" };
+      const settled = settleTaskCall(table, { callId: message.from.callId, outcome, taskId });
+      table = settled.table;
+      events.push(...settled.settled.map((call) => taskSettledEvent(taskId, call, outcome)));
       break;
     }
     case "outcome": {
       const outcome = toOutcome(message);
-      const settled = settleTaskCall(table, { callId: message.from.callId, outcome, taskId });
+      const settled = settleRemainingTaskCalls(table, taskId, outcome);
       events.push(...settled.settled.map((call) => taskSettledEvent(taskId, call, outcome)));
       table = finishTaskRun(settled.table, taskId, message.from.runId);
       session = forgetRunQuestions(session, message.from.runId);
@@ -95,7 +101,7 @@ export async function cancelTasksStep(
     const cancelled = cancelTask(table, taskId);
     table = cancelled.table;
     events.push(...cancelled.settled.map((call) => taskSettledEvent(taskId, call, CANCELLED)));
-    if (cancelled.sendCancel !== undefined) await sendTaskCancel(cancelled.sendCancel);
+    if (cancelled.send !== undefined) await sendTaskRunCommands(cancelled.send);
   }
   return await publishSessionEvents(
     { ...input, sessionState: saveTable(input.sessionState, session, table) },
@@ -126,8 +132,23 @@ function taskSettledEvent(
   }
 }
 
-async function sendTaskCancel(run: TaskRunAddress): Promise<void> {
-  await ignoreGoneTarget(resumeHook(run.hookToken, TASK_CANCEL_COMMAND));
+/**
+ * Sends commands to a task's run, in order. A run that already finished takes
+ * none; its outcome settles any call still waiting.
+ */
+export async function sendTaskRunCommands(commands: TaskRunCommands): Promise<void> {
+  for (const command of commands.commands) {
+    await ignoreGoneTarget(resumeHook(commands.run.hookToken, toControlMessage(command)));
+  }
+}
+
+function toControlMessage(command: TaskRunCommand): WorkflowToolRunControlMessage {
+  switch (command.kind) {
+    case "cancel":
+      return { kind: "cancel", reason: TASK_CANCEL_REASON };
+    case "call":
+      return { call: command.call, kind: "call" };
+  }
 }
 
 async function ignoreGoneTarget(pending: Promise<unknown>): Promise<void> {

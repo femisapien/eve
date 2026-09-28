@@ -15,7 +15,6 @@ vi.mock("#execution/workflow-runtime.js", () => ({
 
 const input: Omit<WorkflowToolRunInput, "hookToken"> = {
   agentContext: {} as AgentSessionContext,
-  agents: { reviewer: { description: "Review deployments." } },
   callId: "call-1",
   entry: { entryPoint: "execute" },
   input: { service: "api" },

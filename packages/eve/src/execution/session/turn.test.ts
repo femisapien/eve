@@ -662,6 +662,7 @@ describe("SessionExecution checkpoints", () => {
     const working = createTask(readTaskTable(undefined), {
       callId: "task-call",
       name: "research",
+      resumable: false,
       turnId: "turn_0",
     });
     const sessionState: DurableSessionState = {

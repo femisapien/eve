@@ -204,6 +204,7 @@ import {
   createCoordinationRequestFromToolCall,
   getPendingCoordinationBatch,
   resolvePendingCoordination,
+  resolveToolCallInputObject,
   setPendingCoordinationBatch,
 } from "#harness/coordination.js";
 import type { RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
@@ -2899,6 +2900,10 @@ function collectDeferredCalls(input: {
     const committed = commitCallEntry(session, {
       callId: toolCall.toolCallId,
       definition,
+      input: resolveToolCallInputObject(toolCall.input, {
+        callId: toolCall.toolCallId,
+        toolName: toolCall.toolName,
+      }),
       toolName: toolCall.toolName,
       turnId: input.turnId,
     });
@@ -2906,6 +2911,7 @@ function collectDeferredCalls(input: {
     workflowRequests.push(
       createCoordinationRequestFromToolCall({
         entry: committed.entry,
+        input: committed.input,
         toolCall,
         tools: input.tools,
       }),

@@ -23,7 +23,7 @@ import type { RuntimeActionResult } from "#shared/action-types.js";
 /** Whether a run's message changes a task record. */
 export function isTaskRunMessage(message: WorkflowToolRunMessage): message is TaskRunMessage {
   if (message.from.taskId === undefined) return false;
-  return message.kind === "started" || message.kind === "outcome";
+  return message.kind === "started" || message.kind === "reply" || message.kind === "outcome";
 }
 
 /** The session's task table as the workflow body last committed it. */

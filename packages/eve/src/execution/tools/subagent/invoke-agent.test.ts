@@ -102,6 +102,7 @@ describe("workflow agent invocation routing", () => {
         turnId: "turn-1",
       },
       agentContext,
+      auth: { current: null, initiator: null },
       owner: runOwner("owner-inbox"),
     });
 
@@ -160,6 +161,7 @@ describe("workflow agent invocation routing", () => {
       control: "control",
       from,
       agentContext,
+      auth: { current: null, initiator: null },
       owner: runOwner("owner-inbox"),
     });
 
@@ -232,6 +234,7 @@ describe("workflow agent invocation routing", () => {
         turnId: "turn-1",
       },
       agentContext,
+      auth: { current: null, initiator: null },
       owner: runOwner("owner-inbox"),
     });
 
@@ -286,6 +289,7 @@ describe("workflow agent invocation routing", () => {
           turnId: "turn-1",
         },
         agentContext,
+        auth: { current: null, initiator: null },
         owner: runOwner("owner"),
       });
       const returned = vi.fn();
@@ -353,6 +357,7 @@ describe("workflow agent invocation routing", () => {
         turnId: "turn-1",
       },
       agentContext,
+      auth: { current: null, initiator: null },
       owner: runOwner("owner-inbox"),
     });
 
@@ -438,6 +443,7 @@ describe("workflow agent invocation routing", () => {
         control: "control",
         from,
         agentContext,
+        auth: { current: null, initiator: null },
         owner: runOwner("owner-inbox"),
       });
 
@@ -523,6 +529,7 @@ describe("workflow agent invocation routing", () => {
       control: "control",
       from,
       agentContext,
+      auth: { current: null, initiator: null },
       owner: runOwner("owner-inbox"),
     });
 
