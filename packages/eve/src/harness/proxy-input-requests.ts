@@ -1,7 +1,14 @@
 import type { SubagentInputRequestHookPayload } from "#channel/types.js";
 import type { PendingInputBatchEvent } from "#harness/pending-input-batches.js";
 import type { HarnessSession, SessionStateMap } from "#harness/types.js";
-import { inputOptionSchema, type InputOption, type InputRequestKind } from "#shared/input.js";
+import {
+  inputOptionSchema,
+  inputPrincipalSchema,
+  type InputOption,
+  type InputPrincipal,
+  type InputRequestKind,
+} from "#shared/input.js";
+import { z } from "#compiled/zod/index.js";
 import {
   isSessionInboxAddress,
   type SessionInboxAddress,
@@ -38,6 +45,8 @@ export interface ProxyInputQuestion {
 export interface ProxyInputRequest {
   readonly remote?: RemoteAgentBinding & { readonly sessionId: string };
   readonly inputSource?: string;
+  /** The only principal whose answer this session routes, copied from the request. */
+  readonly answerableBy?: InputPrincipal;
   readonly workflowAsk?: WorkflowAskRoute;
   /** Batch semantics are optional so sessions written before this field remain routable. */
   readonly batch?: ProxyInputRequestBatch;
@@ -206,6 +215,7 @@ export function toProxyInputRequestEntries(
   };
   return payload.event.requests.map((request) => {
     const route: {
+      answerableBy?: InputPrincipal;
       readonly childContinuationToken: string;
       readonly inputSource?: string;
       readonly remote?: RemoteAgentBinding & { readonly sessionId: string };
@@ -221,6 +231,7 @@ export function toProxyInputRequestEntries(
       event,
       kind: request.kind,
     };
+    if (request.answerableBy !== undefined) route.answerableBy = request.answerableBy;
     if (request.kind === "question") {
       route.question = {
         ...(request.allowFreeform !== undefined && { allowFreeform: request.allowFreeform }),
@@ -295,7 +306,13 @@ function parseProxyInputRequest(value: unknown, requestId: string): ProxyInputRe
   const childSessionInbox = "childSessionInbox" in value ? value.childSessionInbox : undefined;
   if (childSessionInbox !== undefined && !isSessionInboxAddress(childSessionInbox))
     return undefined;
+  const answerableBy = "answerableBy" in value ? value.answerableBy : undefined;
+  // An unreadable restriction must not read as "anyone may answer".
+  if (answerableBy !== undefined && !z.validate(inputPrincipalSchema, answerableBy)) {
+    return undefined;
+  }
   const request: {
+    answerableBy?: InputPrincipal;
     workflowAsk?: WorkflowAskRoute;
     batch?: ProxyInputRequestBatch;
     readonly childContinuationToken: string;
@@ -312,6 +329,7 @@ function parseProxyInputRequest(value: unknown, requestId: string): ProxyInputRe
   };
   if (typeof inputSource === "string") request.inputSource = inputSource;
   if (remote !== undefined) request.remote = remote;
+  if (answerableBy !== undefined) request.answerableBy = answerableBy;
   if (workflowAsk !== undefined) request.workflowAsk = workflowAsk;
   if (childSessionInbox !== undefined) request.childSessionInbox = childSessionInbox;
   if (batch !== undefined && batch.requestIds.includes(requestId)) request.batch = batch;

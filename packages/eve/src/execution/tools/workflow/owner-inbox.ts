@@ -1,5 +1,6 @@
 import type { SubagentInputRequestHookPayload } from "#channel/types.js";
 import type {
+  WorkflowToolAskRequest,
   WorkflowToolRunOutcomeMessage,
   WorkflowToolRunRef,
   WorkflowToolInputRequestBatch,
@@ -8,7 +9,6 @@ import type {
 } from "#execution/tools/workflow/messages.js";
 import type { RuntimeToolResultActionResult } from "#shared/action-types.js";
 import type { InputRequest } from "#shared/input.js";
-import type { ToolInputRequest } from "#tools/definition.js";
 import { parseJsonValue, type JsonValue } from "#shared/json.js";
 
 export function workflowToolRunOutcomeToToolResult(
@@ -104,17 +104,18 @@ function normalizeInputRequest(
     case "authorization-request":
       throw new TypeError("A workflow authorization event cannot be normalized as human input.");
     case "ask":
-      return normalizeAskRequest(request.request, from, requestId);
+      return normalizeAskRequest(request, from, requestId);
     default:
       return request;
   }
 }
 
 function normalizeAskRequest(
-  authored: ToolInputRequest,
+  ask: WorkflowToolAskRequest,
   from: WorkflowToolRunRef,
   requestId: string,
 ): InputRequest {
+  const authored = ask.request;
   if (typeof authored.prompt !== "string" || authored.prompt.length === 0) {
     throw new TypeError("A workflow tool run request needs a non-empty `prompt`.");
   }
@@ -124,6 +125,7 @@ function normalizeAskRequest(
     prompt: authored.prompt,
     requestId,
   };
+  if (ask.answerableBy !== undefined) normalized.answerableBy = ask.answerableBy;
   if (authored.allowFreeform !== undefined) normalized.allowFreeform = authored.allowFreeform;
   if (authored.display !== undefined) normalized.display = authored.display;
   if (authored.options !== undefined) normalized.options = [...authored.options];

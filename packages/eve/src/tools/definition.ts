@@ -151,6 +151,15 @@ export type ToolInputResponse =
 /** Options for `ctx.ask` in a `defineWorkflowTool` executor. */
 export interface ToolInputRequestOptions {
   /**
+   * Who may answer. `"anyone"`, the default, accepts an answer from any person
+   * in the conversation. `"requester"` accepts only the person whose message
+   * led to this call, so in a shared thread another participant's answer,
+   * structured or plain text, is ignored and the question stays pending. When
+   * the call has no authenticated requester, no one can answer, so the ask
+   * resolves as `unavailable`.
+   */
+  readonly answerableBy?: "anyone" | "requester";
+  /**
    * Withdraws the request when it aborts: the channel stops offering the
    * question and the ask resolves as `cancelled`, unless the session accepted
    * an answer first, which the ask then resolves with. The call's

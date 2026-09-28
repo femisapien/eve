@@ -1,6 +1,7 @@
 import type { SessionInboxAddress } from "#execution/session-inbox/address.js";
 import type {
   DeliverPayload,
+  SessionAuthContext,
   SubagentAuthorizationEventHookPayload,
   SubagentInputRequestHookPayload,
 } from "#channel/types.js";
@@ -20,6 +21,7 @@ import {
 } from "#protocol/message.js";
 import type { InputResponse } from "#shared/input.js";
 import { resolveTextToResponse } from "#channel/resolve-text.js";
+import { mayAnswerInputRequest } from "#shared/input-principal.js";
 import { SESSION_LIMIT_STOP_OPTION_ID } from "#harness/session-limit-continuation.js";
 
 // ---------------------------------------------------------------------------
@@ -131,21 +133,29 @@ interface ChildResponseBucket {
  * `ctx.ask()` questions: when exactly one question is pending, a matching option or
  * permitted free text answers it and consumes the message. Otherwise the
  * message stays with the parent.
+ *
+ * A request only its requester may answer takes an answer only from
+ * `responder`'s principal: another person's structured answer is dropped and
+ * their text is not matched, so the request stays pending for the requester.
  */
 export function routeDeliverPayload(input: {
   readonly allowRoute?: (requestId: string, route: ProxyInputRequest) => boolean;
   readonly payload: DeliverPayload;
   readonly resolveMessage?: boolean;
+  /** Who sent the payload; absent, no restricted request accepts it. */
+  readonly responder?: SessionAuthContext | null;
   readonly state: SessionStateMap | undefined;
 }): RoutedDeliverPayload {
   const entries = getProxyInputRequests(input.state);
+  const answerable = (route: ProxyInputRequest) =>
+    mayAnswerInputRequest(route.answerableBy, input.responder);
   const routable = (requestId: string, route: ProxyInputRequest | undefined) =>
     route !== undefined && input.allowRoute?.(requestId, route) !== false;
   const message = resolveMessageAgainstQuestions({
     enabled: input.resolveMessage === true,
     entries,
     payload: input.payload,
-    routable,
+    routable: (requestId, route) => routable(requestId, route) && answerable(route),
   });
   const inputResponses = [...(input.payload.inputResponses ?? []), ...message.responses];
 
@@ -189,6 +199,7 @@ export function routeDeliverPayload(input: {
       unroutedResponses.push(response);
       continue;
     }
+    if (!answerable(route)) continue;
     // A request takes one answer; the first one in the payload wins.
     if (routedRequestIds.has(response.requestId)) continue;
     routedRequestIds.add(response.requestId);

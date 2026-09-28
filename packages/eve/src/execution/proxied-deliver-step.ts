@@ -93,6 +93,7 @@ async function routeProxiedDeliver(
       allowRoute: (requestId) => !resolvedQuestions.has(requestId),
       payload,
       resolveMessage,
+      responder: sourceDelivery.auth,
       state: durableSession.state,
     });
     parentAction ??= routed.parentAction;

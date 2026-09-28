@@ -4,7 +4,7 @@ import type { RemoteAgentBinding } from "#eve-channel/support.js";
 import type { SessionAuth } from "#context/session-context.js";
 import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
 import type { AgentSessionAddress } from "#execution/agent-sessions/steps.js";
-import type { InputRequest } from "#shared/input.js";
+import type { InputPrincipal, InputRequest } from "#shared/input.js";
 import type { JsonObject, JsonValue } from "#shared/json.js";
 import type { TokenUsage } from "#shared/token-usage.js";
 import type {
@@ -29,6 +29,8 @@ export interface WorkflowToolAuthorizationRequest {
 
 /** A question authored with `ask()` from `eve/workflow`, before owner normalization. */
 export interface WorkflowToolAskRequest {
+  /** The only principal whose answer the session accepts, when the ask restricts it. */
+  readonly answerableBy?: InputPrincipal;
   /** The run's control hook, where the session sends its decision on the question. */
   readonly control: string;
   readonly kind: "ask";

@@ -12,6 +12,7 @@ import type {
   ToolInputResponse,
 } from "#tools/definition.js";
 import { workflowToolContextErrorMessage } from "#shared/workflow-tool-context.js";
+import { inputPrincipalOf } from "#shared/input-principal.js";
 
 // `Symbol.for`, not a module-local WeakMap: workflow helpers and body setup may
 // be different bundled copies of this module.
@@ -185,6 +186,12 @@ export function ask(
   if (context.agentContext.capabilities?.requestInput !== true) {
     return Promise.resolve(UNAVAILABLE);
   }
+  const answerableBy =
+    options.answerableBy === "requester" ? inputPrincipalOf(context.auth.current) : undefined;
+  // A requester-only question with no identifiable requester has no one to answer it.
+  if (options.answerableBy === "requester" && answerableBy === undefined) {
+    return Promise.resolve(UNAVAILABLE);
+  }
   const signals = [ctx.abortSignal];
   if (options.signal !== undefined) signals.push(options.signal);
   if (signals.some((signal) => signal.aborted)) return Promise.resolve(CANCELLED);
@@ -197,7 +204,12 @@ export function ask(
       kind: "request",
       from,
       replyTo,
-      request: { control, kind: "ask", request },
+      request: {
+        ...(answerableBy !== undefined && { answerableBy }),
+        control,
+        kind: "ask",
+        request,
+      },
     });
     sent.catch((error: unknown) => asks.fail(replyTo, error));
     // The withdrawal must not overtake the request it withdraws.
