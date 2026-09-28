@@ -14,9 +14,7 @@ export function createAuthorizationRequiredPart(
   const displayName =
     event.data.authorization?.displayName ?? formatAuthorizationDisplayName(event.data.name);
 
-  const part: MutableAuthorizationPart<
-    Extract<EveAuthorizationPart, { state: "required" | "pending" }>
-  > = {
+  const part: MutableAuthorizationPart<Extract<EveAuthorizationPart, { state: "required" }>> = {
     authorization: event.data.authorization,
     description: normalizeAuthorizationDescription(
       event.data.description,

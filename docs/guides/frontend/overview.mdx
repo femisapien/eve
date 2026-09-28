@@ -259,7 +259,7 @@ For a question with `allowFreeform`, render a text input and send `{ requestId, 
 
 ## Authorization prompts
 
-Connections and tools that need OAuth or another grant emit `authorization.required`. The default reducer projects that into an `authorization` message part with the display name, instructions, device code, and user-facing sign-in URL. When multiple people authorize the same connection in one session, the client matches completion to the corresponding `attemptId`, not merely the connection name. The part starts as `required`; a callback-backed request becomes `pending` while eve waits for its callback, then `completed` when eve reports the outcome. A request without a callback stays `required` while eve waits. Render the part as a normal chat message and keep the session cursor so eve can resume the parked turn:
+Connections and tools that need OAuth or another grant emit `authorization.required`. The default reducer projects that into an `authorization` message part with the display name, instructions, device code, and user-facing sign-in URL. When multiple people authorize the same connection in one session, the client matches completion to the corresponding `attemptId`, not merely the connection name. The part stays `required` until eve reports the outcome, then becomes `completed`. `awaitsCallback` is `true` when the sign-in's callback settles the attempt and resumes the parked turn. Render the part as a normal chat message and keep the session cursor so eve can resume the parked turn:
 
 ```tsx
 import type { EveMessagePart } from "eve/react";

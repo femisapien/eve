@@ -97,7 +97,7 @@ export type EveAuthorizationOutcome = AuthorizationOutcome;
 
 /**
  * An authorization prompt or result. The default reducer projects
- * `authorization.required` into a pending part so browser chat UIs can render a
+ * `authorization.required` into a `required` part so browser chat UIs can render a
  * sign-in affordance, then updates it when `authorization.completed` arrives.
  */
 export type EveAuthorizationPart = {
@@ -106,7 +106,7 @@ export type EveAuthorizationPart = {
   readonly displayName: string;
   readonly name: string;
   readonly attemptId?: string;
-  /** A callback can settle this attempt after the current turn ends. */
+  /** The sign-in's callback settles this attempt and resumes the parked turn. */
   readonly awaitsCallback?: boolean;
   readonly stepIndex: number;
   readonly turnId: string;
@@ -115,7 +115,7 @@ export type EveAuthorizationPart = {
   | {
       readonly outcome?: never;
       readonly reason?: never;
-      readonly state: "required" | "pending";
+      readonly state: "required";
     }
   | {
       readonly outcome: EveAuthorizationOutcome;
