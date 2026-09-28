@@ -1,6 +1,6 @@
 import type { DeliverHookPayload } from "#channel/types.js";
 import type { DurableSessionState } from "#execution/durable-session-store.js";
-import type { TaskKernelCall } from "#execution/tasks/calls.js";
+import type { TaskToolCall } from "#execution/tasks/calls.js";
 import type { SettledTurn } from "#harness/types.js";
 import type { RuntimeActionResult } from "#shared/action-types.js";
 import type { TokenUsage } from "#shared/token-usage.js";
@@ -55,7 +55,7 @@ export type DurableStepResult = (
       readonly hasPendingAuthorization: boolean;
       readonly hasPendingInputBatch: boolean;
       readonly pendingCoordinationCallIds?: readonly string[];
-      readonly pendingKernelCalls?: readonly TaskKernelCall[];
+      readonly pendingTaskToolCalls?: readonly TaskToolCall[];
       readonly settled?: SettledTurn;
     }
 ) &

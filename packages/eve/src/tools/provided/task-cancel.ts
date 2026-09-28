@@ -10,7 +10,7 @@ export interface TaskCancelInput {
   readonly taskId: string;
 }
 
-/** `task_cancel`, offered with the task kernel; the session answers each call. */
+/** `task_cancel`, offered to agents that can start tasks; the session answers each call. */
 export const taskCancelTool: HarnessToolDefinition = {
   description: TASK_CANCEL_DESCRIPTION,
   frameworkAction: "task-cancel",

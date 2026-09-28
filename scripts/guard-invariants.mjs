@@ -116,11 +116,11 @@
  *             eve: a provided tool that needs a private hook means authors
  *             cannot build the same tool. Files that predate the rule are
  *             baselined and may only leave the baseline.
- *   rule 46 — The task kernel owns its records and its words. Only
+ *   rule 46 — Tasks own their records and their words. Only
  *             `execution/tasks/table*.ts` names the session's task table, so
  *             every record write goes through it, and the model-facing task
  *             markers appear only in `execution/tasks/render.ts`, which holds
- *             all of the kernel's model text.
+ *             all of the tasks' model text.
  *
  * Baselines for rules with pre-existing violations live in
  * `guard-invariants-baseline.json`. Counts and allowlists in that file
@@ -383,9 +383,9 @@ const PROVIDED_TOOL_EXTRA_IMPORTS = new Set([
   "#tools/schema.js",
 ]);
 
-// The task kernel's `task_wait` and `task_cancel` are kernel machinery, not
-// authored tools: they take their model text from the kernel directly.
-const PROVIDED_KERNEL_TOOL_FILES = new Set([
+// `task_wait` and `task_cancel` belong to the session, not to authors: they
+// take their model text from execution/tasks/render.ts directly.
+const PROVIDED_TASK_TOOL_FILES = new Set([
   "packages/eve/src/tools/provided/task-cancel.ts",
   "packages/eve/src/tools/provided/task-wait.ts",
 ]);
@@ -406,7 +406,7 @@ function isProvidedToolImportAllowed(specifier) {
  */
 function checkRule45(posix, lines, state) {
   if (!posix.startsWith(PROVIDED_TOOLS_DIR) || posix.endsWith(".test.ts")) return;
-  if (state.allowlist.has(posix) || PROVIDED_KERNEL_TOOL_FILES.has(posix)) return;
+  if (state.allowlist.has(posix) || PROVIDED_TASK_TOOL_FILES.has(posix)) return;
   lines.forEach((line, idx) => {
     // Doc comments show authors how to import the tool from its public entry.
     if (/^\s*(?:\*|\/\/)/.test(line)) return;
@@ -421,11 +421,11 @@ function checkRule45(posix, lines, state) {
   });
 }
 
-// ---------- Rule 46: the task kernel owns its records and model text ----------
+// ---------- Rule 46: tasks own their records and model text ----------
 
-const TASK_KERNEL_DIR = "packages/eve/src/execution/tasks/";
+const TASKS_DIR = "packages/eve/src/execution/tasks/";
 const TASK_TABLE_FILE_RE = /^packages\/eve\/src\/execution\/tasks\/table[\w-]*\.ts$/;
-const TASK_RENDER_FILE = `${TASK_KERNEL_DIR}render.ts`;
+const TASK_RENDER_FILE = `${TASKS_DIR}render.ts`;
 const TASK_TABLE_KEY = '"eve.taskTable"';
 const TASK_MODEL_MARKERS = ["<task_result", "[Tasks]", "Started task "];
 

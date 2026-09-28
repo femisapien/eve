@@ -15,7 +15,7 @@ import {
   type SteeringTurn,
 } from "#execution/session/input-queue.js";
 import { AuthKey } from "#context/keys.js";
-import type { TaskKernelCall } from "#execution/tasks/calls.js";
+import type { TaskToolCall } from "#execution/tasks/calls.js";
 import { principalOf } from "#execution/tasks/principal.js";
 import { isTaskRunMessage, SessionTasks, TaskWait } from "#execution/tasks/session-tasks.js";
 import {
@@ -177,7 +177,7 @@ export class SessionExecution {
         const runtimeResults = await this.waitForRuntimeActionResults({
           initialAcceptedAtMs,
           initialResults: dispatchResult.results,
-          kernelCalls: result.pendingKernelCalls ?? [],
+          taskToolCalls: result.pendingTaskToolCalls ?? [],
           pendingCallIds,
           turn,
         });
@@ -262,7 +262,7 @@ export class SessionExecution {
   private async waitForRuntimeActionResults(input: {
     readonly initialAcceptedAtMs: number | undefined;
     readonly initialResults: readonly RuntimeActionResult[];
-    readonly kernelCalls: readonly TaskKernelCall[];
+    readonly taskToolCalls: readonly TaskToolCall[];
     readonly pendingCallIds: readonly string[];
     readonly turn: ActiveTurn;
   }): Promise<RuntimeActionResultStepInput | "cancelled"> {
@@ -277,7 +277,7 @@ export class SessionExecution {
       results.push(result);
       acceptedAtMsByCallId.set(result.callId, Date.now());
     };
-    let taskWaits = await this.answerKernelCalls(input.kernelCalls, input.turn, accept);
+    let taskWaits = await this.answerTaskToolCalls(input.taskToolCalls, input.turn, accept);
 
     while (true) {
       taskWaits = this.resolveTaskWaits(taskWaits, input.turn, interrupted, accept);
@@ -357,8 +357,8 @@ export class SessionExecution {
    * `turn.waiting`, and the turn resolves it alongside the step's other
    * deferred calls.
    */
-  private async answerKernelCalls(
-    calls: readonly TaskKernelCall[],
+  private async answerTaskToolCalls(
+    calls: readonly TaskToolCall[],
     turn: ActiveTurn,
     accept: (result: RuntimeActionResult) => void,
   ): Promise<TaskWait[]> {
@@ -512,7 +512,7 @@ class ActiveTurn {
     return steering.length === 1 ? steering[0] : coalesceDeliveries(steering);
   }
 
-  /** Removes the admitted task run messages, which the task kernel applies at once. */
+  /** Removes the admitted task run messages, which the session applies to the task table at once. */
   takeTaskMessages(): WorkflowToolRunMessage[] {
     const taken: WorkflowToolRunMessage[] = [];
     const kept: RuntimeEvent[] = [];

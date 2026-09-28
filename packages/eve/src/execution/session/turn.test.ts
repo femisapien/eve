@@ -682,7 +682,7 @@ describe("SessionExecution checkpoints", () => {
         hasPendingAuthorization: false,
         hasPendingInputBatch: false,
         pendingCoordinationCallIds: ["wait-call"],
-        pendingKernelCalls: [{ callId: "wait-call", kind: "task_wait" }],
+        pendingTaskToolCalls: [{ callId: "wait-call", kind: "task_wait" }],
         serializedContext: {},
         sessionState,
       });

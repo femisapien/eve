@@ -6,7 +6,7 @@ import {
   loadModuleBackedDefinition,
   type ModuleBackedDefinitionLoadOptions,
 } from "#compiler/normalize-helpers.js";
-import { TASK_KERNEL_TOOL_NAMES } from "#execution/tasks/calls.js";
+import { TASK_TOOL_NAMES } from "#execution/tasks/calls.js";
 
 /**
  * Compiled tool entry produced from one authored `tools/*.ts` file.
@@ -54,7 +54,7 @@ export async function compileToolEntry(
     .replace(/^tools\//, "")
     .replaceAll("/", "-");
 
-  if (TASK_KERNEL_TOOL_NAMES.includes(toolName)) {
+  if (TASK_TOOL_NAMES.includes(toolName)) {
     throw new Error(
       `Tool "${source.logicalPath}" uses the reserved name "${toolName}". Rename its path; eve reserves "${toolName}" for its built-in task tool.`,
     );

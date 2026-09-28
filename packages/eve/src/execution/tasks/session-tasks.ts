@@ -5,7 +5,7 @@ import {
   TASK_CANCEL_TOOL_NAME,
   TASK_WAIT_TOOL_NAME,
   type TaskCancelResult,
-  type TaskKernelCall,
+  type TaskToolCall,
   type TaskWaitResult,
 } from "#execution/tasks/calls.js";
 import { renderTaskWaitResult, renderUnknownTaskError } from "#execution/tasks/render.js";
@@ -38,14 +38,14 @@ export function isTaskRunMessage(message: WorkflowToolRunMessage): message is Ta
  * the turn races against the inbox; nothing polls.
  */
 export class TaskWait {
-  readonly call: Extract<TaskKernelCall, { readonly kind: "task_wait" }>;
+  readonly call: Extract<TaskToolCall, { readonly kind: "task_wait" }>;
   readonly startedAtMs: number;
   /** Resolves with the call's id once the timeout passes; absent without a timeout. */
   readonly timer?: Promise<string>;
   /** A timeout of 0 has passed already: the wait returns whatever is ready. */
   timedOut: boolean;
 
-  constructor(call: Extract<TaskKernelCall, { readonly kind: "task_wait" }>) {
+  constructor(call: Extract<TaskToolCall, { readonly kind: "task_wait" }>) {
     this.call = call;
     this.startedAtMs = Date.now();
     this.timedOut = call.timeoutMs === 0;
@@ -57,8 +57,8 @@ export class TaskWait {
 
 /**
  * The session's view of its tasks from the workflow body. Records change only
- * through the kernel's steps; this class decides when to run them and what
- * the kernel's calls return.
+ * through the task steps; this class decides when to run them and what
+ * the task tools return.
  */
 export class SessionTasks {
   private readonly cursor: SessionStateCursor;
@@ -121,12 +121,12 @@ export class SessionTasks {
       settledStatus,
       waitedMs: Date.now() - wait.startedAtMs,
     });
-    return kernelCallResult(wait.call.callId, TASK_WAIT_TOOL_NAME, text);
+    return taskToolResult(wait.call.callId, TASK_WAIT_TOOL_NAME, text);
   }
 
   /** Answers `task_cancel`, which accepts only the task creator's principal. */
   async cancelCall(
-    call: Extract<TaskKernelCall, { readonly kind: "task_cancel" }>,
+    call: Extract<TaskToolCall, { readonly kind: "task_cancel" }>,
     principal: string,
   ): Promise<RuntimeActionResult> {
     const record = findTask(this.table, call.taskId);
@@ -135,14 +135,14 @@ export class SessionTasks {
         code: "UNKNOWN_TASK",
         message: renderUnknownTaskError(call.taskId, taskToolName(call.taskId)),
       };
-      return { ...kernelCallResult(call.callId, TASK_CANCEL_TOOL_NAME, error), isError: true };
+      return { ...taskToolResult(call.callId, TASK_CANCEL_TOOL_NAME, error), isError: true };
     }
     let result: TaskCancelResult = { status: "already_finished" };
     if (isTaskWorking(record)) {
       await this.cancel([record.id]);
       result = { status: "cancelled" };
     }
-    return kernelCallResult(call.callId, TASK_CANCEL_TOOL_NAME, result);
+    return taskToolResult(call.callId, TASK_CANCEL_TOOL_NAME, result);
   }
 
   private async cancel(taskIds: readonly string[]): Promise<void> {
@@ -152,7 +152,7 @@ export class SessionTasks {
 }
 
 // Built directly: the workflow body can't import the harness's result helpers.
-function kernelCallResult(
+function taskToolResult(
   callId: string,
   toolName: string,
   output: JsonValue,

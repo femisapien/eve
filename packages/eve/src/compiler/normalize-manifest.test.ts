@@ -696,7 +696,7 @@ describe("compileAgentManifest source graph", () => {
     );
   });
 
-  it("reserves the task kernel's tool names", async () => {
+  it("reserves the task tools' names", async () => {
     const sourceRegistry = registry([
       {
         logicalPath: "tools/task_cancel.ts",

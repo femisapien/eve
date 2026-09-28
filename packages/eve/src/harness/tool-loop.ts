@@ -170,15 +170,15 @@ import {
 import {
   appendTaskContext,
   commitCallEntry,
-  isTaskKernelTool,
+  isTaskTool,
   taskSystemMessages,
-  toTaskKernelCall,
-  withTaskKernelTools,
+  toTaskToolCall,
+  withTaskTools,
   workingTaskIds,
 } from "#execution/tasks/model-step.js";
 import { renderFinalOutputWhileWorkingError } from "#execution/tasks/render.js";
 import { principalOf } from "#execution/tasks/principal.js";
-import type { TaskKernelCall } from "#execution/tasks/calls.js";
+import type { TaskToolCall } from "#execution/tasks/calls.js";
 import {
   classifyModelCallError,
   ContentFilteredModelResponseError,
@@ -1420,7 +1420,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
 
     const prepareModelTools = async (opts: ModelCallOptions) => {
       const harnessTools = buildHarnessToolsWithDynamicSubagents(config.tools, ctx);
-      const advertisedHarnessTools = withTaskKernelTools(
+      const advertisedHarnessTools = withTaskTools(
         getAdvertisedTools({
           session,
           tools: harnessTools,
@@ -2631,9 +2631,9 @@ async function handleStepResult(input: {
     turnId: emissionState.turnId,
   });
   const tasks = deferred.workflowRequests;
-  const { kernelCalls } = deferred;
+  const { taskToolCalls } = deferred;
 
-  if (tasks.length > 0 || kernelCalls.length > 0) {
+  if (tasks.length > 0 || taskToolCalls.length > 0) {
     // Stamp the live emission state onto the parked session so the
     // resume turn is classified as a continuation (turnId set), not a
     // fresh turn. Every other park path does this; without it the
@@ -2651,7 +2651,7 @@ async function handleStepResult(input: {
               stepIndex: emissionState.stepIndex,
               turnId: emissionState.turnId,
             },
-            kernelCalls,
+            taskToolCalls,
             responseMessages,
             session: { ...deferred.session, history: validateHarnessModelMessages(promptMessages) },
           }),
@@ -2667,7 +2667,7 @@ async function handleStepResult(input: {
         stepIndex: emissionState.stepIndex,
         turnId: emissionState.turnId,
       },
-      kernelCalls,
+      taskToolCalls,
       responseMessages: pendingResponseMessages,
       session: { ...deferred.session, history: parkedInputHistory },
     });
@@ -2871,11 +2871,11 @@ async function handleStepResult(input: {
 }
 
 function isDeferredHarnessTool(tool: HarnessToolDefinition | undefined): boolean {
-  return tool?.workflowId !== undefined || isTaskKernelTool(tool);
+  return tool?.workflowId !== undefined || isTaskTool(tool);
 }
 
 /**
- * Sorts a step's deferred calls into workflow runs and kernel calls, and
+ * Sorts a step's deferred calls into workflow runs and task tool calls, and
  * commits a task record for each call that starts a task.
  */
 function collectDeferredCalls(input: {
@@ -2885,18 +2885,18 @@ function collectDeferredCalls(input: {
   readonly tools: HarnessToolMap;
   readonly turnId: string;
 }): {
-  readonly kernelCalls: readonly TaskKernelCall[];
+  readonly taskToolCalls: readonly TaskToolCall[];
   readonly session: HarnessSession;
   readonly workflowRequests: readonly RuntimeWorkflowTaskRequest[];
 } {
   let { session } = input;
-  const kernelCalls: TaskKernelCall[] = [];
+  const taskToolCalls: TaskToolCall[] = [];
   const workflowRequests: RuntimeWorkflowTaskRequest[] = [];
   for (const toolCall of input.toolCalls) {
     const definition = input.tools.get(toolCall.toolName);
-    if (definition !== undefined && isTaskKernelTool(definition)) {
-      kernelCalls.push(
-        toTaskKernelCall({
+    if (definition !== undefined && isTaskTool(definition)) {
+      taskToolCalls.push(
+        toTaskToolCall({
           callId: toolCall.toolCallId,
           definition,
           input: resolveToolCallInputObject(toolCall.input, {
@@ -2923,7 +2923,7 @@ function collectDeferredCalls(input: {
       }),
     );
   }
-  return { kernelCalls, session, workflowRequests };
+  return { taskToolCalls, session, workflowRequests };
 }
 
 /** Answers a `final_output` call made while tasks work with an error naming them. */

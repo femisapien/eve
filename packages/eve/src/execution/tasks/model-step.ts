@@ -3,7 +3,7 @@ import type { ModelMessage, SystemModelMessage } from "ai";
 import {
   TASK_CANCEL_TOOL_NAME,
   TASK_WAIT_TOOL_NAME,
-  type TaskKernelCall,
+  type TaskToolCall,
 } from "#execution/tasks/calls.js";
 import {
   renderModelOutputText,
@@ -30,7 +30,7 @@ import type { WorkflowToolEntryPoint } from "#tools/workflow-entry-point.js";
 import { taskCancelTool } from "#tools/provided/task-cancel.js";
 import { taskWaitTool } from "#tools/provided/task-wait.js";
 
-// What the model step does for tasks: it offers the kernel's tools, commits a
+// What the model step does for tasks: it offers the task tools, commits a
 // record for each call that starts a task, delivers settled results, keeps the
 // `[Tasks]` note current, and tells the turn rule which tasks still work.
 
@@ -51,13 +51,13 @@ export function startsTasks(definition: HarnessToolDefinition | undefined): bool
   return entryPointOf(definition) === "task";
 }
 
-export function isTaskKernelTool(definition: HarnessToolDefinition | undefined): boolean {
+export function isTaskTool(definition: HarnessToolDefinition | undefined): boolean {
   return (
     definition?.frameworkAction === "task-wait" || definition?.frameworkAction === "task-cancel"
   );
 }
 
-/** Whether the agent can start tasks, so the kernel's tools and system block are offered. */
+/** Whether the agent can start tasks, so the task tools and system block are offered. */
 export function offersTasks(tools: HarnessToolMap): boolean {
   for (const definition of tools.values()) {
     if (startsTasks(definition)) return true;
@@ -66,7 +66,7 @@ export function offersTasks(tools: HarnessToolMap): boolean {
 }
 
 /** Adds `task_wait` and `task_cancel` to a tool set that can start tasks. */
-export function withTaskKernelTools(tools: HarnessToolMap): HarnessToolMap {
+export function withTaskTools(tools: HarnessToolMap): HarnessToolMap {
   if (!offersTasks(tools)) return tools;
   return new Map([
     ...tools,
@@ -111,11 +111,11 @@ export function commitCallEntry(
   }
 }
 
-export function toTaskKernelCall(input: {
+export function toTaskToolCall(input: {
   readonly callId: string;
   readonly definition: HarnessToolDefinition;
   readonly input: JsonObject;
-}): TaskKernelCall {
+}): TaskToolCall {
   if (input.definition.frameworkAction === "task-cancel") {
     return { callId: input.callId, kind: "task_cancel", taskId: String(input.input.taskId) };
   }

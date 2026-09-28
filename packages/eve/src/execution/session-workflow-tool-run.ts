@@ -43,7 +43,7 @@ export async function handleWorkflowToolRunMessage(
 ): Promise<RuntimeActionResult | undefined> {
   const { message } = input;
   switch (message.kind) {
-    // Only task runs report started, and the session hands their messages to the task kernel.
+    // Only task runs report started, and the session applies their messages to the task table.
     case "started":
       return undefined;
     case "outcome":
