@@ -346,8 +346,7 @@ type TaskWaitResult =
 a wait. The model gets text:
 
 ```text
-d0-2b0c1a completed; its result follows. 1 task is still working: sre-9x1k2p. Also answer any
-message you haven't answered yet.
+d0-2b0c1a completed; its result follows. 1 task is still working: sre-9x1k2p.
 
 Stopped waiting after 5m; 2 tasks are still working. Their results arrive before your turn
 ends; wait again only if you need them now.
@@ -413,9 +412,9 @@ continue, call task_wait; it returns when any task has a result. Start independe
 then wait. To correct or continue an agent, or any task that accepts more input, call its tool
 again with its taskId. If you don't need a task's result yet, reply now instead of calling
 task_wait: your turn stays open while your tasks work, and eve gives you their results when they
-finish. A new message never stops your tasks. If it asks you something, answer it in your next
-response, before any task_wait call; then decide whether it changes the work, and keep the tasks,
-correct an agent with taskId, or stop a task with task_cancel. Never use sleep to wait for a task.
+finish. A new message never stops your tasks: answer it if it asks you something, decide whether
+it changes the work, then keep the tasks, correct an agent with taskId, or stop a task with
+task_cancel. Never use sleep to wait for a task.
 ```
 
 **Errors.** These are the only task error codes.
