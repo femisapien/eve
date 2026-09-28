@@ -94,15 +94,21 @@ of a workflow run.
 
 ### 1. Introspection
 
-Route handlers receive the agent they serve:
+Route handlers receive the agent they serve as `AgentInfo`. `introspect()` returns data only;
+reading a skill, running a tool, and prewarming are operations on the agent:
 
 ```ts
-interface RouteAgent {
+interface AgentInfo {
   readonly name: string;
   readonly description: string;
   introspect(): AgentIntrospection;
   invokeTool(name: string, input: unknown, options: InvokeToolOptions): Promise<InvokeToolResult>;
   prewarm(options: InvokeSessionOptions): Promise<{ sessionId: string }>; // as client.sessions.create()
+  readSkill(
+    skill: string,
+    path: string | undefined,
+    options: InvokeSessionOptions,
+  ): Promise<string | Uint8Array>;
 }
 
 interface AgentIntrospection {
@@ -114,11 +120,6 @@ interface AgentIntrospection {
     approval: boolean; // the tool declares an approval policy
   }[];
   readonly skills: readonly { name: string; description: string; files: readonly string[] }[];
-  readSkillFile(
-    skill: string,
-    path: string | undefined,
-    options: InvokeSessionOptions,
-  ): Promise<string | Uint8Array>;
 }
 ```
 
@@ -220,8 +221,12 @@ const router = vercelSubject({ teamSlug: "acme", projectName: "router" });
 
 export default mcpCapabilitiesChannel({
   auth: vercelOidc({ subjects: [router] }),
+  // Check both identities: on session creation the asserted initiator becomes auth.initiator.
   trustedForwarders: (forwarder, assertion) =>
-    forwarder.subject === router && isRouterUser(assertion.principal?.current),
+    forwarder.subject === router &&
+    assertion.principal !== undefined &&
+    isRouterUser(assertion.principal.current) &&
+    isRouterUser(assertion.principal.initiator),
 });
 ```
 
@@ -237,7 +242,7 @@ The channel only maps MCP onto the primitives:
 | --------------------------------------------------------------------------------------- | -------------------------------------------------- |
 | `server/discover` (with a session key)                                                  | `prewarm`                                          |
 | `tools/list`                                                                            | `introspect().tools`                               |
-| `resources/list`, `resources/read` for `skill://<agent>/<skill>/SKILL.md` and its files | `introspect().skills`, `readSkillFile`             |
+| `resources/list`, `resources/read` for `skill://<agent>/<skill>/SKILL.md` and its files | `introspect().skills`, `readSkill`                 |
 | `tools/call`                                                                            | `invokeTool`                                       |
 | `approval-required`                                                                     | MRTR `input_required` with a boolean approval form |
 | `authorization-required`                                                                | MRTR `input_required` with URL elicitations        |
@@ -289,15 +294,20 @@ tools in the orchestrator that call MCP directly.
    reads them through the connection.
 
 ```ts title="agent/connections/analytics.ts"
-import { vercelOidc } from "eve/agents/auth";
+import { getVercelOidcToken } from "@vercel/oidc";
 import { defineMcpClientConnection } from "eve/connections";
 
 export default defineMcpClientConnection({
   url: "https://analytics.example.com/eve/v1/mcp-capabilities",
-  auth: vercelOidc(),
-  forwardPrincipal: true,
+  description: "Analytics agent: product usage tools and skills.",
+  auth: { getToken: async () => ({ token: await getVercelOidcToken() }) },
+  forwardPrincipal: true, // proposed in this plan
 });
 ```
+
+A provider behind Vercel Deployment Protection also needs the calling project allowed as a
+Trusted Source; the header that carries the OIDC token for that check is part of the forwarding
+work above.
 
 Tools are found through `connection_search`, as now. Always-loaded tools are #3745's concern and
 compose with this.
@@ -332,7 +342,7 @@ compose with this.
 
 ## Open questions
 
-1. Is `RouteAgent` on route args the right place, or should the primitives be importable where
+1. Is `AgentInfo` on route args the right place, or should the primitives be importable where
    extensions can use them too?
 2. Does `invokeTool` run inside a workflow when a tool needs to park, or stay request-scoped with
    durable attempts only?
