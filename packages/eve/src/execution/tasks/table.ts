@@ -49,8 +49,6 @@ export interface TaskRecord {
   readonly id: string;
   /** The tool whose call started the task. */
   readonly name: string;
-  /** Principal of the caller that started the task; only it may wait on or cancel it. */
-  readonly creator: string;
   /** Calls without a result. The task is working while any remain. */
   readonly calls: readonly TaskCall[];
   /** Results not yet delivered to the model. */
@@ -111,33 +109,29 @@ export function taskToolName(taskId: string): string {
   return separator > 0 ? taskId.slice(0, separator) : taskId;
 }
 
-/** Working tasks, optionally only those one principal started. */
-export function workingTasks(table: TaskTable, principal?: string): readonly TaskRecord[] {
-  return table.tasks.filter(
-    (record) => isTaskWorking(record) && (principal === undefined || record.creator === principal),
-  );
+export function workingTasks(table: TaskTable): readonly TaskRecord[] {
+  return table.tasks.filter(isTaskWorking);
 }
 
-/** Tasks whose results the principal's model has not received yet. */
-export function tasksWithResults(table: TaskTable, principal: string): readonly TaskRecord[] {
-  return table.tasks.filter((record) => record.creator === principal && record.results.length > 0);
+/** Tasks whose results the model has not received yet. */
+export function tasksWithResults(table: TaskTable): readonly TaskRecord[] {
+  return table.tasks.filter((record) => record.results.length > 0);
 }
 
 /**
- * What a wait on the principal's tasks returns now, or `undefined` to keep
+ * What a wait on the turn's tasks returns now, or `undefined` to keep
  * waiting. A waiting result, or nothing left working, ends it first;
  * cancelled work never does.
  */
 export function taskWaitResult(
   table: TaskTable,
-  principal: string,
   wake: { readonly interrupted: boolean; readonly timedOut: boolean },
 ): TaskWaitResult | undefined {
-  const settled = tasksWithResults(table, principal).map((record) => ({
+  const settled = tasksWithResults(table).map((record) => ({
     id: record.id,
     status: record.results.at(-1)!.status,
   }));
-  const working = workingTasks(table, principal).map((record) => record.id);
+  const working = workingTasks(table).map((record) => record.id);
   if (settled.length > 0 || working.length === 0) return { settled, status: "settled", working };
   if (wake.interrupted) return { status: "interrupt", working };
   if (wake.timedOut) return { status: "timeout", working };
@@ -145,16 +139,12 @@ export function taskWaitResult(
 }
 
 /**
- * What `task_cancel` answers, or `undefined` for a task the principal didn't
- * start. `cancelled` means the caller cancels the working task.
+ * What `task_cancel` answers, or `undefined` for a task that doesn't exist.
+ * `cancelled` means the caller cancels the working task.
  */
-export function taskCancelResult(
-  table: TaskTable,
-  taskId: string,
-  principal: string,
-): TaskCancelResult | undefined {
+export function taskCancelResult(table: TaskTable, taskId: string): TaskCancelResult | undefined {
   const record = findTask(table, taskId);
-  if (record === undefined || record.creator !== principal) return undefined;
+  if (record === undefined) return undefined;
   return { status: isTaskWorking(record) ? "cancelled" : "already_finished" };
 }
 
@@ -174,7 +164,6 @@ export function createTask(
   table: TaskTable,
   input: {
     readonly callId: string;
-    readonly creator: string;
     readonly name: string;
     readonly turnId: string;
   },
@@ -182,7 +171,6 @@ export function createTask(
   const taskId = createTaskId(table, input.name);
   const record: TaskRecord = {
     calls: [{ callId: input.callId, turnId: input.turnId }],
-    creator: input.creator,
     id: taskId,
     name: input.name,
     results: [],
@@ -276,14 +264,14 @@ export function cancelTask(
 }
 
 /**
- * Hands the principal's undelivered results to the model, which receives each
+ * Hands every undelivered result to the model, which receives each
  * once: `taken` is each record with its results, before they were cleared.
  */
-export function takeTaskResults(
-  table: TaskTable,
-  principal: string,
-): { readonly taken: readonly TaskRecord[]; readonly table: TaskTable } {
-  const taken = tasksWithResults(table, principal);
+export function takeTaskResults(table: TaskTable): {
+  readonly taken: readonly TaskRecord[];
+  readonly table: TaskTable;
+} {
+  const taken = tasksWithResults(table);
   const tasks = table.tasks.map((record) =>
     taken.includes(record) ? { ...record, results: [] } : record,
   );
@@ -344,7 +332,6 @@ function decodeTaskRecord(value: unknown): TaskRecord | undefined {
   }
   return {
     calls: [],
-    creator: typeof value.creator === "string" ? value.creator : "",
     id: value.id,
     name: value.name,
     results: [{ error: UNREADABLE_TASK_ERROR, status: "failed" }],
@@ -356,7 +343,6 @@ function isTaskRecord(value: unknown): value is TaskRecord {
     isObject(value) &&
     isNonEmptyString(value.id) &&
     isNonEmptyString(value.name) &&
-    typeof value.creator === "string" &&
     Array.isArray(value.calls) &&
     Array.from(value.calls as unknown[]).every(isTaskCall) &&
     Array.isArray(value.results) &&

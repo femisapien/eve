@@ -176,7 +176,6 @@ import {
   workingTaskIds,
 } from "#execution/tasks/model-step.js";
 import { renderFinalOutputWhileWorkingError } from "#execution/tasks/render.js";
-import { principalOf } from "#execution/tasks/principal.js";
 import {
   classifyModelCallError,
   ContentFilteredModelResponseError,
@@ -506,7 +505,6 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     }
     const parent = store?.get(ParentSessionKey);
     const callback = store?.get(SessionCallbackKey);
-    const taskPrincipal = principalOf(store?.get(AuthKey));
     const hasDelegatedCaller = parent !== undefined || callback !== undefined;
     let activeAttemptScope: InstrumentationAttempt | undefined;
     const instrumentedEmit =
@@ -1154,7 +1152,6 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       }
       const taskContext = await appendTaskContext({
         messages,
-        principal: taskPrincipal,
         projectHistory,
         session,
         tools: config.tools,
@@ -1650,7 +1647,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
             interruptStreamOnFailure(streamResult.fullStream, generation.signal),
             {
               excludedActionToolNames,
-              holdsTurn: workingTaskIds(session, taskPrincipal).length > 0,
+              holdsTurn: workingTaskIds(session).length > 0,
               tools: advertisedHarnessTools,
             },
           );
@@ -1995,7 +1992,6 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
         runStep,
         session,
         coordinationTools: modelCallCoordinationTools,
-        taskPrincipal,
       });
     } catch (error) {
       throwIfTurnAborted(config.abortSignal);
@@ -2527,8 +2523,6 @@ async function handleStepResult(input: {
   readonly runStep: StepFn;
   readonly coordinationTools: HarnessToolMap;
   readonly session: HarnessSession;
-  /** Principal of the turn, whose working tasks hold it open. */
-  readonly taskPrincipal: string;
 }): Promise<StepResult> {
   const { config, emit, promptMessages, result, runStep } = input;
   let { emissionState, session } = input;
@@ -2621,7 +2615,6 @@ async function handleStepResult(input: {
       return false;
     });
   const deferred = collectDeferredCalls({
-    principal: input.taskPrincipal,
     session: baseSession,
     toolCalls: deferredToolCalls,
     tools: advertisedCoordinationTools,
@@ -2825,7 +2818,7 @@ async function handleStepResult(input: {
   // dangling tool_use the next provider call rejects, and drop the result.
   const calledFinalOutput =
     nextSession.outputSchema !== undefined && extractFinalOutput(result) !== undefined;
-  const workingTasks = workingTaskIds(nextSession, input.taskPrincipal);
+  const workingTasks = workingTaskIds(nextSession);
   const finalOutputRejected = calledFinalOutput && workingTasks.length > 0;
   let responseTail: readonly ModelMessage[] = continuationMessages;
   if (finalOutputRejected) {
@@ -2874,7 +2867,6 @@ function isDeferredHarnessTool(tool: HarnessToolDefinition | undefined): boolean
  * alone: the session reads them from there.
  */
 function collectDeferredCalls(input: {
-  readonly principal: string;
   readonly session: HarnessSession;
   readonly toolCalls: readonly TypedToolCall<ToolSet>[];
   readonly tools: HarnessToolMap;
@@ -2891,7 +2883,6 @@ function collectDeferredCalls(input: {
     const committed = commitCallEntry(session, {
       callId: toolCall.toolCallId,
       definition,
-      principal: input.principal,
       toolName: toolCall.toolName,
       turnId: input.turnId,
     });

@@ -32,25 +32,20 @@ export function sessionTaskTable(cursor: SessionStateCursor): TaskTable {
 }
 
 /**
- * Cancels every working task, or only those one principal started: a turn
- * that ends anyway, such as by failing, cancels the tasks it held on.
+ * Cancels every working task: a turn that ends anyway, such as by failing,
+ * cancels the tasks it held on.
  */
-export async function cancelWorkingTasks(
-  cursor: SessionStateCursor,
-  principal?: string,
-): Promise<void> {
-  const taskIds = workingTasks(sessionTaskTable(cursor), principal).map((record) => record.id);
+export async function cancelWorkingTasks(cursor: SessionStateCursor): Promise<void> {
+  const taskIds = workingTasks(sessionTaskTable(cursor)).map((record) => record.id);
   if (taskIds.length === 0) return;
   await cursor.apply(await cancelTasksStep({ ...cursor.stepState(), taskIds }));
 }
 
-/** Answers `task_cancel`, which accepts only the task creator's principal. */
 export async function answerTaskCancel(
   cursor: SessionStateCursor,
   call: Extract<TaskToolCall, { readonly kind: "task_cancel" }>,
-  principal: string,
 ): Promise<RuntimeActionResult> {
-  const result = taskCancelResult(sessionTaskTable(cursor), call.taskId, principal);
+  const result = taskCancelResult(sessionTaskTable(cursor), call.taskId);
   if (result === undefined) {
     const error = {
       code: "UNKNOWN_TASK",

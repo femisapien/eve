@@ -47,7 +47,7 @@ export type DurableStepResult = (
       readonly usageDelta?: TokenUsage;
     }
   | { readonly action: "cancelled" | "steered" }
-  /** The model ended the turn while its principal's tasks work; the turn waits for them. */
+  /** The model ended the turn while tasks work; the turn waits for them. */
   | { readonly action: "held"; readonly taskIds: readonly string[] }
   | {
       readonly action: "park";

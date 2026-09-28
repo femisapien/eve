@@ -4,8 +4,8 @@ import type { SessionAuthContext } from "#channel/types.js";
 export const ANONYMOUS_PRINCIPAL = "anonymous";
 
 /**
- * Stable key for the principal a session identity acts as. Tasks record their
- * creator with it, and a turn is held, steered, and cancelled by its own.
+ * Stable key for the principal a session identity acts as: only a turn's own
+ * principal steers it, and one principal's queued messages share a turn.
  */
 export function principalOf(auth: SessionAuthContext | null | undefined): string {
   if (auth === null || auth === undefined || auth.principalType === "anonymous") {

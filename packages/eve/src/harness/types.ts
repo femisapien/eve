@@ -218,8 +218,8 @@ export interface StepResult {
    */
   readonly settledTurn?: SettledTurn;
   /**
-   * Present when the model ended the turn while tasks its principal started
-   * are working. The turn stays open until one settles.
+   * Present when the model ended the turn while tasks are working. The turn
+   * stays open until one settles.
    */
   readonly held?: { readonly taskIds: readonly string[] };
 }

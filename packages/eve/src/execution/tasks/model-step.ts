@@ -84,7 +84,6 @@ export function commitCallEntry(
   input: {
     readonly callId: string;
     readonly definition: HarnessToolDefinition | undefined;
-    readonly principal: string;
     readonly toolName: string;
     readonly turnId: string;
   },
@@ -95,7 +94,6 @@ export function commitCallEntry(
     case "task": {
       const created = createTask(readTaskTable(session.state), {
         callId: input.callId,
-        creator: input.principal,
         name: input.toolName,
         turnId: input.turnId,
       });
@@ -107,20 +105,19 @@ export function commitCallEntry(
   }
 }
 
-export function workingTaskIds(session: HarnessSession, principal: string): readonly string[] {
-  return workingTasks(readTaskTable(session.state), principal).map((record) => record.id);
+export function workingTaskIds(session: HarnessSession): readonly string[] {
+  return workingTasks(readTaskTable(session.state)).map((record) => record.id);
 }
 
 /**
  * The messages a model step appends for tasks, before any new input: one
- * `task.result` message with the principal's settled results, then the
+ * `task.result` message with every settled result, then the
  * `[Tasks]` note when the listing changed. The results are marked delivered
  * in the same step. The message lives only in the model's history: clients
  * read outcomes from `task.settled`.
  */
 export async function appendTaskContext(input: {
   readonly messages: readonly HarnessModelMessage[];
-  readonly principal: string;
   readonly projectHistory: (
     messages: readonly ModelMessage[],
     state: HarnessSession["state"],
@@ -138,7 +135,6 @@ export async function appendTaskContext(input: {
   }
   const note = resolveTasksNote({
     messages: input.projectHistory([...input.messages, ...appended], delivery.session.state),
-    principal: input.principal,
     session: delivery.session,
   });
   if (note !== undefined) appended.push(createFrameworkUserMessage("context.state", note));
@@ -146,15 +142,14 @@ export async function appendTaskContext(input: {
 }
 
 /**
- * Takes the principal's settled results for one `task.result` message and
+ * Takes every settled result for one `task.result` message and
  * marks them delivered in the same step that appends the message.
  */
 async function deliverTaskResults(input: {
-  readonly principal: string;
   readonly session: HarnessSession;
   readonly tools: HarnessToolMap;
 }): Promise<{ readonly message?: string; readonly session: HarnessSession }> {
-  const { table, taken } = takeTaskResults(readTaskTable(input.session.state), input.principal);
+  const { table, taken } = takeTaskResults(readTaskTable(input.session.state));
   if (taken.length === 0) return { session: input.session };
   const blocks: TaskResultBlock[] = [];
   for (const record of taken) {
@@ -189,15 +184,14 @@ async function projectOutput(
 }
 
 /**
- * The `[Tasks]` note to append when the principal's listing differs from the
+ * The `[Tasks]` note to append when the listing differs from the
  * latest one in history. Compaction drops old notes, so the listing returns.
  */
 function resolveTasksNote(input: {
   readonly messages: readonly ModelMessage[];
-  readonly principal: string;
   readonly session: HarnessSession;
 }): string | undefined {
-  const working = workingTasks(readTaskTable(input.session.state), input.principal);
+  const working = workingTasks(readTaskTable(input.session.state));
   const latest = input.messages.findLast(isTasksNote);
   if (latest === undefined && working.length === 0) return undefined;
   const rendered = renderTasksNote(working.map((record) => ({ id: record.id, tool: record.name })));

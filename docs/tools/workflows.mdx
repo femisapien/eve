@@ -265,7 +265,7 @@ Each call is a task with its own id, `<tool>-<6 characters>`:
   new message arrives, or an optional timeout passes, and `task_cancel`, which stops a task. Both
   are offered, with a short system prompt block that explains tasks, only when the agent has a
   `task` tool. See [`task_wait` and `task_cancel`](/docs/concepts/built-in-tools#task_wait-and-task_cancel).
-- **Turn end:** a turn can't end while tasks it started are working. When the model ends such a
+- **Turn end:** a turn can't end while tasks are working. When the model ends such a
   turn, eve waits as `task_wait` would, appends the results, and calls the model again in the same
   turn. A `final_output` call made while tasks work returns an error naming them. The held text
   step reports `finishReason: "tool-calls"` on `message.completed`, so channels don't post it as
@@ -275,8 +275,9 @@ Each call is a task with its own id, `<tool>-<6 characters>`:
 - **Cancellation:** `task_cancel`, `session.cancel()`, a failed turn, and the end of the session
   stop a task. Its `abortSignal` aborts and cancelled work never reports back. The run waits up to
   30 seconds for the body to finish unwinding, then ends as cancelled.
-- **Callers:** only the caller that started a task can wait on or cancel it, and only that
-  caller's messages steer its turn. Anonymous callers share one identity.
+- **Ownership:** tasks belong to the session's open turn, not to the caller that started them, so
+  `task_wait`, `task_cancel`, and task results cover every task in the session. Only the turn's own
+  caller steers it; anonymous callers share one identity.
 - **Limit:** at most 32 tasks work at once in a session. A call past the limit fails with
   `TOO_MANY_TASKS`.
 

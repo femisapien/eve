@@ -1,6 +1,6 @@
 import type { DeliverHookPayload, DeliverPayload } from "#channel/types.js";
 import { coalesceDeliveries } from "#harness/messages.js";
-import { ANONYMOUS_PRINCIPAL, principalOf } from "#execution/tasks/principal.js";
+import { ANONYMOUS_PRINCIPAL, principalOf } from "#execution/session/principal.js";
 
 export type SessionControl = "clear" | "compact" | "expired" | "reset";
 

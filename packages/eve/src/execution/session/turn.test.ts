@@ -11,7 +11,6 @@ import type { DeliverHookPayload, SessionCapabilities } from "#channel/types.js"
 import { dispatchCoordinationStep } from "#execution/coordination-dispatch-step.js";
 import { routeDeliverToChildren } from "#execution/route-child-delivery.js";
 import { publishTurnWaitingStep } from "#execution/session/turn-waiting-step.js";
-import { ANONYMOUS_PRINCIPAL } from "#execution/tasks/principal.js";
 import { createTask, readTaskTable, writeTaskTable } from "#execution/tasks/table.js";
 
 vi.mock("#compiled/@workflow/core/index.js", async (importOriginal) => ({
@@ -650,7 +649,6 @@ describe("SessionExecution checkpoints", () => {
     const base = state("");
     const working = createTask(readTaskTable(undefined), {
       callId: "task-call",
-      creator: ANONYMOUS_PRINCIPAL,
       name: "research",
       turnId: "turn_0",
     });

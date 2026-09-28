@@ -16,7 +16,7 @@ import {
 } from "#execution/session/input-queue.js";
 import { AuthKey } from "#context/keys.js";
 import { TASK_WAIT_TOOL_NAME, taskToolResult, type TaskToolCall } from "#execution/tasks/calls.js";
-import { principalOf } from "#execution/tasks/principal.js";
+import { principalOf } from "#execution/session/principal.js";
 import { renderTaskWaitResult } from "#execution/tasks/render.js";
 import {
   answerTaskCancel,
@@ -106,7 +106,7 @@ export class SessionExecution {
       // The turn rule holds a turn while its tasks work, so a turn that ends
       // anyway, such as by failing, cancels them.
       if (outcome.kind === "park" && outcome.settled !== undefined) {
-        await cancelWorkingTasks(this.input.cursor, turn.principal);
+        await cancelWorkingTasks(this.input.cursor);
       }
       return outcome;
     } finally {
@@ -242,13 +242,13 @@ export class SessionExecution {
 
   /**
    * The model tried to end the turn while its tasks work. The turn parks as
-   * `task_wait` would, until one of them settles or its principal steers.
+   * `task_wait` would, until one of them settles or the turn is steered.
    */
   private async waitForHeldTurn(turn: ActiveTurn): Promise<"cancelled" | "woke"> {
     let interrupted = false;
     while (true) {
       const wake = { interrupted, timedOut: false };
-      if (taskWaitResult(sessionTaskTable(this.input.cursor), turn.principal, wake) !== undefined) {
+      if (taskWaitResult(sessionTaskTable(this.input.cursor), wake) !== undefined) {
         return "woke";
       }
       const next = await turn.nextRuntimeEvent([]);
@@ -285,10 +285,10 @@ export class SessionExecution {
       results.push(result);
       acceptedAtMsByCallId.set(result.callId, Date.now());
     };
-    let taskWaits = await this.answerTaskToolCalls(input.taskToolCalls, input.turn, accept);
+    let taskWaits = await this.answerTaskToolCalls(input.taskToolCalls, accept);
 
     while (true) {
-      taskWaits = this.resolveTaskWaits(taskWaits, input.turn, interrupted, accept);
+      taskWaits = this.resolveTaskWaits(taskWaits, interrupted, accept);
       const ready = resolveRuntimeActionResultsForCallIds({
         pendingCallIds: input.pendingCallIds,
         results,
@@ -344,14 +344,13 @@ export class SessionExecution {
   /** Answers every `task_wait` that can return now; returns the ones still waiting. */
   private resolveTaskWaits(
     waits: readonly TaskWait[],
-    turn: ActiveTurn,
     interrupted: boolean,
     accept: (result: RuntimeActionResult) => void,
   ): TaskWait[] {
     const table = sessionTaskTable(this.input.cursor);
     const waiting: TaskWait[] = [];
     for (const wait of waits) {
-      const result = taskWaitResult(table, turn.principal, {
+      const result = taskWaitResult(table, {
         interrupted,
         timedOut: wait.timedOut,
       });
@@ -374,15 +373,14 @@ export class SessionExecution {
    */
   private async answerTaskToolCalls(
     calls: readonly TaskToolCall[],
-    turn: ActiveTurn,
     accept: (result: RuntimeActionResult) => void,
   ): Promise<TaskWait[]> {
     const waits: TaskWait[] = [];
     for (const call of calls) {
       if (call.kind === "task_wait") waits.push(startTaskWait(call));
-      else accept(await answerTaskCancel(this.input.cursor, call, turn.principal));
+      else accept(await answerTaskCancel(this.input.cursor, call));
     }
-    const parked = this.resolveTaskWaits(waits, turn, false, accept);
+    const parked = this.resolveTaskWaits(waits, false, accept);
     if (parked.length > 0) {
       const { cursor } = this.input;
       await cursor.apply(await publishTurnWaitingStep(cursor.stepState()));
@@ -465,7 +463,7 @@ class ActiveTurn {
   private readonly controller = new AbortController();
   private readonly expectedTurnId: string;
   private readonly input: SessionExecutionInput;
-  /** Who the turn belongs to: only its principal, or its delegated caller, steers it. */
+  /** Who alone steers the turn: its principal, or its delegated caller. */
   private readonly identity: SteeringTurn;
   private readonly unsubscribe: () => void;
   private unsubscribeDelivery: () => void;
@@ -498,11 +496,6 @@ class ActiveTurn {
 
   get signal(): AbortSignal {
     return this.controller.signal;
-  }
-
-  /** The principal whose tasks hold this turn and who alone steers it. */
-  get principal(): string {
-    return this.identity.principal;
   }
 
   dispose(): void {
