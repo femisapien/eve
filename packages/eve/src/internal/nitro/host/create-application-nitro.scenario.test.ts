@@ -5,7 +5,7 @@ import { join } from "node:path";
 import type { Nitro } from "nitro/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { compileFromMemory } from "#compiler/compile-from-memory.js";
+import { compileFromMemory } from "#internal/testing/compile-from-memory.js";
 import {
   COMPILE_METADATA_KIND,
   COMPILE_METADATA_VERSION,
@@ -20,7 +20,6 @@ import {
   resolveWorkflowModulePath,
 } from "#internal/application/package.js";
 import { AI_SDK_HARNESS_ADAPTER_TRACE_PATTERN } from "#internal/ai-sdk-harness-adapter-package.js";
-import { resolveNitroBuildDirectory } from "#internal/application/paths.js";
 import type {
   PreparedApplicationHost,
   PreparedDevelopmentApplicationHost,
@@ -87,6 +86,7 @@ function createNitroStub(input: { buildDir?: string; dev?: boolean } = {}): Nitr
         handlers: [],
         publicAssets: [],
         rootDir: "/tmp/weather-agent",
+        virtual: {},
       },
       routing: {
         sync() {},
@@ -228,6 +228,10 @@ async function createPreparedHost(
       workflowBuildDir: `${appRoot}/.eve/dev-hosts/test/workflow`,
     },
   };
+}
+
+function resolveNitroBuildDirectory(appRoot: string): string {
+  return join(appRoot, ".eve", "nitro");
 }
 
 function createProductionOptions(preparedHost: PreparedApplicationHost) {

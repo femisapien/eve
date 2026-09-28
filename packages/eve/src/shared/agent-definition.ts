@@ -1,6 +1,5 @@
 import type { CallSettings, LanguageModel } from "ai";
 import type { HarnessV1 } from "@ai-sdk/harness";
-import type { StandardJSONSchemaV1 } from "#compiled/@standard-schema/spec/index.js";
 import type { JsonObject } from "#shared/json.js";
 import type { ModuleSourceRef } from "#shared/source-ref.js";
 import {
@@ -86,10 +85,6 @@ export type AgentModelResolver = (
 ) => PublicAgentDynamicModelResult | Promise<PublicAgentDynamicModelResult>;
 
 export type PublicAgentDynamicModelDefinition = DynamicSentinel<PublicAgentDynamicModelResult>;
-
-export interface PublicAgentDynamicModelDefinitionInput {
-  readonly events: DynamicSentinel<PublicAgentDynamicModelResult>["events"];
-}
 
 export function isDynamicModelDefinition(
   value: unknown,
@@ -324,7 +319,6 @@ type InternalAgentDefinitionBase = {
   compaction?: InternalAgentCompactionDefinition;
   defaultTools?: boolean;
   experimental?: AgentExperimentalDefinition;
-  outputSchema?: JsonObject;
   reasoning?: AgentReasoningDefinition;
   source?: ModuleSourceRef;
   tool?: boolean;
@@ -387,13 +381,6 @@ type PublicAgentDefinitionBase = {
    * in workflow tools.
    */
   readonly tool?: boolean;
-  /**
-   * Optional structured return type used when this agent runs in task mode
-   * (for example as a subagent, schedule, or remote job). Interactive
-   * conversation turns ignore this field unless the client supplies a
-   * per-message output schema.
-   */
-  readonly outputSchema?: StandardJSONSchemaV1<unknown, unknown> | JsonObject;
 };
 
 /**

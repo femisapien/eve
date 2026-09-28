@@ -27,6 +27,7 @@ import {
   type Session as RuntimeSession,
 } from "#context/keys.js";
 import { createMessageCompletedEvent } from "#protocol/message.js";
+import { captureLogRecords } from "#internal/testing/log-records.js";
 
 /**
  * Unit coverage for the inbound HTTP route's message-body parser and
@@ -61,7 +62,6 @@ type MockSendOptions = Pick<
   | "continuationToken"
   | "activityObserver"
   | "initiatorAuth"
-  | "mode"
   | "title"
 >;
 
@@ -143,7 +143,6 @@ function createEveCreateHandler(
       continuationToken: runInput.continuationToken,
       activityObserver: runInput.activityObserver,
       initiatorAuth: runInput.initiatorAuth,
-      mode: runInput.mode,
       title: runInput.title,
     } satisfies MockSendOptions);
     return {
@@ -569,15 +568,15 @@ describe("eveChannel — stream cursor", () => {
     await vi.waitFor(() => expect(cancelled).toHaveBeenCalledOnce());
   });
 
-  it("forwards negative tail-relative start indices", async () => {
+  it.each([-1, 42])("forwards start index %i to the durable stream", async (startIndex) => {
     const handler = createEveStreamHandler({ auth: none() });
 
     const response = await handler.fetch(
-      "https://eve.test/eve/v1/session/test-session-id/stream?startIndex=-1",
+      `https://eve.test/eve/v1/session/test-session-id/stream?startIndex=${startIndex}`,
     );
 
     expect(response.status).toBe(200);
-    expect(handler.getEventStream).toHaveBeenCalledWith({ startIndex: -1 });
+    expect(handler.getEventStream).toHaveBeenCalledWith({ startIndex });
   });
 
   it.each(["1.5", "1junk", "0x10", "1e2", ""])(
@@ -760,6 +759,7 @@ describe("eveChannel — onMessage", () => {
   });
 
   it("rejects an invalid null onMessage result instead of returning an empty success", async () => {
+    const logs = captureLogRecords();
     const handler = createEveCreateHandler({
       auth: none(),
       onMessage: (() => null) as never,
@@ -773,6 +773,9 @@ describe("eveChannel — onMessage", () => {
       error: "onMessage handler failed.",
       ok: false,
     });
+    expect(logs.records).toContainEqual(
+      expect.objectContaining({ level: "error", message: "onMessage handler failed" }),
+    );
   });
 
   it("allows onMessage to dispatch with an empty context array", async () => {
@@ -791,6 +794,7 @@ describe("eveChannel — onMessage", () => {
   });
 
   it("returns 500 without dispatching when onMessage throws", async () => {
+    const logs = captureLogRecords();
     const handler = createEveCreateHandler({
       auth: none(),
       onMessage: () => {
@@ -806,6 +810,9 @@ describe("eveChannel — onMessage", () => {
       error: "onMessage handler failed.",
       ok: false,
     });
+    expect(logs.records).toContainEqual(
+      expect.objectContaining({ level: "error", message: "onMessage handler failed" }),
+    );
   });
 
   it("rejects combined messages and input responses on continue requests", async () => {
@@ -1039,6 +1046,7 @@ describe("eveChannel — create session idempotency", () => {
 
 describe("eveChannel — create session (text)", () => {
   it("returns a structured 500 when session creation fails", async () => {
+    const logs = captureLogRecords();
     const handler = createEveCreateHandler({ auth: none() });
     handler.send.mockRejectedValue(new Error("backing store outage"));
 
@@ -1049,6 +1057,9 @@ describe("eveChannel — create session (text)", () => {
       error: "Failed to create the session.",
       ok: false,
     });
+    expect(logs.records).toContainEqual(
+      expect.objectContaining({ level: "error", message: "session-create request failed" }),
+    );
   });
 
   it("accepts a plain-string message and opens a new session", async () => {
@@ -1061,27 +1072,16 @@ describe("eveChannel — create session (text)", () => {
     expect(handler.send.mock.calls[0]?.[0]).toBe("hi");
   });
 
-  it("accepts task mode for callback-driven session creation", async () => {
-    const handler = createEveCreateHandler({ auth: none() });
-
-    const response = await handler.fetch(createJsonMessageRequest({ message: "hi", mode: "task" }));
-
-    expect(response.status).toBe(202);
-    expect(handler.send).toHaveBeenCalledTimes(1);
-    expect(handler.send.mock.calls[0]?.[1]).toMatchObject({ mode: "task" });
-  });
-
   it("accepts an explicit empty capability set for conversation sessions", async () => {
     const handler = createEveCreateHandler({ auth: none() });
 
     const response = await handler.fetch(
-      createJsonMessageRequest({ capabilities: {}, message: "hi", mode: "conversation" }),
+      createJsonMessageRequest({ capabilities: {}, message: "hi" }),
     );
 
     expect(response.status).toBe(202);
     expect(handler.send.mock.calls[0]?.[1]).toMatchObject({
       capabilities: {},
-      mode: "conversation",
     });
   });
 
@@ -1097,7 +1097,6 @@ describe("eveChannel — create session (text)", () => {
           url: "https://caller.example.com/eve/v1/callback/tok123",
         },
         message: "hi",
-        mode: "conversation",
       }),
     );
 
@@ -1110,7 +1109,6 @@ describe("eveChannel — create session (text)", () => {
         token: "tok123",
         url: "https://caller.example.com/eve/v1/callback/tok123",
       },
-      mode: "conversation",
     });
   });
 
@@ -1126,7 +1124,6 @@ describe("eveChannel — create session (text)", () => {
           url: "https://caller.example.com/eve/support/v1/callback/tok123",
         },
         message: "hi",
-        mode: "task",
       }),
     );
 
@@ -1145,7 +1142,6 @@ describe("eveChannel — create session (text)", () => {
           url: "https://caller.example.com/eve/v1/callback/tok123",
         },
         message: "hi",
-        mode: "task",
       }),
     );
 
@@ -1168,7 +1164,6 @@ describe("eveChannel — create session (text)", () => {
           url: "https://caller.example.com/eve/v1/callback/other-token",
         },
         message: "hi",
-        mode: "task",
       }),
     );
 
@@ -1192,7 +1187,6 @@ describe("eveChannel — create session (text)", () => {
           url: "https://caller.example.com/eve/v1/callback/tok123",
         },
         message: "hi",
-        mode: "task",
       }),
     );
 
@@ -1200,20 +1194,6 @@ describe("eveChannel — create session (text)", () => {
     expect(handler.send).not.toHaveBeenCalled();
     await expect(response.json()).resolves.toMatchObject({
       error: expect.stringContaining("Unrecognized key"),
-    });
-  });
-
-  it("rejects invalid create-session modes", async () => {
-    const handler = createEveCreateHandler({ auth: none() });
-
-    const response = await handler.fetch(
-      createJsonMessageRequest({ message: "hi", mode: "background" }),
-    );
-
-    expect(response.status).toBe(400);
-    expect(handler.send).not.toHaveBeenCalled();
-    await expect(response.json()).resolves.toMatchObject({
-      error: expect.stringContaining("mode"),
     });
   });
 
@@ -1626,6 +1606,7 @@ describe("eveChannel — continue session HITL (inputResponses)", () => {
   });
 
   it("returns a structured 500 when fixed-session delivery fails", async () => {
+    const logs = captureLogRecords();
     const handler = createEveContinueHandler({ auth: none() });
     handler.send.mockRejectedValue(new Error("backing store outage"));
 
@@ -1636,6 +1617,9 @@ describe("eveChannel — continue session HITL (inputResponses)", () => {
       error: "Failed to send the session message.",
       ok: false,
     });
+    expect(logs.records).toContainEqual(
+      expect.objectContaining({ level: "error", message: "session-message request failed" }),
+    );
   });
 
   it("converts clientContext on continue-session requests", async () => {
@@ -1889,6 +1873,7 @@ describe("eveChannel — cancel turn", () => {
   });
 
   it("returns 500 when the cancellation request fails unexpectedly", async () => {
+    const logs = captureLogRecords();
     const handler = createEveCancelHandler({ auth: none() });
     handler.cancelTurn.mockRejectedValue(new Error("backing store outage"));
 
@@ -1899,6 +1884,9 @@ describe("eveChannel — cancel turn", () => {
       error: "Failed to cancel the turn.",
       ok: false,
     });
+    expect(logs.records).toContainEqual(
+      expect.objectContaining({ level: "error", message: "cancel-turn request failed" }),
+    );
   });
 });
 
@@ -1951,6 +1939,7 @@ describe("eveChannel — reset session", () => {
   });
 
   it("returns 500 when reset fails unexpectedly", async () => {
+    const logs = captureLogRecords();
     const handler = createEveResetHandler({ auth: none() });
     handler.reset.mockRejectedValue(new Error("backing store outage"));
 
@@ -1961,6 +1950,9 @@ describe("eveChannel — reset session", () => {
       error: "Failed to reset the session.",
       ok: false,
     });
+    expect(logs.records).toContainEqual(
+      expect.objectContaining({ level: "error", message: "session-reset request failed" }),
+    );
   });
 });
 
@@ -2055,7 +2047,7 @@ describe("eveChannel — forwarded principal", () => {
   };
 
   function forwardedRequest(forwardedPrincipal: unknown): Request {
-    return createJsonMessageRequest({ forwardedPrincipal, message: "hi", mode: "task" });
+    return createJsonMessageRequest({ forwardedPrincipal, message: "hi" });
   }
 
   function stamped(context: SessionAuthContext): SessionAuthContext {
@@ -2161,6 +2153,7 @@ describe("eveChannel — forwarded principal", () => {
   });
 
   it("returns 500 when the authored predicate throws", async () => {
+    const logs = captureLogRecords();
     const handler = createEveCreateHandler({
       trustedForwarders: () => {
         throw new Error("boom");
@@ -2172,6 +2165,9 @@ describe("eveChannel — forwarded principal", () => {
 
     expect(response.status).toBe(500);
     expect(handler.send).not.toHaveBeenCalled();
+    expect(logs.records).toContainEqual(
+      expect.objectContaining({ level: "error", message: "trustedForwarders handler failed" }),
+    );
   });
 
   it("replaces the session principal when the forwarder is accepted", async () => {
@@ -2205,7 +2201,6 @@ describe("eveChannel — forwarded principal", () => {
         "eve:forwarded-by": ROUTER_CALLER.principalId,
       },
     });
-    expect(options.mode).toBe("task");
   });
 
   it("scopes create-once operations to the forwarded principal", async () => {

@@ -23,7 +23,7 @@ import type { RuntimeTurnAgent } from "#runtime/agent/bootstrap.js";
 import { resolveRuntimeModelReference } from "#runtime/agent/resolve-model.js";
 import { createBundledRuntimeCompiledArtifactsSource } from "#runtime/compiled-artifacts-source.js";
 import { ROOT_RUNTIME_AGENT_NODE_ID, type ResolvedRuntimeAgentNode } from "#runtime/graph.js";
-import { createEmptyHookRegistry } from "#runtime/hooks/registry.js";
+import { createRuntimeHookRegistry } from "#runtime/hooks/registry.js";
 import type { RuntimeToolRegistry } from "#runtime/tools/registry.js";
 import { createRuntimeToolRegistry } from "#runtime/tools/registry.js";
 import { createPreparedRuntimeSubagentTool } from "#runtime/subagents/registry.js";
@@ -44,6 +44,10 @@ import {
   AGENT_TOOL_NAME,
   SUBAGENT_TOOL_INPUT_SCHEMA,
 } from "#tools/framework/agent-contract.js";
+
+// The harness runs outside a workflow body here, where run attributes cannot
+// be written; the attribute contract is covered by emit.test.ts.
+vi.mock("#runtime/attributes/emit.js", () => ({ setEveAttributes: vi.fn(async () => {}) }));
 
 vi.mock("ai", () => ({
   ToolLoopAgent: vi.fn(),
@@ -246,7 +250,7 @@ function createTestNode(
   return {
     agent,
     channels: [],
-    hookRegistry: createEmptyHookRegistry(),
+    hookRegistry: createRuntimeHookRegistry([]),
     nodeId: ROOT_RUNTIME_AGENT_NODE_ID,
     sandboxRegistry: createStubSandboxRegistry(),
     subagentRegistry: {
@@ -653,7 +657,6 @@ describe("createExecutionNodeStep", () => {
     const step = createExecutionNodeStep({
       createRuntime: () => createNoopRuntime(),
       instrumentation: undefined,
-      mode: "task",
       modelResolutionScope: { moduleMap: { nodes: {} }, nodeId: undefined },
       node,
     });
@@ -667,7 +670,8 @@ describe("createExecutionNodeStep", () => {
       { message: "Hello" },
     );
 
-    expect(result.next).toEqual({ done: true, output: "Harness result" });
+    expect(result.next).toBeNull();
+    expect(result.session.history).toContainEqual({ content: "Harness result", role: "assistant" });
     expect(HarnessAgent).toHaveBeenCalledWith(
       expect.objectContaining({
         harness,
@@ -705,7 +709,6 @@ describe("createExecutionNodeStep", () => {
     const step = createExecutionNodeStep({
       createRuntime: () => createNoopRuntime(),
       instrumentation: undefined,
-      mode: "task",
       modelResolutionScope: { moduleMap: { nodes: {} }, nodeId: undefined },
       node,
     });
@@ -770,7 +773,6 @@ describe("createExecutionNodeStep", () => {
       createExecutionNodeStep({
         createRuntime: () => createNoopRuntime(),
         instrumentation: undefined,
-        mode: "task",
         modelResolutionScope: { moduleMap: { nodes: {} }, nodeId: undefined },
         node,
       }),
@@ -825,7 +827,6 @@ describe("createExecutionNodeStep", () => {
     const step = createExecutionNodeStep({
       createRuntime: () => createNoopRuntime(),
       instrumentation,
-      mode: "task",
       modelResolutionScope,
       node: rootNode,
     });
@@ -857,7 +858,8 @@ describe("createExecutionNodeStep", () => {
       ),
     );
 
-    expect(result.next).toEqual({ done: true, output: "tool-output" });
+    expect(result.next).toBeNull();
+    expect(result.settledTurn).toEqual({ output: "tool-output" });
     expect(resolveRuntimeModelReference).toHaveBeenCalledWith(
       rootNode.turnAgent.model,
       modelResolutionScope,
@@ -902,7 +904,6 @@ describe("createExecutionNodeStep", () => {
     const step = createExecutionNodeStep({
       createRuntime: () => createNoopRuntime(),
       instrumentation: undefined,
-      mode: "task",
       modelResolutionScope: { moduleMap: { nodes: {} }, nodeId: undefined },
       node,
     });

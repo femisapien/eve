@@ -158,7 +158,7 @@ describe("createSession", () => {
       continuationToken: "root-token",
       outputSchema,
       sessionId: "sess-root",
-      turnAgent: createTestTurnAgent({ outputSchema, reasoning: "high" }),
+      turnAgent: createTestTurnAgent({ reasoning: "high" }),
     });
 
     expect(session.agent.compactionModelReference).toEqual({ id: "summary-model" });
@@ -400,11 +400,6 @@ describe("createSession", () => {
   });
 
   it("persists run outputSchema through durable session projection and hydration", () => {
-    const agentOutputSchema = {
-      properties: { ignored: { type: "string" } },
-      required: ["ignored"],
-      type: "object",
-    } as const;
     const runOutputSchema = {
       properties: { title: { type: "string" } },
       required: ["title"],
@@ -414,13 +409,13 @@ describe("createSession", () => {
       continuationToken: "root-token",
       outputSchema: runOutputSchema,
       sessionId: "sess-root",
-      turnAgent: createTestTurnAgent({ outputSchema: agentOutputSchema }),
+      turnAgent: createTestTurnAgent(),
     });
 
     const durable = projectToDurableSession(session);
     const hydrated = hydrateDurableSession({
       durable,
-      turnAgent: createTestTurnAgent({ outputSchema: agentOutputSchema }),
+      turnAgent: createTestTurnAgent(),
     });
 
     expect(durable.outputSchema).toEqual(runOutputSchema);

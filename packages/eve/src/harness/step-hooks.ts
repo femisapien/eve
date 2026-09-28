@@ -33,19 +33,24 @@ import {
   mergeGatewayAutoCaching,
   type PromptCachePath,
 } from "#harness/prompt-cache.js";
-import { mergeProviderSafetyIdentifier } from "#harness/provider-safety.js";
+import { resolveCallProviderOptions } from "#harness/provider-safety.js";
 import {
   collectActionPresentation,
   createPresentedRuntimeActionRequestFromToolCall,
 } from "#harness/action-presentation.js";
 import { isInvalidToolCall } from "#harness/tool-call-input-errors.js";
 import type { RuntimeToolResultActionResult } from "#shared/action-types.js";
-import { type HarnessEmitFn, type ToolLoopHarnessConfig } from "#harness/types.js";
+import {
+  type HarnessEmitFn,
+  type HarnessSession,
+  type ToolLoopHarnessConfig,
+} from "#harness/types.js";
 import type { RuntimeModelReference } from "#runtime/agent/bootstrap.js";
 import { contextStorage } from "#context/container.js";
 import { isAuthorizationSignal, isPendingAuthorizationToolOutput } from "#harness/authorization.js";
 import { readToolInterrupt } from "#harness/tool-interrupts.js";
 import { AuthKey } from "#context/keys.js";
+import { resolveConversationId } from "#shared/conversation-identity.js";
 
 // ---------------------------------------------------------------------------
 // Step result type
@@ -81,6 +86,7 @@ export type HarnessStepResult = Pick<
 interface StepHooksInput {
   readonly emit?: HarnessEmitFn;
   readonly emissionState: HarnessEmissionState;
+  readonly session: HarnessSession;
   readonly execution:
     | {
         readonly auth?: import("#channel/types.js").SessionAuthContext | null;
@@ -178,7 +184,7 @@ export function buildStepHooks(input: StepHooksInput): StepHooks {
   // session history — no prepareStep snapshot required.
   // -------------------------------------------------------------------------
 
-  const prepareStep: PrepareStepFunction<ToolSet> = async ({ messages }) => {
+  const prepareStep: PrepareStepFunction<ToolSet> = async ({ messages, model }) => {
     let processed = messages;
 
     if (
@@ -196,11 +202,13 @@ export function buildStepHooks(input: StepHooksInput): StepHooks {
     if (input.execution.kind === "harness") return stepResult;
 
     const modelReference = input.execution.modelReference;
-    const providerOptions = mergeProviderSafetyIdentifier(
+    const providerOptions = resolveCallProviderOptions({
+      auth: input.execution.auth ?? contextStorage.getStore()?.get(AuthKey) ?? null,
+      conversationId: resolveConversationId(input.session.rootSessionId ?? input.session.sessionId),
+      model,
       modelReference,
-      modelReference.providerOptions,
-      input.execution.auth ?? contextStorage.getStore()?.get(AuthKey) ?? null,
-    );
+      providerOptions: modelReference.providerOptions,
+    });
     if (input.execution.cachePath.kind === "gateway-auto") {
       stepResult.providerOptions = mergeGatewayAutoCaching(providerOptions) as NonNullable<
         typeof stepResult.providerOptions

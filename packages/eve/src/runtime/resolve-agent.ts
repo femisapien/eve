@@ -8,11 +8,6 @@ import type { CompiledModuleMap } from "#compiler/module-map.js";
 import { normalizeAgentDefinition } from "#internal/authored-definition/core.js";
 import { resolveChannelDefinition } from "#runtime/resolve-channel.js";
 
-// Re-exported so external consumers (tests, integrations) can keep
-// importing the error class from this path even though it now lives
-// in resolve-helpers.ts.
-export { ResolveAgentError } from "#runtime/resolve-helpers.js";
-
 import { resolveConnectionDefinition } from "#runtime/resolve-connection.js";
 import { resolveDynamicConnectionDefinition } from "#runtime/resolve-dynamic-connection.js";
 import { resolveHookDefinition } from "#runtime/resolve-hook.js";
@@ -36,7 +31,7 @@ import type {
 /**
  * Input for resolving one compiled authored agent into a runtime-owned model.
  */
-export interface ResolveAgentInput {
+interface ResolveAgentInput {
   manifest: CompiledAgentNodeManifest | CompiledAgentResources;
   moduleMap: CompiledModuleMap;
   nodeId?: string;
@@ -202,7 +197,6 @@ async function createResolvedAgentConfig(input: {
     description?: string;
     experimental?: NonNullable<ResolvedAgent["config"]>["experimental"];
     name: string;
-    outputSchema?: NonNullable<ResolvedAgent["config"]>["outputSchema"];
     reasoning?: NonNullable<ResolvedAgent["config"]>["reasoning"];
     source?: NonNullable<ResolvedAgent["config"]>["source"];
     tool?: boolean;
@@ -265,10 +259,6 @@ async function createResolvedAgentConfig(input: {
               world: manifest.config.experimental.workflow.world,
             },
     };
-  }
-
-  if (manifest.config.outputSchema !== undefined) {
-    config.outputSchema = manifest.config.outputSchema;
   }
 
   if (manifest.config.reasoning !== undefined) {

@@ -79,6 +79,7 @@ export function buildToolSet(input: {
         definition,
       }),
       inputSchema: toModelSchema(definition.inputSchema, "input"),
+      strict: false,
       ...(definition.execution === "background"
         ? {
             onInputAvailable: ({

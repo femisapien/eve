@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { compileFromMemory } from "#compiler/compile-from-memory.js";
+import { compileFromMemory } from "#internal/testing/compile-from-memory.js";
 import { resolveAgent } from "#runtime/resolve-agent.js";
 import type { HarnessV1 } from "@ai-sdk/harness";
 import {
