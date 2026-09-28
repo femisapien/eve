@@ -210,18 +210,20 @@ The MCP rules the channel must follow:
 
 ### Today
 
-eve's MCP connections wrap `@ai-sdk/mcp` and its `initialize` handshake
-(`runtime/connections/mcp-client.ts`). They do not send per-request client capabilities, read
-resources, keep tool `_meta` (#2727), or handle `input_required`. A connection cannot reach
-`mcpCapabilitiesChannel` at all today. The prototype's client was therefore userland: three tools
-in the orchestrator that call MCP directly.
+eve's MCP connections wrap `@ai-sdk/mcp` (`runtime/connections/mcp-client.ts`). The client already
+speaks 2026-07-28: it calls `server/discover`, sends `Mcp-Method`, and falls back to the
+`initialize` handshake for older servers (`protocolVersionDiscovery`). It does not support multi
+round-trip requests: an `input_required` result fails the call with "multi round-trip requests are
+not supported yet". It also has no tasks support, and eve's connections do not read resources or
+keep tool `_meta` (#2727). So a connection can list and call the channel's tools, but any
+approval or sign-in fails. The prototype's client was therefore userland: three tools in the
+orchestrator that call MCP directly.
 
 ### Changes
 
-1. **A 2026-07-28 client**, wrapped behind the existing connection API: `server/discover`,
-   per-request `_meta`, `Mcp-Method` and `Mcp-Name` headers, and no MCP session. It uses the
-   official SDK already vendored for the server side, or `@ai-sdk/mcp` once it supports this
-   revision. #2432's per-call overhead is fixed along the way.
+1. **Multi round-trip support in the client**, wrapped behind the existing connection API: return
+   `input_required` with its `inputRequests` and `requestState` instead of failing, and retry with
+   `inputResponses`. This lands upstream in `@ai-sdk/mcp` or in an eve-owned wrapper.
 2. **Interrupts park in the harness (core).** A connection tool call that returns `input_required`
    parks the way connection authorization already does. The harness emits `input.requested`,
    which the channel renders as it renders its own approvals, and on the answer retries the call
