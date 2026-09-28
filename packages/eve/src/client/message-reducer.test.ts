@@ -104,36 +104,10 @@ describe("defaultMessageReducer", () => {
 
   it("uses the canonical completion after an interrupted attempt", () => {
     const reducer = defaultMessageReducer();
-    let data = reduceServerEvents(reducer, reducer.initial(), [
-      createMessageAppendedEvent({
-        messageDelta: "abandoned",
-        sequence: 0,
-        stepIndex: 0,
-        turnId: "turn_1",
-      }),
-      createMessageAppendedEvent({
-        messageDelta: "replacement",
-        sequence: 0,
-        stepIndex: 0,
-        turnId: "turn_1",
-      }),
-      createMessageAppendedEvent({
-        messageDelta: " complete",
-        sequence: 0,
-        stepIndex: 0,
-        turnId: "turn_1",
-      }),
-    ]);
-
-    expect(data.messages[0]?.parts).toContainEqual({
-      state: "streaming",
-      stepIndex: 0,
-      text: "abandonedreplacement complete",
-      type: "text",
-      id: "evt_test_0000",
-    });
-
-    data = reduceServerEvents(reducer, data, [
+    const [first, ...rest] = stampTestEvents([
+      ...["abandoned", "replacement", " complete"].map((messageDelta) =>
+        createMessageAppendedEvent({ messageDelta, sequence: 0, stepIndex: 0, turnId: "turn_1" }),
+      ),
       createMessageCompletedEvent({
         message: "replacement complete",
         sequence: 0,
@@ -141,13 +115,26 @@ describe("defaultMessageReducer", () => {
         turnId: "turn_1",
       }),
     ]);
+    const completion = rest.pop()!;
+    let data = [first!, ...rest].reduce(reducer.reduce, reducer.initial());
 
+    expect(data.messages[0]?.parts).toContainEqual({
+      state: "streaming",
+      stepIndex: 0,
+      text: "abandonedreplacement complete",
+      type: "text",
+      id: first!.meta.id,
+    });
+
+    data = reducer.reduce(data, completion);
+
+    expect(completion.meta.id).not.toBe(first!.meta.id);
     expect(data.messages[0]?.parts).toContainEqual({
       state: "done",
       stepIndex: 0,
       text: "replacement complete",
       type: "text",
-      id: "evt_test_0000",
+      id: first!.meta.id,
     });
   });
 
