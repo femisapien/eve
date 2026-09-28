@@ -4,7 +4,7 @@ status: in-progress
 last_updated: "2026-09-28"
 ---
 
-# One conversation state for web chat and `eve dev`
+# Unified conversation state for web chat and `eve dev`
 
 The web chat and the `eve dev` TUI read the same session streams and show the same things: messages, tool calls, approvals, questions, sign-ins, and subagents. Until this change they interpreted those streams independently. The web path split its interpretation between `EveAgentStore` and `defaultMessageReducer`. The TUI had its own event translator, turn ledger, subagent pump, and renderer state. Each path answered the same lifecycle questions in its own code, and they drifted: each got some cases right that the other got wrong, and some bugs were implemented twice.
 
@@ -17,10 +17,6 @@ This document describes the old state models, the bugs their divergence produced
 | [#3880](https://github.com/vercel/eve/pull/3880) | `eve dev` TUI as an `EveAgentStore` consumer                                                            |
 
 "Before" in this document means the tasks-10 branch the stack is built on, not the pre-tasks `main`.
-
-## How the divergence surfaced
-
-The investigation started with a web chat bug. If you send three messages quickly and the model answers all three in one turn, the web chat showed message 1, the reply, then messages 2 and 3. The TUI showed them in the right order. Instead of patching the web reducer, we ran the same event sequences through both paths and compared the results. Almost every trace found another divergence, and neither path was consistently right. That was the evidence that the two paths needed one interpretation of the protocol rather than more shared helpers.
 
 ## Before: the same questions answered in several places
 
@@ -84,27 +80,7 @@ The investigation started with a web chat bug. If you send three messages quickl
 | Is the turn over, or the session busy?  | Store scan of raw events                                                                           | `visibleTurnCompleted`, `turnState.boundaryEvent`                                                |
 | Has a subagent finished?                | Not tracked                                                                                        | `SubagentPump`'s own inference                                                                   |
 
-The problems were structural, not a list of isolated mistakes:
-
-- **Two readers of one protocol.** A fix landed in one path and not the other, and new protocol behavior had to be taught twice.
-- **Identity inferred from position or name.** Parts were found by `turn:step` and sign-ins by connection name, although the events carry `meta.id` and `attemptId`.
-- **Decisions made beside the state.** The store's busy status, the TUI's prompt lists, and the pump's child completion each came from a private set built from raw events. The reducer could say a request was settled while the store still considered the session busy.
-- **Stream-scoped state in the TUI.** Anything the translator tracked was forgotten at the next stream, including which events and requests it had already seen.
-- **Operations implemented twice.** Send, steer, respond, and cancel existed in both the store and the runner, with different semantics.
-
-## What diverged
-
-The clearest evidence is the same event sequence producing different results in the two paths:
-
-| Trace                                                                           | Web chat                       | TUI                                                        | Correct |
-| ------------------------------------------------------------------------------- | ------------------------------ | ---------------------------------------------------------- | ------- |
-| Three quick messages, answered in one turn                                      | Message 1, reply, messages 2–3 | Messages 1–3, then the reply                               | TUI     |
-| Text, a tool call, then more text under the same step index                     | Both messages                  | Second message dropped                                     | Web     |
-| A late `step.completed` for step 0 while step 1 streams                         | Closes step 0                  | Closes steps 0 and 1                                       | Web     |
-| A turn fails mid-stream                                                         | Partial text stays "streaming" | Partial text closes                                        | TUI     |
-| A reconnect redelivers events                                                   | Deduplicated once              | Content repeats and approvals are asked again              | Web     |
-| Cancel before `turn.started` names the turn                                     | Waits for the turn ID          | Unguarded cancel, retried for 2 s; can cancel a later turn | Web     |
-| Alice's sign-in completes while Bob's sign-in to the same connection is pending | Bob's card completes           | Bob's row completes                                        | Neither |
+In general, there was a lot of functionality that was duplicated between these systems, and those duplicated implementations were often divergent.
 
 ### Web-only bugs
 
@@ -267,7 +243,7 @@ A custom reducer still receives the root server events and the client events it 
 
 ### The TUI as a store consumer
 
-The TUI is now one more store consumer, like the framework hooks. Its runner has one loop and one composer, which stays open while the agent works. Messages sent while work runs steer the active turn. Slash commands run immediately. Approvals and questions from `openConversationInputs()` open as soon as they arrive, and `Esc` or `Ctrl+C` calls the store's guarded cancel.
+The TUI is now one more store consumer, like the UI framework hooks. Its runner has one loop and one composer, which stays open while the agent works. Messages sent while work runs steer the active turn. Slash commands run immediately. Approvals and questions from `openConversationInputs()` open as soon as they arrive, and `Esc` or `Ctrl+C` calls the store's guarded cancel.
 
 Rendering became declarative:
 
@@ -275,27 +251,14 @@ Rendering became declarative:
 2. `ConversationTranscript.project()` walks `conversation.messages` and produces blocks keyed by stable IDs: part IDs, tool call IDs, and agent calls. It computes each block's `live` flag from state. Streaming text in an open turn is live, and so are running tools and their step, agent sections that haven't caught up, and sign-ins that haven't completed.
 3. The renderer reconciles blocks by ID. It commits the leading run of settled blocks to scrollback once and repaints the live remainder every frame.
 
-In this illustration, the San Francisco result has settled but stays in the live region, because tool rows in the same step commit together:
-
-```text
-│ What's the weather in SF and NYC?
-
-▲ I'll check both cities.
-┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄ live region (repainted) ┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄┄
-  ✓ get_weather San Francisco → 64°F, fog
-  ⠋ get_weather New York
-```
-
-Each agent call gets its own section, which stays live until its reply arrives. Tool rows stay running until their task settles, and the activity line names the tasks a held turn is waiting on. Facts only the terminal needs, such as token usage, the model ID, and failure details, come from `tuiSessionReducer`, which the TUI passes to the store as its custom reducer.
-
 The TUI's event translator, steering stream, idle-stream handoff, subagent pump, turn ledger, and name-keyed sign-in maps are gone. So are four behaviors: the mid-turn message queue (and steering with queued messages), restoring the prompt after a cancel, the connection-authorization status label, and "preparing" placeholders for tool rows.
 
 ## Public API changes
 
-- **Breaking:** the default hook `data` is `ConversationState` instead of `EveMessageData`. Its `messages` field keeps the same shape.
+- **Breaking:** the default hook `data` is `ConversationState` instead of `EveMessageData`. Its `messages` field keeps the same shape, so it is easy to update existing consumers (just look at `data.messages`).
 - **Breaking:** authorization parts gain a `pending` state. A UI that checks `state === "required"` to show the sign-in link must also handle `pending`.
 - Text and reasoning parts gain an `id`. UIs should key parts by it.
-- Hooks and store snapshots gain a `conversation` field holding the canonical state, even with a custom reducer.
+- Hooks (React/Vue/Svelte) and store snapshots gain a `conversation` field holding the canonical state, even with a custom reducer.
 - Hooks and the store gain `followSubagents` (default `false`). The store gains `client`, `compact()`, `clear()`, and `retire()`.
 - The store accepts answers during a running turn and rejects answers to requests that are no longer open.
 - The client and framework entry points export `conversationReducer`, `reduceConversation`, `openConversationInputs`, and the conversation types.
@@ -309,7 +272,7 @@ The investigation began on the pre-tasks protocol, and several problems it turne
 - **Wake turns and sections that settled too early.** Background results no longer start new turns, and a turn stays open while its tasks work. A subagent section can no longer settle because its parent turn ended while the child kept running.
 - **Withdrawn text.** `message.completed` can no longer carry a null message. That removes two divergences: the web chat deleting an earlier finished reply, and the TUI keeping a withdrawn channel-delivery marker. It also removes the removal cases from part identity.
 
-The tasks model also makes some of this stack's work more important. Held turns are normal, so answering during an open turn becomes the main path for questions. `taskId` on inputs and authorizations lets a UI place a task's question under its task. Held turns also keep a task's TUI section live for longer; see the scrollback gap below.
+The tasks model also makes some of this stack's work more important. Held turns are normal, so answering during an open turn becomes the main path for questions. Without these changes, it would be impossible to answer approval requests / questions while the model is active. `taskId` on inputs and authorizations lets a UI place a task's question under its task.
 
 ## Size
 
@@ -326,12 +289,8 @@ Approximate line changes in `packages/eve/src` against the tasks-10 base:
 
 ## Known gaps
 
-**Approvals in one model step wait for each other.** When one model step asks to approve two tools, eve runs neither tool and doesn't call the model again until both are answered. Answering the first emits `approval.settled` and nothing else, so the chat shows no progress until the last answer arrives. The TUI never shows this state because it collects every answer in a batch before sending, but the web chat does. The client has enough to render it: approvals from the same turn and step form one batch, so a UI can mark an answered approval as waiting on the rest. Running an approved call before the rest of its batch is answered would need a server change, and it would change what cancelling a partly approved batch means.
-
 **Other client follow-ups:**
 
 - `followSubagents` follows only the root's direct agent-tool sessions, with no cap on concurrent streams. The option leaves room for a predicate. Following is in memory only, so channels such as Slack have no durable way to follow agent sessions.
 - The SDK layer under the store (`ClientSession`, `MessageResponse`, and `summarizeTurnEvents`) still scans raw events for open requests and waiting sign-ins to decide where a response ends. It has no `ConversationState` and is the last duplicate answer to those questions.
 - The React, Vue, and Svelte hooks don't expose `compact()`, `clear()`, or `retire()` yet.
-- The TUI asks about open requests one after another. It has no panel showing several at once.
-- In the TUI, one live block keeps every block after it in the live region. A slow task near the top of a long held turn holds the rest of the turn out of scrollback until it settles, and clips the oldest live rows. One option is to commit a task's header when it starts and show its progress in an area above the composer.
