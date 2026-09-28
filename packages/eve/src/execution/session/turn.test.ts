@@ -59,6 +59,7 @@ describe("SessionExecution checkpoints", () => {
       next: vi.fn(),
       restore: vi.fn(),
       onDelivery: () => () => {},
+      onAgentStarted: () => () => {},
       onInterrupt: () => () => {},
     };
     let signal: AbortSignal | undefined;
@@ -102,6 +103,7 @@ describe("SessionExecution checkpoints", () => {
           deliver = handler;
           return () => {};
         },
+        onAgentStarted: () => () => {},
         onInterrupt: (handler) => {
           interrupt = handler;
           return () => {};
@@ -159,6 +161,7 @@ describe("SessionExecution checkpoints", () => {
       whenPending: () => new Promise<void>(() => {}),
       next: vi.fn(),
       restore: vi.fn(),
+      onAgentStarted: () => () => {},
       onInterrupt: () => () => {},
       onDelivery: (handler) => {
         notify = handler;
@@ -210,6 +213,7 @@ describe("SessionExecution checkpoints", () => {
       whenPending: () => new Promise<void>(() => {}),
       next: vi.fn(),
       restore: vi.fn(),
+      onAgentStarted: () => () => {},
       onInterrupt: () => () => {},
       onDelivery: (handler) => {
         notify = handler;
@@ -273,6 +277,7 @@ describe("SessionExecution checkpoints", () => {
         whenPending: () => new Promise<void>(() => {}),
         next: vi.fn(),
         restore: vi.fn(),
+        onAgentStarted: () => () => {},
         onInterrupt: () => () => {},
         onDelivery: (handler) => {
           notify = handler;
@@ -307,6 +312,7 @@ describe("SessionExecution checkpoints", () => {
       whenPending: () => new Promise<void>(() => {}),
       next: vi.fn(() => new Promise<never>(() => {})),
       onDelivery: vi.fn(() => () => {}),
+      onAgentStarted: () => () => {},
       onInterrupt: vi.fn(() => () => {}),
       restore: vi.fn(),
     };
@@ -358,6 +364,7 @@ describe("SessionExecution checkpoints", () => {
       whenPending: () => new Promise<void>(() => {}),
       next: vi.fn(() => new Promise<never>(() => {})),
       onDelivery: vi.fn(() => () => {}),
+      onAgentStarted: () => () => {},
       onInterrupt: vi.fn((handler) => {
         interrupt = handler;
         return () => {};
@@ -406,6 +413,7 @@ describe("SessionExecution checkpoints", () => {
       whenPending: () => new Promise<void>(() => {}),
       next: vi.fn(() => new Promise<never>(() => {})),
       onDelivery: vi.fn(() => () => {}),
+      onAgentStarted: () => () => {},
       onInterrupt: vi.fn(() => () => {}),
       restore: vi.fn(),
     };
@@ -464,6 +472,7 @@ describe("SessionExecution checkpoints", () => {
       whenPending: () => new Promise<void>(() => {}),
       next: vi.fn(() => new Promise<never>(() => {})),
       onDelivery: vi.fn(() => () => {}),
+      onAgentStarted: () => () => {},
       onInterrupt: vi.fn(() => () => {}),
       restore: vi.fn(),
     };
@@ -512,6 +521,7 @@ describe("SessionExecution checkpoints", () => {
         whenPending: () => new Promise<void>(() => {}),
         next: vi.fn(() => new Promise<never>(() => {})),
         onDelivery: vi.fn(() => () => {}),
+        onAgentStarted: () => () => {},
         onInterrupt: vi.fn(() => () => {}),
         restore: vi.fn(),
       };
@@ -561,6 +571,7 @@ describe("SessionExecution checkpoints", () => {
       next: vi.fn(),
       restore: vi.fn(),
       onDelivery: () => () => {},
+      onAgentStarted: () => () => {},
       onInterrupt: (handler) => {
         interrupt = handler;
         return () => {};
@@ -609,6 +620,7 @@ describe("SessionExecution checkpoints", () => {
       whenPending: () => new Promise<void>(() => {}),
       next: vi.fn(async () => runtimePayloads.shift()),
       onDelivery: vi.fn(() => () => {}),
+      onAgentStarted: () => () => {},
       onInterrupt: vi.fn(() => () => {}),
       restore: vi.fn(),
     };
@@ -670,6 +682,7 @@ describe("SessionExecution checkpoints", () => {
       whenPending: () => new Promise<void>(() => {}),
       next: vi.fn(async () => runtimePayloads.shift()),
       onDelivery: vi.fn(() => () => {}),
+      onAgentStarted: () => () => {},
       onInterrupt: vi.fn(() => () => {}),
       restore: vi.fn(),
     };

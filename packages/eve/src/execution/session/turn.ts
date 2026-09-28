@@ -44,6 +44,7 @@ import type {
   TurnStepPayload,
 } from "#execution/session/turn-step-types.js";
 import { resolveWorkflowCallbackBaseUrl } from "#execution/workflow-callback-url.js";
+import { StepAgentStarts } from "#execution/session/step-agent-starts.js";
 import { turnStep } from "#execution/session/turn-step.js";
 import { activeTurnId } from "#harness/active-turn-id.js";
 import { coalesceDeliveries } from "#harness/messages.js";
@@ -127,12 +128,14 @@ export class SessionExecution {
 
     while (true) {
       const { cursor } = this.input;
-      const result: DurableStepResult = await turnStep({
-        ...cursor.stepState(),
-        abortSignal: turn.signal,
-        input: nextStepInput,
-        steeringSignal: turn.steeringSignal,
-      });
+      const result: DurableStepResult = await turn.agentStarts.publishWhile(
+        turnStep({
+          ...cursor.stepState(),
+          abortSignal: turn.signal,
+          input: nextStepInput,
+          steeringSignal: turn.steeringSignal,
+        }),
+      );
       const pendingCallIds =
         result.action === "park" ? result.pendingCoordinationCallIds : undefined;
       const turnCompleted = result.action === "park" && result.settled !== undefined;
@@ -467,6 +470,7 @@ class ActiveTurn {
   private readonly identity: SteeringTurn;
   private readonly unsubscribe: () => void;
   private unsubscribeDelivery: () => void;
+  readonly agentStarts: StepAgentStarts;
   private steeringController = new AbortController();
 
   constructor(input: SessionExecutionInput, identity: SteeringTurn) {
@@ -477,6 +481,7 @@ class ActiveTurn {
       if (this.cancelsThisTurn(payload)) this.abort();
     });
     this.unsubscribeDelivery = input.inbox.onDelivery(this.signalSteering);
+    this.agentStarts = new StepAgentStarts(input.inbox, input.cursor);
   }
 
   private readonly signalSteering = (payload: SessionInboxPayload): void => {
@@ -591,6 +596,7 @@ class ActiveTurn {
   }
 
   private async admit(value: SessionInboxPayload): Promise<void> {
+    if (this.agentStarts.consume(value)) return;
     const admitted = await admitSessionInboxPayload(value, this.input);
     switch (admitted.kind) {
       case "delivery":
