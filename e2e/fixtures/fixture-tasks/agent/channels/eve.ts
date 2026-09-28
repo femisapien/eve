@@ -34,6 +34,7 @@ const authenticateRemoteChild: AuthFn<Request> = (request) =>
 const authenticateEvalDriver: AuthFn<Request> = () => principal("eval-driver");
 
 export default eveChannel({
+  trustedForwarders: (forwarder) => forwarder.principalId === "remote-http-child",
   auth: [
     authenticateSessionInitiator,
     authenticateLaterParentCaller,
