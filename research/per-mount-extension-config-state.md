@@ -84,7 +84,10 @@ must not create a new instance.
   other's bindings, even when their logical paths match.
 - State belongs to the active durable context, logical mount identity, and authored
   state name. Encode the latter two components unambiguously in a versioned key
-  format outside the reserved `eve.` prefix. The exact encoding is internal.
+  format under a new reserved `eve-mount.` prefix. Public `defineState()` calls
+  must reject authored names starting with `eve-mount.`, as they already reject
+  `eve.`. Only a trusted internal registration path may create generated mount
+  keys. The encoding after the reserved prefix is internal.
 - A package upgrade at the same mount preserves identity, but does not promise
   compatibility with arbitrary changes to the authored state's value schema.
 - Renaming or moving a logical mount changes identity. It does not automatically
@@ -95,8 +98,11 @@ must not create a new instance.
   package creates a different instance.
 - Repeated calls to a mounted subagent do not create new configuration instances.
   This proposal changes mount ownership, not subagent session lifetime.
-- Application-owned `defineState()` keys are unchanged. Shared state between
-  mounts is not implicit; an explicit sharing API is outside this proposal.
+- Application-owned `defineState()` keys are unchanged except that names under
+  `eve-mount.` become invalid. Existing uses require an explicit state migration
+  or session restart; they must never be interpreted as extension state. Shared
+  state between mounts is not implicit; an explicit sharing API is outside this
+  proposal.
 
 ## Architecture
 
@@ -120,61 +126,53 @@ compiler mount-instance descriptor
 
 ### Compiler and module loading
 
-Carry mount identity through discovered mounts, contribution ownership,
-subagent projection, compiled bindings, and runtime mount metadata. Keep package
-name and source root for resolution and diagnostics, not as instance identity.
-Programmatic development mounts derive a logical identity just like authored
-mounts; they need no built-in-specific config/state scope.
+Load extension code separately for each mount, with its configuration ready before
+its tools and other contributions initialize. This costs extra loading work when
+an extension is mounted twice, but prevents the mounts from sharing configuration
+accidentally. Framework code and ordinary dependencies remain shared.
 
-Instantiate extension-owned modules under `(mount identity, resolved module)`
-within each loaded application graph. The same source mounted twice must be
-allowed two evaluations. Imports inside an instance resolve to that instance's
-modules, including relative imports, barrels, contributed subagents, and supported
-package self-imports. Framework code and ordinary dependencies remain shared;
-this is not a copy of all `node_modules` per mount.
+Track which mount owns each contribution, including subagents and consumer
+overrides. If an import could refer to several mounts, report an error rather than
+guess. New syntax for choosing a mount is outside this proposal.
 
-The mount declaration and its contributions must resolve the same instance-bound
-handle. Bind and validate configuration before evaluating contribution factories
-that read it at module initialization. Consumer override imports of an extension's
-exports need the owning mount context too. If an application-level import could
-refer to multiple instances and has no mount context, report that ambiguity
-rather than choosing the first source-root match; any new authoring syntax to
-select an instance requires a separate API decision.
-
-Production bundling and dev/eval loading must implement this same identity rule.
-Loader caches include instance and graph-generation identity. An unbundled native
-import cached only by package URL, or a process-global ambient scope around an
-import, is not sufficient to distinguish instances.
+Apply the same rules in production, development, and evals, including mounts
+created programmatically. Hot reloads and separate applications must not reuse
+each other's extension instances.
 
 ### Configuration and state ownership
 
-Replace the package-global configuration registry with graph-owned instance
-bindings. Separate evaluations within that graph may share a binding for the
-same mount, but unrelated graphs must not. Bindings may contain callbacks and
-credentials; do not serialize them into checkpoints. Reconstruct config from the
-target deployment's mount declarations on session handoff.
+Configuration belongs to a mount in the running application; durable state belongs
+to that mount within the current session/context. On deployment handoff, use the
+new deployment's configuration rather than saving callbacks or credentials in
+checkpoints. State keys stay stable across rebuilds so saved values can survive.
 
-The existing state API continues to use the active context. The shim supplies a
-stable mount-prefixed key, with no graph-generation token in the persisted name.
-State serialization and any temporary legacy import belong at the context/runtime
-boundary, not in generated application code. Keep execution/harness changes
-limited to compatibility admission where needed.
+Keep state naming and migration in the framework, without adding namespace
+arguments to the authoring API. Only framework code may create reserved mount
+keys. This makes isolation automatic, but introduces a compatibility boundary:
+old application state using the newly reserved prefix must be explicitly migrated
+or the session restarted, even if the application has removed the declaration.
+Reject those collisions before restoring state; never silently discard values or
+treat them as extension state.
 
 ## Implementation steps
 
-1. **Define and propagate mount identity.** Specify canonical path encoding,
-   flat/directory equivalence, contributed-subagent inheritance, and compiled
-   metadata. Remove package/subpath-derived scope ownership, including any
-   built-in-specific logic brought forward from the abandoned branch.
+1. **Define and propagate mount identity (metadata only).** Specify canonical path
+   encoding, flat/directory equivalence, contributed-subagent inheritance, and
+   compiled metadata. Preserve the existing package-scoped config binding and
+   state-key shims until their replacements are active in steps 3 and 4.
 2. **Instantiate extension module graphs per mount.** Update production resolution,
    dev/eval resolution, cache identity, and programmatic development mounts. Resolve
    override imports in their mount context and reject ambiguous unowned imports.
 3. **Bind config to the loaded graph and mount.** Ensure mount-before-contribution
    evaluation, config validation, independent hot-reload generations, and no
-   process-global package binding or native-module-cache leakage.
-4. **Scope state handles and implement upgrade admission.** Introduce stable
-   mount-owned state keys. Choose one compatibility policy below before enabling
-   new keys; never ship an intermediate release that silently discards old values.
+   process-global package binding or native-module-cache leakage. Retire the legacy
+   config scope only when these bindings are active; retain package-prefixed state.
+4. **Scope state handles and implement upgrade admission.** Introduce reserved,
+   mount-owned state keys and the trusted internal registration path. Choose one
+   compatibility policy below and activate checkpoint admission before switching
+   state shims or retiring package-prefixed registration. Remove obsolete
+   package/subpath scope ownership only after both replacements are active; never
+   ship an intermediate release that leaves config unbound or discards old values.
 5. **Validate the contract at its boundaries.** Cover identity normalization in
    unit tests; two configured mounts, two authored subagents, and inherited
    contributed-subagent config in module-loading scenarios; and independent state
@@ -182,12 +180,17 @@ limited to compatibility admission where needed.
    including two application graphs/generations in one process. Add deterministic
    fixture eval coverage for mounted contributions. Upgrade scenarios must use
    independently produced old/new artifacts and checkpoints, including ambiguous
-   legacy ownership and rollback, not just a mocked compatibility flag.
+   legacy ownership and rollback, not just a mocked compatibility flag. Add an
+   integration case proving an application cannot define a generated mount key to
+   read or mutate that mount's state. Cover rejection of pre-upgrade authored names
+   under `eve-mount.` in upgrade scenarios, including when the new application has
+   removed the declaration, without losing or reinterpreting the saved value.
 6. **Publish and remove the bridge on schedule.** Document rename semantics,
-   preserved application-owned state, rebuild requirements, and operator upgrade
-   steps. Add release notes/changesets appropriate to the chosen compatibility
-   contract. If using a bridge release, gate its removal at the major release on
-   the conditions below, not merely elapsed time.
+   preserved application-owned state outside the newly reserved prefix, rebuild
+   requirements, and operator upgrade steps. Add release notes/changesets
+   appropriate to the chosen compatibility contract. If using a bridge release,
+   gate its removal at the major release on the conditions below, not merely
+   elapsed time.
 
 ## Backward compatibility and rollout options
 
@@ -238,12 +241,20 @@ For example, an old checkpoint contains:
 acme-browser.requests = 4
 ```
 
-The target graph has one eligible browser mount at `extensions/browser`. During
-checkpoint restoration, import that value into its mount-owned key:
+Assume trusted metadata from the source deployment proves that this saved slot
+belonged only to `extensions/browser` in the checkpoint's owning node/context,
+and that the target graph preserves that ownership. Only with that evidence may
+checkpoint restoration import the value into the mount-owned key:
 
 ```text
-mount-v1[extensions/browser, requests] = 4   # illustrative encoding
+eve-mount.v1[extensions/browser, requests] = 4   # illustrative encoding
 ```
+
+A single browser mount in the target graph is not sufficient evidence. Hosted
+checkpoints currently store a generic bundled-artifact selector and node ID in
+`eve.bundle`, not the predecessor's mount mapping. If no trusted source-side
+ownership metadata is available, refuse automatic migration or require an explicit
+migration decision; do not infer the old layout by loading the target bundle.
 
 Subsequent updates and checkpoints use only the new key. Another mount must not
 read or update the old shared slot.
@@ -252,10 +263,13 @@ The bridge needs these rules:
 
 1. Resolve the target bundle and the checkpoint's owning node/context before
    interpreting legacy keys. Establish a package-key-to-mount mapping from
-   trustworthy metadata. Old artifacts may lack enough metadata; do not infer
-   unique ownership merely because the new graph happens to have one mount.
-2. If a new key exists, it is authoritative, including values such as `0`, `false`,
-   or `null`. An old alias must never overwrite it or resurrect a reset value.
+   trusted source-side ownership metadata and verify it against the target graph.
+   Old artifacts may lack enough metadata; do not infer unique ownership merely
+   because the new graph happens to have one mount.
+2. If a key is proven to be in the new mount layout, it is authoritative, including
+   values such as `0`, `false`, or `null`. An old alias must never overwrite it or
+   resurrect a reset value. A legacy authored name matching the new prefix is a
+   collision to reject, not proof of a migrated value.
 3. Import legacy values only when ownership is unambiguous. Two candidate mounts,
    changed ownership, or an unknown source layout require an explicit migration
    decision or rejection of handoff. Do not pick the first mount or copy a shared
@@ -334,7 +348,10 @@ are rejected with an actionable recovery path, not silently reinitialized.
   and [per-module scope selection](../packages/eve/src/compiler/load-binding-namespace.ts).
 - [`defineState`](../packages/eve/src/public/definitions/state.ts) and
   [context serialization](../packages/eve/src/context/serialize.ts): named durable
-  slots and unknown-key handling.
+  slots, reserved-prefix validation, and unknown-key handling.
+- [Bundle context codec](../packages/eve/src/runtime/sessions/runtime-context-keys.ts)
+  and [durable artifact sources](../packages/eve/src/runtime/durable-compiled-artifacts-source.ts):
+  serialized bundle selector and node identity, not historical mount ownership.
 - [Session handoff](../packages/eve/src/execution/session/handoff.ts) and
   [checkpoint validation](../packages/eve/src/execution/session/handoff-steps.ts).
   The [session-upgrade plan](./single-workflow-session-upgrades.md) explains why
