@@ -42,7 +42,13 @@ vi.mock("#execution/tools/workflow/body.js", () => ({
   }),
   startCallBody: (input: unknown) => ({
     close: async () => {},
-    control: { apply: mocks.applyCommand, runSignal: mocks.body.runSignal },
+    control: {
+      apply: mocks.applyCommand,
+      runSignal: mocks.body.runSignal,
+      get unwinding() {
+        return mocks.body.runSignal.aborted;
+      },
+    },
     outcome: mocks.runBody(input),
   }),
 }));

@@ -23,6 +23,9 @@ import { resumeHookStep } from "#execution/tools/workflow/resume-hook-step.js";
 import { startServeBody } from "#execution/tools/workflow/serve.js";
 import type { WorkflowToolRunInput } from "#execution/tools/workflow/types.js";
 
+const SERVE_CLEANUP_EXPIRED =
+  "The task was cancelled and its serve body didn't return to receive() within 30 seconds.";
+
 /** Owns command intake, body execution, and settlement for one workflow tool call. */
 export async function workflowToolRunWorkflow(input: WorkflowToolRunInput): Promise<void> {
   "use workflow";
@@ -46,7 +49,7 @@ export async function workflowToolRunWorkflow(input: WorkflowToolRunInput): Prom
   // inbox is gone, which is exactly when what the body opened must stop.
   try {
     while (true) {
-      if (signal.aborted) {
+      if (started.control.unwinding) {
         cleanupDeadline ??= sleep(WORKFLOW_CANCELLATION_CLEANUP_MS).then(() => "cancel");
       }
       if (
@@ -78,7 +81,16 @@ export async function workflowToolRunWorkflow(input: WorkflowToolRunInput): Prom
         outcome = { status: "failed", error: normalizeSerializableError(error) };
         break;
       }
-      if (read === "cancel") break;
+      if (read === "cancel") {
+        // A serve body can return to receive() before its deadline.
+        if (!started.control.unwinding) {
+          cleanupDeadline = undefined;
+          continue;
+        }
+        // One that doesn't ends with its task.
+        if (!signal.aborted) started.control.apply({ kind: "end", reason: SERVE_CLEANUP_EXPIRED });
+        break;
+      }
       if (read.next.done) {
         if (read.channel === "control") {
           commandsOpen = false;
@@ -92,6 +104,8 @@ export async function workflowToolRunWorkflow(input: WorkflowToolRunInput): Prom
         return;
       }
       if (read.channel === "control") {
+        // The deadline counts from the cancel the body is unwinding now.
+        if (!started.control.unwinding) cleanupDeadline = undefined;
         applyControlMessage(started, read.next.value);
         continue;
       }

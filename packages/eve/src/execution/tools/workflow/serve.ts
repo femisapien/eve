@@ -98,6 +98,8 @@ class WorkflowServeCalls implements WorkflowBodyControl {
   private pendingReceive: PendingReceive | undefined;
   /** The current stretch of work: set while any call has no result. */
   private stretch: AbortController | undefined;
+  /** A cancel stopped the body at work; it unwinds until it calls `receive()` again. */
+  private unwindingCancel = false;
   private endedBy: Error | undefined;
   private replies: Promise<void> = Promise.resolve();
 
@@ -124,6 +126,10 @@ class WorkflowServeCalls implements WorkflowBodyControl {
 
   get runSignal(): AbortSignal {
     return this.run.signal;
+  }
+
+  get unwinding(): boolean {
+    return this.run.signal.aborted || this.unwindingCancel;
   }
 
   /** The signal of the work in progress, for framework waits started on the body's behalf. */
@@ -160,10 +166,12 @@ class WorkflowServeCalls implements WorkflowBodyControl {
   }
 
   receive(): Promise<WorkflowServeCall<JsonValue>> {
+    // The first call may be cancelled already, so taking it ends no unwinding.
     if (!this.firstReceived) {
       this.firstReceived = true;
       return Promise.resolve(this.first.call);
     }
+    this.unwindingCancel = false;
     if (this.pendingReceive !== undefined) return this.pendingReceive.promise;
     if (this.endedBy !== undefined) return Promise.reject(this.endedBy);
     const next = this.arrived.shift();
@@ -222,6 +230,8 @@ class WorkflowServeCalls implements WorkflowBodyControl {
    * cancelled, so they leave the run, and a later reply is dropped.
    */
   private cancel(reason: Error): void {
+    // A body already waiting in `receive()` has nothing to unwind.
+    if (this.pendingReceive === undefined) this.unwindingCancel = true;
     this.stretch?.abort(reason);
     this.stretch = undefined;
     this.waiting = [];

@@ -4,12 +4,14 @@ import type { SessionAuth, SessionContext, SessionTurn } from "#context/session-
 import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
 import { readWorkflowToolRunRef } from "#execution/tools/workflow/ask.js";
 import type { WorkflowBodyInput } from "#execution/tools/workflow/body.js";
+import { WORKFLOW_CANCELLATION_CLEANUP_MS } from "#execution/tools/workflow/cancellation-policy.js";
 import type {
   WorkflowBodyCommand,
   WorkflowToolRunMessage,
   WorkflowToolRunRef,
 } from "#execution/tools/workflow/messages.js";
 import { startServeBody } from "#execution/tools/workflow/serve.js";
+import { workflowToolRunWorkflow } from "#execution/tools/workflow/workflow.js";
 import type { JsonValue } from "#shared/json.js";
 import type {
   WorkflowServeCall,
@@ -18,6 +20,8 @@ import type {
 } from "#tools/workflow-definition.js";
 
 const mocks = vi.hoisted(() => ({
+  /** Commands the session sends the run's control hook. */
+  commands: [] as WorkflowBodyCommand[],
   deliver: vi.fn<(inbox: string, message: WorkflowToolRunMessage) => Promise<void>>(),
   openAgent:
     vi.fn<
@@ -25,6 +29,8 @@ const mocks = vi.hoisted(() => ({
     >(),
   sendAgent: vi.fn<(input: { readonly context: AgentSessionContext }) => Promise<void>>(),
   serve: vi.fn(),
+  sleep: vi.fn<(ms: number) => Promise<void>>(),
+  wakeCommands: () => {},
 }));
 vi.mock("#execution/workflow-registry.js", () => ({ readRegisteredWorkflow: () => mocks.serve }));
 vi.mock("#execution/tools/workflow/resume-hook-step.js", () => ({
@@ -35,11 +41,21 @@ vi.mock("#execution/agent-sessions/steps.js", () => ({
   sendAgentSessionMessageStep: mocks.sendAgent,
 }));
 vi.mock("#compiled/@workflow/core/index.js", () => ({
-  // The agent's turn never reports; only how the session opened matters here.
-  createHook: () => ({
-    [Symbol.asyncIterator]: () => ({ next: () => new Promise(() => {}) }),
-    token: "agent-turn",
-  }),
+  createHook: (options?: { readonly token?: string }) =>
+    options?.token === "control"
+      ? (async function* () {
+          while (true) {
+            const command = mocks.commands.shift();
+            if (command !== undefined) yield command;
+            else await new Promise<void>((resolve) => (mocks.wakeCommands = resolve));
+          }
+        })()
+      : // Agent turns and the run's inbox never report; only what the run sends matters here.
+        {
+          [Symbol.asyncIterator]: () => ({ next: () => new Promise(() => {}) }),
+          token: "agent-turn",
+        },
+  sleep: mocks.sleep,
 }));
 
 /** Alice, with the claims she has when she makes a call. */
@@ -225,4 +241,50 @@ it("serves every call to its task, one stretch of work at a time, until the sess
   expect(fourth).not.toBe(third);
   expect(first?.aborted).toBe(false);
   expect(fourth?.aborted).toBe(true);
+});
+
+it.each([
+  {
+    body: "ignores the cancel",
+    outcome: {
+      reason:
+        "The task was cancelled and its serve body didn't return to receive() within 30 seconds.",
+      status: "cancelled",
+    },
+    serve: async (receive: WorkflowServeReceive<JsonValue>) => {
+      await receive();
+      return await new Promise<JsonValue>(() => {});
+    },
+  },
+  {
+    body: "returns to receive()",
+    outcome: { output: { request: "Keep it on Thursday." }, status: "completed" },
+    serve: async (receive: WorkflowServeReceive<JsonValue>) => {
+      await aborted((await receive()).abortSignal);
+      return (await receive()).input;
+    },
+  },
+])("bounds a cancelled stretch whose body $body", async ({ outcome, serve }) => {
+  const deadline = Promise.withResolvers<void>();
+  mocks.sleep.mockReturnValue(deadline.promise);
+  mocks.serve.mockImplementation(serve);
+  const run = workflowToolRunWorkflow({ ...input, owner: { inbox: "session" } });
+  const send = (command: WorkflowBodyCommand): void => {
+    mocks.commands.push(command);
+    mocks.wakeCommands();
+  };
+
+  send({ kind: "cancel", reason: "The task was cancelled." });
+  await vi.waitFor(() =>
+    expect(mocks.sleep).toHaveBeenCalledWith(WORKFLOW_CANCELLATION_CLEANUP_MS),
+  );
+  deadline.resolve();
+  send(call("call-2", "Keep it on Thursday."));
+  await run;
+
+  expect(mocks.deliver).toHaveBeenLastCalledWith(
+    "session",
+    expect.objectContaining({ kind: "outcome", result: outcome }),
+    expect.anything(),
+  );
 });

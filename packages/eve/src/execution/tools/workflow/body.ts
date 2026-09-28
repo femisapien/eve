@@ -57,6 +57,8 @@ export interface WorkflowBodyInput extends WorkflowBodyDefinition {
 export interface WorkflowBodyControl {
   /** Aborts when the run stops for good; the run then settles as cancelled. */
   readonly runSignal: AbortSignal;
+  /** The body is winding down cancelled work, which the run bounds with its cleanup deadline. */
+  readonly unwinding: boolean;
   apply(command: WorkflowBodyCommand): void;
 }
 
@@ -93,6 +95,10 @@ class WorkflowCallSignals implements WorkflowBodyControl {
 
   get interruptSignal(): AbortSignal {
     return this.interrupt.signal;
+  }
+
+  get unwinding(): boolean {
+    return this.abort.signal.aborted;
   }
 
   apply(command: WorkflowBodyCommand): void {
