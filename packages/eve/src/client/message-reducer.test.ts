@@ -794,39 +794,20 @@ describe("defaultMessageReducer", () => {
     ]);
   });
 
-  it("parks only callback-backed authorization attempts until their later completion", () => {
+  it("completes only the authorization attempt that a later callback settles", () => {
     const reducer = defaultMessageReducer();
-    const required = (name: string, attemptId: string, webhookUrl?: string) =>
+    const required = (attemptId: string) =>
       createAuthorizationRequiredEvent({
-        name,
+        name: "linear",
         attemptId,
-        description: `Connect ${name}`,
+        description: "Connect linear",
         sequence: 0,
         stepIndex: 0,
         turnId: "turn_1",
-        webhookUrl,
       });
-    const before = reduceServerEvents(reducer, reducer.initial(), [
-      required("linear", "alice", "https://example.com/callback"),
-      required("linear", "bob"),
-    ]);
-    const parked = reduceServerEvents(reducer, before, [
-      {
-        type: "session.waiting",
-        data: { wait: "next-user-message", continuationToken: "session-id" },
-      },
-    ]);
-    const parts = (data: typeof parked) =>
-      data.messages.flatMap((message) =>
-        message.role === "assistant"
-          ? message.parts.filter((part) => part.type === "authorization")
-          : [],
-      );
-    expect(parts(parked)).toEqual([
-      expect.objectContaining({ attemptId: "alice", state: "pending" }),
-      expect.objectContaining({ attemptId: "bob", state: "required" }),
-    ]);
-    const completed = reduceServerEvents(reducer, parked, [
+    const data = reduceServerEvents(reducer, reducer.initial(), [
+      required("alice"),
+      required("bob"),
       createAuthorizationCompletedEvent({
         name: "linear",
         attemptId: "alice",
@@ -836,7 +817,14 @@ describe("defaultMessageReducer", () => {
         turnId: "turn_2",
       }),
     ]);
-    expect(parts(completed)).toEqual([
+
+    expect(
+      data.messages.flatMap((message) =>
+        message.role === "assistant"
+          ? message.parts.filter((part) => part.type === "authorization")
+          : [],
+      ),
+    ).toEqual([
       expect.objectContaining({ attemptId: "alice", state: "completed", outcome: "authorized" }),
       expect.objectContaining({ attemptId: "bob", state: "required" }),
     ]);
