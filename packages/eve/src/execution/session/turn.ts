@@ -23,7 +23,6 @@ import {
   sessionInboxHookToken,
 } from "#execution/session-inbox/address.js";
 import type { SessionInboxPayload, SessionInboxReader } from "#execution/session-inbox/inbox.js";
-import { StepAnnouncements } from "#execution/session/step-announcements.js";
 import { publishTurnWaitingStep } from "#execution/session/turn-waiting-step.js";
 import { admitSessionInboxPayload } from "#execution/session/admission.js";
 import type { SessionStateCursor } from "#execution/session/state-cursor.js";
@@ -128,18 +127,12 @@ export class SessionExecution {
 
     while (true) {
       const { cursor } = this.input;
-      const step = turnStep({
+      const result: DurableStepResult = await turnStep({
         ...cursor.stepState(),
         abortSignal: turn.signal,
         input: nextStepInput,
         steeringSignal: turn.steeringSignal,
       });
-      const result: DurableStepResult = await turn.announcements.publishWhile(
-        step,
-        async (message) => {
-          await this.handleWorkflowMessage(message);
-        },
-      );
       const pendingCallIds =
         result.action === "park" ? result.pendingCoordinationCallIds : undefined;
       const turnCompleted = result.action === "park" && result.settled !== undefined;
@@ -452,7 +445,6 @@ function resolveTurnPrincipal(
  */
 class ActiveTurn {
   private readonly admitted = new Set<number>();
-  readonly announcements: StepAnnouncements;
   private readonly routedToChildren = new Set<number>();
   private readonly runtimeResults: RuntimeEvent[] = [];
   private readonly controller = new AbortController();
@@ -468,7 +460,6 @@ class ActiveTurn {
     this.input = input;
     this.identity = identity;
     this.expectedTurnId = activeTurnId(input.cursor.sessionState.emissionState);
-    this.announcements = new StepAnnouncements(input.inbox);
     this.unsubscribe = input.inbox.onInterrupt((payload) => {
       if (this.cancelsThisTurn(payload)) this.abort();
     });
@@ -592,7 +583,6 @@ class ActiveTurn {
   }
 
   private async admit(value: SessionInboxPayload): Promise<void> {
-    if (this.announcements.consume(value)) return;
     const admitted = await admitSessionInboxPayload(value, this.input);
     switch (admitted.kind) {
       case "delivery":

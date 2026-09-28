@@ -47,7 +47,6 @@ function createMockInbox(reads: readonly ScriptedRead[]): SessionInbox {
     onDelivery() {
       return () => {};
     },
-    onAnnouncement: () => () => {},
     onInterrupt() {
       return () => {};
     },
