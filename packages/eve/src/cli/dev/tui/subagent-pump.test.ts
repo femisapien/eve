@@ -146,7 +146,10 @@ function callAgentTask(
   turnId = "turn-1",
 ): void {
   pump.taskStarted(
-    { data: { callId, name: task.name, taskId: task.taskId, turnId }, type: "task.started" },
+    {
+      data: { callId, kind: "agent", name: task.name, taskId: task.taskId, turnId },
+      type: "task.started",
+    },
     "parent",
   );
 }

@@ -722,6 +722,7 @@ describe("SessionExecution checkpoints", () => {
     const base = state("");
     const working = createTask(readTaskTable(undefined), {
       callId: "task-call",
+      kind: "tool",
       name: "research",
       resumable: false,
       turnId: "turn_0",

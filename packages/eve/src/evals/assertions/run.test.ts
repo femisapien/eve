@@ -316,7 +316,7 @@ describe("run assertions", () => {
   it("matches typed event counts and ordered event groups", async () => {
     const called = {
       type: "task.started",
-      data: { callId: "c", name: "child", taskId: "child-1", turnId: "t" },
+      data: { callId: "c", kind: "agent", name: "child", taskId: "child-1", turnId: "t" },
     } as UnstampedMessageStreamEvent;
     const completed = {
       type: "task.settled",
@@ -380,7 +380,7 @@ describe("run assertions", () => {
   it("eventOrder rejects interleaved event groups", async () => {
     const called = {
       type: "task.started",
-      data: { callId: "c", name: "child", taskId: "child-1", turnId: "t" },
+      data: { callId: "c", kind: "agent", name: "child", taskId: "child-1", turnId: "t" },
     } as UnstampedMessageStreamEvent;
     const completed = {
       type: "task.settled",

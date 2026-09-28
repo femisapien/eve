@@ -389,6 +389,7 @@ describe("registryHandoffAddress", () => {
           type: "task.started",
           data: {
             callId: "selfmod-call",
+            kind: "agent",
             name: "self-modification__agent",
             taskId: "self-modification__agent-selfmod-call",
             turnId: "parent-turn",
@@ -3640,6 +3641,7 @@ describe("EveTUIRunner renderer teardown", () => {
           type: "task.started",
           data: {
             callId: "call-child",
+            kind: "agent",
             name: "weather-child",
             taskId: "weather-child-call-child",
             turnId: "turn-parent",
@@ -3715,6 +3717,7 @@ describe("EveTUIRunner renderer teardown", () => {
           type: "task.started",
           data: {
             callId: "call-child",
+            kind: "agent",
             name: "weather-child",
             taskId: "weather-child-call-child",
             turnId: "turn-parent",
@@ -4769,6 +4772,7 @@ describe("EveTUIRunner cancelled-turn subagent settling", () => {
         type: "task.started",
         data: {
           callId: "call-a",
+          kind: "agent",
           name: "researcher",
           taskId: "researcher-call-a",
           turnId: "turn-a",
@@ -4789,6 +4793,7 @@ describe("EveTUIRunner cancelled-turn subagent settling", () => {
         type: "task.started",
         data: {
           callId: "call-1",
+          kind: "agent",
           name: "researcher",
           taskId: "researcher-call-1",
           turnId: "turn-1",

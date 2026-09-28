@@ -90,7 +90,7 @@ export default defineEval({
       },
     });
 
-    t.event("task.started", { data: { name: "remote-loopback", taskId }, count: 3 })
+    t.event("task.started", { data: { kind: "agent", name: "remote-loopback", taskId }, count: 3 })
       .soft()
       .label("every caller continues the same task");
     t.event("agent.started", { data: { name: "remote-loopback" }, count: 1 })

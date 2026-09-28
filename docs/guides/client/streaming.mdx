@@ -142,7 +142,7 @@ The most common UI events are:
 | `actions.requested`     | Show tool calls as the model requests them, before execution.                  |
 | `action.partial`        | Update a generator tool's provisional output snapshot.                         |
 | `action.result`         | Show tool call results.                                                        |
-| `task.started`          | Show a call that runs as a task; its `action.result` is only a receipt.        |
+| `task.started`          | Show a task call; `action.result` is a receipt. `kind: "agent"` marks agents.  |
 | `task.settled`          | Show the task's result, error, or cancellation for the call's `callId`.        |
 | `input.requested`       | Pause the UI for approval or a question answer.                                |
 | `input.resolved`        | Record the server-accepted outcome and response for each human-input request.  |

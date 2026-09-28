@@ -21,7 +21,7 @@ import {
   type TaskResult,
 } from "#execution/tasks/table.js";
 import { splitTaskIdInput } from "#execution/tasks/task-id-input.js";
-import { entryPointOf, startsTasks } from "#execution/tasks/tool-entry-point.js";
+import { entryPointOf, isAgentTool, startsTasks } from "#execution/tasks/tool-entry-point.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import { createFrameworkUserMessage, type HarnessModelMessage } from "#harness/messages.js";
 import type { HarnessSession, HarnessToolMap } from "#harness/types.js";
@@ -108,6 +108,7 @@ function commitTask(
 ): CommittedCallEntry {
   const created = createTask(readTaskTable(session.state), {
     callId: call.callId,
+    kind: isAgentTool(call.definition) ? "agent" : "tool",
     name: call.toolName,
     resumable: entryPoint === "serve",
     turnId: call.turnId,

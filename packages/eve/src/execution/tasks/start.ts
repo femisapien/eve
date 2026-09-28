@@ -16,6 +16,7 @@ import {
   removeTask,
   workingTasks,
   writeTaskTable,
+  type TaskRecord,
   type TaskTable,
 } from "#execution/tasks/table.js";
 import {
@@ -82,7 +83,7 @@ export async function startTaskRun(
   return {
     result: receipt,
     session: writeTaskTable(session, recordTaskRun(table, taskId, address)),
-    started: taskStartedEvent(dispatch),
+    started: taskStartedEvent(dispatch, record),
   };
 }
 
@@ -119,7 +120,7 @@ export async function sendToTask(input: TaskDispatchInput): Promise<TaskDispatch
   return {
     result: toolResult(input, renderTaskSentReceipt(taskId)),
     session: writeTaskTable(session, recorded.table),
-    started: taskStartedEvent(input),
+    started: taskStartedEvent(input, record),
   };
 }
 
@@ -154,9 +155,10 @@ function unknownTaskResult(input: TaskDispatchInput): RuntimeToolResultActionRes
   });
 }
 
-function taskStartedEvent(input: TaskDispatchInput): TaskStartedStreamEvent {
+function taskStartedEvent(input: TaskDispatchInput, record: TaskRecord): TaskStartedStreamEvent {
   return createTaskStartedEvent({
     callId: input.task.callId,
+    kind: record.kind,
     name: input.task.toolName,
     taskId: input.taskId,
     turnId: input.batchEvent.turnId,

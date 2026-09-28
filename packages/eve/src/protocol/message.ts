@@ -401,6 +401,13 @@ export interface AgentStartedStreamEvent {
 export interface TaskStartedStreamEvent {
   data: {
     callId: string;
+    /**
+     * `"agent"` for a subagent's generated tool, local or remote; `"tool"`
+     * for an authored tool, including one that opens sessions with
+     * `ctx.agent`. An agent call that fails before its session opens has no
+     * `agent.started`, so this is how a client tells it is an agent call.
+     */
+    kind: "agent" | "tool";
     /** The tool whose call started the task. */
     name: string;
     taskId: string;
@@ -1372,6 +1379,7 @@ export function createTaskStartedEvent(
   return {
     data: {
       callId: input.callId,
+      kind: input.kind,
       name: input.name,
       taskId: input.taskId,
       turnId: input.turnId,

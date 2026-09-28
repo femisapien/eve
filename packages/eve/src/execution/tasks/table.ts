@@ -3,6 +3,7 @@ import type { WorkflowToolRunCall } from "#execution/tools/workflow/messages.js"
 import type { SessionStateMap } from "#harness/types.js";
 import { isNonEmptyString, isObject } from "#shared/guards.js";
 import type { JsonValue } from "#shared/json.js";
+import type { TaskStartedStreamEvent } from "#protocol/message.js";
 import { UNREADABLE_TASK_ERROR } from "#execution/tasks/render.js";
 
 // The session's task table. Every write to a task record goes through this
@@ -65,6 +66,8 @@ export type TaskResult = Exclude<TaskOutcome, { readonly status: "cancelled" }>;
 
 export interface TaskRecord {
   readonly id: string;
+  /** Whether the tool is an agent's, as `task.started` reports it. */
+  readonly kind: TaskStartedStreamEvent["data"]["kind"];
   /** The tool whose call started the task. */
   readonly name: string;
   /** A `serve` tool's task: it takes more calls by its id, and is idle between results. */
@@ -205,6 +208,7 @@ export function createTask(
   table: TaskTable,
   input: {
     readonly callId: string;
+    readonly kind: TaskRecord["kind"];
     readonly name: string;
     readonly resumable: boolean;
     readonly turnId: string;
@@ -214,6 +218,7 @@ export function createTask(
   const record: TaskRecord = {
     calls: [{ callId: input.callId, turnId: input.turnId }],
     id: taskId,
+    kind: input.kind,
     name: input.name,
     results: [],
     resumable: input.resumable,
@@ -447,6 +452,7 @@ function decodeTaskRecord(value: unknown): TaskRecord | undefined {
   return {
     calls: [],
     id: value.id,
+    kind: value.kind === "agent" ? "agent" : "tool",
     name: value.name,
     results: [{ error: UNREADABLE_TASK_ERROR, status: "failed" }],
     resumable: false,
@@ -458,6 +464,7 @@ function isTaskRecord(value: unknown): value is TaskRecord {
     isObject(value) &&
     isNonEmptyString(value.id) &&
     isNonEmptyString(value.name) &&
+    (value.kind === "agent" || value.kind === "tool") &&
     typeof value.resumable === "boolean" &&
     Array.isArray(value.calls) &&
     Array.from(value.calls as unknown[]).every(isTaskCall) &&

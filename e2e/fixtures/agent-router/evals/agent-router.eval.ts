@@ -10,7 +10,7 @@ export default defineEval({
     turn.messageIncludes("AGENT-ROUTER-ROOT-COPY-OK");
     turn.calledTool("agent", { count: 1 });
     turn.calledTool("task_wait", { count: 1 });
-    turn.event("task.started", { count: 1, data: { name: "agent" } });
+    turn.event("task.started", { count: 1, data: { kind: "tool", name: "agent" } });
     turn.event("task.settled", { count: 1, data: { status: "completed" } });
     turn.event("agent.started", { count: 1, data: { name: "agent" } });
     t.succeeded();

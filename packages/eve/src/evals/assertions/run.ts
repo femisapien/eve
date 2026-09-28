@@ -226,7 +226,8 @@ export function noFailedActions(): RunAssertion {
 /**
  * Asserts a call to the agent tool `name` occurred. Each call to an agent
  * task counts once: its status and `output` come from `task.settled`, and the
- * session and remote metadata from the task's `agent.started`.
+ * session and remote metadata from the task's `agent.started` once its
+ * session opened.
  */
 export function calledSubagent(
   name: string,

@@ -57,7 +57,7 @@ export interface EveEvalToolCall {
 export interface EveEvalSubagentCall {
   /** The agent tool call's id, as on its task events. */
   readonly callId?: string;
-  /** The id of the agent's session, which every call to one task reaches. */
+  /** The agent's session id, shared by every call to one task; absent if it never opened. */
   readonly childSessionId?: string;
   /** Subagent name. */
   readonly name: string;

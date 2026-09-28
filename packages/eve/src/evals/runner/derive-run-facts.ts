@@ -17,8 +17,8 @@ interface MutableToolCall {
   sessionId?: string;
 }
 
-/** One call to a task, as `task.started` reports it. */
-interface TaskCall {
+/** One call to an agent task, as `task.started` reports it. */
+interface AgentCall {
   readonly callId: string;
   readonly name: string;
   readonly taskId: string;
@@ -60,7 +60,7 @@ export function deriveRunFacts(
   const sessionId = options?.sessionId;
   const toolCalls: MutableToolCall[] = [];
   const toolCallsByCallId = new Map<string, MutableToolCall>();
-  const taskCalls: TaskCall[] = [];
+  const agentCalls: AgentCall[] = [];
   const settledTaskCalls = new Map<string, TaskSettledStreamEvent["data"]>();
   const agentSessions: AgentStartedStreamEvent["data"][] = [];
   const inputRequests: InputRequest[] = [];
@@ -115,8 +115,9 @@ export function deriveRunFacts(
       }
 
       case "task.started": {
-        const { callId, name, taskId } = event.data;
-        taskCalls.push({ callId, name, taskId, turnIndex: Math.max(turnIndex, 0) });
+        const { callId, kind, name, taskId } = event.data;
+        if (kind !== "agent") break;
+        agentCalls.push({ callId, name, taskId, turnIndex: Math.max(turnIndex, 0) });
         break;
       }
 
@@ -158,10 +159,10 @@ export function deriveRunFacts(
   }
 
   const subagentCalls = deriveSubagentCalls({
+    agentCalls,
     agentSessions,
     sessionId,
     settledTaskCalls,
-    taskCalls,
   });
   return {
     toolCalls: toolCalls as readonly EveEvalToolCall[],
@@ -177,38 +178,32 @@ export function deriveRunFacts(
 }
 
 /**
- * Every call to an agent task. An agent tool's task opens one session with the
- * agent it is named after, announced with the task's `taskId`.
+ * Every call to an agent task, with its session from the task's
+ * `agent.started` once that session opened.
  */
 function deriveSubagentCalls(input: {
+  readonly agentCalls: readonly AgentCall[];
   readonly agentSessions: readonly AgentStartedStreamEvent["data"][];
   readonly sessionId: string | undefined;
   readonly settledTaskCalls: ReadonlyMap<string, TaskSettledStreamEvent["data"]>;
-  readonly taskCalls: readonly TaskCall[];
 }): EveEvalSubagentCall[] {
-  const taskNames = new Map(input.taskCalls.map((call) => [call.taskId, call.name]));
   const agentSessionsByTaskId = new Map<string, AgentStartedStreamEvent["data"]>();
   for (const session of input.agentSessions) {
-    if (session.taskId === undefined) continue;
-    if (taskNames.get(session.taskId) !== session.name) continue;
-    agentSessionsByTaskId.set(session.taskId, session);
+    if (session.taskId !== undefined) agentSessionsByTaskId.set(session.taskId, session);
   }
-  return input.taskCalls.flatMap((call) => {
+  return input.agentCalls.map((call) => {
     const session = agentSessionsByTaskId.get(call.taskId);
-    if (session === undefined) return [];
     const settled = input.settledTaskCalls.get(call.callId);
-    return [
-      {
-        callId: call.callId,
-        childSessionId: session.sessionId,
-        name: call.name,
-        output: settled?.output,
-        remoteUrl: session.remote?.url,
-        sessionId: input.sessionId,
-        status: settled?.status ?? "working",
-        turnIndex: call.turnIndex,
-      },
-    ];
+    return {
+      callId: call.callId,
+      childSessionId: session?.sessionId,
+      name: call.name,
+      output: settled?.output,
+      remoteUrl: session?.remote?.url,
+      sessionId: input.sessionId,
+      status: settled?.status ?? "working",
+      turnIndex: call.turnIndex,
+    };
   });
 }
 

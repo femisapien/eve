@@ -87,7 +87,7 @@ Pick the cheapest builder that captures what "correct" means. When exact match i
 
 A subagent call is a task call: it stays `working` until its `task.settled` event arrives, then takes that event's `status` (`completed`, `failed`, or `cancelled`) and, when completed, its `output`. A completed call leaves the child session available for later calls with the same `taskId`.
 
-The runner derives these values from captured `task.started`, `task.settled`, and `agent.started` events. A proxied input request alone does not change the subagent call's status; assert that request with `requireInputRequest`.
+The runner counts each `task.started` with `kind: "agent"` as a subagent call and takes its status from `task.settled`. `childSessionId` and `remoteUrl` come from the task's `agent.started`, so they are absent for a call that failed before its session opened. A proxied input request alone does not change the subagent call's status; assert that request with `requireInputRequest`.
 
 Matcher values accept a literal (objects partial-deep-match), a RegExp, or a predicate function that returns a boolean:
 

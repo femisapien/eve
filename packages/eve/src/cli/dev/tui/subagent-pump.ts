@@ -128,7 +128,6 @@ export interface SubagentPumpOptions {
 
 /** An agent task: its session is announced once, and every call to the task reaches it. */
 interface AgentTask {
-  readonly name: string;
   started?: AgentStartedStreamEvent;
 }
 
@@ -157,10 +156,11 @@ export class SubagentPump {
 
   /** A call started or reached a task. A call to an agent task opens a section at once. */
   taskStarted(event: TaskStartedStreamEvent, parentSessionId: string | undefined): void {
-    const { callId, name, taskId, turnId } = event.data;
+    const { callId, kind, taskId, turnId } = event.data;
+    if (kind !== "agent") return;
     const task = this.#tasks.get(taskId);
     if (task === undefined) {
-      this.#tasks.set(taskId, { name });
+      this.#tasks.set(taskId, {});
       return;
     }
     if (task.started !== undefined && parentSessionId !== undefined) {
@@ -169,14 +169,13 @@ export class SubagentPump {
   }
 
   /**
-   * A run opened a session. A session with the agent a task is named after
-   * belongs to that agent tool's task; sessions other tools open have no
-   * section.
+   * A run opened a session. The session an agent task opens is its agent's;
+   * sessions other tools open have no section.
    */
   agentStarted(started: AgentStartedStreamEvent, parentSessionId: string | undefined): void {
-    const { callId, name, taskId, turnId } = started.data;
+    const { callId, taskId, turnId } = started.data;
     const task = taskId === undefined ? undefined : this.#tasks.get(taskId);
-    if (task === undefined || task.name !== name) return;
+    if (task === undefined) return;
     task.started ??= started;
     if (parentSessionId === undefined) return;
     this.#begin({ callId, parentSessionId, parentTurnId: turnId, started: task.started });

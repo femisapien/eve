@@ -66,8 +66,13 @@ function actionResult(input: {
   };
 }
 
-function taskStarted(callId: string, name: string, taskId: string): UnstampedMessageStreamEvent {
-  return { type: "task.started", data: { callId, name, taskId, turnId: "t1" } };
+function taskStarted(
+  callId: string,
+  name: string,
+  taskId: string,
+  kind: "agent" | "tool",
+): UnstampedMessageStreamEvent {
+  return { type: "task.started", data: { callId, kind, name, taskId, turnId: "t1" } };
 }
 
 function agentStarted(
@@ -343,7 +348,7 @@ describe("deriveRunFacts", () => {
     const facts = derive(
       [
         turnStarted("t1", 0),
-        taskStarted("c1", "weather", "weather-1"),
+        taskStarted("c1", "weather", "weather-1", "agent"),
         agentStarted("c1", "weather", "weather-1", { url: "http://127.0.0.1:4001" }),
         {
           type: "task.settled",
@@ -356,7 +361,7 @@ describe("deriveRunFacts", () => {
           },
         },
         turnStarted("t2", 1),
-        taskStarted("c2", "weather", "weather-1"),
+        taskStarted("c2", "weather", "weather-1", "agent"),
       ],
       { sessionId: "s0" },
     );
@@ -385,14 +390,37 @@ describe("deriveRunFacts", () => {
     ]);
   });
 
-  it("does not count agents a workflow tool's task opens as agent tool calls", () => {
+  it("counts agent tasks by kind, not by the sessions tasks open", () => {
     const facts = derive([
-      taskStarted("c1", "agent_router", "agent_router-1"),
+      taskStarted("c1", "agent_router", "agent_router-1", "tool"),
       agentStarted("c1", "weather", "agent_router-1"),
-      taskStarted("c2", "deploy", "deploy-1"),
+      taskStarted("c2", "research", "research-1", "tool"),
+      agentStarted("c2", "research", "research-1"),
+      taskStarted("c3", "weather", "weather-1", "agent"),
+      {
+        type: "task.settled",
+        data: {
+          callId: "c3",
+          error: { message: "Remote agent is unreachable." },
+          status: "failed",
+          taskId: "weather-1",
+          turnId: "t1",
+        },
+      },
     ]);
 
-    expect(facts.subagentCalls).toEqual([]);
+    expect(facts.subagentCalls).toEqual([
+      {
+        callId: "c3",
+        childSessionId: undefined,
+        name: "weather",
+        output: undefined,
+        remoteUrl: undefined,
+        sessionId: undefined,
+        status: "failed",
+        turnIndex: 0,
+      },
+    ]);
   });
 
   it("captures failure code from session.failed event", () => {
