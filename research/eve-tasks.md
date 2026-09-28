@@ -332,9 +332,8 @@ stops a task, and a task waiting on a person keeps the wait going.
 ```text
 Wait until one of your tasks has a result, a new message arrives, or timeout (in milliseconds)
 passes. Results arrive in a <task_result> message right after this call returns. Waiting never
-stops a task. If a message you haven't answered asks you something, answer it in this response,
-before calling task_wait. Omit timeout to wait until a result or a message arrives; a timeout of
-0 returns at once with any results that are ready.
+stops a task. Omit timeout to wait until a result or a message arrives; a timeout of 0 returns
+at once with any results that are ready.
 ```
 
 ```ts
@@ -347,7 +346,8 @@ type TaskWaitResult =
 a wait. The model gets text:
 
 ```text
-d0-2b0c1a completed; its result follows. 1 task is still working: sre-9x1k2p.
+d0-2b0c1a completed; its result follows. 1 task is still working: sre-9x1k2p. Also answer any
+message you haven't answered yet.
 
 Stopped waiting after 5m; 2 tasks are still working. Their results arrive before your turn
 ends; wait again only if you need them now.
