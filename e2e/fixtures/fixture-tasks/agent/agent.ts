@@ -127,10 +127,12 @@ function respond(request: MockModelRequest): MockModelResponse | string {
   if (message.includes("TASK-REMOTE-WORKFLOW-CHILD-QUESTION")) {
     return runRemoteQuestion(request);
   }
-  if (message.includes("TASK-NESTED-REMOTE-CHILD-APPROVALS")) {
+  if (request.userMessages.some((entry) => entry.includes("TASK-NESTED-REMOTE-CHILD-APPROVALS"))) {
     return runNestedRemoteChildren(request, false);
   }
-  if (message.includes("TASK-NESTED-REMOTE-CHILD-AUTHORIZATION")) {
+  if (
+    request.userMessages.some((entry) => entry.includes("TASK-NESTED-REMOTE-CHILD-AUTHORIZATION"))
+  ) {
     return runNestedRemoteChildren(request, true);
   }
   if (message.includes("TASK-C8-REMOTE-CHILD")) return runRemoteGate(request);
@@ -489,6 +491,14 @@ function runNestedRemoteChildren(
   }));
   if (calls.some((call) => resultById(request, call.id) === undefined)) {
     return { toolCalls: calls };
+  }
+  if (
+    calls.some((call) => {
+      const taskId = findTaskId(resultById(request, call.id)?.output);
+      return taskId === undefined || !hasTaskNotification(request, taskId, "completed");
+    })
+  ) {
+    return "Nested children are still working.";
   }
   return authorization ? "TASK-NESTED-AUTHORIZATION-COMPLETE" : "TASK-NESTED-APPROVALS-COMPLETE";
 }

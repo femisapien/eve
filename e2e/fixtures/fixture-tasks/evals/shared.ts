@@ -97,11 +97,77 @@ export async function waitForTaskInput(
   throw new Error(`Task did not surface input for tool "${toolName}" after five turns.`);
 }
 
+export async function waitForTaskInputs(
+  t: EveEvalContext,
+  initialSession: TaskEvalSessionDriver,
+  toolName: string,
+  count: number,
+): Promise<{
+  readonly requests: readonly InputRequest[];
+  readonly session: TaskEvalSessionDriver;
+}> {
+  let session = initialSession;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const requests = session.pendingInputRequests;
+    if (requests.length >= count) {
+      if (
+        requests.length !== count ||
+        requests.some((request) => request.action.toolName !== toolName)
+      ) {
+        throw new Error(
+          `Expected ${count} pending ${toolName} requests; got ${requests.map((request) => request.action.toolName).join(", ")}.`,
+        );
+      }
+      return { requests, session };
+    }
+    const sessionId = session.sessionId;
+    if (sessionId === undefined) throw new Error("Task input wait has no parent session id.");
+    const live = t.target.watchTurn(sessionId, {
+      startIndex: requireSessionStreamIndex(session, "Task input wait"),
+    });
+    (await live.result()).noFailedActions();
+    session = live.session;
+  }
+  throw new Error(`Task did not surface ${count} ${toolName} requests after eight turns.`);
+}
+
 /** Reads the working task receipt returned by a background tool call. */
 export function requireBackgroundTaskId(turn: EveEvalTurn): string {
   const receipt = taskReceipts(turn.events)[0];
   if (receipt === undefined) throw new Error("Turn completed without a background task receipt.");
   return receipt.taskId;
+}
+
+export async function waitForTaskAuthorization<
+  T extends "authorization.required" | "authorization.completed",
+>(
+  t: EveEvalContext,
+  initialSession: TaskEvalSessionDriver,
+  initialTurn: EveEvalTurn | undefined,
+  type: T,
+): Promise<{
+  readonly event: Extract<EveEvalTurn["events"][number], { readonly type: T }>;
+  readonly session: TaskEvalSessionDriver;
+  readonly turn: EveEvalTurn;
+}> {
+  let session = initialSession;
+  let turn = initialTurn;
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    const event = turn?.events.find(
+      (candidate): candidate is Extract<EveEvalTurn["events"][number], { readonly type: T }> =>
+        candidate.type === type,
+    );
+    if (event !== undefined) return { event, session, turn: turn! };
+    const sessionId = session.sessionId;
+    if (sessionId === undefined) throw new Error("Authorization event wait has no session id.");
+    const live = t.target.watchTurn(sessionId, {
+      startIndex: requireSessionStreamIndex(session, "Authorization event wait"),
+    });
+    turn = await live.result();
+    turn.noFailedActions();
+    session = live.session;
+  }
+  throw new Error(`Task did not surface ${type} after ten turns.`);
 }
 
 export function parseToolErrorOutput(output: unknown): unknown {

@@ -5,8 +5,7 @@ import {
 import { defineTool } from "eve/tools";
 import { z } from "zod";
 
-const AUTHORIZATION_NAME = "c7-task-authorization";
-const AUTHORIZATION_CODE = "c7-deterministic-code";
+import { AUTHORIZATION_CODE, AUTHORIZATION_NAME } from "../../../lib/authorization-fixture.js";
 const AUTHORIZATION_TOKEN = "c7-deterministic-token";
 
 const authorization = defineInteractiveAuthorization<{ marker: "C7" }>({

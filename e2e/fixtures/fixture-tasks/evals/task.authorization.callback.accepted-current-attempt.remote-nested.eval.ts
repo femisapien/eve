@@ -1,22 +1,13 @@
-import type { EveEvalContext, EveEvalTurn } from "eve/evals";
 import { equals, satisfies } from "eve/evals/expect";
 
 import {
   requireBackgroundTaskId,
-  requireSessionStreamIndex,
   requireTaskView,
-  type TaskEvalSessionDriver,
   waitForCompletedTask,
+  waitForTaskAuthorization,
 } from "./shared.js";
 import { defineTaskEval } from "./task-transition.js";
-
-const AUTHORIZATION_CODE = "c7-deterministic-code";
-const AUTHORIZATION_NAME = "c7-task-authorization";
-
-type AuthorizationEvent = Extract<
-  EveEvalTurn["events"][number],
-  { readonly type: "authorization.completed" | "authorization.required" }
->;
+import { AUTHORIZATION_CODE, AUTHORIZATION_NAME } from "../agent/lib/authorization-fixture.js";
 
 export default defineTaskEval({
   transition: {
@@ -32,7 +23,7 @@ export default defineTaskEval({
     });
     started.expectOk();
     const taskId = requireBackgroundTaskId(started);
-    const required = await waitForAuthorization(
+    const required = await waitForTaskAuthorization(
       t,
       started.session,
       started,
@@ -47,7 +38,7 @@ export default defineTaskEval({
     callback.searchParams.set("code", AUTHORIZATION_CODE);
     await t.require((await fetch(callback)).status, equals(200));
 
-    const completed = await waitForAuthorization(
+    const completed = await waitForTaskAuthorization(
       t,
       required.session,
       undefined,
@@ -76,32 +67,3 @@ export default defineTaskEval({
     t.noFailedActions();
   },
 });
-
-async function waitForAuthorization<T extends AuthorizationEvent["type"]>(
-  t: EveEvalContext,
-  initialSession: TaskEvalSessionDriver,
-  initialTurn: EveEvalTurn | undefined,
-  type: T,
-): Promise<{
-  event: Extract<AuthorizationEvent, { readonly type: T }>;
-  session: TaskEvalSessionDriver;
-  turn: EveEvalTurn;
-}> {
-  let session = initialSession;
-  let turn = initialTurn;
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const event = turn?.events.find(
-      (candidate): candidate is Extract<AuthorizationEvent, { readonly type: T }> =>
-        candidate.type === type,
-    );
-    if (event !== undefined) return { event, session, turn: turn! };
-    if (session.sessionId === undefined) throw new Error("Parent session has no id.");
-    const live = t.target.watchTurn(session.sessionId, {
-      startIndex: requireSessionStreamIndex(session, `${type} wait`),
-    });
-    turn = await live.result();
-    turn.noFailedActions();
-    session = live.session;
-  }
-  throw new Error(`Nested remote child did not surface ${type}.`);
-}

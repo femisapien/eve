@@ -1,22 +1,13 @@
-import type { EveEvalContext, EveEvalTurn } from "eve/evals";
 import { equals, satisfies } from "eve/evals/expect";
 
 import {
   requireBackgroundTaskId,
-  requireSessionStreamIndex,
   requireTaskView,
-  type TaskEvalSessionDriver,
   waitForCompletedTask,
+  waitForTaskAuthorization,
 } from "./shared.js";
 import { defineTaskEval } from "./task-transition.js";
-
-const AUTHORIZATION_CODE = "c7-deterministic-code";
-const AUTHORIZATION_NAME = "c7-task-authorization";
-
-type AuthorizationEvent = Extract<
-  EveEvalTurn["events"][number],
-  { readonly type: "authorization.completed" | "authorization.required" }
->;
+import { AUTHORIZATION_CODE, AUTHORIZATION_NAME } from "../agent/lib/authorization-fixture.js";
 
 /** A task-owned interactive authorization keeps its distinct lifecycle and task blocker. */
 export default defineTaskEval({
@@ -38,7 +29,7 @@ export default defineTaskEval({
     });
     const taskId = requireBackgroundTaskId(started);
 
-    const required = await waitForAuthorizationEvent(
+    const required = await waitForTaskAuthorization(
       t,
       started.session,
       started,
@@ -59,7 +50,7 @@ export default defineTaskEval({
     });
     await t.require(callbackResponse.status, equals(200));
 
-    const completed = await waitForAuthorizationEvent(
+    const completed = await waitForTaskAuthorization(
       t,
       required.session,
       undefined,
@@ -101,33 +92,3 @@ export default defineTaskEval({
     t.noFailedActions();
   },
 });
-
-async function waitForAuthorizationEvent<TType extends AuthorizationEvent["type"]>(
-  t: EveEvalContext,
-  initialSession: TaskEvalSessionDriver,
-  initialTurn: EveEvalTurn | undefined,
-  type: TType,
-): Promise<{
-  readonly event: Extract<AuthorizationEvent, { readonly type: TType }>;
-  readonly session: TaskEvalSessionDriver;
-  readonly turn: EveEvalTurn;
-}> {
-  let session = initialSession;
-  let turn = initialTurn;
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    const event = turn?.events.find(
-      (candidate): candidate is Extract<AuthorizationEvent, { readonly type: TType }> =>
-        candidate.type === type,
-    );
-    if (event !== undefined) return { event, session, turn: turn! };
-
-    const sessionId = session.sessionId;
-    if (sessionId === undefined) throw new Error("Authorization event wait has no session id.");
-    const live = t.target.watchTurn(sessionId, {
-      startIndex: requireSessionStreamIndex(session, "Authorization event wait"),
-    });
-    turn = await live.result();
-    session = live.session;
-  }
-  throw new Error(`Task did not surface ${type} after ten turns.`);
-}
