@@ -107,7 +107,9 @@ function settle(): Promise<void> {
 
 function replies(): Array<{ readonly callId: string; readonly output: unknown }> {
   return agent.delivered.flatMap((message) =>
-    message.kind === "reply" ? [{ callId: message.from.callId, output: message.output }] : [],
+    message.kind === "reply"
+      ? message.callIds.map((callId) => ({ callId, output: message.output }))
+      : [],
   );
 }
 

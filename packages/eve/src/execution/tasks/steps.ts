@@ -11,7 +11,7 @@ import {
   markTaskRunStarted,
   readTaskTable,
   settleRemainingTaskCalls,
-  settleTaskCall,
+  settleTaskCalls,
   writeTaskTable,
   type TaskCall,
   type TaskOutcome,
@@ -68,7 +68,7 @@ export async function applyTaskRunMessageStep(
     }
     case "reply": {
       const outcome: TaskOutcome = { output: message.output, status: "completed" };
-      const settled = settleTaskCall(table, { callId: message.from.callId, outcome, taskId });
+      const settled = settleTaskCalls(table, { callIds: message.callIds, outcome, taskId });
       table = settled.table;
       events.push(...settled.settled.map((call) => taskSettledEvent(taskId, call, outcome)));
       break;

@@ -61,7 +61,10 @@ export type TaskOutcome =
   | { readonly error: string; readonly status: "failed" }
   | { readonly status: "cancelled" };
 
-/** An outcome the model receives. Cancelled work never reports back. */
+/**
+ * An outcome the model receives, one per reply or run end, however many calls
+ * it settled. Cancelled work never reports back.
+ */
 export type TaskResult = Exclude<TaskOutcome, { readonly status: "cancelled" }>;
 
 export interface TaskRecord {
@@ -281,24 +284,30 @@ export function recordTaskCall(
 }
 
 /**
- * Settles one call. The first outcome wins: a call already settled, including
- * one its owner cancelled, is dropped.
+ * Settles calls that share one outcome, as one reply does, in one step. Each
+ * call settles once, with its own `task.settled`; the first outcome wins, so a
+ * call already settled, including one its owner cancelled, is dropped. The
+ * model receives the outcome once, since every call it settles would repeat it.
  */
-export function settleTaskCall(
+export function settleTaskCalls(
   table: TaskTable,
-  input: { readonly callId: string; readonly outcome: TaskOutcome; readonly taskId: string },
+  input: {
+    readonly callIds: readonly string[];
+    readonly outcome: TaskOutcome;
+    readonly taskId: string;
+  },
 ): { readonly settled: readonly TaskCall[]; readonly table: TaskTable } {
-  const call = findTask(table, input.taskId)?.calls.find(
-    (candidate) => candidate.callId === input.callId,
-  );
-  if (call === undefined) return { settled: [], table };
+  const settling = new Set(input.callIds);
+  const calls = findTask(table, input.taskId)?.calls ?? [];
+  const settled = calls.filter((call) => settling.has(call.callId));
+  if (settled.length === 0) return { settled, table };
   const { outcome } = input;
   const next = updateTask(table, input.taskId, (current) => ({
     ...current,
-    calls: current.calls.filter((candidate) => candidate.callId !== input.callId),
+    calls: current.calls.filter((call) => !settling.has(call.callId)),
     results: outcome.status === "cancelled" ? current.results : [...current.results, outcome],
   }));
-  return { settled: [call], table: next };
+  return { settled, table: next };
 }
 
 /**
@@ -311,14 +320,8 @@ export function settleRemainingTaskCalls(
   taskId: string,
   outcome: TaskOutcome,
 ): { readonly settled: readonly TaskCall[]; readonly table: TaskTable } {
-  const settled: TaskCall[] = [];
-  let next = table;
-  for (const { callId } of findTask(table, taskId)?.calls ?? []) {
-    const result = settleTaskCall(next, { callId, outcome, taskId });
-    next = result.table;
-    settled.push(...result.settled);
-  }
-  return { settled, table: next };
+  const callIds = findTask(table, taskId)?.calls.map((call) => call.callId) ?? [];
+  return settleTaskCalls(table, { callIds, outcome, taskId });
 }
 
 /** The task's run finished; nothing is left to cancel. */

@@ -115,6 +115,29 @@ const SCENARIOS: Readonly<Record<string, Scenario>> = {
       () => report("WORKFLOW-SIGNOFF-RESULT", latestTaskResult(request, "sign_off_plan")),
     ),
 
+  // Sends the notes task two notes, the first held for the second, so one reply answers both.
+  "WORKFLOW-NOTES-BATCH": (request) =>
+    playScript(
+      request,
+      [
+        { id: "notes-draft", input: () => ({ more: true, note: "draft" }), name: "collect_notes" },
+        {
+          id: "notes-final",
+          input: (current) => ({
+            note: "final",
+            taskId: taskIdFromReceipt(current, "notes-draft"),
+          }),
+          name: "collect_notes",
+        },
+        { id: "notes-wait", name: "task_wait" },
+      ],
+      () =>
+        report(
+          "WORKFLOW-NOTES-RESULT",
+          `${String(countTaskResults(request, "collect_notes"))} ${latestTaskResult(request, "collect_notes") ?? "none"}`,
+        ),
+    ),
+
   "WORKFLOW-DELEGATE-STAGE": (request) =>
     playScript(
       request,
@@ -149,6 +172,16 @@ export function respondToTaskScenario(
 
 function apiService(): { service: string } {
   return { service: "api" };
+}
+
+/** How many `<task_result>` blocks for `tool` the model has received. */
+function countTaskResults(request: MockModelRequest, tool: string): number {
+  const block = new RegExp(`<task_result [^>]*tool="${tool}"`, "g");
+  let count = 0;
+  for (const message of request.messages) {
+    if (message.role === "user") count += [...message.text.matchAll(block)].length;
+  }
+  return count;
 }
 
 /** Input naming the task the receipt of `callId` started. */

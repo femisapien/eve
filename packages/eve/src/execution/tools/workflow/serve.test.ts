@@ -170,7 +170,7 @@ it("serves every call to its task, one stretch of work at a time, until the sess
 
   await vi.waitFor(() => expect(pendings).toHaveLength(2));
   started.control.apply(call("call-2", "Add a rollback step."));
-  await vi.waitFor(() => expect(mocks.deliver).toHaveBeenCalledTimes(4));
+  await vi.waitFor(() => expect(mocks.deliver).toHaveBeenCalledTimes(3));
   started.control.apply(call("call-3", "Move it to Friday."));
   await vi.waitFor(() => expect(received).toHaveLength(3));
   started.control.apply({ kind: "cancel", reason: "The task was cancelled." });
@@ -193,7 +193,7 @@ it("serves every call to its task, one stretch of work at a time, until the sess
     message.kind === "reply"
       ? [
           {
-            callId: message.from.callId,
+            callIds: message.callIds,
             inbox,
             output: message.output,
             turnId: message.from.turnId,
@@ -201,9 +201,14 @@ it("serves every call to its task, one stretch of work at a time, until the sess
         ]
       : [],
   );
+  // One reply settles both calls it answers, together.
   expect(replies).toEqual([
-    { callId: "call-1", inbox: "inbox", output: "revised plan", turnId: "turn" },
-    { callId: "call-2", inbox: "inbox", output: "revised plan", turnId: "turn-call-2" },
+    {
+      callIds: ["call-1", "call-2"],
+      inbox: "inbox",
+      output: "revised plan",
+      turnId: "turn-call-2",
+    },
   ]);
   // Questions, sign-ins, `agent.started`, `ctx.session`, and `ctx.agents`
   // while serving a later call describe that call, not the call that started
