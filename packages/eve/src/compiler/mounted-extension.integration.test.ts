@@ -1,4 +1,4 @@
-import { mkdir, stat, writeFile } from "node:fs/promises";
+import { mkdir, readdir, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -151,6 +151,25 @@ describe("mounted extension via authored-source loader", () => {
       (map) => map.nodes[ROOT_COMPILED_AGENT_NODE_ID]!.modules[id]!.default,
     );
     expect(new Set(instances).size).toBe(4);
+    const generatedMaps = (await readdir(join(app.appRoot, ".eve", "compile"))).filter((name) =>
+      /^authored-module-map-[a-f0-9]{64}\.mjs$/.test(name),
+    );
+    expect(generatedMaps).toHaveLength(1);
+    await writeFile(
+      join(app.appRoot, "node_modules/@acme/crm/extension/extension.mjs"),
+      "export default { instance: {}, revision: 2 };",
+    );
+    const updated = await loadCompiledModuleMapFromAuthoredSource({
+      compiledArtifactsSource: source,
+    });
+    expect(updated.nodes[ROOT_COMPILED_AGENT_NODE_ID]!.modules[id]!.default).toMatchObject({
+      revision: 2,
+    });
+    expect(
+      (await readdir(join(app.appRoot, ".eve", "compile"))).filter((name) =>
+        /^authored-module-map-[a-f0-9]{64}\.mjs$/.test(name),
+      ),
+    ).toHaveLength(2);
   });
 
   it("isolates configured built-in extension mounts", async () => {

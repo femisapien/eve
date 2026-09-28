@@ -6,6 +6,7 @@ import { ContextKey } from "#context/key.js";
 import type { CompiledBundle } from "#runtime/sessions/runtime-context-keys.js";
 import { BundleKey, ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
+import * as manifestLoader from "#runtime/loaders/manifest.js";
 
 const BaseKey = new ContextKey<string>("test.deserialize.base");
 const DerivedKey = new ContextKey<string>("test.deserialize.derived", {
@@ -34,6 +35,35 @@ describe("deserializeContext", () => {
 describe("state layout admission", () => {
   it("rejects legacy local restores before dropping unregistered extension state", async () => {
     await expect(deserializeContext({ "eve.bundle": {}, "acme-crm.requests": 4 })).rejects.toThrow(
+      "Incompatible context state layout",
+    );
+  });
+
+  it("admits an unmarked checkpoint only when its graph has no mounts", async () => {
+    const bundle = { compiledArtifactsSource: { kind: "bundled" } } as CompiledBundle;
+    const deserialize = vi.spyOn(BundleKey.codec!, "deserialize").mockResolvedValue(bundle);
+    const loadManifest = vi.spyOn(manifestLoader, "loadCompiledManifest").mockResolvedValue({
+      extensionMounts: [],
+      subagents: [],
+    } as unknown as Awaited<ReturnType<typeof manifestLoader.loadCompiledManifest>>);
+    try {
+      const restored = await deserializeContext({ "eve.bundle": {} });
+      expect(restored.get(BundleKey)).toBe(bundle);
+      loadManifest.mockResolvedValue({
+        extensionMounts: [{ mountId: "extensions/crm" }],
+        subagents: [],
+      } as unknown as Awaited<ReturnType<typeof manifestLoader.loadCompiledManifest>>);
+      await expect(deserializeContext({ "eve.bundle": {} })).rejects.toThrow(
+        "Incompatible context state layout",
+      );
+    } finally {
+      deserialize.mockRestore();
+      loadManifest.mockRestore();
+    }
+  });
+
+  it("rejects an unsupported explicit layout", async () => {
+    await expect(deserializeContext({ "eve.bundle": {}, "eve.stateLayout": 2 })).rejects.toThrow(
       "Incompatible context state layout",
     );
   });

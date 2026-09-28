@@ -197,7 +197,7 @@ The same mount shape works with an npm package, a workspace dependency, or a lin
 
 Extension state belongs to the logical mount path (for example, `extensions/crm` or `subagents/research/extensions/crm`). A flat `crm.ts` mount and a directory `crm/extension.ts` mount have the same identity; moving or renaming the mount changes its state keys. Application-defined state keys are unchanged.
 
-**Upgrading from a deployment that stored package-prefixed extension state:** Existing session checkpoints and local context snapshots are incompatible with the new state layout. Keep the original deployment available to finish those sessions, or explicitly start new sessions on the updated deployment. eve rejects incompatible restores rather than resetting extension state or copying a shared package slot to a mount. A session written with mount-owned state cannot be handed back to a pre-upgrade deployment.
+**Upgrading from a deployment that stored package-prefixed extension state:** Existing session checkpoints and local context snapshots for agents with extensions are incompatible with the new state layout. Keep the original deployment available to finish those sessions, or explicitly start new sessions on the updated deployment. Unmarked checkpoints for agents without extensions can resume if they have no unrecognized state keys. eve rejects incompatible restores rather than resetting extension state or copying a shared package slot to a mount. A session written with mount-owned state cannot be handed back to a pre-upgrade deployment.
 
 ### Use an extension in a workspace
 
