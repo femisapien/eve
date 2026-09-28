@@ -534,7 +534,7 @@ The parent stream announces each session with `agent.started`, which carries the
 latest call it received), the
 `taskId` when the call runs as a task, the agent `name`, the child's `sessionId`, and a
 `streamPath`. Pass the event to
-[`session.streamSubagent()`](/docs/guides/client/streaming#follow-a-subagent) to follow the child.
+[`session.agent(started).stream()`](/docs/guides/client/streaming#follow-a-subagent) to follow the child.
 
 ### Route to a hidden subagent with Jev
 

@@ -34,7 +34,7 @@ export async function correctKeeperWhileItWorks(t: EveEvalContext, tool: string)
   );
   if (started?.type !== "agent.started") return;
   const firstTurn: MessageStreamEvent[] = [];
-  for await (const event of corrected.session.streamSubagent(started)) {
+  for await (const event of corrected.session.agent(started).stream()) {
     firstTurn.push(event);
     if (event.type === "turn.completed" || event.type === "turn.failed") break;
   }

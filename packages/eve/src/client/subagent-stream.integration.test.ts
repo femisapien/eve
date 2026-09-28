@@ -27,7 +27,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("ClientSession.streamSubagent through the parent proxy", () => {
+describe("ClientSession.agent through the parent proxy", () => {
   it("reads a remote child's events through the parent channel with authored remote credentials", async () => {
     const started = createStarted();
     const childEvents = [
@@ -52,7 +52,7 @@ describe("ClientSession.streamSubagent through the parent proxy", () => {
 
     const session = new Client({ host: PARENT_ORIGIN }).sessions.attach("parent-1");
     const received: MessageStreamEvent[] = [];
-    for await (const event of session.streamSubagent(started, { follow: false })) {
+    for await (const event of session.agent(started).stream({ follow: false })) {
       received.push(event);
     }
 
@@ -90,7 +90,7 @@ describe("ClientSession.streamSubagent through the parent proxy", () => {
 
     const session = new Client({ host: PARENT_ORIGIN }).sessions.attach("parent-1");
     const read = async () => {
-      for await (const _event of session.streamSubagent(started, {
+      for await (const _event of session.agent(started).stream({
         streamReconnectPolicy: { reconnect: false },
       })) {
         // The proxy refuses before any child event exists.

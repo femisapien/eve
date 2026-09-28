@@ -1359,7 +1359,7 @@ describe("ClientSession", () => {
   });
 });
 
-describe("ClientSession.streamSubagent", () => {
+describe("ClientSession.agent", () => {
   function startedEvent(input: { readonly remote?: boolean } = {}): AgentStartedStreamEvent {
     return createAgentStartedEvent({
       callId: "call_1",
@@ -1394,7 +1394,7 @@ describe("ClientSession.streamSubagent", () => {
     });
 
     const types: string[] = [];
-    for await (const event of session.streamSubagent(startedEvent(), { follow: false })) {
+    for await (const event of session.agent(startedEvent()).stream({ follow: false })) {
       types.push(event.type);
     }
 
@@ -1419,7 +1419,7 @@ describe("ClientSession.streamSubagent", () => {
     const session = createSession(parentState);
 
     const types: string[] = [];
-    for await (const event of session.streamSubagent(startedEvent(), {
+    for await (const event of session.agent(startedEvent()).stream({
       startIndex: 1,
       streamReconnectPolicy: { reconnect: false },
     })) {
@@ -1439,7 +1439,7 @@ describe("ClientSession.streamSubagent", () => {
     });
     const session = createSession();
 
-    for await (const _event of session.streamSubagent(startedEvent({ remote: false }), {
+    for await (const _event of session.agent(startedEvent({ remote: false })).stream({
       follow: false,
     })) {
       // Drain the bounded child stream.

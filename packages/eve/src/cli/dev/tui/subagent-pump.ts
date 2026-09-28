@@ -291,7 +291,7 @@ export class SubagentPump {
       const { childSessionId } = run;
       let cursor = this.#childStreamIndices.get(childSessionId) ?? 0;
       try {
-        const events = client.sessions.attach(run.parentSessionId).streamSubagent(run.started, {
+        const events = client.sessions.attach(run.parentSessionId).agent(run.started).stream({
           signal: controller.signal,
           startIndex: cursor,
           streamReconnectPolicy: childStreamReconnectPolicy,

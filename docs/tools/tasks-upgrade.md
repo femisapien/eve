@@ -113,13 +113,14 @@ removed. Use these instead:
 | `agent.started` | `subagent.started`   | `callId`, `turnId`, `taskId`, `name`, `sessionId`, `streamPath` |
 
 Follow a child's own events, which `subagent.event` used to relay, on its stream:
-`session.streamSubagent()` now takes the `agent.started` event.
+`session.streamSubagent()` is now `session.agent(started).stream()`, and it takes the `agent.started` event.
 
 ```diff
  for await (const event of session.stream()) {
 -  if (event.type !== "subagent.called") continue;
 +  if (event.type !== "agent.started") continue;
-   for await (const childEvent of session.streamSubagent(event)) {
+-  for await (const childEvent of session.streamSubagent(event)) {
++  for await (const childEvent of session.agent(event).stream()) {
 ```
 
 Hooks subscribe the same way:

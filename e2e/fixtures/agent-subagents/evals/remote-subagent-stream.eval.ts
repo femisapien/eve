@@ -25,7 +25,7 @@ export default defineEval({
     const started = await requireRemoteSession(t, turn);
 
     const childEvents: MessageStreamEvent[] = [];
-    for await (const event of turn.session.streamSubagent(started)) {
+    for await (const event of turn.session.agent(started).stream()) {
       childEvents.push(event);
       if (isCurrentTurnBoundaryEvent(event)) break;
     }
