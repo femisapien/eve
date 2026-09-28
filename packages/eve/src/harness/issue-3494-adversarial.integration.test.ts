@@ -381,6 +381,44 @@ it("keeps a message waiting behind a budget prompt and runs it after the grant",
   ).toEqual(["Say hello.", "Read the status.", "Also say goodbye."]);
 });
 
+it("applies response authorization to an approval sharing a step with a workflow (#3891)", async () => {
+  const response = vi.fn(() => ({
+    status: "rejected" as const,
+    reason: "Only the requester may approve this tool call.",
+  }));
+  const f = fixture("response-authorization-with-parallel-workflow", response);
+  f.script.push(calls("gateA", "workflow"));
+  await f.drive({ message: "Prepare the protected action and start the workflow." });
+  await f.finishRuntime();
+
+  const approval = f.respond("gateA").inputResponses![0]!;
+  f.script.push("FINAL");
+  await f.drive({
+    attributedInputResponses: [
+      {
+        response: approval,
+        auth: {
+          attributes: {},
+          authenticator: "test",
+          issuer: "test",
+          principalId: "other-user",
+          principalType: "user",
+        },
+      },
+    ],
+  });
+
+  expect({
+    responsePolicyCalls: response.mock.calls.length,
+    executedTools: f.executions,
+    approvalStillPending: f.pending().some((request) => request.action.toolName === "gateA"),
+  }).toEqual({
+    responsePolicyCalls: 1,
+    executedTools: [],
+    approvalStillPending: true,
+  });
+});
+
 it("reaches the next budget prompt after a grant without an older approval [control]", async () => {
   const f = fixture("control-session-limit", false, 1);
   f.script.push("Initial text.");
