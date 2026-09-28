@@ -106,6 +106,15 @@ function respond(request: MockModelRequest): MockModelResponse | string {
       "completed",
     );
   }
+  if (message.startsWith("TASK-NESTED-REMOTE-VERIFY ")) {
+    return inspectTerminalTask(
+      request,
+      "task-nested-remote-verify",
+      "TASK-NESTED-REMOTE-STATUS",
+      message,
+      "completed",
+    );
+  }
   if (message.startsWith("TASK-C8-REMOTE-VERIFY ")) {
     return inspectTerminalTask(
       request,
@@ -114,6 +123,12 @@ function respond(request: MockModelRequest): MockModelResponse | string {
       message,
       "completed",
     );
+  }
+  if (message.includes("TASK-NESTED-REMOTE-CHILD-APPROVALS")) {
+    return runNestedRemoteChildren(request, false);
+  }
+  if (message.includes("TASK-NESTED-REMOTE-CHILD-AUTHORIZATION")) {
+    return runNestedRemoteChildren(request, true);
   }
   if (message.includes("TASK-C8-REMOTE-CHILD")) return runRemoteGate(request);
   if (message.startsWith("Background task ")) {
@@ -183,6 +198,12 @@ function respond(request: MockModelRequest): MockModelResponse | string {
     return startApprovalWorker(request, "task-c7-authorization-worker", "TASK-C7-STARTED");
   }
   if (message === "TASK-C8-REMOTE-HITL") return startRemoteWorker(request);
+  if (message === "TASK-NESTED-REMOTE-APPROVALS") {
+    return startNestedRemoteWorker(request, "TASK-NESTED-REMOTE-CHILD-APPROVALS");
+  }
+  if (message === "TASK-NESTED-REMOTE-AUTHORIZATION") {
+    return startNestedRemoteWorker(request, "TASK-NESTED-REMOTE-CHILD-AUTHORIZATION");
+  }
   if (message === "TASK-INPUT-BATCH-ORDERING") {
     return startApprovalWorker(request, "task-input-batch-worker", "TASK-INPUT-BATCH-STARTED");
   }
@@ -421,6 +442,37 @@ function startApprovalWorker(
     };
   }
   return completedText;
+}
+
+function startNestedRemoteWorker(
+  request: MockModelRequest,
+  message: string,
+): MockModelResponse | string {
+  const callId = "task-nested-remote-worker";
+  if (resultById(request, callId) === undefined) {
+    return { toolCalls: [{ id: callId, name: "remote-loopback", input: { message } }] };
+  }
+  return "TASK-NESTED-REMOTE-STARTED";
+}
+
+function runNestedRemoteChildren(
+  request: MockModelRequest,
+  authorization: boolean,
+): MockModelResponse | string {
+  const children = authorization ? ["authorization"] : ["alice", "bob"];
+  const calls = children.map((child) => ({
+    id: `task-nested-${child}`,
+    name: "approval-worker",
+    input: {
+      message: authorization
+        ? "C7 authorization mode"
+        : `Run the first approval gate for ${child}.`,
+    },
+  }));
+  if (calls.some((call) => resultById(request, call.id) === undefined)) {
+    return { toolCalls: calls };
+  }
+  return authorization ? "TASK-NESTED-AUTHORIZATION-COMPLETE" : "TASK-NESTED-APPROVALS-COMPLETE";
 }
 
 function startRemoteWorker(request: MockModelRequest): MockModelResponse | string {
