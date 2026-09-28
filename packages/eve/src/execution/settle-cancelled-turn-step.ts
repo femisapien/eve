@@ -1,4 +1,7 @@
-import { getPendingCoordinationBatch } from "#harness/coordination.js";
+import {
+  commitCancelledCoordinationBatch,
+  getPendingCoordinationBatch,
+} from "#harness/coordination.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
 import {
   createDurableSessionState,
@@ -11,7 +14,6 @@ import { emitCancelledTurn } from "#harness/cancelled-turn-emission.js";
 import { clearPendingSessionLimitPrompt } from "#harness/input-requests.js";
 import { getHarnessEmissionState, setHarnessEmissionState } from "#harness/emission.js";
 import { clearAllProxyInputRequests } from "#harness/proxy-input-requests.js";
-import { clearPendingCoordinationBatch } from "#harness/coordination.js";
 import { removeBlockingWorkflowToolRuns } from "#harness/workflow-tool-runs.js";
 import { getTurnUsageState, toUsage } from "#harness/turn-tag-state.js";
 import type { TokenUsage } from "#shared/token-usage.js";
@@ -61,7 +63,7 @@ export async function settleCancelledTurnStep(input: {
     setHarnessEmissionState(
       clearPendingSessionLimitPrompt(
         clearAllProxyInputRequests(
-          clearPendingCoordinationBatch(
+          commitCancelledCoordinationBatch(
             removeBlockingWorkflowToolRuns({ ...session, outputSchema: undefined }, owningTurnId),
           ),
         ),
