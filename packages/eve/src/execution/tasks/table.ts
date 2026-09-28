@@ -56,7 +56,10 @@ export interface TaskRunCommands {
   readonly run: TaskRunAddress;
 }
 
-/** One settled call's result, kept until the model receives it. */
+/**
+ * The result of one reply or of the run's end, kept until the model receives
+ * it. `callId` is the latest call it settled; the calls settled with it share it.
+ */
 export type TaskResult =
   | { readonly callId: string; readonly output: JsonValue; readonly status: "completed" }
   | { readonly callId: string; readonly error: string; readonly status: "failed" };
@@ -295,25 +298,35 @@ export function recordTaskCall(
 }
 
 /**
- * Settles one call. The first outcome wins: a call already settled, including
- * one its owner cancelled, is dropped.
+ * Settles calls that share one outcome, as one reply does, in one step. Each
+ * call settles once, with its own `task.settled`; the first outcome wins, so a
+ * call already settled, including one its owner cancelled, is dropped. The
+ * model receives the outcome once, since every call it settles would repeat it.
  */
-export function settleTaskCall(
+export function settleTaskCalls(
   table: TaskTable,
-  input: { readonly callId: string; readonly outcome: TaskCallOutcome; readonly taskId: string },
-): { readonly settlement?: TaskSettlement; readonly table: TaskTable } {
-  const call = findTask(table, input.taskId)?.calls.find(
-    (candidate) => candidate.callId === input.callId,
-  );
-  if (call === undefined) return { table };
-  const settlement: TaskSettlement = { ...input.outcome, ...call, taskId: input.taskId };
-  const result = toTaskResult(input.callId, input.outcome);
+  input: {
+    readonly callIds: readonly string[];
+    readonly outcome: TaskCallOutcome;
+    readonly taskId: string;
+  },
+): { readonly settlements: readonly TaskSettlement[]; readonly table: TaskTable } {
+  const settling = new Set(input.callIds);
+  const calls = findTask(table, input.taskId)?.calls.filter((call) => settling.has(call.callId));
+  const latest = calls?.at(-1);
+  if (calls === undefined || latest === undefined) return { settlements: [], table };
+  const settlements = calls.map((call): TaskSettlement => ({
+    ...input.outcome,
+    ...call,
+    taskId: input.taskId,
+  }));
+  const result = toTaskResult(latest.callId, input.outcome);
   const next = updateTask(table, input.taskId, (current) => ({
     ...current,
-    calls: current.calls.filter((candidate) => candidate.callId !== input.callId),
+    calls: current.calls.filter((call) => !settling.has(call.callId)),
     results: result === undefined ? current.results : [...current.results, result],
   }));
-  return { settlement, table: next };
+  return { settlements, table: next };
 }
 
 /**
@@ -326,14 +339,8 @@ export function settleRemainingTaskCalls(
   taskId: string,
   outcome: TaskCallOutcome,
 ): { readonly settlements: readonly TaskSettlement[]; readonly table: TaskTable } {
-  const settlements: TaskSettlement[] = [];
-  let next = table;
-  for (const { callId } of findTask(table, taskId)?.calls ?? []) {
-    const settled = settleTaskCall(next, { callId, outcome, taskId });
-    next = settled.table;
-    if (settled.settlement !== undefined) settlements.push(settled.settlement);
-  }
-  return { settlements, table: next };
+  const callIds = findTask(table, taskId)?.calls.map((call) => call.callId) ?? [];
+  return settleTaskCalls(table, { callIds, outcome, taskId });
 }
 
 /** The task's run finished; nothing is left to cancel or hard-stop. */

@@ -340,8 +340,9 @@ release-plan-7k2m9q to send it another message.` A call with `taskId` goes to th
   its trace continues from the call's tool span. The session keeps that lineage for its later
   messages, even after the task receives another call. Auth belongs to each message instead: a
   message carries the auth of the call being served when it's sent.
-- **Results:** `ctx.reply(output)` settles every call received so far with `output`, and each
-  settled call delivers its own result. The task then goes idle until its next call. A reply with
+- **Results:** `ctx.reply(output)` settles every call received so far with `output`, all at once.
+  Each settled call reports its own `task.settled`, and the model receives the reply once. The task
+  then goes idle until its next call. A reply with
   no call left to settle is dropped, and `ctx.ask` throws while no call is waiting for a result.
   Returning settles the calls still waiting and ends the task; a throw fails them. `serve` is not
   a generator, so it can't `yield` progress.

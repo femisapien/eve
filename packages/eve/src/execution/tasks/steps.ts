@@ -14,7 +14,7 @@ import {
   readTaskTable,
   setHardStopAt,
   settleRemainingTaskCalls,
-  settleTaskCall,
+  settleTaskCalls,
   takeOverdueRuns,
   writeTaskTable,
   type TaskCallOutcome,
@@ -79,13 +79,13 @@ export async function applyTaskRunMessageStep(
       break;
     }
     case "reply": {
-      const settled = settleTaskCall(table, {
-        callId: message.from.callId,
+      const settled = settleTaskCalls(table, {
+        callIds: message.callIds,
         outcome: { output: message.output, status: "completed" },
         taskId,
       });
       table = settled.table;
-      if (settled.settlement !== undefined) settlements.push(settled.settlement);
+      settlements.push(...settled.settlements);
       break;
     }
     case "outcome": {

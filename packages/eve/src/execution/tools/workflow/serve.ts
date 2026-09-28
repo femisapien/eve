@@ -181,7 +181,7 @@ class WorkflowServeCalls implements WorkflowBodyControl {
     this.waiting = [];
     if (this.arrived.length === 0) this.stretch = undefined;
     const previous = this.replies;
-    this.replies = previous.then(() => this.deliverReplies(settled, output));
+    this.replies = previous.then(() => this.deliverReply(settled, output));
   }
 
   assertWaiting(): void {
@@ -269,12 +269,17 @@ class WorkflowServeCalls implements WorkflowBodyControl {
     };
   }
 
-  /** One `reply` message per call, so the session settles each call once. */
-  private async deliverReplies(calls: readonly ServedCall[], output: JsonValue): Promise<void> {
-    for (const served of calls) {
-      await resumeHookStep(this.inbox, { from: served.from, kind: "reply", output });
-      this.replyCount += 1;
-    }
+  /**
+   * One `reply` message for every call the reply settles: the session settles
+   * them in one step, so no wait wakes on one of them while the rest look
+   * unanswered.
+   */
+  private async deliverReply(calls: readonly ServedCall[], output: JsonValue): Promise<void> {
+    const latest = calls.at(-1);
+    if (latest === undefined) return;
+    const callIds = calls.map((served) => served.from.callId);
+    await resumeHookStep(this.inbox, { callIds, from: latest.from, kind: "reply", output });
+    this.replyCount += 1;
   }
 }
 

@@ -104,9 +104,15 @@ export interface WorkflowToolRunAgentStartedMessage {
   readonly session: StartedAgentSession;
 }
 
-/** A `serve` body's reply, sent once for each call it settles. */
+/**
+ * A `serve` body's reply, sent once for each `ctx.reply()`. It settles every
+ * call the body received since its last reply, so the session settles them
+ * together and the model receives the reply once.
+ */
 export interface WorkflowToolRunReplyMessage {
-  /** The call the reply settles. */
+  /** The calls the reply settles, oldest first. */
+  readonly callIds: readonly string[];
+  /** The latest call the reply settles, which the body serves now. */
   readonly from: WorkflowToolRunRef;
   readonly output: JsonValue;
 }

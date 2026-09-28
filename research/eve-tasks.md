@@ -546,9 +546,11 @@ the model's history, and clients see outcomes through `task.settled`. The eval a
   alongside the tool call; the session then starts the task's run in one step keyed on `taskId`.
   Commands issued before the run reports started are held on the record.
 - **Settle once.** Runs send the session `task.input` and `task.settled`, keyed
-  `(taskId, callId, kind)`; a reply sends one `task.settled` per call it settles. The first
-  outcome per call wins, owner-cancelled results are dropped, and every other result is appended
-  once to the next `task.result` message and marked `delivered`.
+  `(taskId, callId, kind)`. A reply settles every call it answers in one step, with one
+  `task.settled` per call, so no wait wakes while some of them look unanswered. The first outcome
+  per call wins, owner-cancelled results are dropped, and every other result is appended once to
+  the next `task.result` message and marked `delivered`; calls one reply or return settles share
+  one result.
 - **Calls with `taskId`.** The session checks the task is resumable, unfinished, this tool's, and
   the caller's principal's (else `UNKNOWN_TASK`), records the call, marks the task `working`,
   emits `task.started`, and resumes the task's hook with the validated input.
