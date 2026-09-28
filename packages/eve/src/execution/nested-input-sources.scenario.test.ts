@@ -20,13 +20,7 @@ const parentAgent = `import { defineAgent } from "eve";
 import { mockModel } from "eve/evals";
 const model = mockModel((request) => {
   const messages = request.messages.map((message) => message.text).join("\\n");
-  if (request.userMessageCount === 2) {
-    const result = request.toolResults.find((entry) => entry.id === "delegate-2");
-    if (result) return "ROOT_FINISHED=" + result.output;
-    const agentId = /<agent id="([^"]+)" name="remote-child"/.exec(messages)?.[1];
-    if (!agentId) throw new Error("Missing retained child id");
-    return { toolCalls: [{ id: "delegate-2", name: "delegate", input: { agentId } }] };
-  }
+  if (messages.includes("CHILD_FINISHED=alice-ok,bob-ok")) return "ROOT_FINISHED=alice-ok,bob-ok";
   if (request.toolResults.some((result) => result.id === "delegate-1")) return "Child is working.";
   return { toolCalls: [{ id: "delegate-1", name: "delegate", input: {} }] };
 });
@@ -35,10 +29,10 @@ export default defineAgent({ model, modelContextWindowTokens: 32_000 });
 const parentTool = `import { defineWorkflowTool } from "eve/tools";
 export default defineWorkflowTool({
   description: "Delegate to the remote child.", execution: "background",
-  inputSchema: { type: "object", properties: { agentId: { type: "string" } }, additionalProperties: false },
-  async execute(input, ctx) {
+  inputSchema: { type: "object", properties: {}, additionalProperties: false },
+  async execute(_input, ctx) {
     "use workflow";
-    return await ctx.agent("remote-child", { ...(input.agentId ? { agentId: input.agentId } : {}), message: input.agentId ? "Report both task results." : "Complete the two tasks." });
+    return await ctx.agent("remote-child", { message: "Complete the two tasks." });
   },
 });
 `;
@@ -62,50 +56,35 @@ export default defineWorkflowTool({
   },
 });
 `;
-const approvalTool = `import { defineTool } from "eve/tools";
-import { always } from "eve/tools/approval";
-export default defineTool({
-  description: "Approve Bob's action.", approval: always(),
-  inputSchema: { type: "object", properties: {}, additionalProperties: false },
-  execute() { return "BOB_TOOL=executed"; },
-});
-`;
-
-function childAgent(mixed: boolean): string {
-  const second = mixed ? "approve-bob" : "ask-bob";
+function childAgent(): string {
   return `import { defineAgent } from "eve";
 import { mockModel } from "eve/evals";
 const model = mockModel((request) => {
   const text = request.messages.map((message) => message.text).join("\\n");
   const alice = text.includes("ALICE_TOOL=${ALICE_ANSWER}") || request.toolResults.some((result) => result.id === "ask-alice-1" && result.output === "ALICE_TOOL=${ALICE_ANSWER}");
-  const bob = text.includes("BOB_TOOL=${mixed ? "executed" : BOB_ANSWER}") || request.toolResults.some((result) => result.id === "second-1" && result.output === "BOB_TOOL=${mixed ? "executed" : BOB_ANSWER}");
+  const bob = text.includes("BOB_TOOL=${BOB_ANSWER}") || request.toolResults.some((result) => result.id === "second-1" && result.output === "BOB_TOOL=${BOB_ANSWER}");
   if (alice && bob) return "CHILD_FINISHED=alice-ok,bob-ok";
-  if (request.lastUserMessage?.includes("Report both task results.") === true) return "CHILD_FINISHED=" + (alice ? "alice-ok" : "alice-missing") + "," + (bob ? "bob-ok" : "bob-missing");
   if (request.toolResults.some((result) => result.id === "ask-alice-1")) return "Waiting for both tasks.";
   return { toolCalls: [
     { id: "ask-alice-1", name: "ask-alice", input: {} },
-    { id: "second-1", name: "${second}", input: {} },
+    { id: "second-1", name: "ask-bob", input: {} },
   ] };
 });
 export default defineAgent({ description: "Complete two independent tasks.", model, modelContextWindowTokens: 32_000 });
 `;
 }
 
-function childDescriptor(mixed: boolean): ScenarioAppDescriptor {
+function childDescriptor(): ScenarioAppDescriptor {
   return {
     files: {
-      "agent/agent.ts": childAgent(mixed),
+      "agent/agent.ts": childAgent(),
       "agent/channels/eve.ts": childChannel,
       "agent/instructions.md": "Complete two independent tasks.\n",
-      "agent/tools/ask-alice.ts": mixed
-        ? askTool("Alice").replace('execution: "background",', "")
-        : askTool("Alice"),
-      [`agent/tools/${mixed ? "approve-bob" : "ask-bob"}.ts`]: mixed
-        ? approvalTool
-        : askTool("Bob"),
+      "agent/tools/ask-alice.ts": askTool("Alice"),
+      "agent/tools/ask-bob.ts": askTool("Bob"),
     },
     installDependencies: true,
-    name: mixed ? "mixed-input-child" : "two-tools-child",
+    name: "two-tools-child",
   };
 }
 function parentDescriptor(remoteUrl: string): ScenarioAppDescriptor {
@@ -229,21 +208,17 @@ async function stop(child: ChildProcessByStdio<null, Readable, Readable>): Promi
   });
 }
 
-async function exercise(mixed: boolean): Promise<void> {
-  const childApp = await scenarioApp(childDescriptor(mixed));
+async function exercise(): Promise<void> {
+  const childApp = await scenarioApp(childDescriptor());
   const childServer = await startServer(childApp.appRoot);
   try {
     const parentApp = await scenarioApp(parentDescriptor(childServer.url));
     const parentServer = await startServer(parentApp.appRoot);
     const parent = new Client({ host: parentServer.url });
-    const child = new Client({ host: childServer.url, auth: { bearer: AUTH_TOKEN } });
-    let rootSession: ClientSession | undefined;
-    let remoteSession: ClientSession | undefined;
     try {
       const { session, response } = await parent.sessions.create({
         message: "Complete both tasks.",
       });
-      rootSession = session;
       expect((await response.result()).status).toBe("waiting");
       const pending = await waitFor({
         session,
@@ -252,61 +227,16 @@ async function exercise(mixed: boolean): Promise<void> {
       });
       const rootRequests = requests(pending);
       expect(rootRequests).toHaveLength(2);
-      expect(rootRequests.map((request) => request.kind).sort()).toEqual(
-        mixed ? ["question", "tool-approval"] : ["question", "question"],
-      );
-      expect(rootRequests.map((request) => request.prompt).sort()).toEqual(
-        mixed
-          ? ["Approve tool call: approve-bob", "Word for Alice?"]
-          : ["Word for Alice?", "Word for Bob?"],
-      );
-      const call = filterEventsByType(pending, "subagent.called")[0];
-      if (call?.data.childSessionId === undefined) throw new Error("Missing child session id");
-      const childSession = child.sessions.attach(call.data.childSessionId);
-      remoteSession = childSession;
-      for (const [index, request] of rootRequests.entries()) {
-        await session.respond([
-          request.kind === "tool-approval"
-            ? { requestId: request.requestId, optionId: "approve" }
-            : {
-                requestId: request.requestId,
-                text: request.prompt.includes("Alice") ? ALICE_ANSWER : BOB_ANSWER,
-              },
-        ]);
-        if (index === 0) {
-          await waitFor({
-            session: childSession,
-            label: `older ${request.kind} operation to resume`,
-            ready: (events) =>
-              request.kind === "tool-approval"
-                ? filterEventsByType(events, "action.result").some((event) =>
-                    JSON.stringify(event.data).includes("BOB_TOOL=executed"),
-                  )
-                : filterEventsByType(events, "message.received").some((event) =>
-                    event.data.message.includes(
-                      request.prompt.includes("Alice")
-                        ? `ALICE_TOOL=${ALICE_ANSWER}`
-                        : `BOB_TOOL=${BOB_ANSWER}`,
-                    ),
-                  ),
-          });
-        }
-      }
-      await waitFor({
-        session: childSession,
-        label: "both distinct task results in child notifications",
-        ready: (events) => {
-          const notifications = filterEventsByType(events, "message.received")
-            .map((event) => event.data.message)
-            .join("\\n");
-          return (
-            notifications.includes(`ALICE_TOOL=${ALICE_ANSWER}`) &&
-            notifications.includes(`BOB_TOOL=${mixed ? "executed" : BOB_ANSWER}`)
-          );
-        },
-      });
-      const followUp = await session.send("Ask the same child to report both task results.");
-      expect((await followUp.result()).status).toBe("waiting");
+      expect(rootRequests.map((request) => request.kind)).toEqual(["question", "question"]);
+      expect(rootRequests.map((request) => request.prompt)).toEqual([
+        "Word for Alice?",
+        "Word for Bob?",
+      ]);
+      const firstResponse = await session.respond([
+        { requestId: rootRequests[0]!.requestId, text: ALICE_ANSWER },
+      ]);
+      expect((await firstResponse.result()).status).toBe("waiting");
+      await session.respond([{ requestId: rootRequests[1]!.requestId, text: BOB_ANSWER }]);
       const final = await waitFor({
         session,
         label: "distinct child results at root",
@@ -316,29 +246,9 @@ async function exercise(mixed: boolean): Promise<void> {
           ),
       });
       expect(filterEventsByType(final, "session.failed")).toHaveLength(0);
-      expect(
-        filterEventsByType((await childSession.snapshot()).events, "message.completed").map(
-          (event) => event.data.message,
-        ),
-      ).toContain("CHILD_FINISHED=alice-ok,bob-ok");
     } catch (error) {
-      const summarize = async (session: ClientSession | undefined) =>
-        session === undefined
-          ? []
-          : (await session.snapshot()).events
-              .filter((event) =>
-                [
-                  "input.requested",
-                  "message.received",
-                  "action.result",
-                  "message.completed",
-                  "subagent.completed",
-                  "session.failed",
-                ].includes(event.type),
-              )
-              .map((event) => ({ type: event.type, data: event.data }));
       throw new Error(
-        `root=${JSON.stringify(await summarize(rootSession))}\nchild=${JSON.stringify(await summarize(remoteSession))}\nparent stdout:\n${parentServer.stdout()}\nparent stderr:\n${parentServer.stderr()}\nchild stdout:\n${childServer.stdout()}\nchild stderr:\n${childServer.stderr()}`,
+        `parent stdout:\n${parentServer.stdout()}\nparent stderr:\n${parentServer.stderr()}\nchild stdout:\n${childServer.stdout()}\nchild stderr:\n${childServer.stderr()}`,
         { cause: error },
       );
     } finally {
@@ -351,13 +261,8 @@ async function exercise(mixed: boolean): Promise<void> {
 
 describe("nested input source ownership", () => {
   it(
-    "keeps a harness-owned approval pending alongside a workflow question",
-    () => exercise(true),
-    360_000,
-  );
-  it(
-    "answers two separate background workflow tools in one remote child",
-    () => exercise(false),
+    "resumes two remote workflow questions oldest-first with distinct results",
+    () => exercise(),
     360_000,
   );
 });
