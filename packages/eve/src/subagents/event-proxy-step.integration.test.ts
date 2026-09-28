@@ -5,7 +5,7 @@ import { buildAdapterContext } from "#channel/adapter-context.js";
 import { writeChannelEvent } from "#execution/publish-channel-event.js";
 import type { SubagentInputRequestHookPayload } from "#channel/types.js";
 import { ContextContainer } from "#context/container.js";
-import { AuthKey, ContinuationTokenKey, SessionIdKey } from "#context/keys.js";
+import { AuthKey, ContinuationTokenKey, SessionCallbackKey, SessionIdKey } from "#context/keys.js";
 import type { DurableSession } from "#execution/durable-session-store.js";
 import { getProxyInputRequests } from "#harness/proxy-input-requests.js";
 import { createSessionLimitContinuationRequest } from "#harness/session-limit-continuation.js";
@@ -165,6 +165,61 @@ describe("proxied stream hooks", () => {
       ]);
     },
   );
+
+  it("forwards a nested child's authorization interrupt from a remote session", async () => {
+    const f = fixture();
+    const event = {
+      type: "authorization.required" as const,
+      data: {
+        authorization: {
+          displayName: "Linear",
+          instructions: "Sign in to continue.",
+          url: "https://idp.example/authorize",
+        },
+        description: "Authorization required for linear",
+        name: "linear",
+        sequence: 7,
+        stepIndex: 2,
+        turnId: "child-turn",
+        webhookUrl: "https://child.example/connections/linear/callback/child-session%3Aauth",
+      },
+    };
+    f.ctx.set(SessionCallbackKey, {
+      callId: "parent-call",
+      subagentName: "remote-worker",
+      taskId: "parent-task",
+      token: "callback-token",
+      url: "https://parent.example/eve/v1/callback/callback-token",
+    });
+    const fetchMock = vi.fn(
+      async (_url: string, _options: RequestInit) => new Response(null, { status: 202 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      await emitProxiedSubagentEvent({
+        ...f,
+        hookPayload: {
+          callId: "nested-call",
+          childSessionId: "nested-session",
+          event,
+          kind: "subagent-authorization-event",
+          subagentName: "nested-child",
+        },
+      });
+      expect(fetchMock).toHaveBeenCalledOnce();
+      const [url, options] = fetchMock.mock.calls[0]!;
+      expect(url).toBe("https://parent.example/eve/v1/callback/callback-token");
+      expect(JSON.parse(options.body as string)).toMatchObject({
+        kind: "task.authorization",
+        taskId: "parent-task",
+        childSessionId: "parent-session",
+        event,
+      });
+      expect(f.events.map((published) => published.type)).not.toContain("authorization.required");
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 
   it("keeps nested input sources event-scoped and distinct for the same child", async () => {
     const f = fixture();
