@@ -144,7 +144,12 @@ export const ActivityRootTurnIdKey = new ContextKey<string>("eve.activityRootTur
 export const ActivityPendingBlockersKey = new ContextKey<readonly string[]>(
   "eve.activityPendingBlockers",
 );
-/** Call IDs of the tasks the current turn started, whose receipts leave their activity running. */
+/**
+ * Call IDs that got `task.started` this turn, so their `action.result` is a
+ * receipt that leaves the activity running. Not read from the task table: a
+ * call leaves it once it settles, which can happen before its receipt is
+ * published. Cleared at turn end.
+ */
 export const ActivityTaskCallsKey = new ContextKey<readonly string[]>("eve.activityTaskCalls");
 
 /**
