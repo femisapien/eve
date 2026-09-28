@@ -208,9 +208,7 @@ async function runSessionLoop(
 
   const nextParkedActivity = async (
     expectedAttemptIds: ReadonlySet<string>,
-  ): Promise<
-    Exclude<NextTurnInstruction, { kind: "workflow" | "cancel-working-tasks" | "task-cancel-due" }>
-  > => {
+  ): Promise<Exclude<NextTurnInstruction, { kind: "workflow" | "cancel-working-tasks" }>> => {
     while (true) {
       const next = await nextTurnDelivery({
         cursor,
@@ -221,10 +219,6 @@ async function runSessionLoop(
       });
       if (next.kind === "workflow") {
         await execution.handleWorkflowMessage(next.message);
-        continue;
-      }
-      if (next.kind === "task-cancel-due") {
-        await execution.tasks.hardStopOverdue();
         continue;
       }
       if (next.kind === "cancel-working-tasks") {

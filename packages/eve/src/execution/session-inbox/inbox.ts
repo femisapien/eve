@@ -5,7 +5,6 @@ import { releaseSessionHooksStep } from "#execution/session-inbox/release-step.j
 import type { DeliverPayload, HookPayload, SessionCommand } from "#channel/types.js";
 import { claimHookOwnership, disposeHook } from "#execution/hook-ownership.js";
 import type { WorkflowToolRunMessage } from "#execution/tools/workflow/messages.js";
-import type { TaskCancelDueMessage } from "#execution/tasks/hard-stop-workflow.js";
 
 /** All session addresses accept the same protocol. Callback routes construct
  * their own message kind; they never accept arbitrary session commands. */
@@ -18,7 +17,6 @@ export type SessionInboxPayload =
   | HookPayload
   | SessionCommand
   | WorkflowToolRunMessage
-  | TaskCancelDueMessage
   | AuthorizationCallbackPayload;
 
 interface Source {

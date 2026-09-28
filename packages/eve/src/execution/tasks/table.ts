@@ -13,9 +13,6 @@ const TASK_TABLE_VERSION = 1;
 /** At most this many tasks work at once in one session: a backstop normal use shouldn't reach. */
 export const MAX_WORKING_TASKS = 32;
 
-/** How long a cancelled run has to confirm before the session hard-stops it. */
-export const TASK_HARD_STOP_MS = 30_000;
-
 /** Finished records kept so `task_cancel` can still answer `already_finished`. */
 const MAX_FINISHED_RECORDS = 100;
 
@@ -53,15 +50,13 @@ export interface TaskRecord {
   readonly calls: readonly TaskCall[];
   /** Results not yet delivered to the model. */
   readonly results: readonly TaskResult[];
-  /** The task's run, from its start until it finishes or is hard-stopped. */
+  /** The task's run, from its start until it finishes. */
   readonly run?: TaskRun;
-  /** When the owner cancelled the run; the run is hard-stopped if it hasn't finished in time. */
-  readonly cancelledAt?: number;
+  /** A cancel issued before the run could take it, sent once the run reports started. */
+  readonly heldCancel?: true;
 }
 
 export interface TaskTable {
-  /** When the hard-stop sleeper is armed to wake the session. */
-  readonly hardStopAt?: number;
   readonly tasks: readonly TaskRecord[];
 }
 
@@ -95,9 +90,7 @@ export function readTaskTable(state: SessionStateMap | undefined): TaskTable {
     const record = decodeTaskRecord(value);
     return record === undefined ? [] : [record];
   });
-  return typeof stored.hardStopAt === "number"
-    ? { hardStopAt: stored.hardStopAt, tasks }
-    : { tasks };
+  return { tasks };
 }
 
 export function writeTaskTable<T extends { readonly state?: SessionStateMap }>(
@@ -105,13 +98,12 @@ export function writeTaskTable<T extends { readonly state?: SessionStateMap }>(
   table: TaskTable,
 ): T {
   const tasks = pruneFinishedRecords(table.tasks);
-  if (tasks.length === 0 && table.hardStopAt === undefined) {
+  if (tasks.length === 0) {
     const state = { ...session.state };
     delete state[TASK_TABLE_STATE_KEY];
     return { ...session, state: Object.keys(state).length === 0 ? undefined : state };
   }
-  const stored: Record<string, unknown> = { tasks, version: TASK_TABLE_VERSION };
-  if (table.hardStopAt !== undefined) stored.hardStopAt = table.hardStopAt;
+  const stored = { tasks, version: TASK_TABLE_VERSION };
   return { ...session, state: { ...session.state, [TASK_TABLE_STATE_KEY]: stored } };
 }
 
@@ -150,17 +142,6 @@ export function liveTaskRuns(table: TaskTable): readonly TaskRunAddress[] {
   return table.tasks.flatMap((record) =>
     record.run === undefined ? [] : [toRunAddress(record.run)],
   );
-}
-
-/** When the earliest cancelled run is due for a hard stop. */
-export function nextHardStopDue(table: TaskTable): number | undefined {
-  let due: number | undefined;
-  for (const record of table.tasks) {
-    if (record.cancelledAt === undefined || record.run === undefined) continue;
-    const at = record.cancelledAt + TASK_HARD_STOP_MS;
-    if (due === undefined || at < due) due = at;
-  }
-  return due;
 }
 
 // ---------------------------------------------------------------------------
@@ -211,8 +192,11 @@ export function markTaskRunStarted(
     return { table };
   }
   const run = { ...record.run, started: true };
-  const next = updateTask(table, taskId, (current) => ({ ...current, run }));
-  if (record.cancelledAt === undefined) return { table: next };
+  const next = updateTask(table, taskId, (current) => {
+    const { heldCancel: _heldCancel, ...rest } = current;
+    return { ...rest, run };
+  });
+  if (record.heldCancel === undefined) return { table: next };
   return { heldCancel: toRunAddress(run), table: next };
 }
 
@@ -238,11 +222,11 @@ export function settleTaskCall(
   return { settlement, table: next };
 }
 
-/** The task's run finished; nothing is left to cancel or hard-stop. */
+/** The task's run finished; nothing is left to cancel. */
 export function finishTaskRun(table: TaskTable, taskId: string, runId: string): TaskTable {
   return updateTask(table, taskId, (record) => {
     if (record.run?.runId !== runId) return record;
-    const { cancelledAt: _cancelledAt, run: _run, ...rest } = record;
+    const { heldCancel: _heldCancel, run: _run, ...rest } = record;
     return rest;
   });
 }
@@ -254,7 +238,6 @@ export function finishTaskRun(table: TaskTable, taskId: string, runId: string): 
 export function cancelTask(
   table: TaskTable,
   taskId: string,
-  now: number,
 ): {
   readonly sendCancel?: TaskRunAddress;
   readonly settlements: readonly TaskSettlement[];
@@ -263,14 +246,12 @@ export function cancelTask(
   const record = findTask(table, taskId);
   if (record === undefined) return { settlements: [], table };
   const settlements = cancelledSettlements(record);
-  const alreadyCancelled = record.cancelledAt !== undefined;
+  const run = record.run;
   const next = updateTask(table, taskId, (current) => {
     const cancelled: TaskRecord = { ...current, calls: [] };
-    if (current.run === undefined || alreadyCancelled) return cancelled;
-    return { ...cancelled, cancelledAt: now };
+    return run === undefined || run.started ? cancelled : { ...cancelled, heldCancel: true };
   });
-  const run = record.run;
-  if (run === undefined || !run.started || alreadyCancelled) return { settlements, table: next };
+  if (run === undefined || !run.started) return { settlements, table: next };
   return { sendCancel: toRunAddress(run), settlements, table: next };
 }
 
@@ -288,30 +269,6 @@ export function takeTaskResults(
     return { ...record, results: [] };
   });
   return { delivered, table: { ...table, tasks } };
-}
-
-/** Takes the cancelled runs whose confirmation is overdue, so the caller stops them. */
-export function takeOverdueRuns(
-  table: TaskTable,
-  now: number,
-): { readonly runs: readonly TaskRunAddress[]; readonly table: TaskTable } {
-  const runs: TaskRunAddress[] = [];
-  const tasks = table.tasks.map((record) => {
-    if (record.cancelledAt === undefined || record.run === undefined) return record;
-    if (record.cancelledAt + TASK_HARD_STOP_MS > now) return record;
-    runs.push(toRunAddress(record.run));
-    const { cancelledAt: _cancelledAt, run: _run, ...rest } = record;
-    return rest;
-  });
-  return { runs, table: { ...table, tasks } };
-}
-
-export function setHardStopAt(table: TaskTable, at: number | undefined): TaskTable {
-  if (at === undefined) {
-    const { hardStopAt: _hardStopAt, ...rest } = table;
-    return rest;
-  }
-  return { ...table, hardStopAt: at };
 }
 
 // ---------------------------------------------------------------------------
@@ -398,7 +355,7 @@ function isTaskRecord(value: unknown): value is TaskRecord {
     Array.isArray(value.results) &&
     Array.from(value.results as unknown[]).every(isTaskResult) &&
     (value.run === undefined || isTaskRun(value.run)) &&
-    (value.cancelledAt === undefined || typeof value.cancelledAt === "number")
+    (value.heldCancel === undefined || value.heldCancel === true)
   );
 }
 

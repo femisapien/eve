@@ -273,8 +273,8 @@ Each call is a task with its own id, `<tool>-<6 characters>`:
 - **Steering:** a new message ends a `task_wait` but never interrupts a task. The model reads the
   message and decides whether to keep or cancel each task.
 - **Cancellation:** `task_cancel`, `session.cancel()`, a failed turn, and the end of the session
-  stop a task. Its `abortSignal` aborts, cancelled work never reports back, and a run that hasn't
-  finished 30 seconds after the cancel is stopped.
+  stop a task. Its `abortSignal` aborts and cancelled work never reports back. The run waits up to
+  30 seconds for the body to finish unwinding, then ends as cancelled.
 - **Callers:** only the caller that started a task can wait on or cancel it, and only that
   caller's messages steer its turn. Anonymous callers share one identity.
 - **Limit:** at most 32 tasks work at once in a session. A call past the limit fails with

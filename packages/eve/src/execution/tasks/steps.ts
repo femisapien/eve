@@ -4,16 +4,12 @@ import {
   type DurableSession,
   type DurableSessionState,
 } from "#execution/durable-session-store.js";
-import type { TaskHardStopWorkflowInput } from "#execution/tasks/hard-stop-workflow.js";
 import {
   cancelTask,
   finishTaskRun,
   markTaskRunStarted,
-  nextHardStopDue,
   readTaskTable,
-  setHardStopAt,
   settleTaskCall,
-  takeOverdueRuns,
   writeTaskTable,
   type TaskCallOutcome,
   type TaskRunAddress,
@@ -32,12 +28,8 @@ import type {
   WorkflowToolRunOutcomeMessage,
 } from "#execution/tools/workflow/messages.js";
 import { workflowToolRunFailureOutput } from "#execution/tools/workflow/owner-inbox.js";
-import {
-  startWorkflowOnCurrentDeployment,
-  taskHardStopWorkflowReference,
-} from "#execution/workflow-runtime.js";
 import { clearProxyInputRequestsWhere } from "#harness/proxy-input-requests.js";
-import { cancelRun, getWorld, resumeHook } from "#internal/workflow/runtime.js";
+import { resumeHook } from "#internal/workflow/runtime.js";
 import { createTaskSettledEvent, type TaskSettledStreamEvent } from "#protocol/message.js";
 
 /** The messages a task's run sends that change its record. */
@@ -45,10 +37,6 @@ export type TaskRunMessage = Extract<
   WorkflowToolRunMessage,
   { readonly kind: "outcome" | "started" }
 >;
-
-interface TaskStepResult {
-  readonly sessionState: DurableSessionState;
-}
 
 const TASK_CANCEL_COMMAND: WorkflowToolRunControlMessage = {
   kind: "cancel",
@@ -95,52 +83,27 @@ export async function applyTaskRunMessageStep(
 }
 
 /**
- * Cancels tasks: their calls settle as cancelled, their runs are told to
- * stop, and the sleeper is armed to hard-stop any run that doesn't confirm.
+ * Cancels tasks: their calls settle as cancelled and their runs are told to
+ * stop. A run ends itself within its cleanup deadline and reports cancelled.
  */
 export async function cancelTasksStep(
-  input: SessionStepState & {
-    readonly inbox: string;
-    readonly taskIds: readonly string[];
-  },
+  input: SessionStepState & { readonly taskIds: readonly string[] },
 ): Promise<PublishedSessionEvents> {
   "use step";
 
   const session = readDurableSession(input.sessionState);
-  const now = Date.now();
   let table = readTaskTable(session.state);
   const settlements: TaskSettlement[] = [];
   for (const taskId of input.taskIds) {
-    const cancelled = cancelTask(table, taskId, now);
+    const cancelled = cancelTask(table, taskId);
     table = cancelled.table;
     settlements.push(...cancelled.settlements);
     if (cancelled.sendCancel !== undefined) await sendTaskCancel(cancelled.sendCancel);
   }
-  table = await armHardStop(table, input.inbox);
   return await publishSessionEvents(
     { ...input, sessionState: saveTable(input.sessionState, session, table) },
     settlements.map(taskSettledEvent),
   );
-}
-
-/** Hard-stops every cancelled run whose confirmation is overdue, then re-arms the sleeper. */
-export async function hardStopOverdueTasksStep(input: {
-  readonly inbox: string;
-  readonly sessionState: DurableSessionState;
-}): Promise<TaskStepResult> {
-  "use step";
-
-  let session = readDurableSession(input.sessionState);
-  const overdue = takeOverdueRuns(readTaskTable(session.state), Date.now());
-  const world = await getWorld();
-  for (const run of overdue.runs) {
-    await ignoreGoneTarget(
-      cancelRun(world, run.runId, { cancelReason: "The task was cancelled." }),
-    );
-    session = forgetRunQuestions(session, run.runId);
-  }
-  const table = await armHardStop(setHardStopAt(overdue.table, undefined), input.inbox);
-  return { sessionState: saveTable(input.sessionState, session, table) };
 }
 
 /** The `task.settled` event for one settled call. */
@@ -162,15 +125,6 @@ function taskSettledEvent(settlement: TaskSettlement): TaskSettledStreamEvent {
     case "cancelled":
       return createTaskSettledEvent({ ...base, status: "cancelled" });
   }
-}
-
-/** Starts the session's one sleeper for the earliest pending confirmation, unless one is armed. */
-async function armHardStop(table: TaskTable, inbox: string): Promise<TaskTable> {
-  const dueAt = nextHardStopDue(table);
-  if (dueAt === undefined || table.hardStopAt !== undefined) return table;
-  const input: TaskHardStopWorkflowInput = { dueAt, inbox };
-  await startWorkflowOnCurrentDeployment(taskHardStopWorkflowReference, [input]);
-  return setHardStopAt(table, dueAt);
 }
 
 async function sendTaskCancel(run: TaskRunAddress): Promise<void> {

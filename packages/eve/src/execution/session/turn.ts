@@ -81,10 +81,7 @@ export class SessionExecution {
 
   constructor(input: SessionExecutionInput) {
     this.input = input;
-    this.tasks = new SessionTasks({
-      cursor: input.cursor,
-      inbox: sessionInboxHookToken(sessionCommandHookToken(input.sessionId)),
-    });
+    this.tasks = new SessionTasks(input.cursor);
   }
 
   get cursor(): SessionStateCursor {
@@ -113,10 +110,7 @@ export class SessionExecution {
 
   /** Applies what task runs reported while the model step ran, so the next step sees it. */
   private async handleAdmittedTaskEvents(turn: ActiveTurn): Promise<void> {
-    for (const event of turn.takeTaskEvents()) {
-      if (event.kind === "task-cancel-due") await this.tasks.hardStopOverdue();
-      else await this.handleWorkflowMessage(event.message);
-    }
+    for (const message of turn.takeTaskMessages()) await this.handleWorkflowMessage(message);
   }
 
   private async runTurnSteps(
@@ -255,9 +249,6 @@ export class SessionExecution {
         case "steering":
           interrupted = true;
           continue;
-        case "task-cancel-due":
-          await this.tasks.hardStopOverdue();
-          continue;
         case "workflow":
           await this.handleWorkflowMessage(next.message);
           continue;
@@ -310,10 +301,6 @@ export class SessionExecution {
         for (const wait of taskWaits) {
           if (wait.call.callId === next.callId) wait.timedOut = true;
         }
-        continue;
-      }
-      if (next.kind === "task-cancel-due") {
-        await this.tasks.hardStopOverdue();
         continue;
       }
       if (next.kind === "steering") {
@@ -409,16 +396,9 @@ type RuntimeEvent =
   | { readonly kind: "workflow"; readonly message: WorkflowToolRunMessage }
   /** A steering message that answered no pending request arrived during the wait. */
   | { readonly kind: "steering" }
-  /** A cancelled task run is due for its hard stop. */
-  | { readonly kind: "task-cancel-due" }
   /** A `task_wait` call's timeout passed. */
   | { readonly kind: "timeout"; readonly callId: string }
   | "cancelled";
-
-/** Runtime events the task kernel applies as soon as the turn admits them. */
-type TaskEvent =
-  | { readonly kind: "task-cancel-due" }
-  | { readonly kind: "workflow"; readonly message: WorkflowToolRunMessage };
 
 /**
  * The principal of the delivery that starts or continues a turn. A delivery
@@ -532,14 +512,14 @@ class ActiveTurn {
     return steering.length === 1 ? steering[0] : coalesceDeliveries(steering);
   }
 
-  /** Removes the admitted events the task kernel applies at once. */
-  takeTaskEvents(): TaskEvent[] {
-    const taken: TaskEvent[] = [];
+  /** Removes the admitted task run messages, which the task kernel applies at once. */
+  takeTaskMessages(): WorkflowToolRunMessage[] {
+    const taken: WorkflowToolRunMessage[] = [];
     const kept: RuntimeEvent[] = [];
     for (const event of this.runtimeResults) {
-      const taskEvent = asTaskEvent(event);
-      if (taskEvent === undefined) kept.push(event);
-      else taken.push(taskEvent);
+      const message = asTaskMessage(event);
+      if (message === undefined) kept.push(event);
+      else taken.push(message);
     }
     this.runtimeResults.splice(0, this.runtimeResults.length, ...kept);
     return taken;
@@ -600,9 +580,6 @@ class ActiveTurn {
       case "cancel":
         if (this.cancelsThisTurn(value)) this.abort();
         return;
-      case "task-cancel-due":
-        this.runtimeResults.push({ kind: "task-cancel-due" });
-        return;
       case "consumed":
         return;
     }
@@ -650,13 +627,10 @@ class ActiveTurn {
   }
 }
 
-function asTaskEvent(event: RuntimeEvent): TaskEvent | undefined {
+function asTaskMessage(event: RuntimeEvent): WorkflowToolRunMessage | undefined {
   if (event === "cancelled") return undefined;
-  if (event.kind === "task-cancel-due") return event;
   // Tasks run beside the turn, so everything their runs send, such as a
   // question, reaches the session at the next boundary rather than at turn end.
-  if (event.kind === "workflow" && event.message.from.taskId !== undefined) {
-    return { kind: "workflow", message: event.message };
-  }
+  if (event.kind === "workflow" && event.message.from.taskId !== undefined) return event.message;
   return undefined;
 }

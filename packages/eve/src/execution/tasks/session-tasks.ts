@@ -12,7 +12,6 @@ import { renderTaskWaitResult, renderUnknownTaskError } from "#execution/tasks/r
 import {
   applyTaskRunMessageStep,
   cancelTasksStep,
-  hardStopOverdueTasksStep,
   type TaskRunMessage,
 } from "#execution/tasks/steps.js";
 import {
@@ -63,11 +62,9 @@ export class TaskWait {
  */
 export class SessionTasks {
   private readonly cursor: SessionStateCursor;
-  private readonly inbox: string;
 
-  constructor(input: { readonly cursor: SessionStateCursor; readonly inbox: string }) {
-    this.cursor = input.cursor;
-    this.inbox = input.inbox;
+  constructor(cursor: SessionStateCursor) {
+    this.cursor = cursor;
   }
 
   private get table(): TaskTable {
@@ -90,12 +87,6 @@ export class SessionTasks {
 
   hasWorkingTasks(): boolean {
     return workingTasks(this.table).length > 0;
-  }
-
-  async hardStopOverdue(): Promise<void> {
-    await this.cursor.apply(
-      await hardStopOverdueTasksStep({ inbox: this.inbox, sessionState: this.cursor.sessionState }),
-    );
   }
 
   /**
@@ -156,9 +147,7 @@ export class SessionTasks {
 
   private async cancel(taskIds: readonly string[]): Promise<void> {
     if (taskIds.length === 0) return;
-    await this.cursor.apply(
-      await cancelTasksStep({ ...this.cursor.stepState(), inbox: this.inbox, taskIds }),
-    );
+    await this.cursor.apply(await cancelTasksStep({ ...this.cursor.stepState(), taskIds }));
   }
 }
 
