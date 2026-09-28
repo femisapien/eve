@@ -5,6 +5,9 @@ import type { MockModelRequest, MockModelResponse } from "eve/evals";
 const HITL_REQUEST = "GENERATED-PROGRAM-CHILD-HITL";
 const AGENT_TASK_CANCEL = "AGENT-TASK-CANCEL";
 const SLEEPER_FOLLOW_UP = "SLEEPER-FOLLOW-UP";
+const CANCELLED_TURN_FOLLOW_UP = "CANCELLATION-SUBAGENT-FOLLOW-UP-OK";
+/** How a call the cancelled turn stopped reads in history. */
+const CANCELLED_CALL_TEXT = "cancelled before this call finished";
 
 async function respond(request: MockModelRequest): Promise<MockModelResponse | string> {
   const message = request.lastUserMessage ?? "";
@@ -72,7 +75,23 @@ async function respond(request: MockModelRequest): Promise<MockModelResponse | s
       ],
     };
   }
+  if (message.includes(CANCELLED_TURN_FOLLOW_UP)) return replyAfterCancelledTurn(request);
   return `Mock reply: ${message}`;
+}
+
+/**
+ * Answers the follow-up to a cancelled sleeper turn only when history keeps
+ * what that turn did: the sleeper call, and the calls the cancel stopped
+ * answered as cancelled. Without them the sleeper request would look unanswered.
+ */
+function replyAfterCancelledTurn(request: MockModelRequest): string {
+  const calledSleeper = request.toolResults.some((entry) => entry.id === "cancel-sleeper");
+  const cancelledCall = request.toolResults.some((entry) =>
+    String(entry.output).includes(CANCELLED_CALL_TEXT),
+  );
+  return calledSleeper && cancelledCall
+    ? CANCELLED_TURN_FOLLOW_UP
+    : "The cancelled turn's calls are missing from history.";
 }
 
 /**

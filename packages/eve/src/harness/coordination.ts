@@ -15,6 +15,7 @@ import {
   findBlockingWorkflowToolRun,
   removeBlockingWorkflowToolRuns,
 } from "#harness/workflow-tool-runs.js";
+import { validateHarnessModelMessages } from "#harness/messages.js";
 import { normalizeToolModelOutput } from "#harness/tool-model-output.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import type { TaskKernelCall } from "#execution/tasks/calls.js";
@@ -93,6 +94,37 @@ export function clearPendingCoordinationBatch(session: HarnessSession): HarnessS
   const state = { ...session.state };
   delete state[PENDING_COORDINATION_BATCH_KEY];
   return { ...session, state: Object.keys(state).length > 0 ? state : undefined };
+}
+
+/** What the model reads for a call its turn's cancellation stopped before the call settled. */
+export const CANCELLED_CALL_RESULT = "The turn was cancelled before this call finished.";
+
+/**
+ * Moves a cancelled turn's pending batch into history instead of dropping it.
+ * The model keeps the calls it made, each answered as cancelled, so it sees
+ * that the work started and stopped rather than a request left unanswered.
+ */
+export function commitCancelledCoordinationBatch(session: HarnessSession): HarnessSession {
+  const batch = getPendingCoordinationBatch(session.state);
+  if (batch === undefined) return session;
+  const cancelledCalls = [
+    ...batch.tasks.map((task) => ({ callId: task.callId, toolName: task.toolName })),
+    ...(batch.kernelCalls ?? []).map((call) => ({ callId: call.callId, toolName: call.kind })),
+  ];
+  const cancelledResults = cancelledCalls.map(({ callId, toolName }): ToolResultPart => ({
+    output: { type: "text", value: CANCELLED_CALL_RESULT },
+    toolCallId: callId,
+    toolName,
+    type: "tool-result",
+  }));
+  const history = validateHarnessModelMessages([
+    ...session.history,
+    ...batch.responseMessages,
+    ...(cancelledResults.length === 0
+      ? []
+      : [{ content: cancelledResults, role: "tool" as const }]),
+  ]);
+  return clearPendingCoordinationBatch({ ...session, history });
 }
 
 /**
