@@ -326,10 +326,7 @@ Approximate line changes in `packages/eve/src` against the tasks-10 base:
 
 ## Known gaps
 
-**Server side.** Neither client can work around these:
-
-- A partially answered approval batch sends no boundary, so the UI shows the agent as working until the whole batch is answered.
-- When an agent tool starts two parallel subagents that each need approval, both approvals reach the root, but the answer to the first is dropped. That task never settles and the root turn stays held. The same two approvals directly under the root settle normally.
+**Server side.** A partially answered approval batch sends no boundary, so the UI shows the agent as working until the whole batch is answered. Neither client can work around this.
 
 **Client side:**
 
