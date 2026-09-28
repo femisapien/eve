@@ -211,10 +211,10 @@ A `serve` body runs once per task and gets its calls from `receive()` instead of
   no call is waiting for a result.
 - **`return output`** settles the calls still waiting and ends the task; throwing fails them.
   `serve` is not a generator, so it can't yield progress for now.
-- **`taskId` on the model input.** eve adds an optional `taskId` to the tool's model input.
-  Without it, a call starts a new task; with it, the call goes to that task. The build fails if
-  `inputSchema` declares its own `taskId`. The ID must name an unfinished task this tool started
-  for the caller's principal, or the call fails `UNKNOWN_TASK`.
+- **`taskId` on the model input.** eve adds an optional `taskId` to the tool's model input. Without
+  it, a call starts a new task; with it, the call goes to that task. The build fails if
+  `inputSchema` declares its own `taskId`. The ID must name an unfinished task this tool started, or
+  the call fails `UNKNOWN_TASK`.
 - **One `abortSignal` per stretch of work.** A stretch starts when a call reaches an idle task and
   ends when a reply or a cancel settles its calls; calls that arrive during it carry the same
   signal. Each signal aborts at most once and the next stretch gets a new one, so a task can be
@@ -326,10 +326,10 @@ Both are offered, with the system block below, when the agent has an agent or a 
 `serve()` tool.
 All model text is a draft, tuned with real-model evals.
 
-**`task_wait`** returns when any task the turn's principal started settles, when `timeout`
-passes, or when steering arrives, and at once if a result is already waiting. It never returns
-content; the settled results follow as the `task.result` message in the same step. Waiting never
-stops a task, and a task waiting on a person keeps the wait going.
+**`task_wait`** returns when any task in the turn settles, when `timeout` passes, or when steering
+arrives, and at once if a result is already waiting. It never returns content; the settled results
+follow as the `task.result` message in the same step. Waiting never stops a task, and a task waiting
+on a person keeps the wait going.
 
 ```text
 Wait until one of your tasks has a result, a new message arrives, or timeout (in milliseconds)
@@ -392,8 +392,8 @@ Sent to task researcher-7k2m9q.
 
 **`[Tasks]` note.** A `context.state` message appended at a model-step boundary when the listing
 changes, and after compaction, so task IDs survive it. It is derived only from the session's task
-table in process, never from child streams: the turn principal's working tasks with tool and
-status, then its 10 most recent idle resumable tasks.
+table in process, never from child streams: the working tasks with tool and status, then the 10 most
+recent idle resumable tasks.
 
 ```text
 [Tasks]
@@ -421,18 +421,18 @@ task_cancel. Never use sleep to wait for a task.
 
 **Errors.** These are the only task error codes.
 
-| Code             | Where                                 | Message                                                                                                                                           |
-| ---------------- | ------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `UNKNOWN_TASK`   | Call with `taskId`, `task_cancel`     | `No task "{id}" is available to {tool}: it may have ended or belong to another tool or caller. Start a new one by calling {tool} without taskId.` |
-| `TOO_MANY_TASKS` | Start, call to an idle resumable task | `32 tasks are already working ({ids}). Wait with task_wait or stop one with task_cancel, then try again.`                                         |
+| Code             | Where                                 | Message                                                                                                                                 |
+| ---------------- | ------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------- |
+| `UNKNOWN_TASK`   | Call with `taskId`, `task_cancel`     | `No task "{id}" is available to {tool}: it may have ended or belong to another tool. Start a new one by calling {tool} without taskId.` |
+| `TOO_MANY_TASKS` | Start, call to an idle resumable task | `32 tasks are already working ({ids}). Wait with task_wait or stop one with task_cancel, then try again.`                               |
 
 ## 6. Turns, principals, and limits
 
-**The turn rule.** No turn ends while tasks its principal started are working, in any session.
-When the model ends such a turn, eve does what `task_wait` does: it parks until one of those tasks
-settles or the same principal steers, appends the settled results, and calls the model again. A
-`final_output` call while tasks work returns an error naming them. No result ever starts a turn.
-Session expiry and turn failures cancel the turn's tasks, as `session.cancel()` does.
+**The turn rule.** No turn ends while any task is working, in any session. When the model ends such
+a turn, eve does what `task_wait` does: it parks until one of those tasks settles or the turn's
+principal steers, appends the settled results, and calls the model again. A `final_output` call
+while tasks work returns an error naming them. No result ever starts a turn. Session expiry and turn
+failures cancel the turn's tasks, as `session.cancel()` does.
 
 **Presentation of a held turn.** A held turn stays open. Each time an open turn parks, the stream
 emits `turn.waiting` with the turn's ID: when eve holds a turn the model tried to end, in every
@@ -469,11 +469,11 @@ call's receipt doesn't show as finished: Slack's activity keeps the call running
 until `task.settled` for that `callId`, then settles it with the real status. There is no option
 yet, and other channels are unchanged.
 
-**Principals.** Only the turn's own principal steers it; another principal's message waits for
-the turn to end, then starts that principal's turn. Calls with `taskId` and `task_cancel` accept
-only the task's creator principal, and `task_wait` and `[Tasks]` cover only the turn principal's
-tasks. Anonymous callers share one principal. Queued messages from one principal share a turn
-even when their claims differ, and the turn runs with the latest claims.
+**Principals.** Only the turn's own principal steers it; another principal's message waits for the
+turn to end, then starts that principal's turn. Tasks belong to the session's open turn, and any
+turn can continue an idle task by `taskId` with its own caller's auth. Anonymous callers share one
+principal. Queued messages from one principal share a turn even when their claims differ, and the
+turn runs with the latest claims.
 
 **No task time limits.** `defineAgent`'s `limits.sessionTimeoutMs` keeps its meaning, the
 session lifetime (default 30 days), and bounds all work in the session; with `false`, tasks are
@@ -522,12 +522,11 @@ the model's history, and clients see outcomes through `task.settled`. The eval a
 ## 7. Runtime invariants
 
 - **One owner per task.** The session owns every task; a workflow run owns only the sessions it
-  opens with `ctx.agent`, which are not tasks. One small versioned record per task, written only
-  by applying the session's inbox messages (`execution/tasks/table.ts`): `id`, `name`,
-  `resumable`, `status` (`working`, `idle`, or finished), the calls without a result, each with
-  its `turnId`, `delivered`, `creator` (auth captured at start), and the cancel timestamp. A
-  record that fails to decode fails its task ("its state could not be read"), never the session.
-  Sessions aren't migrated.
+  opens with `ctx.agent`, which are not tasks. One small versioned record per task, written only by
+  applying the session's inbox messages (`execution/tasks/table.ts`): `id`, `name`, `resumable`,
+  `status` (`working`, `idle`, or finished), the calls without a result, each with its `turnId`,
+  `delivered`, and the cancel timestamp. A record that fails to decode fails its task ("its state
+  could not be read"), never the session. Sessions aren't migrated.
 - **Every wait suspends.** The session is a durable workflow (`execution/session/entry.ts`) whose
   inbox is built on Workflow SDK hooks. `execute` calls keep today's path: the call defers out
   of the model step and the turn loop parks until it settles (`execution/session/turn.ts`,
@@ -556,22 +555,23 @@ the model's history, and clients see outcomes through `task.settled`. The eval a
   per call wins, owner-cancelled results are dropped, and every other result is appended once to
   the next `task.result` message and marked `delivered`; calls one reply or return settles share
   one result.
-- **Calls with `taskId`.** The session checks the task is resumable, unfinished, this tool's, and
-  the caller's principal's (else `UNKNOWN_TASK`), records the call, marks the task `working`,
-  emits `task.started`, and resumes the task's hook with the validated input.
+- **Calls with `taskId`.** The session checks the task is resumable, unfinished, and this tool's
+  (else `UNKNOWN_TASK`), records the call, marks the task `working`, emits `task.started`, and
+  resumes the task's hook with the validated input.
 - **Cancel.** The session settles the waiting calls as `cancelled`, sends the run `cancel`, and
   returns at once. A `task()` run aborts its call's `abortSignal`; a `serve()` run aborts the
   current stretch's signal. The run bounds its own cleanup: a `task()` body still running, or a
   `serve()` body not back at `receive()`, 30 s after the cancel ends the run as `cancelled`. The
   session never waits on it, so it keeps no timer.
-- **Agent sessions.** A workflow run's start input carries the caller's principal, capabilities,
-  dynamic agent selections, and sandbox reference. `ctx.agent` opens its child, local or remote,
-  in a step keyed on the run and the handle's position; `send` uses the child's existing deliver
-  path with the run's `callId` as `caller.callId`; `result()` waits through a hook. The run sends
-  `agent.started` to the session, which publishes it as it arrives, even while a model step runs,
-  so clients follow a child while it works. Publishing it changes no session state, so the step's
-  result, which replaces that state at the boundary, loses nothing. `action.partial` reaches
-  channel handlers, which can change state, so it waits for the step boundary.
+- **Agent sessions.** A workflow run's start input carries the caller's capabilities, dynamic agent
+  selections, and sandbox reference, and each message to a session carries the auth of the call that
+  sends it. `ctx.agent` opens its child, local or remote, in a step keyed on the run and the
+  handle's position; `send` uses the child's existing deliver path with the run's `callId` as
+  `caller.callId`; `result()` waits through a hook. The run sends `agent.started` to the session,
+  which publishes it as it arrives, even while a model step runs, so clients follow a child while it
+  works. Publishing it changes no session state, so the step's result, which replaces that state at
+  the boundary, loses nothing. `action.partial` reaches channel handlers, which can change state, so
+  it waits for the step boundary.
 - **Questions go up, answers come down.** A child's `input.requested` and `authorization.*` travel
   up the owner chain to the root, where a person answers, and answers route down by request ID.
   The root emits `input.resolved` for each answer it routes, during a hold too. This is the only
@@ -579,9 +579,9 @@ the model's history, and clients see outcomes through `task.settled`. The eval a
   with idempotent callbacks and a version check that fails the call at start with a message
   naming both versions.
 - **Turn end.** The harness's terminate branch (`harness/tool-loop.ts`) returns `held` with the
-  working task IDs, the turn loop waits, and the program (`execution/session/program.ts`) sends
-  the caller's reply from one guarded site. The hold is keyed by principal, so a turn resumed
-  after an approval or sign-in still holds on the parked turn's work.
+  working task IDs, the turn loop waits, and the program (`execution/session/program.ts`) sends the
+  caller's reply from one guarded site. The open turn holds on every working task, so a turn resumed
+  after an approval or sign-in still holds on the earlier turn's work.
 - **A turn completes once.** `turn.completed` comes only at a turn's real end. A question or
   sign-in inside a running call parks the turn with `turn.waiting` and never ends it.
 - **Guards** (`pnpm guard:invariants`): `tools/provided/**` and generated agent tools import only
@@ -691,7 +691,7 @@ calls, `ctx.ask(..., { signal })` withdrawal with `outcome: "cancelled"`, removi
 `sleep` and `ask_question` rebuilt as `execute(input, ctx)` on public API, and the
 `tools/provided/**` guard.
 
-**4. Agent sessions.** `ctx.agent(name)` handles opened from the run with the caller's principal,
+**4. Agent sessions.** `ctx.agent(name)` handles opened from the run with the caller's auth,
 capabilities, dynamic selections, and sandbox reference in the start input; `agent.started` with
 the opening call's `turnId`; `streamSubagent()` accepting `agent.started`; questions and sign-ins
 up the owner chain from run-owned sessions; the remote protocol change and version check.
@@ -707,17 +707,15 @@ scanning for `subagent.called` (`eve-channel/support.ts`); resolve it from the a
 `agent.started.name`, and if dynamic remote agents can't be resolved that way, record the binding
 on the run's `agent.started` step instead.
 
-**5. Tasks and the turn rule.** Task records, `task(input, ctx)` with
-`WorkflowTaskContext` and the one-entry-point definition error, receipts, `task.started` and
-`task.settled` with each call's `turnId`, `task_wait` with `turn.waiting` when it parks,
-`task_cancel`, the `task.result` message (not published as `message.received`), `[Tasks]`, the
-system block, `UNKNOWN_TASK`, `TOO_MANY_TASKS`, principals, `session.cancel()` cancelling working
-tasks, and the turn rule with `final_output`'s error. `agent.started` gains
-`taskId` for `task()` runs, and proxied answers emit `input.resolved` during a hold. A held turn
-emits no `turn.waiting` yet: every held text step reports `"tool-calls"`, as child turns do.
-`agentRouter()` and
-the `workflow` program tool become `task()` tools; the `execution` error gains its final
-wording.
+**5. Tasks and the turn rule.** Task records, `task(input, ctx)` with `WorkflowTaskContext` and the
+one-entry-point definition error, receipts, `task.started` and `task.settled` with each call's
+`turnId`, `task_wait` with `turn.waiting` when it parks, `task_cancel`, the `task.result` message
+(not published as `message.received`), `[Tasks]`, the system block, `UNKNOWN_TASK`,
+`TOO_MANY_TASKS`, principal steering and queuing, `session.cancel()` cancelling working tasks, and
+the turn rule with `final_output`'s error. `agent.started` gains `taskId` for `task()` runs, and
+proxied answers emit `input.resolved` during a hold. A held turn emits no `turn.waiting` yet: every
+held text step reports `"tool-calls"`, as child turns do. `agentRouter()` and the `workflow` program
+tool become `task()` tools; the `execution` error gains its final wording.
 
 **6. Held-turn presentation.** `turn.waiting` whenever eve holds a turn, in every session kind; a
 root turn's held text step completes as `"stop"`, and `"tool-calls"` remains only for child and
