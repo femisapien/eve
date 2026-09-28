@@ -29,6 +29,40 @@ Agent calls come later, in a second phase with its own plan: agents advertised a
 tools, a unified `mcpChannel`, and the removal of `defineRemoteAgent`. Phase 1 does not change
 `mcpChannel`, `eveChannel`, or remote agents.
 
+## How `mcpChannel` works today
+
+`mcpChannel` publishes an agent at `/eve/v1/mcp` for MCP clients such as Claude Code. It serves
+`tools/call`, but only for four tools of its own:
+
+| Tool                                       | Does                                                                                         |
+| ------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| `agent_start { message }`                  | starts one durable agent task and returns an `invocationId`                                  |
+| `agent_get { invocationId }`               | reads its state: `working`, `input_required`, `authorization_required`, or a terminal status |
+| `agent_update { invocationId, responses }` | answers the pending questions                                                                |
+| `agent_cancel { invocationId }`            | requests cooperative cancellation                                                            |
+
+```text
+tools/call agent_start { message }
+  routeAuth(request)                       → principal P, on every request
+  WorkflowAgentInvocationExecution.create  → a durable task-mode session owned by P
+    the agent runs a whole turn: its model loop, its tools, its sandbox
+  ← { invocationId, status: "working", pollAfterMs }
+tools/call agent_get / agent_update        → read the run's state / deliver answers to its inbox
+```
+
+Three properties matter here:
+
+- **The only execution path is starting a session.** Every task runs the agent's model loop. The
+  agent's own tools never appear in `tools/list`, so a client cannot call one directly, only ask
+  the agent in a message and hope its model calls it.
+- **Tasks are hand-rolled.** The four tools recreate what the MCP tasks extension now standardizes
+  (`tools/call` returning a task, then `tasks/get`, `tasks/update`, and `tasks/cancel`). Moving to
+  it changes the wire format, not the execution, and belongs to phase 2.
+- **Identity is the direct caller.** The channel has no `trustedForwarders`; work runs as the
+  authenticated principal.
+
+Agent invocation therefore already exists. What is missing is running one tool.
+
 ## Core framework changes
 
 ### Why core has to change
