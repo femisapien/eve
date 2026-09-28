@@ -12,7 +12,7 @@ This document describes the old state models, the bugs their divergence produced
 
 | PR                                               | Scope                                                                                                   |
 | ------------------------------------------------ | ------------------------------------------------------------------------------------------------------- |
-| [#3878](https://github.com/vercel/eve/pull/3878) | Default message reducer: stable part IDs, authorization attempts with a `pending` state, replay fixes   |
+| [#3878](https://github.com/vercel/eve/pull/3878) | Default message reducer: stable part IDs, authorization attempts matched by `attemptId`, replay fixes   |
 | [#3879](https://github.com/vercel/eve/pull/3879) | `ConversationState` and `ConversationClient` under `EveAgentStore` and the React, Vue, and Svelte hooks |
 | [#3880](https://github.com/vercel/eve/pull/3880) | `eve dev` TUI as an `EveAgentStore` consumer                                                            |
 
@@ -154,19 +154,19 @@ Some bugs were the same mistake implemented separately in each path:
 Each concern has one owner:
 
 - **`ConversationClient` decides what was observed.** It owns the root stream, one event deduper for the session, per-session cursors, and the agent-session follower.
-- **`conversationReducer` decides what events mean.** Above the SDK layer, no other code interprets lifecycle events. It wraps `defaultMessageReducer` for messages and adds turns, inputs, tasks, and agent sessions. A followed agent session is reduced by the same reducer, in its own scope, so its turn and request IDs can't collide with the root's.
+- **`conversationReducer` decides what events mean.** Above the SDK layer, no other code interprets lifecycle events. Below it, `ClientSession` responses decide where they end with one shared tracker, `TurnSegment`, and the store applies the same rule to the conversation state. It wraps `defaultMessageReducer` for messages and adds turns, inputs, tasks, and agent sessions. A followed agent session is reduced by the same reducer, in its own scope, so its turn and request IDs can't collide with the root's.
 - **`AgentStreamFollower` owns only subscriptions.** It starts, pauses, and resumes each agent session's stream by asking the state whether that session has shown everything its task's calls produced.
 - **`EveAgentStore` owns operations.** It derives status from the conversation state instead of scanning events.
 - **Each UI decides only presentation.** Focus, open drawers, and dismissed prompts stay in the UI. Whether a request is open, a sign-in is waiting, or a subagent has finished does not.
 
-| Question                                | Answered by                                                           |
-| --------------------------------------- | --------------------------------------------------------------------- |
-| Have we already applied this event?     | The `ConversationClient` deduper, once per session across all streams |
-| Which text part does this delta extend? | The part's `id`: the `meta.id` of the event that created it           |
-| Which requests are still open?          | `conversation.inputs[requestId].status`                               |
-| Is a sign-in waiting?                   | The authorization part for that `attemptId`, in the `pending` state   |
-| Is the turn over, or the session busy?  | `activeTurnId` and `turns[turnId]`                                    |
-| Has a subagent finished?                | `tasks[taskId].calls[callId].status`, from `task.settled`             |
+| Question                                | Answered by                                                                         |
+| --------------------------------------- | ----------------------------------------------------------------------------------- |
+| Have we already applied this event?     | The `ConversationClient` deduper, once per session across all streams               |
+| Which text part does this delta extend? | The part's `id`: the `meta.id` of the event that created it                         |
+| Which requests are still open?          | `conversation.inputs[requestId].status`                                             |
+| Is a sign-in waiting?                   | The authorization part for that `attemptId`, still `required` with `awaitsCallback` |
+| Is the turn over, or the session busy?  | `activeTurnId` and `turns[turnId]`                                                  |
+| Has a subagent finished?                | `tasks[taskId].calls[callId].status`, from `task.settled`                           |
 
 ### The conversation state
 
@@ -224,7 +224,7 @@ interface ConversationAgentSession {
 }
 ```
 
-- **`messages`** keeps the UIMessage-compatible shape. Text and reasoning parts carry the ID of the event that created them through appends, completion, and replay. Authorization parts track each attempt by `attemptId`, with a `pending` state while eve waits for a callback-backed grant.
+- **`messages`** keeps the UIMessage-compatible shape. Text and reasoning parts carry the ID of the event that created them through appends, completion, and replay. Authorization parts track each attempt by `attemptId`, and `awaitsCallback` marks the ones a sign-in callback settles.
 - **`inputs`** records every request from `input.requested` until it settles, across turns. `responded` means this client sent an answer the server hasn't settled yet. The store rejects an answer to any request that isn't `open` with "already answered" instead of sending it.
 - **`turns`** tracks each root turn. A turn held by working tasks or an open question stays `active` with `waiting` set.
 - **`tasks`** records every task call from `task.started` and `task.settled`. A UI can show a call's outcome without following any child stream.
@@ -256,7 +256,7 @@ The TUI's event translator, steering stream, idle-stream handoff, subagent pump,
 ## Public API changes
 
 - **Breaking:** the default hook `data` is `ConversationState` instead of `EveMessageData`. Its `messages` field keeps the same shape, so it is easy to update existing consumers (just look at `data.messages`).
-- **Breaking:** authorization parts gain a `pending` state. A UI that checks `state === "required"` to show the sign-in link must also handle `pending`.
+- Authorization parts gain `attemptId` and `awaitsCallback`.
 - Text and reasoning parts gain an `id`. UIs should key parts by it.
 - Hooks (React/Vue/Svelte) and store snapshots gain a `conversation` field holding the canonical state, even with a custom reducer.
 - Hooks and the store gain `followSubagents` (default `false`). The store gains `client`, `compact()`, `clear()`, and `retire()`.
@@ -280,10 +280,10 @@ Approximate line changes in `packages/eve/src` against the tasks-10 base:
 
 | PR        | Production code |      Tests |
 | --------- | --------------: | ---------: |
-| #3878     |             +15 |       +306 |
-| #3879     |            +971 |     +1,642 |
-| #3880     |          −2,399 |     −4,873 |
-| **Stack** |      **−1,413** | **−2,925** |
+| #3878     |              −5 |       +322 |
+| #3879     |            +992 |     +1,807 |
+| #3880     |          −2,073 |     −4,739 |
+| **Stack** |      **−1,086** | **−2,610** |
 
 #3879 adds the shared model while the TUI's copy of that logic still exists. The web path had little to delete: its old lifecycle tracking was a pair of name-keyed sets and an event scan. #3880 deletes the TUI's copy.
 
@@ -292,5 +292,4 @@ Approximate line changes in `packages/eve/src` against the tasks-10 base:
 **Other client follow-ups:**
 
 - `followSubagents` follows only the root's direct agent-tool sessions, with no cap on concurrent streams. The option leaves room for a predicate. Following is in memory only, so channels such as Slack have no durable way to follow agent sessions.
-- The SDK layer under the store (`ClientSession`, `MessageResponse`, and `summarizeTurnEvents`) still scans raw events for open requests and waiting sign-ins to decide where a response ends. It has no `ConversationState` and is the last duplicate answer to those questions.
 - The React, Vue, and Svelte hooks don't expose `compact()`, `clear()`, or `retire()` yet.
