@@ -457,9 +457,14 @@ function InputRequestActions({
 function partKey(part: EveMessagePart, index: number): string {
   switch (part.type) {
     case "authorization":
-      return `authorization:${part.turnId}:${part.stepIndex}:${part.name}`;
+      return part.attemptId === undefined
+        ? `authorization:${part.turnId}:${part.stepIndex}:${part.name}`
+        : `authorization:${part.attemptId}`;
     case "dynamic-tool":
       return part.toolCallId;
+    case "reasoning":
+    case "text":
+      return `${part.type}:${part.id ?? index}`;
     default:
       return `${part.type}:${index}`;
   }
