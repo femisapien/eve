@@ -42,10 +42,13 @@ export interface EveMessageMetadata {
  * or `"done"`; `file` carries user-attachment metadata; `step-start` marks the
  * boundary of an agent step; and `dynamic-tool` ({@link EveDynamicToolPart})
  * holds the tool call and its lifecycle state. `stepIndex` ties a part to the
- * agent step that produced it.
+ * agent step that produced it. Assistant text and reasoning parts carry an
+ * `id` from the event that created the run. It survives appends and completion;
+ * a null completion removes the part. User text may not have an `id`.
  */
 export type EveMessagePart =
   | {
+      readonly id?: string;
       readonly providerMetadata?: Record<string, unknown>;
       readonly state?: "done" | "streaming";
       readonly stepIndex?: number;
@@ -53,6 +56,7 @@ export type EveMessagePart =
       readonly type: "text";
     }
   | {
+      readonly id?: string;
       readonly providerMetadata?: Record<string, unknown>;
       readonly state?: "done" | "streaming";
       readonly stepIndex?: number;
@@ -101,6 +105,9 @@ export type EveAuthorizationPart = {
   readonly description: string;
   readonly displayName: string;
   readonly name: string;
+  readonly attemptId?: string;
+  /** A callback can settle this attempt after the current turn ends. */
+  readonly awaitsCallback?: boolean;
   readonly stepIndex: number;
   readonly turnId: string;
   readonly type: "authorization";
@@ -108,7 +115,7 @@ export type EveAuthorizationPart = {
   | {
       readonly outcome?: never;
       readonly reason?: never;
-      readonly state: "required";
+      readonly state: "required" | "pending";
     }
   | {
       readonly outcome: EveAuthorizationOutcome;

@@ -273,7 +273,13 @@ describe("EveAgentStore lifecycle", () => {
           metadata: { status: "complete", turnId: "turn_1" },
           parts: [
             { type: "step-start" },
-            { state: "done", stepIndex: 0, text: "Hi there.", type: "text" },
+            {
+              id: expect.stringMatching(/^evt_/),
+              state: "done",
+              stepIndex: 0,
+              text: "Hi there.",
+              type: "text",
+            },
           ],
           role: "assistant",
         },
@@ -831,6 +837,7 @@ describe("EveAgentStore stream overlap", () => {
     expect(streamingText).toContain("Hel");
     expect(streamingText).toContain("Hello");
     expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual({
+      id: expect.stringMatching(/^evt_/),
       state: "done",
       stepIndex: 0,
       text: "Hello",
@@ -888,6 +895,7 @@ describe("EveAgentStore stream overlap", () => {
       expect(streamingText).toContain("Hel");
       expect(streamingText).toContain("Hello");
       expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual({
+        id: expect.stringMatching(/^evt_/),
         state: "done",
         stepIndex: 0,
         text: "Hello",
@@ -959,7 +967,13 @@ describe("EveAgentStore stream overlap", () => {
     expect(assistant).toHaveLength(1);
     expect(assistant[0]?.parts).toEqual([
       { type: "step-start" },
-      { state: "done", stepIndex: 0, text: "Hi there.", type: "text" },
+      {
+        id: expect.stringMatching(/^evt_/),
+        state: "done",
+        stepIndex: 0,
+        text: "Hi there.",
+        type: "text",
+      },
     ]);
   });
 
@@ -981,7 +995,13 @@ describe("EveAgentStore stream overlap", () => {
     const assistant = store.snapshot.data.messages.find((message) => message.role === "assistant");
     expect(assistant?.parts).toEqual([
       { type: "step-start" },
-      { state: "done", stepIndex: 0, text: "Legacy response.", type: "text" },
+      {
+        id: "turn_legacy:assistant:text:1",
+        state: "done",
+        stepIndex: 0,
+        text: "Legacy response.",
+        type: "text",
+      },
     ]);
   });
 
@@ -1222,6 +1242,7 @@ describe("EveAgentStore session resume", () => {
     ).toBe(String(prefix.length));
     expect(streamingText).toContain("Hello");
     expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual({
+      id: expect.stringMatching(/^evt_/),
       state: "done",
       stepIndex: 0,
       text: "Hello",
@@ -1256,6 +1277,7 @@ describe("EveAgentStore session resume", () => {
     ).toBeNull();
     expect(streamingText).toContain("Hello");
     expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual({
+      id: expect.stringMatching(/^evt_/),
       state: "done",
       stepIndex: 0,
       text: "Hello",
@@ -1462,6 +1484,7 @@ describe("EveAgentStore session resume", () => {
       "session.waiting",
     ]);
     expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual({
+      id: expect.stringMatching(/^evt_/),
       state: "done",
       stepIndex: 0,
       text: "A second reply.",
@@ -1589,6 +1612,7 @@ describe("EveAgentStore session resume", () => {
 
     expect(store.snapshot.status).toBe("ready");
     expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual({
+      id: expect.stringMatching(/^evt_/),
       state: "done",
       stepIndex: 0,
       text: "Hi there.",
@@ -1834,6 +1858,7 @@ describe("EveAgentStore steering", () => {
       secondWaiting,
     ]);
     expect(store.snapshot.data.messages.at(-1)?.parts).toContainEqual({
+      id: expect.stringMatching(/^evt_/),
       state: "done",
       stepIndex: 0,
       text: "Follow-up reply.",

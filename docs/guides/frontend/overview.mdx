@@ -53,7 +53,7 @@ export function Chat() {
         <article key={message.id}>
           <header>{message.role}</header>
           {message.parts.map((part, index) =>
-            part.type === "text" ? <p key={index}>{part.text}</p> : null,
+            part.type === "text" ? <p key={part.id ?? index}>{part.text}</p> : null,
           )}
         </article>
       ))}
@@ -157,9 +157,10 @@ change the option from `false` to `true` again, reset, or send a message to reco
 
 The hook keeps consuming one session stream across turns and idle periods. Replies,
 authorization updates, and turns started elsewhere all update the same projection. Separately
-delivered participant messages remain separate bubbles even when they steer the same active turn;
-a single event that coalesces multiple deliveries remains one bubble. A turn settling does not
-close the connection. The transport reconnects from its cursor after a disconnect or the
+delivered participant messages remain separate bubbles before that turn's assistant response, even
+when they arrive after the response begins. A single event that coalesces multiple deliveries
+remains one bubble. A turn settling does not close the connection. The transport reconnects from
+its cursor after a disconnect or the
 server's renewable 60-second lease; lease renewal does not start a turn or clear UI state.
 Unmounting or resetting closes the local stream without cancelling the old durable session.
 
@@ -168,7 +169,9 @@ the reset, it prepares the next owned session; otherwise, the next send creates 
 supplied `session` remains externally owned and is never replaced by prewarming or reset. Use
 `initialSession` with `resume: true` to restore a saved chat.
 
-`data.messages` are eve-owned `EveMessage[]`. Common text, reasoning, file, and dynamic-tool parts follow the [AI SDK `UIMessage`](https://ai-sdk.dev/docs/reference/ai-sdk-core/ui-message) rendering convention, but the types are not interchangeable. eve also exposes authorization and HITL metadata, and a file part's URL can be absent. Adapt those parts before passing messages to an API typed as `UIMessage[]`.
+`data.messages` are eve-owned `EveMessage[]`. Assistant text and reasoning parts have a stable `id` from the event that created the part. Appends and completion retain that ID. Use `part.id` to key streamed assistant content, including successive text parts within one step. Older events without an ID get a best-effort fallback. User text parts may not have an ID.
+
+Common text, reasoning, file, and dynamic-tool parts follow the [AI SDK `UIMessage`](https://ai-sdk.dev/docs/reference/ai-sdk-core/ui-message) rendering convention, but the types are not interchangeable. eve also exposes authorization and HITL metadata, and a file part's URL can be absent. Adapt those parts before passing messages to an API typed as `UIMessage[]`.
 
 When the root agent delegates, its stream emits `agent.started` with the child's `sessionId`, and the subagent tool call's `task.settled` carries the child's reply. The child session can remain available for reuse. Detailed child progress lives on the child session's stream instead of being flattened into the root `data.messages`. When your UI needs live subagent activity, attach a [client session](../client/overview#sessions) to the parent and pass the `agent.started` event from `events` to [`session.agent()`](../client/streaming#follow-a-subagent) and follow the child with `stream()`. It follows local and remote children through the parent, so the browser never calls a remote deployment directly. See [What the parent sees](../../subagents#what-the-parent-sees) for the complete contract.
 
@@ -256,7 +259,7 @@ For a question with `allowFreeform`, render a text input and send `{ requestId, 
 
 ## Authorization prompts
 
-Connections and tools that need OAuth or another grant emit `authorization.required`. The default reducer projects that into an `authorization` message part with the display name, instructions, device code, and user-facing sign-in URL. Render that part as a normal chat message, then keep the session cursor; eve resumes the parked turn when the callback completes and updates the part after `authorization.completed`:
+Connections and tools that need OAuth or another grant emit `authorization.required`. The default reducer projects that into an `authorization` message part with the display name, instructions, device code, and user-facing sign-in URL. When multiple people authorize the same connection in one session, the client matches completion to the corresponding `attemptId`, not merely the connection name. The part starts as `required`; a callback-backed request becomes `pending` while eve waits for its callback, then `completed` when eve reports the outcome. A request without a callback stays `required` while eve waits. Render the part as a normal chat message and keep the session cursor so eve can resume the parked turn:
 
 ```tsx
 import type { EveMessagePart } from "eve/react";
