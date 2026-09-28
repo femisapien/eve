@@ -40,6 +40,33 @@ function reduceServerEvents(
 }
 
 describe("defaultMessageReducer", () => {
+  it("groups late received messages before the response for their turn", () => {
+    const reducer = defaultMessageReducer();
+    const data = reduceServerEvents(reducer, reducer.initial(), [
+      createMessageReceivedEvent({ message: "First", sequence: 0, turnId: "turn_1" }),
+      createMessageCompletedEvent({
+        finishReason: "stop",
+        message: "Response",
+        sequence: 1,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
+      createMessageReceivedEvent({ message: "Second", sequence: 2, turnId: "turn_1" }),
+      createMessageReceivedEvent({ message: "Third", sequence: 3, turnId: "turn_1" }),
+      createMessageReceivedEvent({ message: "Next turn", sequence: 0, turnId: "turn_2" }),
+    ]);
+
+    expect(
+      data.messages.map((message) => (message.role === "user" ? message.parts[0] : "assistant")),
+    ).toEqual([
+      { state: "done", text: "First", type: "text" },
+      { state: "done", text: "Second", type: "text" },
+      { state: "done", text: "Third", type: "text" },
+      "assistant",
+      { state: "done", text: "Next turn", type: "text" },
+    ]);
+  });
+
   it("accumulates message and reasoning deltas without a start marker", () => {
     const reducer = defaultMessageReducer();
     const data = reduceServerEvents(reducer, reducer.initial(), [
@@ -71,8 +98,8 @@ describe("defaultMessageReducer", () => {
 
     expect(data.messages[0]?.parts).toEqual([
       { type: "step-start" },
-      { state: "streaming", stepIndex: 0, text: "I can", type: "reasoning" },
-      { state: "streaming", stepIndex: 0, text: "Hello", type: "text" },
+      { id: "evt_test_0000", state: "streaming", stepIndex: 0, text: "I can", type: "reasoning" },
+      { id: "evt_test_0002", state: "streaming", stepIndex: 0, text: "Hello", type: "text" },
     ]);
   });
 
@@ -104,6 +131,7 @@ describe("defaultMessageReducer", () => {
       stepIndex: 0,
       text: "abandonedreplacement complete",
       type: "text",
+      id: "evt_test_0000",
     });
 
     data = reduceServerEvents(reducer, data, [
@@ -120,6 +148,7 @@ describe("defaultMessageReducer", () => {
       stepIndex: 0,
       text: "replacement complete",
       type: "text",
+      id: "evt_test_0000",
     });
   });
 
@@ -258,6 +287,50 @@ describe("defaultMessageReducer", () => {
     expect(data.messages[0]?.parts).toEqual([{ type: "step-start" }]);
   });
 
+  it("closes partial content and drops unfinished tool input on a failed turn", () => {
+    const reducer = defaultMessageReducer();
+    const data = reduceServerEvents(reducer, reducer.initial(), [
+      createMessageAppendedEvent({
+        messageDelta: "Partial answer",
+        sequence: 1,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
+      createReasoningAppendedEvent({
+        reasoningDelta: "Partial thought",
+        sequence: 2,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
+      createActionInputAppendedEvent({
+        callId: "unfinished",
+        inputTextDelta: "{",
+        sequence: 3,
+        stepIndex: 0,
+        toolName: "lookup",
+        turnId: "turn_1",
+      }),
+      createTurnFailedEvent({
+        code: "MODEL_FAILED",
+        message: "model failed",
+        sequence: 4,
+        turnId: "turn_1",
+      }),
+    ]);
+    expect(data.messages[0]?.metadata?.status).toBe("complete");
+    expect(data.messages[0]?.parts).toEqual([
+      { type: "step-start" },
+      { id: "evt_test_0000", type: "text", stepIndex: 0, text: "Partial answer", state: "done" },
+      {
+        id: "evt_test_0001",
+        type: "reasoning",
+        stepIndex: 0,
+        text: "Partial thought",
+        state: "done",
+      },
+    ]);
+  });
+
   it("does not create an assistant message when a turn fails before streaming", () => {
     const reducer = defaultMessageReducer();
     const data = reduceServerEvents(reducer, reducer.initial(), [
@@ -270,6 +343,75 @@ describe("defaultMessageReducer", () => {
     ]);
 
     expect(data.messages).toEqual([]);
+  });
+
+  it("does not reopen a settled approval on repeated request and call events", () => {
+    const reducer = defaultMessageReducer();
+    const call = createActionsRequestedEvent({
+      actions: [{ callId: "call_1", input: {}, kind: "tool-call", toolName: "color" }],
+      sequence: 0,
+      stepIndex: 0,
+      turnId: "turn_1",
+    });
+    const request = createInputRequestedEvent({
+      requests: [
+        {
+          action: { callId: "call_1", input: {}, kind: "tool-call", toolName: "color" },
+          display: "confirmation",
+          kind: "tool-approval",
+          options: [{ id: "approve", label: "Approve" }],
+          prompt: "Approve color?",
+          requestId: "approval_1",
+        },
+      ],
+      sequence: 1,
+      stepIndex: 0,
+      turnId: "turn_1",
+    });
+    const result = createActionResultEvent({
+      result: { callId: "call_1", kind: "tool-result", output: "blue", toolName: "color" },
+      sequence: 2,
+      stepIndex: 0,
+      turnId: "turn_1",
+    });
+    const data = reduceServerEvents(reducer, reducer.initial(), [
+      call,
+      request,
+      result,
+      request,
+      call,
+    ]);
+    expect(findToolPart(data, "call_1")).toMatchObject({
+      state: "output-available",
+      output: "blue",
+    });
+  });
+
+  it("projects a rejected action result as denied rather than a successful output", () => {
+    const reducer = defaultMessageReducer();
+    const data = reduceServerEvents(reducer, reducer.initial(), [
+      createActionsRequestedEvent({
+        actions: [{ callId: "call_rejected", input: {}, kind: "tool-call", toolName: "bash" }],
+        sequence: 0,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
+      {
+        type: "action.result",
+        data: {
+          error: { code: "USER_REJECTED", message: "Denied by user." },
+          result: { callId: "call_rejected", kind: "tool-result", output: null, toolName: "bash" },
+          sequence: 1,
+          status: "rejected",
+          stepIndex: 0,
+          turnId: "turn_1",
+        },
+      },
+    ]);
+    expect(findToolPart(data, "call_rejected")).toMatchObject({
+      approval: { approved: false, reason: "Denied by user." },
+      state: "output-denied",
+    });
   });
 
   it("replaces tool-generator snapshots and ignores a late partial after the terminal result", () => {
@@ -419,6 +561,7 @@ describe("defaultMessageReducer", () => {
             stepIndex: 0,
             text: "Need the weather tool.",
             type: "reasoning",
+            id: "evt_test_0000",
           },
           {
             input: { city: "Vienna" },
@@ -430,8 +573,11 @@ describe("defaultMessageReducer", () => {
               eve: {
                 kind: "tool-call",
                 name: "get_weather",
+                inputRequest: undefined,
+                inputResponse: undefined,
               },
             },
+            approval: undefined,
             toolName: "get_weather",
             type: "dynamic-tool",
           },
@@ -495,6 +641,39 @@ describe("defaultMessageReducer", () => {
         ],
         role: "assistant",
       },
+    ]);
+  });
+
+  it("settles a task call on its original tool part after later turns", () => {
+    const reducer = defaultMessageReducer();
+    const receipt = createActionResultEvent({
+      result: {
+        callId: "call_1",
+        kind: "tool-result",
+        output: "Started task task_1.",
+        toolName: "research",
+      },
+      sequence: 0,
+      stepIndex: 0,
+      turnId: "turn_1",
+    });
+    const settled = createTaskSettledEvent({
+      callId: "call_1",
+      output: "Alice's report is ready.",
+      status: "completed",
+      taskId: "task_1",
+      turnId: "turn_1",
+    });
+    const after = reduceServerEvents(reducer, reducer.initial(), [
+      receipt,
+      createMessageReceivedEvent({ message: "Continue", sequence: 0, turnId: "turn_2" }),
+      settled,
+    ]);
+    const part = after.messages[0]?.parts.find((candidate) => candidate.type === "dynamic-tool");
+    expect(part).toMatchObject({ output: "Alice's report is ready.", state: "output-available" });
+    expect(after.messages.map((message) => message.id)).toEqual([
+      "turn_1:assistant",
+      expect.any(String),
     ]);
   });
 
@@ -616,6 +795,7 @@ describe("defaultMessageReducer", () => {
             description: "Authorization required for Notion",
             displayName: "Notion",
             name: "notion",
+            awaitsCallback: true,
             state: "required",
             stepIndex: 0,
             turnId: "turn_1",
@@ -624,6 +804,54 @@ describe("defaultMessageReducer", () => {
         ],
         role: "assistant",
       },
+    ]);
+  });
+
+  it("parks only callback-backed authorization attempts until their later completion", () => {
+    const reducer = defaultMessageReducer();
+    const required = (name: string, attemptId: string, webhookUrl?: string) =>
+      createAuthorizationRequiredEvent({
+        name,
+        attemptId,
+        description: `Connect ${name}`,
+        sequence: 0,
+        stepIndex: 0,
+        turnId: "turn_1",
+        webhookUrl,
+      });
+    const before = reduceServerEvents(reducer, reducer.initial(), [
+      required("linear", "alice", "https://example.com/callback"),
+      required("linear", "bob"),
+    ]);
+    const parked = reduceServerEvents(reducer, before, [
+      {
+        type: "session.waiting",
+        data: { wait: "next-user-message", continuationToken: "session-id" },
+      },
+    ]);
+    const parts = (data: typeof parked) =>
+      data.messages.flatMap((message) =>
+        message.role === "assistant"
+          ? message.parts.filter((part) => part.type === "authorization")
+          : [],
+      );
+    expect(parts(parked)).toEqual([
+      expect.objectContaining({ attemptId: "alice", state: "pending" }),
+      expect.objectContaining({ attemptId: "bob", state: "required" }),
+    ]);
+    const completed = reduceServerEvents(reducer, parked, [
+      createAuthorizationCompletedEvent({
+        name: "linear",
+        attemptId: "alice",
+        outcome: "authorized",
+        sequence: 1,
+        stepIndex: 0,
+        turnId: "turn_2",
+      }),
+    ]);
+    expect(parts(completed)).toEqual([
+      expect.objectContaining({ attemptId: "alice", state: "completed", outcome: "authorized" }),
+      expect.objectContaining({ attemptId: "bob", state: "required" }),
     ]);
   });
 
@@ -674,6 +902,7 @@ describe("defaultMessageReducer", () => {
             description: "Sign in to Notion to continue.",
             displayName: "Notion",
             name: "notion",
+            awaitsCallback: true,
             outcome: "authorized",
             state: "completed",
             stepIndex: 0,
@@ -1033,6 +1262,52 @@ describe("defaultMessageReducer", () => {
     },
   );
 
+  it("keeps a settled approval's decision when its batch resolution repeats the answer", () => {
+    const reducer = defaultMessageReducer();
+    const response = { optionId: "approve", requestId: "approval_1" };
+    const data = reduceServerEvents(reducer, reducer.initial(), [
+      createInputRequestedEvent({
+        requests: [
+          {
+            action: { callId: "call_1", input: {}, kind: "tool-call", toolName: "save_note" },
+            kind: "tool-approval",
+            prompt: "Save Alice's note?",
+            requestId: "approval_1",
+          },
+        ],
+        sequence: 0,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
+      {
+        type: "approval.settled",
+        data: {
+          outcome: "approved",
+          requestId: "approval_1",
+          responderPrincipalId: "alice",
+          sequence: 0,
+          stepIndex: 0,
+          turnId: "turn_1",
+        },
+      },
+      {
+        type: "input.resolved",
+        data: {
+          resolutions: [
+            { kind: "tool-approval", outcome: "approved", requestId: "approval_1", response },
+          ],
+          sequence: 0,
+          stepIndex: 0,
+          turnId: "turn_1",
+        },
+      },
+    ]);
+    expect(findToolPart(data, "call_1")).toMatchObject({
+      state: "approval-responded",
+      approval: { approved: true },
+    });
+  });
+
   it("merges resumed approval results back into the requested tool part", () => {
     const reducer = defaultMessageReducer();
     let data = reduceServerEvents(reducer, reducer.initial(), [
@@ -1168,6 +1443,7 @@ describe("defaultMessageReducer", () => {
             stepIndex: 0,
             text: "First step.",
             type: "text",
+            id: "evt_test_0000",
           },
           { type: "step-start" },
           {
@@ -1175,6 +1451,7 @@ describe("defaultMessageReducer", () => {
             stepIndex: 1,
             text: "Second step.",
             type: "text",
+            id: "evt_test_0001",
           },
         ],
         role: "assistant",
@@ -1269,12 +1546,14 @@ describe("defaultMessageReducer", () => {
             stepIndex: 0,
             text: "Thinking",
             type: "reasoning",
+            id: "evt_test_0000",
           },
           {
             state: "done",
             stepIndex: 0,
             text: "Partial",
             type: "text",
+            id: "evt_test_0001",
           },
         ],
         role: "assistant",
