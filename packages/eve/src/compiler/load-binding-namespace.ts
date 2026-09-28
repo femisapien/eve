@@ -5,7 +5,6 @@ import {
   memoizeModuleNamespaceFactories,
   type ProgrammaticModuleNamespace,
 } from "#compiler/source-graph.js";
-import { packageStateNamespace } from "#discover/extensions.js";
 import { loadAuthoredModuleNamespace } from "#internal/authored-module-loader.js";
 
 export type CompiledBindingNamespaceLoader = (
@@ -76,11 +75,9 @@ async function loadCompiledBindingNamespace(input: {
   });
 }
 
-/** Derives the legacy package-owned state scope used while loading an extension module. */
+/** Derives the owning mount for state handles in an extension module. */
 export function resolveCompiledModuleExtensionScopeNamespace(
   binding: AgentModuleBinding,
 ): string | undefined {
-  return binding.owner.kind === "extension"
-    ? packageStateNamespace(binding.owner.packageName)
-    : undefined;
+  return binding.owner.kind === "extension" ? binding.owner.mountId : undefined;
 }

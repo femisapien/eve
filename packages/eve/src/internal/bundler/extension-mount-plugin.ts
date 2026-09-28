@@ -38,6 +38,7 @@ export function createExtensionMountPlugin(
       source: string,
       importer?: string,
     ) {
+      if (source === "eve/context") return undefined;
       const query = source.indexOf(MOUNT_QUERY);
       const tagged =
         query >= 0 ? decodeURIComponent(source.slice(query + MOUNT_QUERY.length)) : undefined;

@@ -8,7 +8,7 @@ import { buildSingleRolldownChunk } from "#internal/bundler/nitro-rolldown.js";
 import { createExtensionMountPlugin } from "#internal/bundler/extension-mount-plugin.js";
 import {
   createExtensionScopePlugin,
-  createFixedNamespaceScopePlugin,
+  createFixedMountScopePlugin,
 } from "#internal/bundler/extension-scope-plugin.js";
 
 // Externalizes the framework barrels so the temp module bundles without eve
@@ -95,10 +95,10 @@ describe("extension-scope plugin (bundled)", () => {
   it("bakes the package namespace into an extension-owned module's defineState", async () => {
     const { modulePath, sourceRoot } = scratchModule(STATE_MODULE);
     const code = await bundle(modulePath, [
-      createExtensionScopePlugin([{ sourceRoot, packageNamespace: "acme-crm" }]),
+      createExtensionScopePlugin([{ sourceRoot, mountId: "extensions/crm" }]),
       externalizeEvePlugin,
     ]);
-    expect(code).toContain("acme-crm");
+    expect(code).toContain("mount-v1:extensions%2Fcrm:");
     expect(code).toContain("eve/context");
   });
 
@@ -108,12 +108,12 @@ describe("extension-scope plugin (bundled)", () => {
       createExtensionScopePlugin([
         {
           sourceRoot: join(tmpdir(), "some-other-extension", "extension"),
-          packageNamespace: "acme-crm",
+          mountId: "extensions/crm",
         },
       ]),
       externalizeEvePlugin,
     ]);
-    expect(code).not.toContain("acme-crm");
+    expect(code).not.toContain("mount-v1:extensions%2Fcrm:");
   });
 
   it("does not scope when there are no extensions", async () => {
@@ -123,7 +123,7 @@ describe("extension-scope plugin (bundled)", () => {
       (plugin) => plugin !== null,
     );
     const code = await bundle(modulePath, plugins);
-    expect(code).not.toContain("acme-crm");
+    expect(code).not.toContain("mount-v1:extensions%2Fcrm:");
     void sourceRoot;
   });
 
@@ -132,9 +132,9 @@ describe("extension-scope plugin (bundled)", () => {
     // filesystem matching (which is unreliable under workspace symlinks).
     const { modulePath } = scratchModule(STATE_MODULE);
     const code = await bundle(modulePath, [
-      createFixedNamespaceScopePlugin("acme-crm"),
+      createFixedMountScopePlugin("extensions/crm"),
       externalizeEvePlugin,
     ]);
-    expect(code).toContain("acme-crm");
+    expect(code).toContain("mount-v1:extensions%2Fcrm:");
   });
 });

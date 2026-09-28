@@ -1,6 +1,6 @@
 import { posix } from "node:path";
 
-import { mountRefNamespace, packageStateNamespace } from "#discover/extensions.js";
+import { mountRefNamespace } from "#discover/extensions.js";
 import type { AgentSourceManifest, LocalSubagentSourceRef } from "#discover/manifest.js";
 import type {
   CompiledAgentDefinition,
@@ -183,7 +183,6 @@ export function compileExtensionMounts(
         namespace: mount.namespace,
         packageName: mount.packageName,
         mountId: posix.join(nodePath, "extensions", mount.namespace),
-        packageNamespace: packageStateNamespace(mount.packageName),
         sourceRoot: mount.sourceRoot,
       },
     ];

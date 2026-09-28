@@ -31,6 +31,20 @@ describe("deserializeContext", () => {
   });
 });
 
+describe("state layout admission", () => {
+  it("rejects legacy local restores before dropping unregistered extension state", async () => {
+    await expect(deserializeContext({ "eve.bundle": {}, "acme-crm.requests": 4 })).rejects.toThrow(
+      "Incompatible context state layout",
+    );
+  });
+
+  it("stamps bundle-backed context snapshots with the current layout", () => {
+    const ctx = new ContextContainer();
+    ctx.set(BundleKey, { compiledArtifactsSource: {} } as CompiledBundle);
+    expect(serializeContext(ctx)["eve.stateLayout"]).toBe(1);
+  });
+});
+
 describe("serialize/deserialize error logging", () => {
   let warnSpy: ReturnType<typeof vi.spyOn>;
   let errorSpy: ReturnType<typeof vi.spyOn>;

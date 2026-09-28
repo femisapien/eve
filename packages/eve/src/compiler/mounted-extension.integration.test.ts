@@ -4,6 +4,8 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 
 import { compileAgent } from "#compiler/compile-agent.js";
+import { ContextContainer, contextStorage } from "#context/container.js";
+import { deserializeContext, serializeContext } from "#context/serialize.js";
 import { ROOT_COMPILED_AGENT_NODE_ID } from "#compiler/manifest.js";
 import { loadCompiledModuleMapFromAuthoredSource } from "#internal/authored-module-map-loader.js";
 import { bundleAuthoredModuleMapForGeneration } from "#internal/authored-module-loader.js";
@@ -103,6 +105,70 @@ describe("mounted extension via authored-source loader", () => {
     };
     expect(read(generated.default, "one")).toBe("one");
     expect(read(generated.default, "two")).toBe("two");
+  });
+
+  it("keeps state independent across mounts and context restoration", async () => {
+    const app = await createAppRoot("eve-mount-state-", {
+      files: {
+        "agent/agent.mjs": 'export default { model: "openai/gpt-5.4" };',
+        "agent/instructions.md": "Work with the available tools.",
+        "agent/extensions/one.mjs": 'import ext from "@acme/crm"; export default ext;',
+        "agent/extensions/two.mjs": 'import ext from "@acme/crm"; export default ext;',
+        "node_modules/@acme/crm/package.json": JSON.stringify({
+          name: "@acme/crm",
+          type: "module",
+          eve: { extension: { source: "source", dist: "extension" } },
+          exports: { ".": "./extension/extension.mjs" },
+        }),
+        "node_modules/@acme/crm/extension/_manifest.json": compatibilityManifest({
+          extension: 1,
+          tool: 1,
+        }),
+        "node_modules/@acme/crm/extension/extension.mjs": "export default {};",
+        "node_modules/@acme/crm/extension/tools/count.mjs": [
+          'import { defineState } from "eve/context";',
+          'const count = defineState("requests", () => 0);',
+          'export default { description: "Count", inputSchema: {}, execute: () => { count.update(n => n + 1); return count.get(); } };',
+        ].join("\n"),
+      },
+    });
+    const { manifest, moduleMap } = await compileRuntimeGraph(app.appRoot);
+    const execute = (map: typeof moduleMap, mount: string) => {
+      const tool = manifest.tools.find((entry) => entry.name === `${mount}__count`)!;
+      return (
+        map.nodes[ROOT_COMPILED_AGENT_NODE_ID]!.modules[tool.sourceId]!.default as {
+          execute: () => number;
+        }
+      ).execute();
+    };
+    const ctx = new ContextContainer();
+    contextStorage.run(ctx, () => {
+      expect(execute(moduleMap, "one")).toBe(1);
+      expect(execute(moduleMap, "one")).toBe(2);
+      expect(execute(moduleMap, "two")).toBe(1);
+    });
+    const saved = serializeContext(ctx);
+    expect(Object.keys(saved).filter((name) => name.startsWith("mount-v1:"))).toHaveLength(2);
+    const restored = await deserializeContext(saved);
+    contextStorage.run(restored, () => {
+      expect(execute(moduleMap, "one")).toBe(3);
+      expect(execute(moduleMap, "two")).toBe(2);
+    });
+
+    const moduleMapPath = join(app.appRoot, ".eve", "compile", "state-map.mjs");
+    const { code } = await bundleAuthoredModuleMapForGeneration({
+      appRoot: app.appRoot,
+      manifest,
+      moduleMapPath,
+    });
+    await writeFile(moduleMapPath, code);
+    const generated = (await import(`${moduleMapPath}?test=mount-state`)) as {
+      default: typeof moduleMap;
+    };
+    contextStorage.run(restored, () => {
+      expect(execute(generated.default, "one")).toBe(4);
+      expect(execute(generated.default, "two")).toBe(3);
+    });
   });
 
   it("keeps module instances distinct across mounts in a generation graph", async () => {

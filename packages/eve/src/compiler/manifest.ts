@@ -940,7 +940,6 @@ const compiledExtensionMountSchema: z.ZodType<CompiledExtensionMount> = z
     namespace: z.string(),
     packageName: z.string(),
     mountId: z.string(),
-    packageNamespace: z.string(),
     sourceRoot: z.string(),
     mountSourceId: z.string(),
     mountLogicalPath: z.string(),
@@ -1038,7 +1037,6 @@ export interface CompiledExtensionMount {
   /** Canonical path of this mount in the root agent tree. */
   readonly mountId: string;
   /** Legacy package-derived prefix for extension state keys. */
-  readonly packageNamespace: string;
   /**
    * Absolute path to the extension's source root on disk. The extension-scope
    * bundler plugin treats any module under this root as extension-owned and
