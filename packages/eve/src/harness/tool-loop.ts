@@ -824,6 +824,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
         for (const challenge of coordinated.challenges) {
           await emit(
             createAuthorizationRequiredEvent({
+              attemptId: challenge.attemptId,
               authorization: challenge.challenge,
               candidateId: challenge.candidateId,
               description:
