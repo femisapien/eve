@@ -14,6 +14,7 @@ export type CompiledBindingNamespaceLoader = (
 /** Loads one node's selected bindings with dependency ordering and per-phase caching. */
 export function createCompiledBindingNamespaceLoader(input: {
   readonly bindings?: Readonly<Record<string, AgentModuleBinding>>;
+  readonly mountSourceId?: (binding: AgentModuleBinding) => string | undefined;
   readonly onLoad?: (sourceId: string) => void;
   readonly registries: readonly AgentSourceRegistry[];
   readonly resolveBinding?: (sourceId: string) => AgentModuleBinding | undefined;
@@ -38,11 +39,17 @@ export function createCompiledBindingNamespaceLoader(input: {
     }
     input.onLoad?.(sourceId);
     const nextLineage = new Set(lineage).add(sourceId);
-    const loading = loadCompiledBindingNamespace({
-      binding,
-      loadDependency: (dependencySourceId) => load(dependencySourceId, nextLineage),
-      registries: input.registries,
-    }).then(memoizeModuleNamespaceFactories);
+    const mountSourceId = input.mountSourceId?.(binding);
+    const loading = (async () => {
+      if (mountSourceId !== undefined && mountSourceId !== sourceId) {
+        await load(mountSourceId, nextLineage);
+      }
+      return await loadCompiledBindingNamespace({
+        binding,
+        loadDependency: (dependencySourceId) => load(dependencySourceId, nextLineage),
+        registries: input.registries,
+      });
+    })().then(memoizeModuleNamespaceFactories);
     cache.set(sourceId, loading);
     return loading;
   };

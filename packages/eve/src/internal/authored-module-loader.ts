@@ -315,7 +315,19 @@ export async function bundleAuthoredModuleMapForGeneration(input: {
       workflowFunctions: (id) => workflowSources.workflowFunctions(id),
     }),
     workflowSources.graphPlugin(),
-    createExtensionMountPlugin(extensionMounts),
+    createExtensionMountPlugin(
+      extensionMounts,
+      new Map(
+        [input.manifest, ...input.manifest.subagents.map((subagent) => subagent.agent)].flatMap(
+          (node) =>
+            Object.values(node.bindings).flatMap((binding) =>
+              binding.backing.kind === "filesystem" && binding.backing.mountId !== undefined
+                ? [[binding.backing.sourcePath, binding.backing.mountId] as const]
+                : [],
+            ),
+        ),
+      ),
+    ),
     extensionScopePlugin,
     createAuthoredRelativeExtensionResolverPlugin({ extensions: RESOLVE_EXTENSIONS }),
     createAuthoredAssetImportPlugin({ packageRoot }),
@@ -324,7 +336,11 @@ export async function bundleAuthoredModuleMapForGeneration(input: {
       extensions: RESOLVE_EXTENSIONS,
     }),
     createNodeEsmCompatBannerPlugin({ includeRequire: true }),
-    createGenerationPackageBoundaryPlugin({ externalDependencies, packageRoot }),
+    createGenerationPackageBoundaryPlugin({
+      externalDependencies,
+      packageRoot,
+      extensionSpecifiers: new Set(extensionMounts.map((mount) => mount.specifier)),
+    }),
   ].filter((plugin) => plugin !== null);
 
   try {

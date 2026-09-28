@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { join, relative, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -25,8 +25,6 @@ import { readMaterializedAuthoredModuleIndex } from "#internal/materialized-auth
 import type { RuntimeDiskCompiledArtifactsSource } from "#runtime/compiled-artifacts-source.js";
 import { loadCompiledManifest } from "#runtime/loaders/manifest.js";
 import { formatValidationError } from "#runtime/validation.js";
-
-let fallbackGraphGeneration = 0;
 
 /** Hydrates the compiled module map from the manifest’s authored bindings. */
 export async function loadCompiledModuleMapFromAuthoredSource(input: {
@@ -69,7 +67,7 @@ async function hydrateCompiledModuleMapFromManifest(
       moduleMapPath,
     });
     const hash = createHash("sha256").update(code).digest("hex");
-    const fileName = `authored-module-map-${hash}-${++fallbackGraphGeneration}.mjs`;
+    const fileName = `authored-module-map-${hash}-${randomUUID()}.mjs`;
     const outputPath = join(runtimeAppRoot, ".eve", "compile", fileName);
     await mkdir(join(runtimeAppRoot, ".eve", "compile"), { recursive: true });
     await writeFile(outputPath, code, { flag: "wx" });

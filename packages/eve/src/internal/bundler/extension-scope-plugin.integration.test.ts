@@ -64,8 +64,18 @@ describe("extension-scope plugin (bundled)", () => {
     );
     const code = await bundle(entry, [
       createExtensionMountPlugin([
-        { mountId: "extensions/research", sourceRoot },
-        { mountId: "extensions/support", sourceRoot },
+        {
+          mountId: "extensions/research",
+          sourceRoot,
+          packageName: "@acme/test",
+          specifier: "@acme/test",
+        },
+        {
+          mountId: "extensions/support",
+          sourceRoot,
+          packageName: "@acme/test",
+          specifier: "@acme/test",
+        },
       ]),
     ]);
     const result = (await import(`data:text/javascript,${encodeURIComponent(code)}`)) as {
@@ -80,8 +90,18 @@ describe("extension-scope plugin (bundled)", () => {
     await expect(
       bundle(entry, [
         createExtensionMountPlugin([
-          { mountId: "extensions/research", sourceRoot },
-          { mountId: "extensions/support", sourceRoot },
+          {
+            mountId: "extensions/research",
+            sourceRoot,
+            packageName: "@acme/test",
+            specifier: "@acme/test",
+          },
+          {
+            mountId: "extensions/support",
+            sourceRoot,
+            packageName: "@acme/test",
+            specifier: "@acme/test",
+          },
         ]),
       ]),
     ).rejects.toThrow(/multiple extension mounts/);

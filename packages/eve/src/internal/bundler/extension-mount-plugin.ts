@@ -1,13 +1,15 @@
-import { readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { createRequire } from "node:module";
 import { join, resolve, sep } from "node:path";
 
 const MOUNT_QUERY = "?eve-mount=";
-const BUILT_IN_EXTENSION = "eve/self-modification";
 
 interface Mount {
   readonly mountId: string;
   readonly sourceRoot: string;
-  readonly packageName?: string;
+  readonly packageName: string;
+  readonly specifier?: string;
+  readonly mountSourcePath?: string;
 }
 
 function canonical(path: string): string {
@@ -18,13 +20,26 @@ function canonical(path: string): string {
   }
 }
 
+function within(path: string, root: string): boolean {
+  return path === root || path.startsWith(`${root}${sep}`);
+}
+
 /** Isolates extension-owned source modules, but leaves ordinary dependencies shared. */
 export function createExtensionMountPlugin(
   mounts: readonly Mount[],
+  overridePaths: ReadonlyMap<string, string> = new Map(),
 ): Record<string, unknown> | null {
   if (mounts.length === 0) return null;
   const roots = mounts.map((mount) => ({ ...mount, root: canonical(mount.sourceRoot) }));
+  const declarationPaths = new Map(
+    roots
+      .filter((mount) => mount.mountSourcePath !== undefined)
+      .map((mount) => [canonical(resolve(mount.mountSourcePath!)), mount]),
+  );
   const byId = new Map(roots.map((mount) => [mount.mountId, mount]));
+  const overrideMounts = new Map(
+    [...overridePaths].map(([path, id]) => [canonical(path), byId.get(id)]),
+  );
   return {
     name: "eve-extension-mount",
     async resolveId(
@@ -47,47 +62,63 @@ export function createExtensionMountPlugin(
         importerQuery >= 0
           ? decodeURIComponent(importer!.slice(importerQuery + MOUNT_QUERY.length))
           : undefined;
-      const mountId = tagged ?? inherited;
-      if (mountId === undefined) {
-        if (importer === undefined || importer.startsWith("\0")) return undefined;
-        const resolved = await this.resolve(source, importer, { skipSelf: true });
-        if (resolved === null || resolved.external || resolved.id.startsWith("\0"))
-          return undefined;
-        const path = canonical(resolved.id.split("?")[0]!);
-        const owners = roots.filter(
-          (root) => path === root.root || path.startsWith(`${root.root}${sep}`),
-        );
-        if (owners.length > 1) {
-          throw new Error(
-            `Import "${source}" from "${importer}" refers to multiple extension mounts (${owners.map((owner) => owner.mountId).join(", ")}). Import it from an owned mount or contribution instead.`,
-          );
-        }
-        return owners.length === 1
-          ? { id: `${resolved.id}${MOUNT_QUERY}${encodeURIComponent(owners[0]!.mountId)}` }
-          : undefined;
-      }
-      const mount = byId.get(mountId);
-      if (mount === undefined) throw new Error(`Unknown extension mount "${mountId}".`);
       const cleanSource = query >= 0 ? source.slice(0, query) : source;
       const cleanImporter = importerQuery >= 0 ? importer!.slice(0, importerQuery) : importer;
+      const importerPath = cleanImporter === undefined ? undefined : canonical(cleanImporter);
+      const declarationMount =
+        importerPath === undefined ? undefined : declarationPaths.get(importerPath);
+      const overrideMount =
+        importerPath === undefined ? undefined : overrideMounts.get(importerPath);
+      const mountId = tagged ?? inherited ?? declarationMount?.mountId ?? overrideMount?.mountId;
+      const mount = mountId === undefined ? undefined : byId.get(mountId);
+      if (mountId !== undefined && mount === undefined)
+        throw new Error(`Unknown extension mount "${mountId}".`);
+
+      // An override has mount context for its imports, but remains application-owned:
+      // its own state and all of its other dependencies keep their ordinary identity.
+      const override =
+        mount !== undefined &&
+        importerPath !== undefined &&
+        !within(importerPath, mount.root) &&
+        overrideMounts.get(importerPath) === mount;
+      const sourceMount =
+        mount !== undefined && cleanSource === mount.specifier ? mount : undefined;
       const builtInEntry =
-        cleanSource === BUILT_IN_EXTENSION &&
-        mount.mountId === "extensions/self-modification" &&
-        mount.packageName === "eve"
-          ? join(
-              mount.sourceRoot,
-              `extension${mount.sourceRoot.includes(`${sep}dist${sep}`) ? ".js" : ".ts"}`,
-            )
+        sourceMount?.packageName === "eve" && cleanImporter !== undefined
+          ? ((sourceMount.specifier === "eve/self-modification"
+              ? ["extension.ts", "extension.js"]
+                  .map((name) => join(sourceMount.root, name))
+                  .find((path) => existsSync(path))
+              : undefined) ?? createRequire(cleanImporter).resolve(cleanSource))
           : undefined;
       const resolved = await this.resolve(builtInEntry ?? cleanSource, cleanImporter, {
         skipSelf: true,
       });
-      if (resolved === null || resolved.external || resolved.id.startsWith("\0")) return resolved;
-      const path = canonical(resolved.id.split("?")[0]!);
-      if (path !== mount.root && !path.startsWith(`${mount.root}${sep}`) && tagged === undefined) {
-        return resolved;
+      if (resolved === null || resolved.id.startsWith("\0")) return resolved;
+      if (resolved.external) {
+        if (sourceMount === undefined) return resolved;
+        throw new Error(
+          `Extension export "${cleanSource}" for mount "${mountId}" was externalized; it must be bundled to isolate its configuration.`,
+        );
       }
-      return { id: `${resolved.id}${MOUNT_QUERY}${encodeURIComponent(mountId)}` };
+      const path = canonical(resolved.id.split("?")[0]!);
+      if (
+        mount !== undefined &&
+        (sourceMount !== undefined || (!override && within(path, mount.root)))
+      ) {
+        return { id: `${resolved.id}${MOUNT_QUERY}${encodeURIComponent(mountId!)}` };
+      }
+      if (mount !== undefined) return resolved;
+      if (importer === undefined || importer.startsWith("\0")) return undefined;
+      const owners = roots.filter((root) => within(path, root.root));
+      if (owners.length > 1) {
+        throw new Error(
+          `Import "${source}" from "${importer}" refers to multiple extension mounts (${owners.map((owner) => owner.mountId).join(", ")}). Import it from an owned mount or contribution instead.`,
+        );
+      }
+      return owners.length === 1
+        ? { id: `${resolved.id}${MOUNT_QUERY}${encodeURIComponent(owners[0]!.mountId)}` }
+        : undefined;
     },
     load(id: string) {
       const query = id.indexOf(MOUNT_QUERY);

@@ -371,6 +371,7 @@ const filesystemModuleBackingSchema = z
   .object({
     externalDependencies: z.array(z.string()).readonly(),
     extensionScope: z.object({ namespace: z.string(), sourceRoot: z.string() }).strict().optional(),
+    mountId: z.string().optional(),
     kind: z.literal("filesystem"),
     sourcePath: z.string(),
   })
@@ -939,9 +940,11 @@ const compiledExtensionMountSchema: z.ZodType<CompiledExtensionMount> = z
     externalDependencies: z.array(z.string()).readonly(),
     namespace: z.string(),
     packageName: z.string(),
+    specifier: z.string(),
     mountId: z.string(),
     sourceRoot: z.string(),
     mountSourceId: z.string(),
+    mountSourcePath: z.string(),
     mountLogicalPath: z.string(),
   })
   .strict();
@@ -1034,16 +1037,14 @@ export interface CompiledExtensionMount {
   /** Mount-derived namespace that prefixes the extension's tool/skill names. */
   readonly namespace: string;
   readonly packageName: string;
+  /** Package export imported by the mount declaration. */
+  readonly specifier: string;
   /** Canonical path of this mount in the root agent tree. */
   readonly mountId: string;
-  /** Legacy package-derived prefix for extension state keys. */
-  /**
-   * Absolute path to the extension's source root on disk. The extension-scope
-   * bundler plugin treats any module under this root as extension-owned and
-   * rewrites `eve/context` imports to retain the legacy state prefix.
-   */
+  /** Absolute path to the extension's distributed source root. */
   readonly sourceRoot: string;
   readonly mountSourceId: string;
+  readonly mountSourcePath: string;
   readonly mountLogicalPath: string;
 }
 

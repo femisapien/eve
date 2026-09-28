@@ -105,7 +105,7 @@ export function createExtensionScopePlugin(
       const mountId = decodeURIComponent(importer.slice(mountQuery + "?eve-mount=".length));
       const owned = canonicalScopes.find((scope) => scope.mountId === mountId);
       if (owned === undefined) throw new Error(`Unknown extension mount "${mountId}".`);
-      return owned.mountId;
+      return isUnder(importerPath(importer), owned.root) ? owned.mountId : undefined;
     }
     const path = importerPath(importer);
     const matches = canonicalScopes.filter((scope) => isUnder(path, scope.root));

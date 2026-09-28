@@ -599,7 +599,21 @@ function createApplicationNitroBundlerConfiguration(
     compiledSandboxProviderPrunePlugin,
     createOptionalEngineDependencyPlugin(unconfiguredOptionalEnginePackages),
     createExtensionExternalDependencyPlugin(extensionMounts),
-    createExtensionMountPlugin(extensionMounts),
+    createExtensionMountPlugin(
+      extensionMounts,
+      new Map(
+        [
+          preparedHost.compileResult.manifest,
+          ...preparedHost.compileResult.manifest.subagents.map((subagent) => subagent.agent),
+        ].flatMap((node) =>
+          Object.values(node.bindings).flatMap((binding) =>
+            binding.backing.kind === "filesystem" && binding.backing.mountId !== undefined
+              ? [[binding.backing.sourcePath, binding.backing.mountId] as const]
+              : [],
+          ),
+        ),
+      ),
+    ),
     extensionScopePlugin,
   ].filter((plugin) => plugin !== null);
   const nitroRolldownConfig = {
