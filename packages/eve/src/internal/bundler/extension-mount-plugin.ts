@@ -84,7 +84,7 @@ export function createExtensionMountPlugin(
       const sourceMount =
         mount !== undefined && cleanSource === mount.specifier ? mount : undefined;
       const builtInEntry =
-        sourceMount?.packageName === "eve" && cleanImporter !== undefined
+        sourceMount !== undefined && cleanImporter !== undefined
           ? ((sourceMount.specifier === "eve/self-modification"
               ? ["extension.ts", "extension.js"]
                   .map((name) => join(sourceMount.root, name))

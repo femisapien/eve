@@ -88,6 +88,7 @@ export function createGenerationPackageBoundaryPlugin(input: {
 export function createRuntimeLoaderPackageBoundaryPlugin(input: {
   readonly externalDependencies: readonly string[];
   readonly packageRoot: string;
+  readonly extensionSpecifier?: string;
 }): Record<string, unknown> {
   const canonicalPackageRoot = toCanonicalPath(input.packageRoot);
 
@@ -103,6 +104,9 @@ export function createRuntimeLoaderPackageBoundaryPlugin(input: {
         return undefined;
       }
 
+      if (source === input.extensionSpecifier && importer?.includes("?eve-mount=")) {
+        return undefined;
+      }
       if (isFrameworkRuntimeImport(source, importer)) {
         return {
           external: true,

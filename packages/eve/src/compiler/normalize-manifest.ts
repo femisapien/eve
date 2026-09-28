@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { posix } from "node:path";
 
 import type { AgentSourceManifest } from "#discover/manifest.js";
@@ -33,6 +34,7 @@ import {
   markConfigRuntimeEntries,
   NodeModuleEvaluationContext,
 } from "#compiler/module-lifecycle.js";
+import type { ExtensionCompileMount } from "#compiler/load-binding-namespace.js";
 import { compileAgentConfig } from "#compiler/normalize-agent-config.js";
 import { compileChannelDefinition } from "#compiler/normalize-channel.js";
 import { compileConnectionDefinition } from "#compiler/normalize-connection.js";
@@ -157,6 +159,8 @@ class AgentGraphCompiler {
   private readonly context: ManifestCompileContext;
   private readonly registries: readonly AgentSourceRegistry[];
   private readonly diagnostics: CompilerDiagnostic[];
+  private readonly evaluationId = randomUUID();
+  private readonly mounts = new Map<string, ExtensionCompileMount>();
 
   constructor(
     context: ManifestCompileContext,
@@ -449,12 +453,34 @@ class AgentGraphCompiler {
           )?.sourceId,
       ]),
     );
-    const evaluation = new NodeModuleEvaluationContext(this.registries, (binding) => {
-      const mountId = binding.backing.kind === "filesystem" ? binding.backing.mountId : undefined;
-      return mountsById.get(
-        mountId ?? (binding.owner.kind === "extension" ? binding.owner.mountId : ""),
-      );
-    });
+    for (const mount of input.manifest.resolvedExtensions) {
+      const mountId = posix.join(input.nodePath, "extensions", mount.namespace);
+      const logicalPath = input.manifest.extensions.find(
+        (ref) => mountRefNamespace(ref.logicalPath) === mount.namespace,
+      )?.logicalPath;
+      this.mounts.set(mountId, {
+        mountId,
+        programmatic: mount.programmaticDeclaration !== undefined,
+        mountSourcePath: posix.join(
+          input.manifest.agentRoot,
+          logicalPath ?? `extensions/${mount.namespace}.ts`,
+        ),
+        packageName: mount.packageName,
+        sourceRoot: mount.sourceRoot,
+        specifier: mount.specifier,
+      });
+    }
+    const evaluation = new NodeModuleEvaluationContext(
+      this.registries,
+      (binding) => {
+        const mountId = binding.backing.kind === "filesystem" ? binding.backing.mountId : undefined;
+        return mountsById.get(
+          mountId ?? (binding.owner.kind === "extension" ? binding.owner.mountId : ""),
+        );
+      },
+      this.mounts,
+      this.evaluationId,
+    );
     evaluation.setBindings(
       Object.fromEntries(
         [...graph.composed.selected.values()]

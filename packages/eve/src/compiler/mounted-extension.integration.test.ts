@@ -77,14 +77,35 @@ describe("mounted extension via authored-source loader", () => {
           "export default defineExtension({ config });",
         ].join("\n"),
         "node_modules/@acme/crm/extension/tools/account.mjs": [
-          'import ext from "@acme/crm";',
+          'import ext from "../extension.mjs";',
           "const account = ext.config.account; export default { description: account, inputSchema: {}, execute: () => account };",
         ].join("\n"),
       },
     });
     const first = await compileRuntimeGraph(app.appRoot);
-    expect(first.manifest.tools.find((tool) => tool.name === "two__account")?.description).toBe(
-      "two",
+    const firstMounts = first.manifest.extensionMounts.map((mount) => mount.mountId);
+    expect(firstMounts).toEqual(expect.arrayContaining(["extensions/one", "extensions/two"]));
+    expect(first.manifest.tools.map((tool) => [tool.name, tool.description])).toEqual(
+      expect.arrayContaining([
+        ["one__account", "Read overridden account"],
+        ["two__account", "two"],
+      ]),
+    );
+    const otherCompilation = await compileAgent({ startPath: app.appRoot });
+    expect(
+      otherCompilation.manifest.tools.find((tool) => tool.name === "two__account")?.description,
+    ).toBe("two");
+    await writeFile(
+      join(app.appRoot, "agent/extensions/two.mjs"),
+      'import ext from "@acme/crm"; export default ext({ account: "updated" });',
+    );
+    const refreshed = await compileAgent({ startPath: app.appRoot });
+    expect(refreshed.manifest.tools.find((tool) => tool.name === "two__account")?.description).toBe(
+      "updated",
+    );
+    await writeFile(
+      join(app.appRoot, "agent/extensions/two.mjs"),
+      'import ext from "@acme/crm"; export default ext({ account: "two" });',
     );
     const second = await loadCompiledModuleMapFromAuthoredSource({
       compiledArtifactsSource: createDiskRuntimeCompiledArtifactsSource(app.appRoot),
@@ -252,7 +273,7 @@ describe("mounted extension via authored-source loader", () => {
       expect(execute(moduleMap, "two")).toBe(1);
     });
     const saved = serializeContext(ctx);
-    expect(Object.keys(saved).filter((name) => name.startsWith("mount-v1:"))).toHaveLength(2);
+    expect(Object.keys(saved).filter((name) => name.startsWith("eve:mount.v1:"))).toHaveLength(2);
     const restored = await deserializeContext(saved);
     contextStorage.run(restored, () => {
       expect(execute(moduleMap, "one")).toBe(3);
@@ -272,6 +293,40 @@ describe("mounted extension via authored-source loader", () => {
     contextStorage.run(restored, () => {
       expect(execute(generated.default, "one")).toBe(4);
       expect(execute(generated.default, "two")).toBe(3);
+    });
+  });
+
+  it("rejects application state using a generated mount key", async () => {
+    const app = await createAppRoot("eve-mount-state-collision-", {
+      files: {
+        "agent/agent.mjs": 'export default { model: "openai/gpt-5.4" };',
+        "agent/instructions.md": "Work with the available tools.",
+        "agent/extensions/crm.mjs": 'export { default } from "@acme/crm";',
+        "agent/tools/intrude.mjs": [
+          'import { defineState } from "eve/context";',
+          'defineState("eve:mount.v1:extensions%2Fcrm:requests", () => 0);',
+          'export default { description: "Read state", inputSchema: {}, execute: () => 0 };',
+        ].join("\n"),
+        "node_modules/@acme/crm/package.json": JSON.stringify({
+          name: "@acme/crm",
+          type: "module",
+          eve: { extension: { source: "source", dist: "extension" } },
+          exports: { ".": "./extension/extension.mjs" },
+        }),
+        "node_modules/@acme/crm/extension/_manifest.json": compatibilityManifest({
+          extension: 1,
+          tool: 1,
+        }),
+        "node_modules/@acme/crm/extension/extension.mjs": "export default {};",
+        "node_modules/@acme/crm/extension/tools/count.mjs": [
+          'import { defineState } from "eve/context";',
+          'const count = defineState("requests", () => 0);',
+          'export default { description: "Count", inputSchema: {}, execute: () => count.get() };',
+        ].join("\n"),
+      },
+    });
+    await expect(compileAgent({ startPath: app.appRoot })).rejects.toMatchObject({
+      cause: expect.objectContaining({ message: expect.stringMatching(/reserved "eve:mount\."/) }),
     });
   });
 

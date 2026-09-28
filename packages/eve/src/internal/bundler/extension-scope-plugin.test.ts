@@ -91,12 +91,8 @@ describe("shim baking (shared)", () => {
     const shim = createFixedMountScopePlugin("extensions/crm").load(
       "\0eve-ext-scope:context:extensions%2Fcrm",
     );
-    expect(shim?.code).toContain(
-      `import { defineState as __eveScopedDefineState } from "eve/context"`,
-    );
-    expect(shim?.code).toContain(
-      `__eveScopedDefineState("mount-v1:extensions%2Fcrm:" + encodeURIComponent(name), initial)`,
-    );
+    expect(shim?.code).toContain(`import { defineMountedState } from "eve/internal/mount-state"`);
+    expect(shim?.code).toContain(`defineMountedState("extensions/crm", name, initial)`);
   });
 
   it("passes through non-shim ids in load", () => {

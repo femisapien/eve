@@ -118,8 +118,8 @@ describe("extension-scope plugin (bundled)", () => {
       createExtensionScopePlugin([{ sourceRoot, mountId: "extensions/crm" }]),
       externalizeEvePlugin,
     ]);
-    expect(code).toContain("mount-v1:extensions%2Fcrm:");
-    expect(code).toContain("eve/context");
+    expect(code).toContain('defineMountedState("extensions/crm", name, initial)');
+    expect(code).toContain("eve/internal/mount-state");
   });
 
   it("leaves a module outside every extension source root unscoped", async () => {
@@ -133,7 +133,7 @@ describe("extension-scope plugin (bundled)", () => {
       ]),
       externalizeEvePlugin,
     ]);
-    expect(code).not.toContain("mount-v1:extensions%2Fcrm:");
+    expect(code).not.toContain("eve/internal/mount-state");
   });
 
   it("does not scope when there are no extensions", async () => {
@@ -143,7 +143,7 @@ describe("extension-scope plugin (bundled)", () => {
       (plugin) => plugin !== null,
     );
     const code = await bundle(modulePath, plugins);
-    expect(code).not.toContain("mount-v1:extensions%2Fcrm:");
+    expect(code).not.toContain("eve/internal/mount-state");
     void sourceRoot;
   });
 
@@ -155,6 +155,6 @@ describe("extension-scope plugin (bundled)", () => {
       createFixedMountScopePlugin("extensions/crm"),
       externalizeEvePlugin,
     ]);
-    expect(code).toContain("mount-v1:extensions%2Fcrm:");
+    expect(code).toContain('defineMountedState("extensions/crm", name, initial)');
   });
 });

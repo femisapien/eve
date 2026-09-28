@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { createRuntimeAdapterRegistry } from "#runtime/channels/registry.js";
+import { compileFromMemory } from "#internal/testing/compile-from-memory.js";
 import { ContextContainer } from "#context/container.js";
 import { ContextKey } from "#context/key.js";
+import { defineState } from "#public/definitions/state.js";
 import type { CompiledBundle } from "#runtime/sessions/runtime-context-keys.js";
 import { BundleKey, ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
@@ -33,26 +35,48 @@ describe("deserializeContext", () => {
 });
 
 describe("state layout admission", () => {
-  it("rejects legacy local restores before dropping unregistered extension state", async () => {
-    await expect(deserializeContext({ "eve.bundle": {}, "acme-crm.requests": 4 })).rejects.toThrow(
-      "Incompatible context state layout",
-    );
+  it("rejects unmarked legacy keys before dropping their values", async () => {
+    const { manifest } = await compileFromMemory({ model: "openai/gpt-5.4" });
+    const bundle = { compiledArtifactsSource: { kind: "bundled" } } as CompiledBundle;
+    const deserialize = vi.spyOn(BundleKey.codec!, "deserialize").mockResolvedValue(bundle);
+    const loadManifest = vi
+      .spyOn(manifestLoader, "loadCompiledManifest")
+      .mockResolvedValue(manifest);
+    try {
+      await expect(
+        deserializeContext({ "eve.bundle": {}, "acme-crm.requests": 4 }),
+      ).rejects.toThrow("Incompatible context state layout");
+      // Registration in a previous graph must not turn a reserved legacy authored name
+      // into proof that it belongs to the new layout.
+      new ContextKey("eve:mount.v1:extensions%2Fcrm:requests");
+      await expect(
+        deserializeContext({
+          "eve.bundle": {},
+          "eve:mount.v1:extensions%2Fcrm:requests": 4,
+        }),
+      ).rejects.toThrow("Incompatible context state layout");
+    } finally {
+      deserialize.mockRestore();
+      loadManifest.mockRestore();
+    }
   });
 
   it("admits an unmarked checkpoint only when its graph has no mounts", async () => {
+    const { manifest } = await compileFromMemory({ model: "openai/gpt-5.4" });
     const bundle = { compiledArtifactsSource: { kind: "bundled" } } as CompiledBundle;
     const deserialize = vi.spyOn(BundleKey.codec!, "deserialize").mockResolvedValue(bundle);
-    const loadManifest = vi.spyOn(manifestLoader, "loadCompiledManifest").mockResolvedValue({
-      extensionMounts: [],
-      subagents: [],
-    } as unknown as Awaited<ReturnType<typeof manifestLoader.loadCompiledManifest>>);
+    const loadManifest = vi
+      .spyOn(manifestLoader, "loadCompiledManifest")
+      .mockResolvedValue(manifest);
     try {
       const restored = await deserializeContext({ "eve.bundle": {} });
       expect(restored.get(BundleKey)).toBe(bundle);
       loadManifest.mockResolvedValue({
-        extensionMounts: [{ mountId: "extensions/crm" }],
-        subagents: [],
-      } as unknown as Awaited<ReturnType<typeof manifestLoader.loadCompiledManifest>>);
+        ...manifest,
+        extensionMounts: [
+          { mountId: "extensions/crm" } as (typeof manifest.extensionMounts)[number],
+        ],
+      });
       await expect(deserializeContext({ "eve.bundle": {} })).rejects.toThrow(
         "Incompatible context state layout",
       );
@@ -60,6 +84,49 @@ describe("state layout admission", () => {
       deserialize.mockRestore();
       loadManifest.mockRestore();
     }
+  });
+
+  it("preserves unchanged application state regardless of prior module registrations", async () => {
+    const { manifest } = await compileFromMemory({ model: "openai/gpt-5.4" });
+    const bundle = { compiledArtifactsSource: { kind: "bundled" } } as CompiledBundle;
+    const name = "test.legacy.app-owned";
+    const deserialize = vi.spyOn(BundleKey.codec!, "deserialize").mockImplementation(async () => {
+      defineState(name, () => 0);
+      return bundle;
+    });
+    const loadManifest = vi
+      .spyOn(manifestLoader, "loadCompiledManifest")
+      .mockResolvedValue(manifest);
+    try {
+      const restored = await deserializeContext({ "eve.bundle": {}, [name]: 4 });
+      expect(restored.get(BundleKey)).toBe(bundle);
+      // The registered key is retained; an unregistered name still refuses the restore.
+      expect([...restored.entries()].map(([key]) => key.name)).toContain(name);
+      await expect(
+        deserializeContext({ "eve.bundle": {}, "test.legacy.unknown": 4 }),
+      ).rejects.toThrow("Incompatible context state layout");
+    } finally {
+      deserialize.mockRestore();
+      loadManifest.mockRestore();
+    }
+  });
+
+  it("rejects unmarked reserved state even when the declaration has been removed", async () => {
+    const savedName = "eve:mount.v1:extensions%2Fremoved:requests";
+    new ContextKey(savedName);
+    await expect(deserializeContext({ [savedName]: 4 })).rejects.toThrow(
+      "Incompatible context state layout",
+    );
+  });
+
+  it("keeps marked mount state in a context without a bundle", async () => {
+    const name = "eve:mount.v1:extensions%2Fcrm:requests";
+    const key = new ContextKey<number>(name);
+    const original = new ContextContainer();
+    original.set(key, 4);
+    const saved = serializeContext(original);
+    expect(saved["eve.stateLayout"]).toBe(1);
+    expect((await deserializeContext(saved)).get(key)).toBe(4);
   });
 
   it("rejects an unsupported explicit layout", async () => {

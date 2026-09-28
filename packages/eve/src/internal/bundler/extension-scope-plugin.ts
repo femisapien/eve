@@ -1,8 +1,6 @@
 import { realpathSync } from "node:fs";
 import { resolve, sep } from "node:path";
 
-import { mountStateKeyPrefix } from "#context/mount-state-key.js";
-
 /**
  * One extension's on-disk source root paired with its logical mount identity.
  */
@@ -41,9 +39,9 @@ function isUnder(path: string, root: string): boolean {
 
 function shimSource(mountId: string): string {
   return [
-    `import { defineState as __eveScopedDefineState } from "eve/context";`,
+    `import { defineMountedState } from "eve/internal/mount-state";`,
     `export function defineState(name, initial) {`,
-    `  return __eveScopedDefineState(${JSON.stringify(mountStateKeyPrefix(mountId))} + encodeURIComponent(name), initial);`,
+    `  return defineMountedState(${JSON.stringify(mountId)}, name, initial);`,
     `}`,
     "",
   ].join("\n");

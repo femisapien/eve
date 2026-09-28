@@ -25,7 +25,12 @@ export function serializeContext(ctx: AlsContext): Record<string, unknown> {
       throw error;
     }
   }
-  if (data[BundleKey.name] !== undefined) data[STATE_LAYOUT_KEY] = STATE_LAYOUT_VERSION;
+  if (
+    data[BundleKey.name] !== undefined ||
+    Object.keys(data).some((name) => name.startsWith("eve:mount."))
+  ) {
+    data[STATE_LAYOUT_KEY] = STATE_LAYOUT_VERSION;
+  }
   return data;
 }
 
@@ -39,19 +44,16 @@ export async function deserializeContext(data: Record<string, unknown>): Promise
   const ctx = new ContextContainer();
 
   const serializedBundle = data[BundleKey.name];
+  if (data[STATE_LAYOUT_KEY] !== undefined && data[STATE_LAYOUT_KEY] !== STATE_LAYOUT_VERSION) {
+    throw incompatibleStateLayout();
+  }
+  if (
+    data[STATE_LAYOUT_KEY] === undefined &&
+    Object.keys(data).some((name) => data[name] !== undefined && name.startsWith("eve:mount."))
+  ) {
+    throw incompatibleStateLayout();
+  }
   if (serializedBundle !== undefined) {
-    if (data[STATE_LAYOUT_KEY] !== undefined && data[STATE_LAYOUT_KEY] !== STATE_LAYOUT_VERSION) {
-      throw incompatibleStateLayout();
-    }
-    if (
-      data[STATE_LAYOUT_KEY] === undefined &&
-      Object.keys(data).some(
-        (name) =>
-          name !== BundleKey.name && data[name] !== undefined && resolveKey(name) === undefined,
-      )
-    ) {
-      throw incompatibleStateLayout();
-    }
     const codec = BundleKey.codec;
     if (codec === undefined) {
       throw new Error('Context key "eve.bundle" is missing a codec.');
@@ -68,6 +70,17 @@ export async function deserializeContext(data: Record<string, unknown>): Promise
       ) {
         throw incompatibleStateLayout();
       }
+    }
+    if (
+      Object.keys(data).some(
+        (name) =>
+          name !== BundleKey.name &&
+          name !== STATE_LAYOUT_KEY &&
+          data[name] !== undefined &&
+          resolveKey(name) === undefined,
+      )
+    ) {
+      throw incompatibleStateLayout();
     }
     ctx.set(BundleKey, bundle);
   }

@@ -56,6 +56,15 @@ export interface AuthoredModuleLoadOptions {
    * dependencies bundled with it) are scoped to this namespace at bundle time.
    */
   readonly extensionScopeNamespace?: string;
+  /** Separate compiler passes must not reuse one another's extension handles. */
+  readonly evaluationId?: string;
+  readonly mount?: {
+    readonly mountId: string;
+    readonly mountSourcePath: string;
+    readonly packageName: string;
+    readonly sourceRoot: string;
+    readonly specifier: string;
+  };
 }
 
 /**
@@ -148,12 +157,33 @@ export async function bundleAuthoredModuleCode(
   options: AuthoredModuleLoadOptions = {},
 ): Promise<string> {
   const packageRoot = resolveAuthoredPackageRoot(modulePath);
+  const mount = options.mount;
   return await buildAuthoredModuleBundle(modulePath, options, {
     packageBoundaryPlugin: createRuntimeLoaderPackageBoundaryPlugin({
       externalDependencies: normalizeExternalDependencies(options.externalDependencies),
       packageRoot,
+      extensionSpecifier: mount?.specifier,
     }),
-    plugins: [createAuthoredWorkflowDirectivePlugin({ appRoot: packageRoot })],
+    plugins: [
+      ...(mount === undefined
+        ? []
+        : [
+            {
+              name: "eve-compile-mount-entry",
+              resolveId(id: string) {
+                return id === "\0eve-compile-mount-entry" ? id : undefined;
+              },
+              load(id: string) {
+                if (id !== "\0eve-compile-mount-entry") return undefined;
+                const mountImport = `${mount.mountSourcePath}?eve-mount=${encodeURIComponent(mount.mountId)}`;
+                const contribution = `${modulePath}?eve-mount=${encodeURIComponent(mount.mountId)}`;
+                return `import ${JSON.stringify(mountImport)}; export * from ${JSON.stringify(contribution)}; import entry from ${JSON.stringify(contribution)}; export default entry;`;
+              },
+            },
+          ]),
+      createAuthoredWorkflowDirectivePlugin({ appRoot: packageRoot }),
+      ...(options.mount === undefined ? [] : [createExtensionMountPlugin([options.mount])!]),
+    ],
     sourcemap: "inline",
   });
 }
@@ -513,7 +543,7 @@ async function buildAuthoredModuleBundle(
   try {
     const chunk = await buildSingleRolldownChunk(`authored module for "${modulePath}"`, {
       cwd: packageRoot,
-      input: modulePath,
+      input: options.mount === undefined ? modulePath : "\0eve-compile-mount-entry",
       platform: "node",
       plugins,
       resolve: {
@@ -597,6 +627,10 @@ async function loadBundledAuthoredModule(
     .update("\0")
     .update(options.extensionScopeNamespace ?? "")
     .update("\0")
+    .update(options.mount?.mountId ?? "")
+    .update("\0")
+    .update(options.mount === undefined ? "" : (options.evaluationId ?? ""))
+    .update("\0")
     .update(code)
     .digest("hex");
   const bundleDirectoryPath = join(
@@ -623,7 +657,7 @@ function createInFlightModuleLoadKey(
 ): string {
   const externalDependencies = normalizeExternalDependencies(options.externalDependencies);
 
-  return `${modulePath}\0${externalDependencies.join("\0")}\0${options.extensionScopeNamespace ?? ""}`;
+  return `${modulePath}\0${externalDependencies.join("\0")}\0${options.extensionScopeNamespace ?? ""}\0${options.mount?.mountId ?? ""}\0${options.mount === undefined ? "" : (options.evaluationId ?? "")}`;
 }
 
 export function resolveAuthoredTsConfigPath(packageRoot: string): string | false {
