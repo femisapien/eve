@@ -332,8 +332,9 @@ stops a task, and a task waiting on a person keeps the wait going.
 ```text
 Wait until one of your tasks has a result, a new message arrives, or timeout (in milliseconds)
 passes. Results arrive in a <task_result> message right after this call returns. Waiting never
-stops a task. Omit timeout to wait until a result or a message arrives; a timeout of 0 returns
-at once with any results that are ready.
+stops a task. If a message you haven't answered asks you something, answer it in this response,
+before calling task_wait. Omit timeout to wait until a result or a message arrives; a timeout of
+0 returns at once with any results that are ready.
 ```
 
 ```ts
@@ -412,9 +413,9 @@ continue, call task_wait; it returns when any task has a result. Start independe
 then wait. To correct or continue an agent, or any task that accepts more input, call its tool
 again with its taskId. If you don't need a task's result yet, reply now instead of calling
 task_wait: your turn stays open while your tasks work, and eve gives you their results when they
-finish. A new message never stops your tasks: answer it if it asks you something, decide whether
-it changes the work, then keep the tasks, correct an agent with taskId, or stop a task with
-task_cancel. Never use sleep to wait for a task.
+finish. A new message never stops your tasks. If it asks you something, answer it in your next
+response, before any task_wait call; then decide whether it changes the work, and keep the tasks,
+correct an agent with taskId, or stop a task with task_cancel. Never use sleep to wait for a task.
 ```
 
 **Errors.** These are the only task error codes.
