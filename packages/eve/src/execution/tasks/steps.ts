@@ -11,9 +11,9 @@ import {
   readTaskTable,
   settleTaskCall,
   writeTaskTable,
-  type TaskCallOutcome,
+  type TaskCall,
+  type TaskOutcome,
   type TaskRunAddress,
-  type TaskSettlement,
   type TaskTable,
 } from "#execution/tasks/table.js";
 import { isTaskWorkflowTargetGone } from "#execution/tasks/workflow-target.js";
@@ -56,7 +56,7 @@ export async function applyTaskRunMessageStep(
     return { serializedContext: input.serializedContext, sessionState: input.sessionState };
   }
   let table = readTaskTable(session.state);
-  const settlements: TaskSettlement[] = [];
+  const events: TaskSettledStreamEvent[] = [];
   switch (message.kind) {
     case "started": {
       const started = markTaskRunStarted(table, taskId, message.from.runId);
@@ -65,12 +65,9 @@ export async function applyTaskRunMessageStep(
       break;
     }
     case "outcome": {
-      const settled = settleTaskCall(table, {
-        callId: message.from.callId,
-        outcome: toCallOutcome(message),
-        taskId,
-      });
-      if (settled.settlement !== undefined) settlements.push(settled.settlement);
+      const outcome = toOutcome(message);
+      const settled = settleTaskCall(table, { callId: message.from.callId, outcome, taskId });
+      events.push(...settled.settled.map((call) => taskSettledEvent(taskId, call, outcome)));
       table = finishTaskRun(settled.table, taskId, message.from.runId);
       session = forgetRunQuestions(session, message.from.runId);
       break;
@@ -78,7 +75,7 @@ export async function applyTaskRunMessageStep(
   }
   return await publishSessionEvents(
     { ...input, sessionState: saveTable(input.sessionState, session, table) },
-    settlements.map(taskSettledEvent),
+    events,
   );
 }
 
@@ -93,33 +90,35 @@ export async function cancelTasksStep(
 
   const session = readDurableSession(input.sessionState);
   let table = readTaskTable(session.state);
-  const settlements: TaskSettlement[] = [];
+  const events: TaskSettledStreamEvent[] = [];
   for (const taskId of input.taskIds) {
     const cancelled = cancelTask(table, taskId);
     table = cancelled.table;
-    settlements.push(...cancelled.settlements);
+    events.push(...cancelled.settled.map((call) => taskSettledEvent(taskId, call, CANCELLED)));
     if (cancelled.sendCancel !== undefined) await sendTaskCancel(cancelled.sendCancel);
   }
   return await publishSessionEvents(
     { ...input, sessionState: saveTable(input.sessionState, session, table) },
-    settlements.map(taskSettledEvent),
+    events,
   );
 }
 
+const CANCELLED: TaskOutcome = { status: "cancelled" };
+
 /** The `task.settled` event for one settled call. */
-function taskSettledEvent(settlement: TaskSettlement): TaskSettledStreamEvent {
-  const base = {
-    callId: settlement.callId,
-    taskId: settlement.taskId,
-    turnId: settlement.turnId,
-  };
-  switch (settlement.status) {
+function taskSettledEvent(
+  taskId: string,
+  call: TaskCall,
+  outcome: TaskOutcome,
+): TaskSettledStreamEvent {
+  const base = { callId: call.callId, taskId, turnId: call.turnId };
+  switch (outcome.status) {
     case "completed":
-      return createTaskSettledEvent({ ...base, output: settlement.output, status: "completed" });
+      return createTaskSettledEvent({ ...base, output: outcome.output, status: "completed" });
     case "failed":
       return createTaskSettledEvent({
         ...base,
-        error: { message: settlement.error },
+        error: { message: outcome.error },
         status: "failed",
       });
     case "cancelled":
@@ -139,7 +138,7 @@ async function ignoreGoneTarget(pending: Promise<unknown>): Promise<void> {
   }
 }
 
-function toCallOutcome(message: WorkflowToolRunOutcomeMessage): TaskCallOutcome {
+function toOutcome(message: WorkflowToolRunOutcomeMessage): TaskOutcome {
   switch (message.result.status) {
     case "completed":
       return { output: message.result.output, status: "completed" };

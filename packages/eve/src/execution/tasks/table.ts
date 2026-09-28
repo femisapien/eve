@@ -1,3 +1,4 @@
+import type { TaskCancelResult, TaskWaitResult } from "#execution/tasks/calls.js";
 import type { SessionStateMap } from "#harness/types.js";
 import { isNonEmptyString, isObject } from "#shared/guards.js";
 import type { JsonValue } from "#shared/json.js";
@@ -35,10 +36,14 @@ export interface TaskCall {
   readonly turnId: string;
 }
 
-/** One settled call's result, kept until the model receives it. */
-export type TaskResult =
-  | { readonly callId: string; readonly output: JsonValue; readonly status: "completed" }
-  | { readonly callId: string; readonly error: string; readonly status: "failed" };
+/** How a task call ended, as `task.settled` reports it. */
+export type TaskOutcome =
+  | { readonly output: JsonValue; readonly status: "completed" }
+  | { readonly error: string; readonly status: "failed" }
+  | { readonly status: "cancelled" };
+
+/** An outcome the model receives. Cancelled work never reports back. */
+export type TaskResult = Exclude<TaskOutcome, { readonly status: "cancelled" }>;
 
 export interface TaskRecord {
   readonly id: string;
@@ -58,25 +63,6 @@ export interface TaskRecord {
 
 export interface TaskTable {
   readonly tasks: readonly TaskRecord[];
-}
-
-/** How a call settled, as `task.settled` reports it. */
-export type TaskCallOutcome =
-  | { readonly output: JsonValue; readonly status: "completed" }
-  | { readonly error: string; readonly status: "failed" }
-  | { readonly status: "cancelled" };
-
-/** One call's outcome, with the call's turn, as `task.settled` publishes it. */
-export type TaskSettlement = TaskCallOutcome &
-  TaskCall & {
-    readonly taskId: string;
-  };
-
-/** A result handed to the model, with the task it belongs to. */
-export interface DeliveredTaskResult {
-  readonly name: string;
-  readonly result: TaskResult;
-  readonly taskId: string;
 }
 
 const EMPTY_TABLE: TaskTable = { tasks: [] };
@@ -135,6 +121,41 @@ export function workingTasks(table: TaskTable, principal?: string): readonly Tas
 /** Tasks whose results the principal's model has not received yet. */
 export function tasksWithResults(table: TaskTable, principal: string): readonly TaskRecord[] {
   return table.tasks.filter((record) => record.creator === principal && record.results.length > 0);
+}
+
+/**
+ * What a wait on the principal's tasks returns now, or `undefined` to keep
+ * waiting. A waiting result, or nothing left working, ends it first;
+ * cancelled work never does.
+ */
+export function taskWaitResult(
+  table: TaskTable,
+  principal: string,
+  wake: { readonly interrupted: boolean; readonly timedOut: boolean },
+): TaskWaitResult | undefined {
+  const settled = tasksWithResults(table, principal).map((record) => ({
+    id: record.id,
+    status: record.results.at(-1)!.status,
+  }));
+  const working = workingTasks(table, principal).map((record) => record.id);
+  if (settled.length > 0 || working.length === 0) return { settled, status: "settled", working };
+  if (wake.interrupted) return { status: "interrupt", working };
+  if (wake.timedOut) return { status: "timeout", working };
+  return undefined;
+}
+
+/**
+ * What `task_cancel` answers, or `undefined` for a task the principal didn't
+ * start. `cancelled` means the caller cancels the working task.
+ */
+export function taskCancelResult(
+  table: TaskTable,
+  taskId: string,
+  principal: string,
+): TaskCancelResult | undefined {
+  const record = findTask(table, taskId);
+  if (record === undefined || record.creator !== principal) return undefined;
+  return { status: isTaskWorking(record) ? "cancelled" : "already_finished" };
 }
 
 /** Runs that may still be doing work, including cancelled runs that haven't confirmed yet. */
@@ -206,20 +227,19 @@ export function markTaskRunStarted(
  */
 export function settleTaskCall(
   table: TaskTable,
-  input: { readonly callId: string; readonly outcome: TaskCallOutcome; readonly taskId: string },
-): { readonly settlement?: TaskSettlement; readonly table: TaskTable } {
+  input: { readonly callId: string; readonly outcome: TaskOutcome; readonly taskId: string },
+): { readonly settled: readonly TaskCall[]; readonly table: TaskTable } {
   const call = findTask(table, input.taskId)?.calls.find(
     (candidate) => candidate.callId === input.callId,
   );
-  if (call === undefined) return { table };
-  const settlement: TaskSettlement = { ...input.outcome, ...call, taskId: input.taskId };
-  const result = toTaskResult(input.callId, input.outcome);
+  if (call === undefined) return { settled: [], table };
+  const { outcome } = input;
   const next = updateTask(table, input.taskId, (current) => ({
     ...current,
     calls: current.calls.filter((candidate) => candidate.callId !== input.callId),
-    results: result === undefined ? current.results : [...current.results, result],
+    results: outcome.status === "cancelled" ? current.results : [...current.results, outcome],
   }));
-  return { settlement, table: next };
+  return { settled: [call], table: next };
 }
 
 /** The task's run finished; nothing is left to cancel. */
@@ -240,35 +260,34 @@ export function cancelTask(
   taskId: string,
 ): {
   readonly sendCancel?: TaskRunAddress;
-  readonly settlements: readonly TaskSettlement[];
+  readonly settled: readonly TaskCall[];
   readonly table: TaskTable;
 } {
   const record = findTask(table, taskId);
-  if (record === undefined) return { settlements: [], table };
-  const settlements = cancelledSettlements(record);
+  if (record === undefined) return { settled: [], table };
+  const settled = cancelledCalls(record);
   const run = record.run;
   const next = updateTask(table, taskId, (current) => {
     const cancelled: TaskRecord = { ...current, calls: [] };
     return run === undefined || run.started ? cancelled : { ...cancelled, heldCancel: true };
   });
-  if (run === undefined || !run.started) return { settlements, table: next };
-  return { sendCancel: toRunAddress(run), settlements, table: next };
+  if (run === undefined || !run.started) return { settled, table: next };
+  return { sendCancel: toRunAddress(run), settled, table: next };
 }
 
-/** Hands the principal's undelivered results to the model, which receives each once. */
+/**
+ * Hands the principal's undelivered results to the model, which receives each
+ * once: `taken` is each record with its results, before they were cleared.
+ */
 export function takeTaskResults(
   table: TaskTable,
   principal: string,
-): { readonly delivered: readonly DeliveredTaskResult[]; readonly table: TaskTable } {
-  const delivered: DeliveredTaskResult[] = [];
-  const tasks = table.tasks.map((record) => {
-    if (record.creator !== principal || record.results.length === 0) return record;
-    for (const result of record.results) {
-      delivered.push({ name: record.name, result, taskId: record.id });
-    }
-    return { ...record, results: [] };
-  });
-  return { delivered, table: { ...table, tasks } };
+): { readonly taken: readonly TaskRecord[]; readonly table: TaskTable } {
+  const taken = tasksWithResults(table, principal);
+  const tasks = table.tasks.map((record) =>
+    taken.includes(record) ? { ...record, results: [] } : record,
+  );
+  return { table: { ...table, tasks }, taken };
 }
 
 // ---------------------------------------------------------------------------
@@ -287,20 +306,8 @@ function updateTask(
 }
 
 /** A task the session never started reported no `task.started`, so it settles nothing. */
-function cancelledSettlements(record: TaskRecord): TaskSettlement[] {
-  if (record.run === undefined) return [];
-  return record.calls.map((call) => ({ ...call, status: "cancelled", taskId: record.id }));
-}
-
-function toTaskResult(callId: string, outcome: TaskCallOutcome): TaskResult | undefined {
-  switch (outcome.status) {
-    case "completed":
-      return { callId, output: outcome.output, status: "completed" };
-    case "failed":
-      return { callId, error: outcome.error, status: "failed" };
-    case "cancelled":
-      return undefined;
-  }
+function cancelledCalls(record: TaskRecord): readonly TaskCall[] {
+  return record.run === undefined ? [] : record.calls;
 }
 
 function toRunAddress(run: TaskRun): TaskRunAddress {
@@ -340,7 +347,7 @@ function decodeTaskRecord(value: unknown): TaskRecord | undefined {
     creator: typeof value.creator === "string" ? value.creator : "",
     id: value.id,
     name: value.name,
-    results: [{ callId: "", error: UNREADABLE_TASK_ERROR, status: "failed" }],
+    results: [{ error: UNREADABLE_TASK_ERROR, status: "failed" }],
   };
 }
 
@@ -360,7 +367,7 @@ function isTaskRecord(value: unknown): value is TaskRecord {
 }
 
 function isTaskResult(value: unknown): value is TaskResult {
-  if (!isObject(value) || typeof value.callId !== "string") return false;
+  if (!isObject(value)) return false;
   if (value.status === "completed") return "output" in value;
   return value.status === "failed" && typeof value.error === "string";
 }

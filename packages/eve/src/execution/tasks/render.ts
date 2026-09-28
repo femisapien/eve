@@ -44,33 +44,26 @@ export function renderFinalOutputWhileWorkingError(workingIds: readonly string[]
   return `You can't give your final output while tasks you started are working (${workingIds.join(", ")}). Wait for their results with task_wait, or stop a task with task_cancel, then call final_output.`;
 }
 
-/** How long a wait lasted, and how each task whose result follows ended. */
-export interface TaskWaitDetails {
-  readonly settledStatus: ReadonlyMap<string, "completed" | "failed">;
-  readonly waitedMs: number;
-}
-
-/** What the model reads when `task_wait` returns. */
-export function renderTaskWaitResult(result: TaskWaitResult, details: TaskWaitDetails): string {
+/** What the model reads when `task_wait` returns after waiting `waitedMs`. */
+export function renderTaskWaitResult(result: TaskWaitResult, waitedMs: number): string {
   switch (result.status) {
     case "settled":
-      return renderSettledWait(result.settled, result.working, details.settledStatus);
+      return renderSettledWait(result.settled, result.working);
     case "timeout":
-      return `Stopped waiting after ${formatDuration(details.waitedMs)}; ${countWorking(result.working)}. ${resultsArriveLater(result.working.length)}`;
+      return `Stopped waiting after ${formatDuration(waitedMs)}; ${countWorking(result.working)}. ${resultsArriveLater(result.working.length)}`;
     case "interrupt":
-      return `A new message arrived, so the wait ended after ${formatDuration(details.waitedMs)}; ${countWorking(result.working)}. Read the message and decide whether it changes this work: ${interruptChoices(result.working.length)}`;
+      return `A new message arrived, so the wait ended after ${formatDuration(waitedMs)}; ${countWorking(result.working)}. Read the message and decide whether it changes this work: ${interruptChoices(result.working.length)}`;
   }
 }
 
 function renderSettledWait(
-  settled: readonly string[],
+  settled: Extract<TaskWaitResult, { readonly status: "settled" }>["settled"],
   working: readonly string[],
-  settledStatus: TaskWaitDetails["settledStatus"],
 ): string {
   if (settled.length === 0 && working.length === 0) return "No tasks are working.";
   const sentences: string[] = [];
   if (settled.length > 0) {
-    const outcomes = settled.map((id) => `${id} ${settledStatus.get(id) ?? "completed"}`);
+    const outcomes = settled.map((task) => `${task.id} ${task.status}`);
     const follows = settled.length === 1 ? "its result follows" : "their results follow";
     sentences.push(`${joinList(outcomes)}; ${follows}.`);
   }
@@ -97,8 +90,8 @@ function interruptChoices(workingCount: number): string {
   return `${keep}, call an agent again with its taskId to correct it, or stop a task with task_cancel.`;
 }
 
-/** One settled call's result, ready to render into a `task.result` message. */
-export interface RenderedTaskResult {
+/** One `<task_result>` block of a `task.result` message. */
+export interface TaskResultBlock {
   readonly body: string;
   readonly status: "completed" | "failed";
   readonly taskId: string;
@@ -109,7 +102,7 @@ export interface RenderedTaskResult {
  * The `task.result` message: one `<task_result>` block per result. All
  * bodies share one size budget; a body past it is cut and marked.
  */
-export function renderTaskResults(results: readonly RenderedTaskResult[]): string {
+export function renderTaskResults(results: readonly TaskResultBlock[]): string {
   const budget = { bytes: TASK_RESULTS_MAX_BYTES, lines: TASK_RESULTS_MAX_LINES };
   return results
     .map((result) => {

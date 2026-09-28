@@ -12,6 +12,8 @@ import { cancelDescendantTurnsStep } from "#execution/cancel-descendant-turns-st
 import { SessionInputQueue } from "#execution/session/input-queue.js";
 import { SessionExecution } from "#execution/session/turn.js";
 import { SessionStateCursor } from "#execution/session/state-cursor.js";
+import { cancelWorkingTasks, sessionTaskTable } from "#execution/tasks/session.js";
+import { workingTasks } from "#execution/tasks/table.js";
 import type { TurnOutcome, TurnStepPayload } from "#execution/session/turn-step-types.js";
 import { settleCancelledTurnStep } from "#execution/settle-cancelled-turn-step.js";
 import { finalizeSession, type SessionTerminalOutcome } from "#execution/session/finalization.js";
@@ -213,7 +215,7 @@ async function runSessionLoop(
       const next = await nextTurnDelivery({
         cursor,
         expectedAttemptIds,
-        hasWorkingTasks: () => execution.tasks.hasWorkingTasks(),
+        hasWorkingTasks: () => workingTasks(sessionTaskTable(cursor)).length > 0,
         inbox,
         queue,
       });
@@ -222,7 +224,7 @@ async function runSessionLoop(
         continue;
       }
       if (next.kind === "cancel-working-tasks") {
-        await execution.tasks.cancelAll();
+        await cancelWorkingTasks(cursor);
         continue;
       }
       return next;
@@ -349,7 +351,7 @@ async function runSessionLoop(
             serializedContext: cursor.serializedContext,
             sessionState: cursor.sessionState,
           });
-          await execution.tasks.cancelAll();
+          await cancelWorkingTasks(cursor);
           await settleCancelledTurn();
           // Cancellation consumes any outstanding caller; do not report the prior turn.
           action = { ...action, settled: undefined };

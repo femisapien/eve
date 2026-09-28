@@ -1,4 +1,4 @@
-import { getWorkflowMetadata } from "#compiled/@workflow/core/index.js";
+import { getWorkflowMetadata, sleep } from "#compiled/@workflow/core/index.js";
 
 import type {
   DeliverHookPayload,
@@ -15,9 +15,17 @@ import {
   type SteeringTurn,
 } from "#execution/session/input-queue.js";
 import { AuthKey } from "#context/keys.js";
-import type { TaskToolCall } from "#execution/tasks/calls.js";
+import { TASK_WAIT_TOOL_NAME, taskToolResult, type TaskToolCall } from "#execution/tasks/calls.js";
 import { principalOf } from "#execution/tasks/principal.js";
-import { isTaskRunMessage, SessionTasks, TaskWait } from "#execution/tasks/session-tasks.js";
+import { renderTaskWaitResult } from "#execution/tasks/render.js";
+import {
+  answerTaskCancel,
+  cancelWorkingTasks,
+  isTaskRunMessage,
+  sessionTaskTable,
+} from "#execution/tasks/session.js";
+import { applyTaskRunMessageStep } from "#execution/tasks/steps.js";
+import { taskWaitResult } from "#execution/tasks/table.js";
 import {
   sessionCommandHookToken,
   sessionInboxHookToken,
@@ -77,11 +85,9 @@ export interface SessionExecutionInput {
  */
 export class SessionExecution {
   private readonly input: SessionExecutionInput;
-  readonly tasks: SessionTasks;
 
   constructor(input: SessionExecutionInput) {
     this.input = input;
-    this.tasks = new SessionTasks(input.cursor);
   }
 
   get cursor(): SessionStateCursor {
@@ -100,7 +106,7 @@ export class SessionExecution {
       // The turn rule holds a turn while its tasks work, so a turn that ends
       // anyway, such as by failing, cancels them.
       if (outcome.kind === "park" && outcome.settled !== undefined) {
-        await this.tasks.cancelWorking(turn.principal);
+        await cancelWorkingTasks(this.input.cursor, turn.principal);
       }
       return outcome;
     } finally {
@@ -212,7 +218,8 @@ export class SessionExecution {
     message: WorkflowToolRunMessage,
   ): Promise<RuntimeActionResult | undefined> {
     if (isTaskRunMessage(message)) {
-      await this.tasks.handleRunMessage(message);
+      const { cursor } = this.input;
+      await cursor.apply(await applyTaskRunMessageStep({ ...cursor.stepState(), message }));
       return undefined;
     }
     return await handleWorkflowToolRunMessage({
@@ -229,7 +236,7 @@ export class SessionExecution {
       serializedContext: cursor.serializedContext,
       sessionState: cursor.sessionState,
     });
-    await this.tasks.cancelAll();
+    await cancelWorkingTasks(cursor);
     return { cancelled: true, kind: "park" };
   }
 
@@ -240,7 +247,8 @@ export class SessionExecution {
   private async waitForHeldTurn(turn: ActiveTurn): Promise<"cancelled" | "woke"> {
     let interrupted = false;
     while (true) {
-      if (this.tasks.waitResult(turn.principal, { interrupted, timedOut: false }) !== undefined) {
+      const wake = { interrupted, timedOut: false };
+      if (taskWaitResult(sessionTaskTable(this.input.cursor), turn.principal, wake) !== undefined) {
         return "woke";
       }
       const next = await turn.nextRuntimeEvent([]);
@@ -299,7 +307,7 @@ export class SessionExecution {
       if (next === "cancelled") return next;
       if (next.kind === "timeout") {
         for (const wait of taskWaits) {
-          if (wait.call.callId === next.callId) wait.timedOut = true;
+          if (wait.callId === next.callId) wait.timedOut = true;
         }
         continue;
       }
@@ -340,12 +348,19 @@ export class SessionExecution {
     interrupted: boolean,
     accept: (result: RuntimeActionResult) => void,
   ): TaskWait[] {
+    const table = sessionTaskTable(this.input.cursor);
     const waiting: TaskWait[] = [];
     for (const wait of waits) {
-      const wake = { interrupted, timedOut: wait.timedOut };
-      const result = this.tasks.waitResult(turn.principal, wake);
-      if (result === undefined) waiting.push(wait);
-      else accept(this.tasks.waitCallResult(wait, result));
+      const result = taskWaitResult(table, turn.principal, {
+        interrupted,
+        timedOut: wait.timedOut,
+      });
+      if (result === undefined) {
+        waiting.push(wait);
+        continue;
+      }
+      const text = renderTaskWaitResult(result, Date.now() - wait.startedAtMs);
+      accept(taskToolResult(wait.callId, TASK_WAIT_TOOL_NAME, text));
     }
     return waiting;
   }
@@ -364,8 +379,8 @@ export class SessionExecution {
   ): Promise<TaskWait[]> {
     const waits: TaskWait[] = [];
     for (const call of calls) {
-      if (call.kind === "task_wait") waits.push(new TaskWait(call));
-      else accept(await this.tasks.cancelCall(call, turn.principal));
+      if (call.kind === "task_wait") waits.push(startTaskWait(call));
+      else accept(await answerTaskCancel(this.input.cursor, call, turn.principal));
     }
     const parked = this.resolveTaskWaits(waits, turn, false, accept);
     if (parked.length > 0) {
@@ -389,6 +404,26 @@ export class SessionExecution {
     });
     await Promise.all(runs.map((run) => interruptWorkflowToolRun(run)));
   }
+}
+
+/**
+ * One `task_wait` call the turn is parked on. Its timeout is a durable sleep
+ * the turn races against the inbox; nothing polls.
+ */
+interface TaskWait {
+  readonly callId: string;
+  readonly startedAtMs: number;
+  /** Resolves with the call's id once the timeout passes; absent without a timeout. */
+  readonly timer?: Promise<string>;
+  /** A timeout of 0 has passed already: the wait returns whatever is ready. */
+  timedOut: boolean;
+}
+
+function startTaskWait(call: Extract<TaskToolCall, { readonly kind: "task_wait" }>): TaskWait {
+  const { callId, timeoutMs } = call;
+  const timer =
+    timeoutMs !== undefined && timeoutMs > 0 ? sleep(timeoutMs).then(() => callId) : undefined;
+  return { callId, startedAtMs: Date.now(), timedOut: timeoutMs === 0, timer };
 }
 
 type RuntimeEvent =

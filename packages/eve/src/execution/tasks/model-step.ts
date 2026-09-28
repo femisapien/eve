@@ -7,7 +7,7 @@ import {
   renderTasksNote,
   TASK_SYSTEM_BLOCK,
   TASKS_NOTE_LABEL,
-  type RenderedTaskResult,
+  type TaskResultBlock,
 } from "#execution/tasks/render.js";
 import {
   createTask,
@@ -15,7 +15,8 @@ import {
   takeTaskResults,
   workingTasks,
   writeTaskTable,
-  type DeliveredTaskResult,
+  type TaskRecord,
+  type TaskResult,
 } from "#execution/tasks/table.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import { createFrameworkUserMessage, type HarnessModelMessage } from "#harness/messages.js";
@@ -153,24 +154,23 @@ async function deliverTaskResults(input: {
   readonly session: HarnessSession;
   readonly tools: HarnessToolMap;
 }): Promise<{ readonly message?: string; readonly session: HarnessSession }> {
-  const taken = takeTaskResults(readTaskTable(input.session.state), input.principal);
-  if (taken.delivered.length === 0) return { session: input.session };
-  const rendered: RenderedTaskResult[] = [];
-  for (const delivered of taken.delivered) {
-    rendered.push(await renderDeliveredResult(delivered, input.tools.get(delivered.name)));
+  const { table, taken } = takeTaskResults(readTaskTable(input.session.state), input.principal);
+  if (taken.length === 0) return { session: input.session };
+  const blocks: TaskResultBlock[] = [];
+  for (const record of taken) {
+    for (const result of record.results) {
+      blocks.push(await toResultBlock(record, result, input.tools.get(record.name)));
+    }
   }
-  return {
-    message: renderTaskResults(rendered),
-    session: writeTaskTable(input.session, taken.table),
-  };
+  return { message: renderTaskResults(blocks), session: writeTaskTable(input.session, table) };
 }
 
-async function renderDeliveredResult(
-  delivered: DeliveredTaskResult,
+async function toResultBlock(
+  record: TaskRecord,
+  result: TaskResult,
   definition: HarnessToolDefinition | undefined,
-): Promise<RenderedTaskResult> {
-  const { result } = delivered;
-  const base = { taskId: delivered.taskId, tool: delivered.name };
+): Promise<TaskResultBlock> {
+  const base = { taskId: record.id, tool: record.name };
   if (result.status === "failed") return { ...base, body: result.error, status: "failed" };
   return { ...base, body: await projectOutput(result.output, definition), status: "completed" };
 }
