@@ -2690,6 +2690,22 @@ async function handleStepResult(input: {
       }),
     );
 
+  const responseAuthorizationTools =
+    inputRequests.length > 0
+      ? buildResponseAuthorizationTools({
+          authoredTools: config.tools,
+          context: contextStorage.getStore(),
+        })
+      : undefined;
+  const responseAuthRequiredRequestIds = approvalRequests
+    .filter((request) => {
+      const approval = responseAuthorizationTools?.get(request.action.toolName)?.approval;
+      return (
+        approval !== undefined && typeof approval !== "function" && approval.response !== undefined
+      );
+    })
+    .map((request) => request.requestId);
+
   if (pendingCoordination.length > 0) {
     const runtimeActions = pendingCoordination.flatMap((entry) =>
       entry.kind === "runtime-action" ? [entry.request] : [],
@@ -2744,6 +2760,7 @@ async function handleStepResult(input: {
       },
       requests: inputRequests,
       toolReplayIdentities: captureToolReplayIdentities(config, approvalRequests),
+      responseAuthRequiredRequestIds,
       responseMessages: [],
       session: parkedSession,
     });
@@ -2768,10 +2785,6 @@ async function handleStepResult(input: {
   // --- Park on input requests -----------------------------------------------
 
   if (inputRequests.length > 0) {
-    const responseAuthorizationTools = buildResponseAuthorizationTools({
-      authoredTools: config.tools,
-      context: contextStorage.getStore(),
-    });
     let parkedSession = appendPendingInputBatch({
       event: {
         sequence: emissionState.sequence,
@@ -2780,16 +2793,7 @@ async function handleStepResult(input: {
       },
       requests: inputRequests,
       toolReplayIdentities: captureToolReplayIdentities(config, approvalRequests),
-      responseAuthRequiredRequestIds: approvalRequests
-        .filter((request) => {
-          const approval = responseAuthorizationTools.get(request.action.toolName)?.approval;
-          return (
-            approval !== undefined &&
-            typeof approval !== "function" &&
-            approval.response !== undefined
-          );
-        })
-        .map((request) => request.requestId),
+      responseAuthRequiredRequestIds,
       responseMessages: pendingResponseMessages,
       session: { ...baseSession, history: parkedInputHistory },
     });
