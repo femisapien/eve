@@ -1,4 +1,3 @@
-import { BoundaryHookError } from "#shared/boundary-hook-error.js";
 import { context as otelContext, trace } from "#compiled/@opentelemetry/api/index.js";
 import {
   type FilePart,
@@ -33,6 +32,7 @@ import {
   SessionDynamicInstructionsKey,
   SessionDynamicModelReferenceKey,
   SessionDynamicSubagentSelectionsKey,
+  SessionDynamicToolMetadataKey,
   StepDynamicToolMetadataKey,
   TurnTaskDeliveryKey,
   TaskDeliveryPolicyKey,
@@ -3583,6 +3583,166 @@ describe("createToolLoopHarness", () => {
       stepIndex: 0,
       status: "completed",
       turnId: "turn_0",
+    });
+  });
+
+  it("projects label presentation for session-scoped dynamic tools", async () => {
+    setupMockAgent({
+      finishReason: "tool-calls",
+      response: {
+        messages: [
+          {
+            content: [{ input: {}, toolCallId: "call-1", toolName: "lookup", type: "tool-call" }],
+            role: "assistant",
+          },
+          {
+            content: [
+              {
+                output: { ok: true },
+                toolCallId: "call-1",
+                toolName: "lookup",
+                type: "tool-result",
+              },
+            ],
+            role: "tool",
+          },
+        ],
+      },
+      text: "",
+      toolCalls: [{ input: {}, toolCallId: "call-1", toolName: "lookup", type: "tool-call" }],
+      toolResults: [
+        {
+          input: {},
+          output: { ok: true },
+          toolCallId: "call-1",
+          toolName: "lookup",
+          type: "tool-result",
+        },
+      ],
+    });
+
+    const ctx = new ContextContainer();
+    ctx.set(SessionIdKey, "test-session");
+    const owner = {
+      sessionId: "test-session",
+      scope: "session" as const,
+      resolverSlug: "lookup",
+      entryKey: "lookup",
+      name: "lookup",
+    };
+    registerDurableDynamicCallback({ callback: () => ({ ok: true }), phase: "execute", owner });
+    registerDurableDynamicCallback({
+      callback: () => "Looking it up",
+      phase: "labelStart",
+      owner,
+    });
+    registerDurableDynamicCallback({ callback: () => "Done", phase: "labelComplete", owner });
+    ctx.set(SessionDynamicToolMetadataKey, [
+      {
+        callbacks: {
+          execute: { closure: {} },
+          label: { complete: { closure: {} }, start: { closure: {} } },
+        },
+        description: "Look something up.",
+        entryKey: "lookup",
+        inputSchema: { type: "object" },
+        name: "lookup",
+        resolverSlug: "lookup",
+      },
+    ]);
+
+    const { emit, events } = createEventCollector();
+    const runStep = createToolLoopHarness(createTestConfig(emit));
+    await contextStorage.run(ctx, () => runStep(createTestSession(), { message: "Look it up" }));
+
+    expect(events.find((e) => e.type === "actions.requested")?.data.presentation).toEqual({
+      "call-1": { label: "Looking it up" },
+    });
+    expect(events.find((e) => e.type === "action.result")?.data.presentation).toEqual({
+      "call-1": { label: "Done" },
+    });
+  });
+
+  it("projects the step-scoped label when a step tool overrides a same-named session tool", async () => {
+    setupMockAgent({
+      finishReason: "tool-calls",
+      response: {
+        messages: [
+          {
+            content: [{ input: {}, toolCallId: "call-1", toolName: "lookup", type: "tool-call" }],
+            role: "assistant",
+          },
+          {
+            content: [
+              {
+                output: { ok: true },
+                toolCallId: "call-1",
+                toolName: "lookup",
+                type: "tool-result",
+              },
+            ],
+            role: "tool",
+          },
+        ],
+      },
+      text: "",
+      toolCalls: [{ input: {}, toolCallId: "call-1", toolName: "lookup", type: "tool-call" }],
+      toolResults: [
+        {
+          input: {},
+          output: { ok: true },
+          toolCallId: "call-1",
+          toolName: "lookup",
+          type: "tool-result",
+        },
+      ],
+    });
+
+    const ctx = new ContextContainer();
+    ctx.set(SessionIdKey, "test-session");
+    const metadata = {
+      callbacks: {
+        execute: { closure: {} },
+        label: { complete: { closure: {} }, start: { closure: {} } },
+      },
+      description: "Look something up.",
+      entryKey: "lookup",
+      inputSchema: { type: "object" },
+      name: "lookup",
+      resolverSlug: "lookup",
+    };
+    for (const scope of ["step", "session"] as const) {
+      const owner = {
+        sessionId: "test-session",
+        scope,
+        resolverSlug: "lookup",
+        entryKey: "lookup",
+        name: "lookup",
+      };
+      registerDurableDynamicCallback({ callback: () => ({ ok: true }), phase: "execute", owner });
+      registerDurableDynamicCallback({
+        callback: () => `${scope} start`,
+        phase: "labelStart",
+        owner,
+      });
+      registerDurableDynamicCallback({
+        callback: () => `${scope} complete`,
+        phase: "labelComplete",
+        owner,
+      });
+    }
+    ctx.set(StepDynamicToolMetadataKey, [metadata]);
+    ctx.set(SessionDynamicToolMetadataKey, [metadata]);
+
+    const { emit, events } = createEventCollector();
+    const runStep = createToolLoopHarness(createTestConfig(emit));
+    await contextStorage.run(ctx, () => runStep(createTestSession(), { message: "Look it up" }));
+
+    expect(events.find((e) => e.type === "actions.requested")?.data.presentation).toEqual({
+      "call-1": { label: "step start" },
+    });
+    expect(events.find((e) => e.type === "action.result")?.data.presentation).toEqual({
+      "call-1": { label: "step complete" },
     });
   });
 
@@ -12665,113 +12825,6 @@ describe("appendMissingToolResultMessages", () => {
 });
 
 describe("boundary event failures", () => {
-  it.each(["turn.started", "step.started"] as const)(
-    "parks a failed %s and accepts the next turn",
-    async (boundary) => {
-      const logs = captureLogRecords();
-      const events: UnstampedMessageStreamEvent[] = [];
-      let denied = true;
-      const emit: HarnessEmitFn = async (event) => {
-        events.push(event);
-        if (denied && event.type === boundary)
-          throw new BoundaryHookError(new Error("admission denied"));
-      };
-      const runStep = createToolLoopHarness(createTestConfig(emit));
-      const result = await runStep(createTestSession({ outputSchema: { type: "object" } }), {
-        message: "Denied request",
-      });
-      expect(result.next).toBeNull();
-      expect(result.settledTurn).toEqual({
-        isError: true,
-        output: "admission denied",
-      });
-      expect(result.session.outputSchema).toBeUndefined();
-      expect(ToolLoopAgent).not.toHaveBeenCalled();
-      expect(events.filter((event) => event.type === "turn.failed")).toMatchObject([
-        { data: { turnId: "turn_0", sequence: 0, code: "EVENT_HANDLER_FAILED" } },
-      ]);
-      expect(events.map((event) => event.type)).toContain("session.waiting");
-      expect(events.map((event) => event.type)).not.toContain("session.failed");
-      expect(getHarnessEmissionState(result.session.state)).toEqual({
-        sessionStarted: true,
-        sequence: 1,
-        stepIndex: 0,
-        turnId: "",
-      });
-      denied = false;
-      setupMockAgent({
-        finishReason: "stop",
-        response: { messages: [{ role: "assistant", content: "recovered" }] },
-        text: "recovered",
-        toolCalls: [],
-        toolResults: [],
-      });
-      const recovered = await runStep(
-        JSON.parse(JSON.stringify(result.session)) as HarnessSession,
-        { message: "Try again" },
-      );
-      expect(recovered.next).toBeNull();
-      expect(events.filter((event) => event.type === "turn.completed")).toMatchObject([
-        { data: { turnId: "turn_1", sequence: 1 } },
-      ]);
-      expect(events.filter((event) => event.type === "session.started")).toHaveLength(1);
-      expect(logs.records).toContainEqual(
-        expect.objectContaining({
-          level: "error",
-          message: "turn boundary handler failed — parking session",
-        }),
-      );
-    },
-  );
-
-  it("fails the current later step without invoking another model", async () => {
-    const logs = captureLogRecords();
-    const events: UnstampedMessageStreamEvent[] = [];
-    const emit: HarnessEmitFn = async (event) => {
-      events.push(event);
-      if (event.type === "step.started")
-        throw new BoundaryHookError(new Error("step budget exhausted"));
-    };
-    const session = setHarnessEmissionState(createTestSession(), {
-      sessionStarted: true,
-      sequence: 2,
-      stepIndex: 3,
-      turnId: "turn_2",
-    });
-    const result = await createToolLoopHarness(createTestConfig(emit))(session);
-    expect(result.next).toBeNull();
-    expect(events[1]).toMatchObject({
-      type: "step.failed",
-      data: { stepIndex: 3, turnId: "turn_2" },
-    });
-    expect(ToolLoopAgent).not.toHaveBeenCalled();
-    expect(logs.records).toContainEqual(
-      expect.objectContaining({
-        level: "error",
-        message: "turn boundary handler failed — parking session",
-      }),
-    );
-  });
-
-  it("lets a failed failure handler escalate", async () => {
-    const logs = captureLogRecords();
-    const emit: HarnessEmitFn = async (event) => {
-      if (event.type === "turn.started") throw new BoundaryHookError(new Error("admission denied"));
-      if (event.type === "turn.failed") throw new Error("failure handler failed");
-    };
-    await expect(
-      createToolLoopHarness(createTestConfig(emit))(createTestSession(), {
-        message: "Hi",
-      }),
-    ).rejects.toThrow("failure handler failed");
-    expect(logs.records).toContainEqual(
-      expect.objectContaining({
-        level: "error",
-        message: "turn boundary handler failed — parking session",
-      }),
-    );
-  });
-
   it("keeps runtime preamble failures terminal", async () => {
     const failure = new Error("memory recall failed");
     const emit: HarnessEmitFn = async (event) => {

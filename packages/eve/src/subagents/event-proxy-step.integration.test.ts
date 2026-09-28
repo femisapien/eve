@@ -205,14 +205,17 @@ describe("proxied stream hooks", () => {
     ]);
   });
 
-  it("propagates hook failures after publication and releases the writer", async () => {
+  it("isolates hook failures after publication and releases the writer", async () => {
     const f = fixture();
-    const error = new Error("audit unavailable");
-    f.typed.mockRejectedValueOnce(error);
-    await expect(emitProxiedSubagentEvent(f)).rejects.toBe(error);
-    expect(f.events.map((event) => event.type)).toEqual(["input.requested"]);
-    expect(f.typed).toHaveBeenCalledOnce();
-    expect(f.wildcard).not.toHaveBeenCalled();
+    f.typed.mockRejectedValueOnce(new Error("audit unavailable"));
+    await emitProxiedSubagentEvent(f);
+    expect(f.events.map((event) => event.type)).toEqual([
+      "input.requested",
+      "turn.completed",
+      "session.waiting",
+    ]);
+    expect(f.typed).toHaveBeenCalledTimes(3);
+    expect(f.wildcard).toHaveBeenCalledTimes(3);
     expect(f.sessionWritable.locked).toBe(false);
   });
 });

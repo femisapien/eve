@@ -30,6 +30,8 @@ interface ChannelEventInput {
 export async function publishChannelEvent(input: ChannelEventInput): Promise<MessageStreamEvent> {
   const stamped = await writeChannelEvent(input);
   await dispatchStreamEventHooks({
+    // Only turn-step events can cancel the running turn; see turn-event-handler.ts.
+    cancelTurn: undefined,
     ctx: input.ctx,
     registry: input.ctx.require(BundleKey).hookRegistry,
     event: stamped,
