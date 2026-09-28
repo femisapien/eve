@@ -124,6 +124,9 @@ function respond(request: MockModelRequest): MockModelResponse | string {
       "completed",
     );
   }
+  if (message.includes("TASK-REMOTE-WORKFLOW-CHILD-QUESTION")) {
+    return runRemoteQuestion(request);
+  }
   if (message.includes("TASK-NESTED-REMOTE-CHILD-APPROVALS")) {
     return runNestedRemoteChildren(request, false);
   }
@@ -198,6 +201,9 @@ function respond(request: MockModelRequest): MockModelResponse | string {
     return startApprovalWorker(request, "task-c7-authorization-worker", "TASK-C7-STARTED");
   }
   if (message === "TASK-C8-REMOTE-HITL") return startRemoteWorker(request);
+  if (message === "TASK-REMOTE-WORKFLOW-QUESTION") {
+    return startNestedRemoteWorker(request, "TASK-REMOTE-WORKFLOW-CHILD-QUESTION");
+  }
   if (message === "TASK-NESTED-REMOTE-APPROVALS") {
     return startNestedRemoteWorker(request, "TASK-NESTED-REMOTE-CHILD-APPROVALS");
   }
@@ -453,6 +459,18 @@ function startNestedRemoteWorker(
     return { toolCalls: [{ id: callId, name: "remote-loopback", input: { message } }] };
   }
   return "TASK-NESTED-REMOTE-STARTED";
+}
+
+function runRemoteQuestion(request: MockModelRequest): MockModelResponse | string {
+  const callId = "task-remote-question";
+  const result = resultById(request, callId);
+  if (result === undefined) {
+    return { toolCalls: [{ id: callId, name: "remote_question", input: {} }] };
+  }
+  if (!JSON.stringify(result.output).includes("REMOTE-QUESTION-ANSWER=alice-ok")) {
+    throw new Error("Remote workflow question did not receive Alice's answer.");
+  }
+  return "TASK-REMOTE-QUESTION-COMPLETE";
 }
 
 function runNestedRemoteChildren(
