@@ -169,8 +169,8 @@ export type WorkflowToolRunAskDecision =
  * - `cancel` stops the current work: an `execute` or `task` call's run, or a
  *   `serve` task's current stretch of work, after which it waits for more calls.
  * - `end` stops the run for good, because the session ended.
- * - `interrupt` aborts an `execute` call's `interruptSignal`, because steering
- *   arrived while the turn waits on the call.
+ * - `interrupt` aborts an `execute` call's `abortSignal` without cancelling the
+ *   call, because steering arrived while the turn waits on it.
  * - `call` delivers a later call to a `serve` task.
  */
 export type WorkflowBodyCommand =

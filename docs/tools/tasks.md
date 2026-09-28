@@ -26,18 +26,19 @@ defineWorkflowTool({ /* … */ async serve(receive, ctx) {} }); // a task that a
 
 Defining none of the three, or more than one, throws when the tool is defined.
 
-| Call                                                                    | Runs as                   | Result                                            | A new message during the call      |
-| ----------------------------------------------------------------------- | ------------------------- | ------------------------------------------------- | ---------------------------------- |
-| `execute` workflow tool, including `sleep` and `ask_question`           | Tool call; the turn waits | The tool result                                   | Fires the call's `interruptSignal` |
-| `task` workflow tool, including `agentRouter()` and the `workflow` tool | Task                      | A receipt, then a `task.result` message           | Nothing                            |
-| `serve` workflow tool, including every agent tool                       | Resumable task            | A receipt, then a `task.result` message per reply | Nothing                            |
-| `task_wait`                                                             | Wait inside the turn      | Which tasks settled                               | Ends the wait                      |
-| Plain and MCP tools                                                     | Inside the model step     | The tool result                                   | Applied at the next step boundary  |
+| Call                                                                    | Runs as                   | Result                                            | A new message during the call     |
+| ----------------------------------------------------------------------- | ------------------------- | ------------------------------------------------- | --------------------------------- |
+| `execute` workflow tool, including `sleep` and `ask_question`           | Tool call; the turn waits | The tool result                                   | Aborts the call's `abortSignal`   |
+| `task` workflow tool, including `agentRouter()` and the `workflow` tool | Task                      | A receipt, then a `task.result` message           | Nothing                           |
+| `serve` workflow tool, including every agent tool                       | Resumable task            | A receipt, then a `task.result` message per reply | Nothing                           |
+| `task_wait`                                                             | Wait inside the turn      | Which tasks settled                               | Ends the wait                     |
+| Plain and MCP tools                                                     | Inside the model step     | The tool result                                   | Applied at the next step boundary |
 
 Waiting alone doesn't need a task. A question, a `sleep`, or an approval inside an `execute` call
-parks the turn durably and holds no compute. Use a task when the model should keep talking while
-the work runs, such as a twenty-minute deploy or research the model may not need right away. A
-long `execute` tool holds the conversation until it settles.
+parks the turn durably and holds no compute, and a new message stops the wait. Use a task when the
+model should keep talking while the work runs, such as a twenty-minute deploy or research the model
+may not need right away, or when a question should stay open through new messages. A long
+`execute` tool holds the conversation until it settles or a new message stops it.
 
 Agents have no choice to make: every agent tool is a `serve` tool, so every agent call is a
 resumable task, because only the model can tell from the conversation whether it needs an agent's
@@ -96,40 +97,39 @@ conversation should continue while the review runs.
 A workflow tool body receives its signals from its context or, in a `serve` body, from each call
 `receive()` resolves:
 
-- **`abortSignal`** aborts when the call's work is cancelled: by `task_cancel`, `session.cancel()`,
-  a cancelled or failed turn, or the end of the session. `execute` and `task` bodies read it as
+- **`abortSignal`** aborts when the call's work should stop: by `task_cancel`, `session.cancel()`,
+  a cancelled or failed turn, or the end of the session, and, for an `execute` call, by a steering
+  message that arrives while the turn waits on it. `execute` and `task` bodies read it as
   `ctx.abortSignal`. In a `serve` body, each call from `receive()` carries its own `abortSignal`;
   every call in one stretch of work shares one signal, and the next stretch gets a new one. Pass it
   to the steps and `ctx.agent` sends that should stop.
-- **`ctx.interruptSignal`** aborts once, on the first steering message that arrives while the turn
-  waits on the call. Only `execute` calls have it, because the conversation never waits on a task.
-  What it means is the tool's choice: a body that ignores it keeps going, and one that should stop
-  early races or passes it.
-- **`ctx.ask(request, { signal })`** withdraws the question when `signal` aborts. The answer
-  resolves as `{ status: "cancelled" }`, and the stream reports `input.resolved` with
-  `outcome: "cancelled"` so channels stop offering the question. The call's `abortSignal` withdraws
-  a pending question the same way. A person's answer that reached the session first still wins:
+- **`ctx.ask(request)`** withdraws the question when the call's `abortSignal` aborts, and
+  `ctx.ask(request, { signal })` also when `signal` does. The answer resolves as
+  `{ status: "cancelled" }`, and the stream reports `input.resolved` with `outcome: "cancelled"` so
+  channels stop offering the question. A person's answer that reached the session first still wins:
   the ask resolves as `answered`, so branch on `status`, not on the signal.
 
-Pass `ctx.interruptSignal` when a question should lapse once the conversation moves on. The
-provided `ask_question` tool does, so a steering message that doesn't answer its question
-withdraws it. Omit the signal, as an approval usually should, to keep the question open through
-unrelated messages:
+A body doesn't need to tell a steering message from a cancel: in both cases, stop and return what
+you have. After a steering message the call settles with what the body returns, or with
+`{ interrupted: true }` if the body rejects, and the model reads the message next. After a cancel,
+eve discards the result. So a question in an `execute` call lapses once the conversation moves on,
+as the provided `ask_question` tool's does, while a question in a task stays open:
 
 ```ts
 async execute({ service }, ctx) {
   "use workflow";
-  const answer = await ctx.ask(
-    { prompt: `Deploy ${service} now?`, display: "confirmation", options: DEPLOY_OR_WAIT },
-    { signal: ctx.interruptSignal }, // omit to keep asking through unrelated messages
-  );
+  const answer = await ctx.ask({
+    prompt: `Deploy ${service} now?`,
+    display: "confirmation",
+    options: DEPLOY_OR_WAIT,
+  });
   if (answer.status === "cancelled") return { deployed: false, reason: "the conversation moved on" };
   // …
 }
 ```
 
-See [Stop early for a new message](/docs/tools/workflows#stop-early-for-a-new-message-ctxinterruptsignal)
-for how the provided `sleep` tool races its timer against the signal.
+See [Stop early for a new message](/docs/tools/workflows#stop-early-for-a-new-message) for how the
+provided `sleep` tool races its timer against the signal.
 
 ## What the model sees
 
@@ -223,7 +223,7 @@ same turn to its end. See [Aggregate a turn](/docs/guides/client/streaming#aggre
 `task_wait`, so people see what the agent is waiting on.
 
 A steering message from the turn's own caller, one sent with `turnPolicy: "steer"`, the default,
-ends a `task_wait` and fires the `interruptSignal` of any `execute` call the turn waits on, but it
+ends a `task_wait` and aborts the `abortSignal` of any `execute` call the turn waits on, but it
 never interrupts a task. The model reads the message and decides whether to keep each task,
 correct an agent by calling it again with its `taskId`, or stop a task with `task_cancel`. A
 `"queue"` message, or a message from another caller, waits for the turn to end.

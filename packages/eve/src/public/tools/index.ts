@@ -42,7 +42,6 @@ export {
   type WorkflowServeReceive,
   type WorkflowServeToolDefinition,
   type WorkflowStepToolContext,
-  type WorkflowTaskContext,
   type WorkflowTaskToolDefinition,
   type WorkflowToolContext,
   type WorkflowToolDefinition,

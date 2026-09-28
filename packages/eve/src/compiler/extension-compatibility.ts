@@ -22,8 +22,8 @@ interface ExtensionCapabilityContract {
 const EXTENSION_CAPABILITY_CONTRACTS = {
   extension: { current: 1, supported: [1], dropped: {} },
   tool: {
-    current: 64,
-    supported: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 29, 30, 31, 32, 34, 35, 54, 55, 64],
+    current: 65,
+    supported: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 29, 30, 31, 32, 34, 35, 54, 55, 65],
     dropped: {
       14: "TaskExec.delegated was removed; migrate to workflow-backed background tools",
       15: "TaskExec replaces stageEffect with send",
@@ -67,6 +67,7 @@ const EXTENSION_CAPABILITY_CONTRACTS = {
       61: "Workflow tools define exactly one of execute(input, ctx) or task(input, ctx); a task() tool's calls return a receipt and run as tasks without interruptSignal, and stream events gained task.started and task.settled.",
       62: "Workflow tools can define serve(receive, ctx), whose calls reach resumable tasks through receive() and whose model input gains taskId; defineWorkflowTool gained its serve overloads.",
       63: "Agent tools are serve(receive, ctx) tools with taskId in place of agentId, and the subagent.called, subagent.completed, subagent.started, and subagent.event stream events were removed.",
+      64: "ctx.interruptSignal and WorkflowTaskContext were removed: a steering message aborts the abortSignal of an execute call the turn waits on, and task() bodies take WorkflowToolContext.",
     },
   },
   dynamicTool: {

@@ -144,8 +144,8 @@ export interface ToolInputRequestOptions {
   /**
    * Withdraws the request when it aborts: the channel stops offering the
    * question and the ask resolves as `cancelled`, unless the session accepted
-   * an answer first, which the ask then resolves with. Pass
-   * `ctx.interruptSignal` to stop asking once a new message arrives.
+   * an answer first, which the ask then resolves with. The call's
+   * `abortSignal` withdraws the request the same way without being passed.
    */
   readonly signal?: AbortSignal;
 }

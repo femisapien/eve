@@ -84,10 +84,9 @@ or days later, the run resumes, deploys, and returns. The model sees one tool re
 - Import `createHook`, `createWebhook`, `sleep`, and `FatalError` from `workflow` in the body.
   `start`, `getRun`, and `resumeHook` from `workflow/api` belong in steps. Your app does not install
   the SDK; for types, new projects list `eve/workflow-modules` in the tsconfig `types`.
-- In an `execute` body, `ctx` is a `WorkflowToolContext` with `session`, `callId`, `toolName`,
-  `abortSignal`, `interruptSignal`, `agent`, `agents`, and `ask`. A `task` body gets a
-  `WorkflowTaskContext` with the same members except `interruptSignal`, because steering never
-  interrupts a task. A `serve` body gets a `WorkflowServeContext` with `session`, `toolName`,
+- In an `execute` or `task` body, `ctx` is a `WorkflowToolContext` with `session`, `callId`,
+  `toolName`, `abortSignal`, `agent`, `agents`, and `ask`. A `serve` body gets a
+  `WorkflowServeContext` with `session`, `toolName`,
   `agent`, `agents`, `ask`, and `reply`; each call it receives carries its own `callId` and
   `abortSignal`.
   A `"use step"` helper that receives `ctx` directly gets a restricted `WorkflowStepToolContext` with
@@ -97,8 +96,8 @@ or days later, the run resumes, deploys, and returns. The model sees one tool re
 - The tool's input must be a JSON object. Workflow bodies are for static tools under `agent/tools/`,
   not tools returned from `defineDynamic` resolvers.
 
-`ctx.agent`, `ctx.agents`, and `ctx.ask` are available only on `WorkflowToolContext`,
-`WorkflowTaskContext`, and `WorkflowServeContext` in the workflow body.
+`ctx.agent`, `ctx.agents`, and `ctx.ask` are available only on `WorkflowToolContext` and
+`WorkflowServeContext` in the workflow body.
 Ordinary tools, channel handlers, schedule handlers, and workflow steps do not receive these methods. Type
 step helpers with `WorkflowStepToolContext` from `eve/tools` when they need step-safe context capabilities.
 
@@ -177,16 +176,17 @@ an agent catalog. Calls use the same target resolution, availability, and author
 Replace `defineTool` with `defineWorkflowTool`, keep the executor's `"use workflow"` directive,
 and replace `agent(ctx, input)` and `ask(ctx, request)` with an agent session from
 [`ctx.agent(name)`](#delegate-work-ctxagent) and `ctx.ask(request)`. The `eve/workflow` entry point
-has been removed. Import `WorkflowToolContext`, `WorkflowTaskContext`, `AgentSession`,
+has been removed. Import `WorkflowToolContext`, `AgentSession`,
 `ToolInputRequest`, `ToolInputRequestOptions`, and `ToolInputResponse` from `eve/tools` when you
 need explicit types.
 
-`ctx.ask` no longer accepts `dismissible`, and its `dismissed` status is now `cancelled`. To stop
-asking once a new message arrives, pass `ctx.interruptSignal`:
+`ctx.ask` no longer accepts `dismissible`, and its `dismissed` status is now `cancelled`. A
+steering message withdraws a question an `execute` call asks, so drop the option. To keep a
+question open while the conversation continues, ask it from a [`task`](#run-calls-as-tasks-task).
 
 ```diff
 -const answer = await ctx.ask({ prompt, dismissible: true });
-+const answer = await ctx.ask({ prompt }, { signal: ctx.interruptSignal });
++const answer = await ctx.ask({ prompt });
 ```
 
 See [Upgrade to Tasks](/docs/tools/tasks-upgrade) for `task` replacing `execution: "background"`
@@ -200,8 +200,8 @@ A call to an `execute` tool works like any other tool call from the model's poin
 - **Parent turn:** waits for the call to settle, then continues with the result.
 - **Durable wait inside the body:** suspends the workflow while the tool call stays pending.
 - **Cancel:** cancelling the turn cancels the run.
-- **Steering:** a new message fires the call's `ctx.interruptSignal`, and the body decides whether
-  to stop. See [Stop early for a new message](#stop-early-for-a-new-message-ctxinterruptsignal).
+- **Steering:** a new message aborts the call's `ctx.abortSignal`, and the call settles with what
+  the body returns. See [Stop early for a new message](#stop-early-for-a-new-message).
 
 To keep the conversation going while a call works, [define `task` instead](#run-calls-as-tasks-task).
 
@@ -258,9 +258,9 @@ export default defineWorkflowTool({
 });
 ```
 
-A `task` body is written like an `execute` body: returning settles the call, a throw fails it, and
-an `async *task` generator can `yield` progress. Its context, `WorkflowTaskContext`, has no
-`interruptSignal`.
+A `task` body is written like an `execute` body, with the same `WorkflowToolContext`: returning
+settles the call, a throw fails it, and an `async *task` generator can `yield` progress. A
+steering message never aborts a task's `abortSignal`.
 
 Each call is a task with its own id, `<tool>-<6 characters>`:
 
@@ -472,8 +472,9 @@ if (answer === undefined) return { deployed: false, reason: "timed out" };
 - Ending the run, by returning, throwing, or cancellation, withdraws its pending requests.
 - Several requests may be outstanding at once.
 - A response never steers. A new human message that does not answer a pending request follows the
-  session's normal `turnPolicy`. A steering message also fires `ctx.interruptSignal`; pass it as
-  `signal` to withdraw the question when the conversation moves on, as `ask_question` does.
+  session's normal `turnPolicy`. A steering message aborts the `abortSignal` of each `execute` call
+  the turn waits on, which withdraws that call's questions, such as `ask_question`'s. A task's
+  questions stay open.
 - An aborted `signal` asks the session to withdraw the question, and the session decides. If a
   person's answer reached the session first, the ask resolves as `answered` even though the signal
   aborted, and the channel shows it answered. Branch on `status`, not on the signal.
@@ -685,9 +686,10 @@ Use [`ctx.ask`](#ask-a-human-ctxask) when the workflow needs a human answer. See
 ## Cancel and clean up: `ctx.abortSignal`
 
 `ctx.abortSignal` aborts when the call is cancelled: by `session.cancel()`, or, for a task, by
-`task_cancel`, a failed turn, or the end of the session. It is durable — it survives replay, and a
-step that receives it observes the abort. Pass it into the steps that should stop, and clean up in
-`try/finally`:
+`task_cancel`, a failed turn, or the end of the session. A steering message also aborts it for an
+`execute` call; see [Stop early for a new message](#stop-early-for-a-new-message). It is durable —
+it survives replay, and a step that receives it observes the abort. Pass it into the steps that
+should stop, and clean up in `try/finally`:
 
 ```ts
 async execute({ projectId }, ctx) {
@@ -701,54 +703,58 @@ async execute({ projectId }, ctx) {
 }
 ```
 
-After the signal fires, the run waits up to 30 seconds for the body to finish unwinding, then ends
-as cancelled whether or not it did. A body parked on a hook or a `sleep` does not observe the signal;
-it is abandoned when the grace period ends. Steps that received the signal are how you clean up
-first.
+After a cancel aborts the signal, the run waits up to 30 seconds for the body to finish unwinding,
+then ends as cancelled whether or not it did. A body parked on a hook or a `sleep` does not observe
+the signal; it is abandoned when the grace period ends. Steps that received the signal are how you
+clean up first.
 
 The caller waits up to 35 seconds for a cooperatively cancelled run to settle before forcing it
 to stop. This includes time for the run to publish its outcome after body cleanup.
 
-## Stop early for a new message: `ctx.interruptSignal`
+## Stop early for a new message
 
-`ctx.interruptSignal` aborts when a steering message arrives while the turn waits on the call. A
+A steering message aborts the `ctx.abortSignal` of each `execute` call the turn waits on. A
 steering message is one sent with `turnPolicy: "steer"`, the default, that does not answer a pending
-question; a message that answers a question never interrupts. The signal aborts once, on the first
-such message. Later messages wait for the call like any other. Only an `execute` call has an
-`interruptSignal`: steering never interrupts a [task](#run-calls-as-tasks-task).
+question; a message that answers a question never stops a call. Steering never touches a
+[task](#run-calls-as-tasks-task).
 
-The signal only informs the body. Steering does not cancel the call or end the turn, and the model
-reads the new message after the step's workflow tool calls settle. A body that ignores the signal
-keeps going: a deploy waiting on an approval survives unrelated messages. A body that should stop
-races the signal or passes it on. The provided `sleep` tool races it against the timer:
+Steering does not cancel the call or end the turn. The call settles with what the body returns, and
+the model reads the new message after the step's workflow tool calls settle:
+
+- **Questions:** a pending `ctx.ask` question is withdrawn and resolves as `cancelled`, unless a
+  person's answer reached the session first.
+- **Rejections:** a body that rejects after the abort, such as one whose step received the signal,
+  settles as `{ interrupted: true }` instead of failing.
+- **No grace period:** a body that doesn't observe the signal, such as one parked on a hook or a
+  `sleep`, keeps the turn waiting until it finishes.
+
+The body doesn't need to tell a steering message from a cancel: in both cases, stop and return what
+you have. After a cancel, eve discards the result. The provided `sleep` tool races its timer
+against the signal:
 
 ```ts
 import { sleep } from "workflow";
 
 async execute(input, ctx) {
   "use workflow";
-  const interrupted = new Promise<"interrupted">((resolve) =>
-    ctx.interruptSignal.addEventListener("abort", () => resolve("interrupted"), { once: true }),
+  const stopped = new Promise<"stopped">((resolve) =>
+    ctx.abortSignal.addEventListener("abort", () => resolve("stopped"), { once: true }),
   );
   const elapsed = sleep(input.seconds * 1_000).then(() => "elapsed" as const);
-  const woke = await Promise.race([elapsed, interrupted]);
+  const woke = await Promise.race([elapsed, stopped]);
   return woke === "elapsed" ? { waitedSeconds: input.seconds } : { interrupted: true };
 }
 ```
 
-Pass the signal to `ctx.ask` as `signal` to withdraw a question once the conversation moves on. The
-provided `ask_question` tool does this:
-
-```ts
-const answer = await ctx.ask(question, { signal: ctx.interruptSignal });
-```
+To keep a question or long work going while the conversation continues, define
+[`task`](#run-calls-as-tasks-task) instead of `execute`.
 
 ## Workflow tool examples
 
 ### Approve with a deadline and an escalation
 
 ```ts
-async execute({ service }, ctx) {
+async task({ service }, ctx) {
   "use workflow";
   const plan = await planDeploy(service);
   const pending = ctx.ask({ prompt: `Deploy ${service}?`, display: "confirmation", options: APPROVE_OR_CANCEL });
@@ -767,8 +773,9 @@ async execute({ service }, ctx) {
 }
 ```
 
-One request stays on the channel the whole time. `sleep` is the deadline, `pageOnCall` is a step,
-and returning withdraws the request.
+One request stays on the channel the whole time. As a `task`, the call doesn't hold the
+conversation, and a steering message doesn't withdraw the request. `sleep` is the deadline,
+`pageOnCall` is a step, and returning withdraws the request.
 
 ### Wait for an external system to call back
 
@@ -837,8 +844,8 @@ One call, one result. A workflow tool call resolves once, with the return value,
 cancellation.
 
 While an `execute` call runs, the turn is parked. A `queue` message waits for it. A `steer` message
-that answers no pending question fires the call's `ctx.interruptSignal` and reaches the model once
-the call settles; it never cancels the run. Input responses never steer. A task doesn't park the
+that answers no pending question aborts the call's `ctx.abortSignal` and reaches the model once the
+call settles; it never cancels the run. Input responses never steer. A task doesn't park the
 turn, and steering never touches it.
 
 Errors follow the SDK. A thrown error in a step retries per the step's policy; `FatalError` does

@@ -2,7 +2,7 @@ import { defineEval } from "eve/evals";
 
 /**
  * The provided `sleep` tool races its timer against the call's
- * `interruptSignal`. A steering message ends a ten-minute sleep at once, and
+ * `abortSignal`. A steering message ends a ten-minute sleep at once, and
  * the same turn continues with the message and the interrupted result.
  */
 export default defineEval({

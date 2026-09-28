@@ -1,15 +1,15 @@
 import { defineEval } from "eve/evals";
 
 /**
- * `offer_deploy` passes its `interruptSignal` to `ctx.ask`. A steering
- * message withdraws the question: `input.resolved` reports it as cancelled,
- * and the call returns that the offer was withdrawn.
+ * A steering message aborts the `abortSignal` of the `offer_deploy` call the
+ * turn waits on, which withdraws its question: `input.resolved` reports it as
+ * cancelled, and the call returns that the offer was withdrawn.
  *
  * The withdrawal belongs to the parked turn, not to Alice's message, so the
  * eval follows the session stream to see it, as a channel does.
  */
 export default defineEval({
-  description: "A question asked with the interruptSignal is withdrawn as cancelled on steering.",
+  description: "A steering message withdraws a waited call's question as cancelled.",
   async test(t) {
     const parked = await t.send("WORKFLOW-OFFER-START");
     const request = parked.session.requireInputRequest({ toolName: "offer_deploy" });

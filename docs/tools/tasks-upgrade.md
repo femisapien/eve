@@ -6,8 +6,10 @@ url: /tools/tasks-upgrade
 
 This release replaces background tasks with [tasks](/docs/tools/tasks). Every change below breaks
 the previous API. Work through the sections that apply to your agent. A workflow tool that uses
-none of `execution: "background"`, `dismissible`, or `ctx.agent` doesn't change: `execute(input,
-ctx)` keeps its signature, and `ctx.abortSignal` and `ctx.callId` are where they were.
+none of `execution: "background"`, `dismissible`, or `ctx.agent` keeps its code: `execute(input,
+ctx)` keeps its signature, and `ctx.abortSignal` and `ctx.callId` are where they were. One behavior
+changes for every `execute` tool: a steering message now aborts its `ctx.abortSignal`. See
+[Drop `dismissible`](#drop-dismissible-a-new-message-stops-an-execute-call).
 Type-checking flags most of the code changes, such as the removed `execution` and `dismissible`
 options and the old `ctx.agent` call.
 
@@ -30,27 +32,33 @@ Rename `execute` to `task` and remove `execution`. The body doesn't change:
 
 `defineWorkflowTool` rejects `execution` with
 `"execution" was replaced by task(). Define task(input, ctx) to run each call as a task.` A
-`task` body's context, `WorkflowTaskContext`, has no `interruptSignal`, because steering never
-interrupts a task. An `execute` tool is an ordinary tool call: the turn waits for its result. See
+`task` body gets the same `WorkflowToolContext` as an `execute` body, and steering never aborts a
+task's `abortSignal`. An `execute` tool is an ordinary tool call: the turn waits for its result. See
 [Choose how a call runs](/docs/tools/tasks#choose-how-a-call-runs).
 
 A tool that the model should be able to send more input while it works, such as a plan it revises
 on request, defines [`serve(receive, ctx)`](/docs/tools/workflows#resumable-tasks-serve) instead.
 
-## Pass `ctx.interruptSignal` instead of `dismissible`
+## Drop `dismissible`: a new message stops an `execute` call
 
-`ctx.ask` no longer accepts `dismissible`. To withdraw a question when the conversation moves on,
-pass the call's `interruptSignal` as `signal`:
+`ctx.ask` no longer accepts `dismissible`. A steering message now aborts the `ctx.abortSignal` of
+each `execute` call the turn waits on, which withdraws every question the call asked, as
+`dismissible: true` did:
 
 ```diff
 -const answer = await ctx.ask({ prompt, dismissible: true });
-+const answer = await ctx.ask({ prompt }, { signal: ctx.interruptSignal });
++const answer = await ctx.ask({ prompt });
 ```
+
+To keep a question open through new messages, ask it from a
+[`task`](#replace-execution-background-with-taskinput-ctx) instead. Other work that
+receives `ctx.abortSignal`, such as a step or a `ctx.agent` send, stops too. The call settles with
+what the body returns, or with `{ interrupted: true }` if the body rejects, and the model reads the
+message next.
 
 A withdrawn question resolves as `{ status: "cancelled" }` instead of `dismissed`, and the
 `input.resolved` outcome `"dismissed"` is now `"cancelled"`. Update clients and channels that
-match on the old value. Only an `execute` body has `ctx.interruptSignal`; see
-[Pass signals to the work](/docs/tools/tasks#pass-signals-to-the-work).
+match on the old value. See [Pass signals to the work](/docs/tools/tasks#pass-signals-to-the-work).
 
 ## Open agent sessions with `ctx.agent(name)`
 

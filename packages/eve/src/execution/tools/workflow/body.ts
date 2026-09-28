@@ -6,7 +6,6 @@ import { createAgentSessions } from "#execution/agent-sessions/session.js";
 import type {
   AgentSession,
   WorkflowSharedContext,
-  WorkflowTaskContext,
   WorkflowToolContext,
 } from "#tools/workflow-definition.js";
 import {
@@ -72,33 +71,46 @@ export interface StartedWorkflowBody {
   readonly outcome: Promise<WorkflowToolRunOutcome>;
 }
 
-type WorkflowCallContext = ToolContext & (WorkflowToolContext | WorkflowTaskContext);
+type WorkflowCallContext = ToolContext & WorkflowToolContext;
+
+/** What an `execute` call a steering message stopped settles with when its body rejects. */
+const INTERRUPTED_OUTPUT = { interrupted: true } as const;
 
 type WorkflowCallEntryPoint = (
   input: unknown,
   ctx: WorkflowCallContext,
 ) => Promise<JsonValue> | AsyncIterable<JsonValue>;
 
-/** The signals of an `execute` or `task` call, which the run's commands abort. */
+/**
+ * The signals of an `execute` or `task` call, which the run's commands abort.
+ * The body's `abortSignal` aborts on a cancel and on an interrupt; the run's
+ * signal only on a cancel, because an interrupted call still settles with the
+ * body's result.
+ */
 class WorkflowCallSignals implements WorkflowBodyControl {
-  private readonly abort = new AbortController();
-  private readonly interrupt = new AbortController();
+  private readonly body = new AbortController();
+  private readonly run = new AbortController();
   private readonly asks: WorkflowToolRunAsks;
 
   constructor(asks: WorkflowToolRunAsks) {
     this.asks = asks;
   }
 
-  get runSignal(): AbortSignal {
-    return this.abort.signal;
+  get abortSignal(): AbortSignal {
+    return this.body.signal;
   }
 
-  get interruptSignal(): AbortSignal {
-    return this.interrupt.signal;
+  get runSignal(): AbortSignal {
+    return this.run.signal;
+  }
+
+  /** A steering message stopped the body, and no cancel has. */
+  get interrupted(): boolean {
+    return this.body.signal.aborted && !this.run.signal.aborted;
   }
 
   get unwinding(): boolean {
-    return this.abort.signal.aborted;
+    return this.run.signal.aborted;
   }
 
   apply(command: WorkflowBodyCommand): void {
@@ -109,10 +121,11 @@ class WorkflowCallSignals implements WorkflowBodyControl {
         // so it accepts no answer after this; settle them before the abort
         // would ask to withdraw them.
         this.asks.cancelAll();
-        this.abort.abort(new WorkflowToolRunCancelledError(command.reason));
+        this.run.abort(new WorkflowToolRunCancelledError(command.reason));
+        this.body.abort(this.run.signal.reason);
         return;
       case "interrupt":
-        this.interrupt.abort();
+        this.body.abort(new WorkflowToolRunInterruptedError());
         return;
       case "call":
         // Only a `serve` task takes later calls.
@@ -171,6 +184,7 @@ async function executeCallBody(
     }
     return { output, status: "completed" };
   } catch (error) {
+    if (signals.interrupted) return { output: INTERRUPTED_OUTPUT, status: "completed" };
     return toFailedOutcome(error, signals.runSignal);
   }
 }
@@ -259,23 +273,22 @@ export function createAgentsView(context: AgentSessionContext): WorkflowSharedCo
 }
 
 /**
- * The context of an `execute` or `task` call: a task's, or, for an `execute`
- * call the turn waits on, the same plus `interruptSignal`.
+ * The context of an `execute` or `task` call. They differ only in what aborts
+ * `abortSignal`: the session interrupts only the `execute` calls a turn waits on.
  */
 function createCallContext(
   input: WorkflowBodyInput,
   signals: WorkflowCallSignals,
   agent: (name: string) => AgentSession,
 ): WorkflowCallContext {
-  const ctx: ToolContext & WorkflowTaskContext = {
+  const ctx: WorkflowCallContext = {
     ...createSharedContext(input, agent, (request, options) => ask(ctx, request, options)),
-    abortSignal: signals.runSignal,
+    abortSignal: signals.abortSignal,
     agents: createAgentsView(input.agentContext),
     callId: input.callId,
     session: input.session,
   };
-  if (input.entry.entryPoint !== "execute") return ctx;
-  return Object.assign(ctx, { interruptSignal: signals.interruptSignal });
+  return ctx;
 }
 
 function isAsyncIterable(value: unknown): value is AsyncIterable<JsonValue> {
@@ -290,5 +303,13 @@ export class WorkflowToolRunCancelledError extends Error {
   constructor(reason: string) {
     super(reason);
     this.name = "WorkflowToolRunCancelledError";
+  }
+}
+
+/** Why an `execute` call's `abortSignal` aborted when a steering message arrived. */
+export class WorkflowToolRunInterruptedError extends Error {
+  constructor() {
+    super("A new message arrived while the turn waited on this call.");
+    this.name = "WorkflowToolRunInterruptedError";
   }
 }

@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { agentRouter } from "#tools/provided/agent-router.js";
 import { runAgentRouterTask } from "#execution/tools/agent-router.js";
 import { evaluate } from "#ai/evaluate.js";
-import type { WorkflowTaskContext } from "#tools/workflow-definition.js";
+import type { WorkflowToolContext } from "#tools/workflow-definition.js";
 
 vi.mock("#ai/evaluate.js", () => ({ evaluate: vi.fn() }));
 
@@ -105,12 +105,12 @@ function replyingAgent(message: string) {
 }
 
 function workflowContext(
-  input: Pick<WorkflowTaskContext, "agent" | "agents"> &
-    Partial<Pick<WorkflowTaskContext, "abortSignal">>,
-): WorkflowTaskContext {
+  input: Pick<WorkflowToolContext, "agent" | "agents"> &
+    Partial<Pick<WorkflowToolContext, "abortSignal">>,
+): WorkflowToolContext {
   return {
     abortSignal: input.abortSignal ?? new AbortController().signal,
     agent: input.agent,
     agents: input.agents,
-  } as WorkflowTaskContext;
+  } as WorkflowToolContext;
 }

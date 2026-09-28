@@ -392,7 +392,7 @@ export class SessionExecution {
     return parked;
   }
 
-  /** Fires the `interruptSignal` of every workflow tool call the wait has no result for yet. */
+  /** Aborts the `abortSignal` of every workflow tool call the wait has no result for yet. */
   private async interruptWaitedWorkflowCalls(
     pendingCallIds: readonly string[],
     settled: readonly RuntimeActionResult[],

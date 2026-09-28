@@ -43,10 +43,8 @@ it("binds workflow-only methods to the run context", async () => {
   const session = { send: vi.fn() };
   mocks.ask.mockResolvedValue({ optionId: "yes" });
   mocks.openAgent.mockReturnValue(session);
-  let abortSignal: AbortSignal | undefined;
   mocks.execute.mockImplementation(async (_input, ctx: WorkflowToolContext & ToolContext) => {
     expect(findWorkflowToolRunContext(ctx)?.from.runId).toBe("run");
-    abortSignal = ctx.abortSignal;
     expect(ctx.agents).toEqual({ reviewer: { description: "Review deployments." } });
     expect(Object.isFrozen(ctx.agents)).toBe(true);
     expect(Object.isFrozen(ctx.agents.reviewer)).toBe(true);
@@ -61,5 +59,4 @@ it("binds workflow-only methods to the run context", async () => {
     status: "completed",
     output: { answer: { optionId: "yes" } },
   });
-  expect(abortSignal).toBe(started.control.runSignal);
 });

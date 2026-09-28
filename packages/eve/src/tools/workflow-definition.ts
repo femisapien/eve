@@ -93,26 +93,22 @@ export type WorkflowSharedContext = Pick<
 };
 
 /**
- * Context of an `execute(input, ctx)` call, which the turn waits on. When
- * passed directly to a step, eve replaces it with {@link WorkflowStepToolContext}.
+ * Context of an `execute(input, ctx)` or `task(input, ctx)` call. When passed
+ * directly to a step, eve replaces it with {@link WorkflowStepToolContext}.
  */
 export type WorkflowToolContext = WorkflowSharedContext &
-  Pick<ToolContext, "abortSignal" | "callId"> & {
+  Pick<ToolContext, "callId"> & {
     /**
-     * Aborts once, on the first steering message that arrives while the turn
-     * waits on this call. What it means is the tool's choice: a body that
-     * ignores it keeps going, and one that should stop early races or passes it.
+     * Aborts when the call's work should stop: the call is cancelled, by
+     * `task_cancel`, `session.cancel()`, a failed turn, or the end of the
+     * session, or, for an `execute` call, a steering message arrives while the
+     * turn waits on it. Stop and return what you have. After a steering
+     * message the call settles with what the body returns, or with
+     * `{ interrupted: true }` if it rejects; a cancelled call's result is
+     * discarded. A task never sees a steering message.
      */
-    readonly interruptSignal: AbortSignal;
+    readonly abortSignal: AbortSignal;
   };
-
-/**
- * Context of a `task(input, ctx)` call, which runs as a task. Steering never
- * interrupts a task, so it has no `interruptSignal`. When passed directly to a
- * step, eve replaces it with {@link WorkflowStepToolContext}.
- */
-export type WorkflowTaskContext = WorkflowSharedContext &
-  Pick<ToolContext, "abortSignal" | "callId">;
 
 /**
  * One call a `serve` body receives: the call that started the task, or a
@@ -192,7 +188,7 @@ export interface WorkflowTaskToolDefinition<
   TInput = unknown,
   TOutput = unknown,
 > extends WorkflowToolDefinitionBase<TInput, TOutput> {
-  task(input: TInput, ctx: WorkflowTaskContext): Promise<TOutput> | AsyncIterable<TOutput>;
+  task(input: TInput, ctx: WorkflowToolContext): Promise<TOutput> | AsyncIterable<TOutput>;
   execute?: never;
   serve?: never;
 }
@@ -244,7 +240,7 @@ type ExecuteDefinition<TInput, TReturn> = DefinitionFields<TInput, WorkflowRetur
   serve?: never;
 };
 type TaskDefinition<TInput, TReturn> = DefinitionFields<TInput, WorkflowReturn<TReturn>> & {
-  task(input: TInput, ctx: WorkflowTaskContext): TReturn;
+  task(input: TInput, ctx: WorkflowToolContext): TReturn;
   execute?: never;
   serve?: never;
 };

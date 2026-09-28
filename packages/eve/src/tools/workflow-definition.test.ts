@@ -10,7 +10,6 @@ import {
   type WorkflowServeCall,
   type WorkflowServeContext,
   type WorkflowStepToolContext,
-  type WorkflowTaskContext,
   type WorkflowToolContext,
 } from "#tools/workflow-definition.js";
 import { normalizeToolDefinition } from "#internal/authored-definition/schema-backed.js";
@@ -51,15 +50,13 @@ describe("defineWorkflowTool", () => {
     expectTypeOf(definition.execute).parameter(0).toEqualTypeOf<{ service: string }>();
   });
 
-  it("infers a task's input and gives it a context without interruptSignal", () => {
+  it("infers a task's input and gives it the context of an execute call", () => {
     const definition = defineWorkflowTool({
       description: "Deploy",
       inputSchema: z.object({ service: z.string() }),
       async task(input, ctx) {
         expectTypeOf(input).toEqualTypeOf<{ service: string }>();
-        expectTypeOf(ctx).toEqualTypeOf<WorkflowTaskContext>();
-        // @ts-expect-error Steering never interrupts a task.
-        void ctx.interruptSignal;
+        expectTypeOf(ctx).toEqualTypeOf<WorkflowToolContext>();
         return { deployed: input.service };
       },
     });
@@ -75,8 +72,6 @@ describe("defineWorkflowTool", () => {
         const call = await receive();
         expectTypeOf(call).toEqualTypeOf<WorkflowServeCall<{ request: string }>>();
         expectTypeOf(ctx).toEqualTypeOf<WorkflowServeContext<{ steps: string[] }>>();
-        // @ts-expect-error Steering never interrupts a task.
-        void ctx.interruptSignal;
         // @ts-expect-error Each call carries its own abortSignal.
         void ctx.abortSignal;
         ctx.reply({ steps: [call.input.request] });
