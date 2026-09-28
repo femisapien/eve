@@ -5,17 +5,16 @@ import {
   attachWorkflowToolRunContext,
   WorkflowToolRunAsks,
 } from "#execution/tools/workflow/ask.js";
-import { resumeHookStep } from "#execution/tools/workflow/resume-hook-step.js";
+import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
 import type { ToolContext } from "#tools/definition.js";
-
-vi.mock("#execution/tools/workflow/resume-hook-step.js", () => ({ resumeHookStep: vi.fn() }));
 
 describe("ask", () => {
   it("resolves as unavailable without waiting when the session cannot request input", async () => {
     const ctx = {} as ToolContext;
+    const send = vi.fn();
     attachWorkflowToolRunContext(ctx, {
+      agentContext: { capabilities: { requestInput: false } } as AgentSessionContext,
       asks: new WorkflowToolRunAsks("run"),
-      canRequestInput: false,
       control: "control",
       from: {
         callId: "call",
@@ -26,12 +25,12 @@ describe("ask", () => {
         toolName: "ask_question",
         turnId: "turn",
       },
-      owner: { inbox: "inbox" },
+      owner: { send, sent: 0 },
     });
 
     await expect(ask(ctx, { prompt: "Which region?" })).resolves.toEqual({
       status: "unavailable",
     });
-    expect(resumeHookStep).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
   });
 });

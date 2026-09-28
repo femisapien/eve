@@ -1,9 +1,9 @@
+import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
 import type {
   WorkflowToolRunAskDecision,
-  WorkflowToolRunOwner,
   WorkflowToolRunRef,
 } from "#execution/tools/workflow/messages.js";
-import { resumeHookStep } from "#execution/tools/workflow/resume-hook-step.js";
+import type { WorkflowToolRunInbox } from "#execution/tools/workflow/owner.js";
 import type {
   ToolContext,
   ToolInputRequest,
@@ -17,12 +17,16 @@ import { workflowToolContextErrorMessage } from "#shared/workflow-tool-context.j
 const WORKFLOW_TOOL_RUN_CONTEXT = Symbol.for("eve.workflow-tool-run.context");
 
 export interface WorkflowToolRunContext {
+  /**
+   * What the run's caller lends it: the lineage and principal `ctx.agent`
+   * sessions run with, and whether `ctx.ask()` can reach a person.
+   */
+  readonly agentContext: AgentSessionContext;
   readonly asks: WorkflowToolRunAsks;
-  readonly canRequestInput?: boolean;
   /** The run's control hook, where the session sends its decisions on the run's questions. */
   readonly control: string;
   readonly from: WorkflowToolRunRef;
-  readonly owner: WorkflowToolRunOwner;
+  readonly owner: WorkflowToolRunInbox;
 }
 
 type WorkflowToolRunContextCarrier = {
@@ -60,7 +64,7 @@ export function readWorkflowToolRunRef(ctx: ToolContext): WorkflowToolRunRef {
   return readWorkflowToolRunContext(ctx, "agent").from;
 }
 
-export function readWorkflowToolRunOwner(ctx: ToolContext): WorkflowToolRunOwner {
+export function readWorkflowToolRunOwner(ctx: ToolContext): WorkflowToolRunInbox {
   return readWorkflowToolRunContext(ctx, "agent").owner;
 }
 
@@ -136,7 +140,10 @@ export function ask(
   options: ToolInputRequestOptions = {},
 ): Promise<ToolInputResponse> {
   const context = readWorkflowToolRunContext(ctx, "ask");
-  if (context.canRequestInput === false) return Promise.resolve(UNAVAILABLE);
+  // A caller that can't reach a person resolves `ctx.ask()` as `unavailable`.
+  if (context.agentContext.capabilities?.requestInput !== true) {
+    return Promise.resolve(UNAVAILABLE);
+  }
   const signals = [ctx.abortSignal];
   if (options.signal !== undefined) signals.push(options.signal);
   if (signals.some((signal) => signal.aborted)) return Promise.resolve(CANCELLED);
@@ -144,7 +151,7 @@ export function ask(
   const { asks, control, owner } = context;
   const { answer, requestId } = asks.open();
   const from = context.from;
-  const sent = resumeHookStep(owner.inbox, {
+  const sent = owner.send({
     kind: "request",
     from,
     replyTo: requestId,
@@ -156,7 +163,7 @@ export function ask(
     if (!asks.isPending(requestId)) return;
     // The withdrawal must not overtake the request it withdraws.
     const withdrawal = sent.then(() =>
-      resumeHookStep(owner.inbox, { control, from, kind: "withdraw", replyTo: requestId }),
+      owner.send({ control, from, kind: "withdraw", replyTo: requestId }),
     );
     withdrawal.catch((error: unknown) => asks.fail(requestId, error));
   };

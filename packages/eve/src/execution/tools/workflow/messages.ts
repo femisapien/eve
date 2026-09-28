@@ -1,4 +1,5 @@
 import type { SubagentAuthorizationEventHookPayload } from "#channel/types.js";
+import type { AgentSessionAddress } from "#execution/agent-sessions/steps.js";
 import type {
   AgentInvocationRequest,
   AgentSettlementRequest,
@@ -99,16 +100,10 @@ export interface WorkflowToolRunWithdrawMessage {
   readonly replyTo: string;
 }
 
-/** A session the run opened with `ctx.agent`, which the session announces as `agent.started`. */
-export interface StartedAgentSession {
-  readonly name: string;
-  readonly remote?: { readonly resolverId?: string; readonly url: string };
-  readonly sessionId: string;
-}
-
+/** The run opened a session with `ctx.agent`, which its session announces as `agent.started`. */
 export interface WorkflowToolRunAgentStartedMessage {
   readonly from: WorkflowToolRunRef;
-  readonly session: StartedAgentSession;
+  readonly session: AgentSessionAddress;
 }
 
 export type WorkflowToolRunMessage =

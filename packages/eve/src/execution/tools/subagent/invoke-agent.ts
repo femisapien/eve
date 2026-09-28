@@ -6,7 +6,6 @@ import {
   type AgentSessionRequest,
 } from "#execution/agent-sessions/requests.js";
 import { readWorkflowToolRunOwner, readWorkflowToolRunRef } from "#execution/tools/workflow/ask.js";
-import { resumeHookStep } from "#execution/tools/workflow/resume-hook-step.js";
 import type { RuntimeSubagentChildResult, RuntimeSubagentResult } from "#shared/action-types.js";
 import type { JsonValue } from "#shared/json.js";
 import type { JsonObject } from "#shared/json.js";
@@ -60,7 +59,7 @@ export async function invokeAgent(
   const replies = createHook<AgentInvocationReply>();
   const { invocationId } = options;
   try {
-    await resumeHookStep(owner.inbox, {
+    await owner.send({
       kind: "request",
       from: run,
       replyTo: replies.token,
@@ -79,7 +78,7 @@ export async function invokeAgent(
         );
         if (result !== undefined) {
           if (result.origin === "child") {
-            await resumeHookStep(owner.inbox, {
+            await owner.send({
               kind: "request",
               from: run,
               replyTo: replies.token,
@@ -105,7 +104,7 @@ export async function invokeAgent(
       if (reply.kind === "agent-settled") continue;
       await forwardAgentSessionRequest({
         from: run,
-        inbox: owner.inbox,
+        owner,
         replyTo: replies.token,
         request: reply,
       });

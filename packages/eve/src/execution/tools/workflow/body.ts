@@ -2,20 +2,18 @@ import { getWorkflowMetadata } from "#compiled/@workflow/core/index.js";
 
 import type { SessionContext } from "#context/session-context.js";
 import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
-import type { AgentSessions } from "#execution/agent-sessions/session.js";
-import type { WorkflowToolContext } from "#tools/workflow-definition.js";
+import { createAgentSessions } from "#execution/agent-sessions/session.js";
+import type { AgentSession, WorkflowToolContext } from "#tools/workflow-definition.js";
 import {
   ask,
   attachWorkflowToolRunContext,
   type WorkflowToolRunAsks,
 } from "#execution/tools/workflow/ask.js";
-import {
-  type WorkflowToolRunOutcome,
-  type WorkflowToolRunOwner,
-  type WorkflowToolRunRef,
-  type WorkflowToolRunReport,
+import type {
+  WorkflowToolRunOutcome,
+  WorkflowToolRunRef,
 } from "#execution/tools/workflow/messages.js";
-import { resumeHookStep } from "#execution/tools/workflow/resume-hook-step.js";
+import type { WorkflowToolRunInbox } from "#execution/tools/workflow/owner.js";
 import { normalizeSerializableError } from "#execution/workflow-errors.js";
 import { readRegisteredWorkflow } from "#execution/workflow-registry.js";
 import type { JsonObject, JsonValue } from "#shared/json.js";
@@ -39,24 +37,20 @@ export interface WorkflowBodyDefinition {
 export interface WorkflowBodyInput extends WorkflowBodyDefinition {
   /** The run's control hook, which the session answers the body's questions on. */
   readonly hookToken: string;
-  readonly owner: WorkflowToolRunOwner;
+  readonly owner: WorkflowToolRunInbox;
 }
 
-export interface WorkflowBodyResult {
-  readonly outcome: WorkflowToolRunOutcome;
-  /** Progress reports the body sent; the run relays each before the outcome. */
-  readonly reportCount: number;
-}
-
-/**
- * What the run owns and lends its body: the call's signals, which commands on
- * the run's control hook abort, and the `ctx.agent` sessions the run ends when
- * it finishes.
- */
+/** The call's signals, which commands on the run's control hook abort. */
 export interface WorkflowBodyRun {
   readonly abortSignal: AbortSignal;
-  readonly agentSessions: AgentSessions;
   readonly interruptSignal: AbortSignal;
+}
+
+/** A body the run started. */
+export interface StartedWorkflowBody {
+  /** Releases what the body opened, such as its `ctx.agent` sessions, once the run ends. */
+  close(): Promise<void>;
+  readonly outcome: Promise<WorkflowToolRunOutcome>;
 }
 
 type WorkflowToolExecute = (
@@ -64,25 +58,34 @@ type WorkflowToolExecute = (
   ctx: WorkflowToolContext,
 ) => Promise<JsonValue> | AsyncIterable<JsonValue>;
 
-/** Executes one registered workflow body and reports progress to its owner. */
-export async function executeWorkflowBody(
+/** Starts one registered workflow body, which reports progress to its owner. */
+export function startWorkflowBody(
   input: WorkflowBodyInput & { readonly runId?: string },
   run: WorkflowBodyRun,
   asks: WorkflowToolRunAsks,
-): Promise<WorkflowBodyResult> {
-  const signal = run.abortSignal;
-  const from = createWorkflowBodyRef(input);
-  const ctx = createWorkflowBodyContext(input, run);
-  attachWorkflowToolRunContext(ctx, {
+): StartedWorkflowBody {
+  const runContext = {
+    agentContext: input.agentContext,
     asks,
-    // A caller that can't reach a person resolves `ctx.ask()` as `unavailable`.
-    canRequestInput: input.agentContext.capabilities?.requestInput === true,
     control: input.hookToken,
-    from,
+    from: createWorkflowBodyRef(input),
     owner: input.owner,
-  });
-  let reportCount = 0;
+  };
+  const agentSessions = createAgentSessions(runContext);
+  const ctx = createWorkflowBodyContext(input, run, agentSessions.open);
+  attachWorkflowToolRunContext(ctx, runContext);
+  return {
+    close: agentSessions.close,
+    outcome: executeWorkflowBody(input, ctx, runContext.from),
+  };
+}
 
+async function executeWorkflowBody(
+  input: WorkflowBodyInput,
+  ctx: ToolContext & WorkflowToolContext,
+  from: WorkflowToolRunRef,
+): Promise<WorkflowToolRunOutcome> {
+  const signal = ctx.abortSignal;
   try {
     const execute = resolveWorkflowToolExecute(input);
     const result = execute(input.executeInput ?? input.input, ctx);
@@ -95,26 +98,21 @@ export async function executeWorkflowBody(
       let next = await iterator.next();
       while (next.done !== true) {
         last = next.value;
-        const report: WorkflowToolRunReport = { from, update: next.value };
-        await resumeHookStep(input.owner.inbox, { kind: "report", ...report });
-        reportCount += 1;
+        await input.owner.send({ from, kind: "report", update: next.value });
         next = await iterator.next();
       }
       output = (next.value as JsonValue | undefined) ?? last ?? null;
     }
-    return { outcome: { output, status: "completed" }, reportCount };
+    return { output, status: "completed" };
   } catch (error) {
     if (signal.aborted) {
       return {
-        outcome: {
-          reason:
-            signal.reason instanceof Error ? signal.reason.message : String(signal.reason ?? ""),
-          status: "cancelled",
-        },
-        reportCount,
+        reason:
+          signal.reason instanceof Error ? signal.reason.message : String(signal.reason ?? ""),
+        status: "cancelled",
       };
     }
-    return { outcome: { error: normalizeSerializableError(error), status: "failed" }, reportCount };
+    return { error: normalizeSerializableError(error), status: "failed" };
   }
 }
 
@@ -145,6 +143,7 @@ function resolveWorkflowToolExecute(input: WorkflowBodyInput): WorkflowToolExecu
 function createWorkflowBodyContext(
   input: WorkflowBodyInput,
   run: WorkflowBodyRun,
+  agent: (name: string) => AgentSession,
 ): ToolContext & WorkflowToolContext {
   const unavailable = (member: string, hint: string): never => {
     throw new Error(
@@ -152,7 +151,7 @@ function createWorkflowBodyContext(
     );
   };
   const ctx: ToolContext & WorkflowToolContext = {
-    agent: (name) => run.agentSessions.open(name),
+    agent,
     agents: Object.freeze(
       Object.fromEntries(
         Object.entries(input.agents ?? {}).map(([name, metadata]) => [

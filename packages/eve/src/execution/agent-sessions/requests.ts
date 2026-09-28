@@ -7,7 +7,7 @@ import {
   sessionInboxHookToken,
 } from "#execution/session-inbox/address.js";
 import type { WorkflowToolRunRef } from "#execution/tools/workflow/messages.js";
-import { resumeHookStep } from "#execution/tools/workflow/resume-hook-step.js";
+import type { WorkflowToolRunInbox } from "#execution/tools/workflow/owner.js";
 
 /** A child's question or sign-in, which only a person at the root can answer. */
 export type AgentSessionRequest =
@@ -21,14 +21,13 @@ export type AgentSessionRequest =
  */
 export async function forwardAgentSessionRequest(input: {
   readonly from: WorkflowToolRunRef;
-  /** The run's inbox, which relays body messages to its session. */
-  readonly inbox: string;
+  readonly owner: WorkflowToolRunInbox;
   readonly replyTo: string;
   readonly request: AgentSessionRequest;
 }): Promise<void> {
   const { from, request } = input;
   if (request.kind === "subagent-authorization-event") {
-    await resumeHookStep(input.inbox, {
+    await input.owner.send({
       from,
       kind: "request",
       replyTo: input.replyTo,
@@ -36,7 +35,7 @@ export async function forwardAgentSessionRequest(input: {
     });
     return;
   }
-  await resumeHookStep(input.inbox, {
+  await input.owner.send({
     from,
     kind: "request",
     replyTo: childAnswerToken(request),

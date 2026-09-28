@@ -1,7 +1,6 @@
 import { createHook, type Hook } from "#compiled/@workflow/core/index.js";
 
 import type { RuntimeActionResultHookPayload } from "#channel/types.js";
-import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
 import {
   forwardAgentSessionRequest,
   type AgentSessionRequest,
@@ -15,11 +14,7 @@ import {
   type AgentSessionMessage,
 } from "#execution/agent-sessions/steps.js";
 import { disposeHook } from "#execution/hook-ownership.js";
-import type {
-  StartedAgentSession,
-  WorkflowToolRunRef,
-} from "#execution/tools/workflow/messages.js";
-import { resumeHookStep } from "#execution/tools/workflow/resume-hook-step.js";
+import type { WorkflowToolRunContext } from "#execution/tools/workflow/ask.js";
 import type { RuntimeSubagentResult } from "#shared/action-types.js";
 import { serializeOutputSchema } from "#tools/schema-emission.js";
 import type {
@@ -29,14 +24,6 @@ import type {
   AgentSession,
 } from "#tools/workflow-definition.js";
 
-/** What a run's sessions need from the run that owns them. */
-export interface AgentSessionOwner {
-  readonly context: AgentSessionContext;
-  readonly from: WorkflowToolRunRef;
-  /** The run's inbox, which relays questions and `agent.started` to its session. */
-  readonly inbox: string;
-}
-
 type AgentTurnReply = AgentSessionRequest | RuntimeActionResultHookPayload;
 
 type AgentTurnEnd =
@@ -44,50 +31,30 @@ type AgentTurnEnd =
   | { readonly kind: "failed"; readonly error: unknown };
 
 /**
- * The sessions one workflow run opens with `ctx.agent`. A handle's position in
- * the run names it, so replay reaches the same session, and every session the
- * run opened ends when the run finishes.
+ * Opens `ctx.agent` sessions for a workflow run. A handle's position in the
+ * run names its session, so replay reaches the same one, and `close` ends
+ * every session the run opened, cancelling any turn still running.
  */
-export class AgentSessions {
-  readonly #owner: AgentSessionOwner;
-  readonly #opened: AgentSessionAddress[] = [];
-  #handles = 0;
-  #announcements = 0;
-
-  constructor(owner: AgentSessionOwner) {
-    this.#owner = owner;
-  }
-
-  /** `agent.started` messages sent to the run's inbox, which the run relays before its outcome. */
-  get announcements(): number {
-    return this.#announcements;
-  }
-
-  open(name: string): AgentSession {
-    if (typeof name !== "string" || name.trim() === "") {
-      throw new TypeError("ctx.agent() requires a non-empty agent name.");
-    }
-    const key = `${this.#owner.from.runId}:${String(this.#handles)}`;
-    this.#handles += 1;
-    return new RunAgentSession({ key, name, owner: this.#owner, sessions: this });
-  }
-
-  /** Ends every session the run opened, cancelling any turn still running. */
-  async end(): Promise<void> {
-    if (this.#opened.length === 0) return;
-    await endAgentSessionsStep({ context: this.#owner.context, sessions: this.#opened });
-  }
-
-  /** Records an opened session and has the run's session publish `agent.started`. */
-  async started(address: AgentSessionAddress): Promise<void> {
-    this.#opened.push(address);
-    await resumeHookStep(this.#owner.inbox, {
-      from: this.#owner.from,
-      kind: "agent-started",
-      session: toStartedAgentSession(address),
-    });
-    this.#announcements += 1;
-  }
+export function createAgentSessions(run: WorkflowToolRunContext): {
+  readonly close: () => Promise<void>;
+  readonly open: (name: string) => AgentSession;
+} {
+  const opened: AgentSessionAddress[] = [];
+  let handles = 0;
+  return {
+    open: (name) => {
+      if (typeof name !== "string" || name.trim() === "") {
+        throw new TypeError("ctx.agent() requires a non-empty agent name.");
+      }
+      const key = `${run.from.runId}:${String(handles)}`;
+      handles += 1;
+      return new RunAgentSession({ key, name, opened, run });
+    },
+    close: async () => {
+      if (opened.length === 0) return;
+      await endAgentSessionsStep({ context: run.agentContext, sessions: opened });
+    },
+  };
 }
 
 /** One turn of a session: its result and questions arrive on the turn's own hook. */
@@ -99,21 +66,22 @@ interface AgentTurn {
 class RunAgentSession implements AgentSession {
   readonly #key: string;
   readonly #name: string;
-  readonly #owner: AgentSessionOwner;
-  readonly #sessions: AgentSessions;
+  /** Every session the run opened, which it ends when it finishes. */
+  readonly #opened: AgentSessionAddress[];
+  readonly #run: WorkflowToolRunContext;
   #address: Promise<AgentSessionAddress> | undefined;
   #turn: AgentTurn | undefined;
 
   constructor(input: {
     readonly key: string;
     readonly name: string;
-    readonly owner: AgentSessionOwner;
-    readonly sessions: AgentSessions;
+    readonly opened: AgentSessionAddress[];
+    readonly run: WorkflowToolRunContext;
   }) {
     this.#key = input.key;
     this.#name = input.name;
-    this.#owner = input.owner;
-    this.#sessions = input.sessions;
+    this.#opened = input.opened;
+    this.#run = input.run;
   }
 
   async send<TOutput = unknown>(
@@ -128,7 +96,7 @@ class RunAgentSession implements AgentSession {
     const turn = running ?? this.#startTurn(outputSchema !== undefined);
     try {
       await this.#deliver({
-        context: this.#owner.context,
+        context: this.#run.agentContext,
         message,
         outputSchema,
         replyTo: turn.hook.token,
@@ -158,8 +126,8 @@ class RunAgentSession implements AgentSession {
       for await (const reply of hook) {
         if (reply.kind !== "runtime-action-result") {
           await forwardAgentSessionRequest({
-            from: this.#owner.from,
-            inbox: this.#owner.inbox,
+            from: this.#run.from,
+            owner: this.#run.owner,
             replyTo: hook.token,
             request: reply,
           });
@@ -205,7 +173,8 @@ class RunAgentSession implements AgentSession {
   async #open(message: AgentSessionMessage): Promise<AgentSessionAddress> {
     try {
       const address = await openAgentSessionStep({ ...message, key: this.#key, name: this.#name });
-      await this.#sessions.started(address);
+      this.#opened.push(address);
+      await this.#run.owner.send({ from: this.#run.from, kind: "agent-started", session: address });
       return address;
     } catch (error) {
       this.#address = undefined;
@@ -218,7 +187,7 @@ class RunAgentSession implements AgentSession {
     const cancel = (): void => {
       if (this.#turn !== turn || this.#address === undefined) return;
       void this.#address
-        .then((address) => cancelAgentSessionTurnStep({ address, context: this.#owner.context }))
+        .then((address) => cancelAgentSessionTurnStep({ address, context: this.#run.agentContext }))
         .catch(() => {});
     };
     if (signal.aborted) {
@@ -254,13 +223,4 @@ function toAgentMessageResult(
       return { data: undefined, message: typeof output === "string" ? output : undefined, status };
     }
   }
-}
-
-function toStartedAgentSession(address: AgentSessionAddress): StartedAgentSession {
-  if (address.kind === "local") {
-    return { name: address.name, sessionId: address.sessionId };
-  }
-  const remote: { resolverId?: string; url: string } = { url: address.url };
-  if (address.resolverId !== undefined) remote.resolverId = address.resolverId;
-  return { name: address.name, remote, sessionId: address.sessionId };
 }

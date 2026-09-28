@@ -1,19 +1,13 @@
 import { WORKFLOW_CANCELLATION_CLEANUP_MS } from "#execution/tools/workflow/cancellation-policy.js";
 import { sleep } from "#compiled/@workflow/core/index.js";
 import { normalizeSerializableError } from "#execution/workflow-errors.js";
-import {
-  createWorkflowBodyRef,
-  executeWorkflowBody,
-  type WorkflowBodyResult,
-} from "#execution/tools/workflow/body.js";
+import { createWorkflowBodyRef, startWorkflowBody } from "#execution/tools/workflow/body.js";
 import { WorkflowToolRunAsks } from "#execution/tools/workflow/ask.js";
 import {
   isWorkflowToolRunAskDecision,
   isWorkflowToolRunControlMessage,
-  type WorkflowToolRunMessage,
   type WorkflowToolRunOutcome,
 } from "#execution/tools/workflow/messages.js";
-import { AgentSessions } from "#execution/agent-sessions/session.js";
 import {
   createChannelReader,
   raceChannelReads,
@@ -34,29 +28,23 @@ export async function workflowToolRunWorkflow(input: WorkflowToolRunInput): Prom
   const owner = createBlockingWorkflow(input, asks);
   const { signal } = owner;
   const inbox = openWorkflowToolRunOwnerInbox();
-  const agentSessions = new AgentSessions({
-    context: input.agentContext,
-    from: createWorkflowBodyRef(input),
-    inbox: inbox.owner.inbox,
-  });
-  const body: ChannelReader<"body", WorkflowBodyResult> = createChannelReader(
+  const started = startWorkflowBody(
+    { ...input, owner: inbox.owner },
+    { abortSignal: signal, interruptSignal: owner.interruptSignal },
+    asks,
+  );
+  const body: ChannelReader<"body", WorkflowToolRunOutcome> = createChannelReader(
     "body",
-    awaitBodyResult(
-      executeWorkflowBody(
-        { ...input, owner: inbox.owner },
-        { abortSignal: signal, agentSessions, interruptSignal: owner.interruptSignal },
-        asks,
-      ),
-    ),
+    awaitBodyOutcome(started.outcome),
   );
   let commandsOpen = true;
   let relayedMessages = 0;
-  let bodyResult: WorkflowBodyResult | undefined;
+  let bodyOutcome: WorkflowToolRunOutcome | undefined;
   let cleanupDeadline: Promise<"cancel"> | undefined;
   let outcome: WorkflowToolRunOutcome | undefined;
 
-  // End the agent sessions on every exit: a relay throws once the calling
-  // session's inbox is gone, which is exactly when its agents must stop.
+  // Close the body on every exit: a relay throws once the calling session's
+  // inbox is gone, which is exactly when what the body opened must stop.
   try {
     while (true) {
       if (signal.aborted) {
@@ -64,25 +52,27 @@ export async function workflowToolRunWorkflow(input: WorkflowToolRunInput): Prom
       }
       if (
         // Wait for the body to produce its final outcome.
-        bodyResult !== undefined &&
-        // Its reports and `agent.started` announcements must be relayed before settlement.
-        relayedMessages >= bodyResult.reportCount + agentSessions.announcements &&
+        bodyOutcome !== undefined &&
+        // Everything the body sent must be relayed before settlement.
+        relayedMessages >= inbox.owner.sent &&
         // Handle buffered commands, especially cancellation, before publishing the outcome.
         owner.commands.landed.length === 0 &&
         // Propagate a command-read failure instead of hiding it behind completion.
         owner.commands.failure === undefined
       ) {
-        outcome = bodyResult.outcome;
+        outcome = bodyOutcome;
         break;
       }
       let read;
       try {
         const readers: Array<
-          typeof owner.commands | typeof inbox.reader | ChannelReader<"body", WorkflowBodyResult>
+          | typeof owner.commands
+          | typeof inbox.reader
+          | ChannelReader<"body", WorkflowToolRunOutcome>
         > = [];
         if (commandsOpen) readers.push(owner.commands);
         readers.push(inbox.reader);
-        if (bodyResult === undefined) readers.push(body);
+        if (bodyOutcome === undefined) readers.push(body);
         read = await raceChannelReads(readers, cleanupDeadline);
       } catch (error) {
         if (owner.commands.failure !== undefined) throw error;
@@ -107,16 +97,16 @@ export async function workflowToolRunWorkflow(input: WorkflowToolRunInput): Prom
         continue;
       }
       if (read.channel === "body") {
-        bodyResult = read.next.value;
+        bodyOutcome = read.next.value;
         continue;
       }
       const message = read.next.value;
       if (message.kind === "outcome") continue;
-      if (isRelayedBeforeOutcome(message)) relayedMessages += 1;
+      relayedMessages += 1;
       await owner.handleMessage(message);
     }
   } finally {
-    await agentSessions.end();
+    await started.close();
   }
   // Cleanup cannot undo cancellation, even when the body returns success.
   if (signal.aborted) {
@@ -152,13 +142,8 @@ function applyControlMessage(
   owner.handleCommand(message);
 }
 
-/** Messages the run must relay before its outcome, so none arrives after the call settles. */
-function isRelayedBeforeOutcome(message: WorkflowToolRunMessage): boolean {
-  return message.kind === "report" || message.kind === "agent-started";
-}
-
-async function* awaitBodyResult(
-  result: Promise<WorkflowBodyResult>,
-): AsyncGenerator<WorkflowBodyResult> {
-  yield await result;
+async function* awaitBodyOutcome(
+  outcome: Promise<WorkflowToolRunOutcome>,
+): AsyncGenerator<WorkflowToolRunOutcome> {
+  yield await outcome;
 }

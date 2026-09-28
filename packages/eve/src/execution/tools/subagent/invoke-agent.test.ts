@@ -6,6 +6,8 @@ import {
   WorkflowToolRunAsks,
 } from "#execution/tools/workflow/ask.js";
 import type { WorkflowToolRunRef } from "#execution/tools/workflow/messages.js";
+import type { WorkflowToolRunInbox } from "#execution/tools/workflow/owner.js";
+import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
 import {
   invokeAgent,
   type AgentInvocationReply,
@@ -31,6 +33,17 @@ vi.mock("#execution/tools/workflow/resume-hook-step.js", () => ({
   resumeHookStep: (...args: unknown[]) => mocks.resumeHook(...args),
 }));
 beforeEach(() => vi.resetAllMocks());
+
+const agentContext = {} as AgentSessionContext;
+
+function runOwner(inbox: string): WorkflowToolRunInbox {
+  return {
+    sent: 0,
+    send: async (message) => {
+      await mocks.resumeHook(inbox, message);
+    },
+  };
+}
 
 function invokeResearch(
   ctx: ToolContext,
@@ -88,9 +101,8 @@ describe("workflow agent invocation routing", () => {
         toolName: "research",
         turnId: "turn-1",
       },
-      owner: {
-        inbox: "owner-inbox",
-      },
+      agentContext,
+      owner: runOwner("owner-inbox"),
     });
 
     const result = invokeResearch(ctx, { message: "Find it" });
@@ -147,9 +159,8 @@ describe("workflow agent invocation routing", () => {
       asks: new WorkflowToolRunAsks("run-1"),
       control: "control",
       from,
-      owner: {
-        inbox: "owner-inbox",
-      },
+      agentContext,
+      owner: runOwner("owner-inbox"),
     });
 
     const outputSchema = {
@@ -220,9 +231,8 @@ describe("workflow agent invocation routing", () => {
         toolName: "research",
         turnId: "turn-1",
       },
-      owner: {
-        inbox: "owner-inbox",
-      },
+      agentContext,
+      owner: runOwner("owner-inbox"),
     });
 
     await expect(invokeResearch(ctx, { message: "Find it" })).resolves.toBe("inline");
@@ -275,7 +285,8 @@ describe("workflow agent invocation routing", () => {
           toolName: "research",
           turnId: "turn-1",
         },
-        owner: { inbox: "owner" },
+        agentContext,
+        owner: runOwner("owner"),
       });
       const returned = vi.fn();
       const output = invokeResearch(ctx, { message: "Find it" }).then(
@@ -341,9 +352,8 @@ describe("workflow agent invocation routing", () => {
         toolName: "research",
         turnId: "turn-1",
       },
-      owner: {
-        inbox: "owner-inbox",
-      },
+      agentContext,
+      owner: runOwner("owner-inbox"),
     });
 
     await expect(invokeResearch(ctx, { message: "Find it" })).rejects.toEqual(failure.output);
@@ -427,9 +437,8 @@ describe("workflow agent invocation routing", () => {
         asks: new WorkflowToolRunAsks("run-1"),
         control: "control",
         from,
-        owner: {
-          inbox: "owner-inbox",
-        },
+        agentContext,
+        owner: runOwner("owner-inbox"),
       });
 
       await expect(invokeResearch(ctx, { message: "Find it" })).resolves.toBe("done");
@@ -513,9 +522,8 @@ describe("workflow agent invocation routing", () => {
       asks: new WorkflowToolRunAsks("run-1"),
       control: "control",
       from,
-      owner: {
-        inbox: "owner-inbox",
-      },
+      agentContext,
+      owner: runOwner("owner-inbox"),
     });
 
     await expect(invokeResearch(ctx, { message: "Find it" })).resolves.toBe("done");

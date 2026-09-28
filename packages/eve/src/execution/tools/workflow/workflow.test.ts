@@ -7,13 +7,12 @@ import type {
 import { WorkflowToolRunAsks } from "#execution/tools/workflow/ask.js";
 import { workflowToolRunWorkflow } from "#execution/tools/workflow/workflow.js";
 import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
-import { AgentSessions } from "#execution/agent-sessions/session.js";
 
 const mocks = vi.hoisted(() => ({
   sleep: vi.fn(),
   control: vi.fn(),
   deliver: vi.fn(),
-  executeWorkflowBody: vi.fn(),
+  runBody: vi.fn(),
   openWorkflowToolRunOwnerInbox: vi.fn(),
 }));
 
@@ -40,7 +39,10 @@ vi.mock("#execution/tools/workflow/body.js", () => ({
     toolName: input.toolName,
     turnId: input.session.turn.id,
   }),
-  executeWorkflowBody: mocks.executeWorkflowBody,
+  startWorkflowBody: (...args: unknown[]) => ({
+    close: async () => {},
+    outcome: mocks.runBody(...args),
+  }),
 }));
 vi.mock("#execution/tools/workflow/owner.js", () => ({
   openWorkflowToolRunOwnerInbox: mocks.openWorkflowToolRunOwnerInbox,
@@ -67,13 +69,11 @@ const input = {
 beforeEach(() => {
   vi.resetAllMocks();
   setControl(new AbortController());
-  mocks.executeWorkflowBody.mockResolvedValue({
-    outcome: { output: "done", status: "completed" },
-    reportCount: 1,
-  });
+  mocks.runBody.mockResolvedValue({ output: "done", status: "completed" });
 });
 
 it("emits every persisted report before the terminal outcome", async () => {
+  const invocationOwner = { send: vi.fn(), sent: 1 };
   const report = {
     from: {
       callId: "call-1",
@@ -88,7 +88,7 @@ it("emits every persisted report before the terminal outcome", async () => {
     update: "halfway",
   };
   mocks.openWorkflowToolRunOwnerInbox.mockReturnValue({
-    owner: { inbox: "invocation-owner" },
+    owner: invocationOwner,
     reader: createChannelReader(
       "workflow",
       (async function* () {
@@ -111,13 +111,9 @@ it("emits every persisted report before the terminal outcome", async () => {
     },
     { ifPresent: false },
   );
-  expect(mocks.executeWorkflowBody).toHaveBeenCalledWith(
-    expect.objectContaining({ owner: { inbox: "invocation-owner" } }),
-    {
-      abortSignal: expect.any(AbortSignal),
-      agentSessions: expect.any(AgentSessions),
-      interruptSignal: expect.any(AbortSignal),
-    },
+  expect(mocks.runBody).toHaveBeenCalledWith(
+    expect.objectContaining({ owner: invocationOwner }),
+    { abortSignal: expect.any(AbortSignal), interruptSignal: expect.any(AbortSignal) },
     expect.any(WorkflowToolRunAsks),
   );
 });
@@ -133,26 +129,22 @@ it.each(["completed", "failed", "cancelled", "throw", "blocked"] as const)(
       await new Promise<void>(() => {});
     });
     mocks.openWorkflowToolRunOwnerInbox.mockReturnValue({
-      owner: { inbox: "owner" },
+      owner: { send: vi.fn(), sent: 0 },
       reader: createChannelReader("workflow", {
         [Symbol.asyncIterator]: () => ({
           next: () => new Promise<IteratorResult<never>>(() => {}),
         }),
       }),
     });
-    mocks.executeWorkflowBody.mockImplementation(async () => {
+    mocks.runBody.mockImplementation(async () => {
       started.resolve();
       await release.promise;
       if (status === "throw") throw new Error("cleanup failed");
-      return {
-        reportCount: 0,
-        outcome:
-          status === "failed"
-            ? { status, error: "failed" }
-            : status === "cancelled"
-              ? { status, reason: "body cancelled" }
-              : { status: "completed", output: "late success" },
-      };
+      return status === "failed"
+        ? { status, error: "failed" }
+        : status === "cancelled"
+          ? { status, reason: "body cancelled" }
+          : { status: "completed", output: "late success" };
     });
     setControl(controller);
     const completion = workflowToolRunWorkflow(input);
@@ -190,7 +182,7 @@ it("preserves the pending inbox read across cancellation and drains the report b
   };
   mocks.sleep.mockReturnValue(new Promise<void>(() => {}));
   mocks.openWorkflowToolRunOwnerInbox.mockReturnValue({
-    owner: { inbox: "owner" },
+    owner: { send: vi.fn(), sent: 1 },
     reader: createChannelReader("workflow", { [Symbol.asyncIterator]: () => ({ next }) }),
   });
   setControl(controller);
@@ -276,7 +268,7 @@ it("applies cancellation buffered during the last report delivery before publish
   });
   mocks.sleep.mockReturnValue(new Promise<void>(() => {}));
   mocks.openWorkflowToolRunOwnerInbox.mockReturnValue({
-    owner: { inbox: "owner" },
+    owner: { send: vi.fn(), sent: 1 },
     reader: createChannelReader(
       "workflow",
       (async function* () {
@@ -306,12 +298,9 @@ it("keeps waiting for the body after the control hook closes", async () => {
     handleCommand: vi.fn(),
     handleMessage: mocks.deliver,
   });
-  mocks.executeWorkflowBody.mockResolvedValue({
-    reportCount: 0,
-    outcome: { status: "completed", output: "done" },
-  });
+  mocks.runBody.mockResolvedValue({ status: "completed", output: "done" });
   mocks.openWorkflowToolRunOwnerInbox.mockReturnValue({
-    owner: { inbox: "owner" },
+    owner: { send: vi.fn(), sent: 0 },
     reader: createChannelReader("workflow", {
       [Symbol.asyncIterator]: () => ({
         next: () => new Promise<IteratorResult<WorkflowToolRunMessage>>(() => {}),
@@ -328,12 +317,9 @@ it("keeps waiting for the body after the control hook closes", async () => {
 });
 
 it("propagates terminal delivery failure instead of replacing the invocation outcome", async () => {
-  mocks.executeWorkflowBody.mockResolvedValue({
-    reportCount: 0,
-    outcome: { status: "completed", output: "done" },
-  });
+  mocks.runBody.mockResolvedValue({ status: "completed", output: "done" });
   mocks.openWorkflowToolRunOwnerInbox.mockReturnValue({
-    owner: { inbox: "owner" },
+    owner: { send: vi.fn(), sent: 0 },
     reader: createChannelReader("workflow", {
       [Symbol.asyncIterator]: () => ({
         next: () => new Promise<IteratorResult<WorkflowToolRunMessage>>(() => {}),

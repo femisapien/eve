@@ -46,7 +46,13 @@ export async function emitAgentStartedStep(
     callId: from.callId,
     name: session.name,
     parentSessionId: input.sessionState.sessionId,
-    remote: session.remote,
+    remote:
+      session.kind === "remote"
+        ? {
+            url: session.url,
+            ...(session.resolverId !== undefined && { resolverId: session.resolverId }),
+          }
+        : undefined,
     sessionId: session.sessionId,
     turnId: from.turnId,
   });
