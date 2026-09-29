@@ -17,7 +17,8 @@ agent's tools, including connection tools.
 - `codemode: true` makes a tool callable only from `run_js` programs. Authored tools default to
   `false` and connection tools to `true`; no tool is callable both ways.
 - Nested calls go through the ordinary harness tool path, so approvals, sign-in, validation, and
-  events behave as they do for direct calls. Replay is per nested call.
+  events behave as they do for direct calls. Replay is per batch of nested calls, as it is per model
+  step for direct calls.
 - The model's tool list and the `run_js` description stay fixed for the session, so discovery never
   invalidates the prompt cache.
 
@@ -244,17 +245,23 @@ each follows.
   proposes for direct connection calls. It then retries with the person's `inputResponses`.
   `requestState` stays in the call's durable record, where neither the program nor the model sees
   it.
-- **Parallelism and cancellation.** Pending agent calls fan out, as they do today. Pending tool
-  calls run one at a time, in program order, which keeps replay deterministic and writes ordered.
-  Concurrent reads need a trusted read-only declaration: an authored flag on eve tools, published in
-  the capabilities channel's `AgentDescription` and trusted only for connections whose provider is
-  authenticated as an eve agent. MCP annotations stay untrusted. Cancelling the turn aborts the
-  in-flight call, and calls a program leaves un-awaited are cancelled when it returns.
+- **Parallelism and cancellation.** Calls the program makes together, for example under
+  `Promise.all`, park as one batch and resolve concurrently, within the in-flight limit. This covers
+  tool calls and agent calls alike, as parallel tool calls from one model step already run together.
+  Calls the program awaits one after another arrive in separate batches and stay sequential. Each
+  call's id is assigned when the program makes it, and results are recorded by that id, so replay
+  does not depend on completion order. Cancelling the turn aborts the in-flight calls, and calls a
+  program leaves un-awaited are cancelled when it returns.
 - **Execution budgets.** The existing bridge request limit (256) counts tool calls as well as agent
   calls, and `maxSubagents` still counts only agent calls. The time budget covers sandbox execution;
   waiting on a call parks instead of counting. Every remote connection call has a timeout. Recorded
-  values have a size cap whose error tells the program to return a smaller value or a reference. In
-  probes, calls kept running after a reported timeout, so a budget must stop calls, not only the
+  results count against the continuation budget (32 MiB by default, with at most 4 MiB per result),
+  because the program resumes from a continuation that carries every earlier result. Before a result
+  is recorded, it is checked against the remaining budget. A result that does not fit resolves the
+  call as failed, and the failure is what is recorded, so replay never runs the call again. The
+  error says that the call completed, that its result was not kept, and how many bytes it needed,
+  and suggests requesting less or returning a handle. The `run_js` description states both budgets.
+  In probes, calls kept running after a reported timeout, so a budget must stop calls, not only the
   program.
 - **State and context lifetime.** A fresh context per program, with no state carried across
   programs. Within one program, progress survives restarts through the signed continuation. No
@@ -273,6 +280,14 @@ each follows.
   field, the constraint, and a preview. There is no raw escape hatch; a tool that cannot promise a
   shape omits `outputSchema`. In probes, a declared string arrived as `123` and a program skipped a
   refund without any error.
+- **Who sees nested results.** Keeping data from the model means keeping it out of the model's
+  context, not out of the session. Nested calls are ordinary actions: hooks and channels receive
+  `action.started` and `action.result` with full output, as they do when the same tool is called
+  directly, and trace content follows the channel's audience policy for each nested call. Code mode
+  therefore changes how many events a turn produces, not who can see a tool's output. Built-in
+  channels group nested actions under their `run_js` action by `parentCallId`, as one item with
+  progress and a call count; nested approvals still render individually, since a person answers
+  them. Suppressing nested events instead would break approvals, evals, and tracing.
 - **Output delivered to the model.** The program's JSON return value, up to a size cap, and a
   truncated result says that it was truncated. Tools with `toModelOutput` cannot be code mode tools,
   since a program could return the raw result and bypass the projection.
@@ -289,11 +304,12 @@ each follows.
 - **Continuation.** The program resumes from its signed continuation with recorded resolutions, as
   `workflow()` does today, across restarts. After a program fails, the model writes a new one.
 - **Repeated effects and compensation.** Nested calls get the same guarantee as direct calls. A
-  completed call is recorded before the program resumes, and replay returns the record. A call
-  interrupted mid-execution re-runs, so a non-idempotent tool needs the same idempotency or approval
-  it needs as a direct call. A connection call retried after `input_required` also re-runs on the
-  provider, which stores a sign-in's grant rather than the call. eve provides no compensation. A
-  whole-program replay unit repeated writes in 3 of 5 runs.
+  completed call is recorded before the program resumes, and replay returns the record, so the
+  replay unit is one batch rather than the whole program. A call interrupted mid-execution re-runs,
+  so a non-idempotent tool needs the same idempotency or approval it needs as a direct call. A
+  connection call retried after `input_required` also re-runs on the provider, which stores a
+  sign-in's grant rather than the call. eve provides no compensation. A whole-program replay unit
+  repeated writes in 3 of 5 runs.
 
 ### Operations
 
@@ -327,9 +343,12 @@ tests also cover `codemode` defaults and definition errors, signature rendering,
 rejection, output validation, and error mapping.
 
 Scenario tests extend the existing program-step coverage. A nested tool call parks and resumes. A
-process killed after a nested call completes resumes without re-running it. A nested call that needs
-approval is approved in one run and declined in another. A nested connection call that returns
-`input_required` parks the program and retries with the answer.
+process killed after a nested call completes resumes without re-running it. A batch of calls under
+`Promise.all` resolves concurrently, and replay maps each result to its call regardless of
+completion order. A result that exceeds the continuation budget fails the call once, and replay does
+not run it again. A nested call that needs approval is approved in one run and declined in another.
+A nested connection call that returns `input_required` parks the program and retries with the
+answer.
 
 Fixture evals cover a deep composition task and a single-call control, a connection tool found with
 `ctx.search` and called in the same program, sign-in in the middle of a program, an MCP tool without
@@ -344,12 +363,13 @@ from a program through an MCP connection.
 | H1  | Do gains require several dependent calls?                  | Task-shape suite with a single-call control; k ≥ 20                                                                                                    | Revise the conditions unless code mode loses on the control and wins on deep tasks                                      |
 | H2  | Which results need declared types?                         | The same tasks with no output schemas, schemas only on results the program branches on, and schemas everywhere                                         | Require types only where their absence measurably lowers correctness                                                    |
 | H3  | Which discovery pattern should eve use?                    | The client-side discovery benchmark with a third arm: materialized tools, dispatch, and in-program search, on the same cases, then at a larger catalog | Remove `connection_search` if in-program search matches or beats both on pass rate, latency, tokens, and cache hit rate |
-| H4  | Does per-call replay prevent duplicate writes?             | Kill the process mid-program on a task with writes                                                                                                     | Zero duplicates of completed calls at k ≥ 20                                                                            |
+| H4  | Does per-batch replay prevent duplicate writes?            | Kill the process mid-program on a task with writes                                                                                                     | Zero duplicates of completed calls at k ≥ 20                                                                            |
 | H5  | Does approval inside a program work end to end?            | A refund that needs approval: accept, decline, and replay                                                                                              | No write before approval, and none repeated after                                                                       |
 | H6  | Does the benefit hold across eve's model providers?        | The same suite across providers                                                                                                                        | The documented model-family list                                                                                        |
 | H7  | Does hiding intermediate results hurt exploratory answers? | Real-prompt suite with expected answers                                                                                                                | Keep exploratory tools direct if quality drops                                                                          |
 | H8  | Could a tool usefully be callable both ways?               | Exclusive exposure against both, on fitting and non-fitting tasks                                                                                      | Allow both only if the model picks correctly at an agreed rate                                                          |
 | H9  | Does the tool name matter?                                 | `run_js` against `execute` on the same suite, with `bash` present                                                                                      | Keep `run_js` unless `execute` lowers wrong-tool calls or syntax errors                                                 |
+| H10 | How does resume cost grow with program length?             | Programs of 1, 10, 50, and 200 calls, sequential and batched; wall time, workflow steps, and stored bytes                                              | Store continuation deltas instead of whole continuations if storage or latency grows faster than the number of calls    |
 
 Every eval of an agent with code mode tools reports programs per answer and the share of single-call
 programs, alongside success, tokens, cost, and latency.
@@ -362,8 +382,6 @@ programs, alongside success, tokens, cost, and latency.
 ## Open questions
 
 - Whether eve enforces the model-family list or only documents it.
-- Where the read-only flag lives on authored tools, and how a connection establishes that its
-  provider is an eve agent.
 - Whether `run_js` takes raw JavaScript through grammar-constrained tools where the provider
   supports them.
 - Whether console output reaches the model when a program fails.
