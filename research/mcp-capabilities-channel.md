@@ -19,7 +19,8 @@ halved median latency (15 s against 28 s), and used about a quarter of the token
 This plan covers the first phase of that work:
 
 1. **Core**: additions to surfaces eve already has, on `eve/client` and in route handlers.
-   `info()` returns the agent's tools and skills, split from deployment inspection.
+   `describe()` returns what the agent offers callers: its tools and skills, without deployment
+   details.
    `sessions.create({ capabilities: true })` creates a session that runs tools instead of turns.
    `session.invokeTool` runs one tool with the context it gets in a turn, inside the request and
    without parking. `session.readSkill` reads one skill file.
@@ -98,23 +99,23 @@ Two alternatives were considered and rejected:
 Almost everything the channel needs exists already, on the client (`eve/client`) or inside the
 framework. The changes extend those surfaces instead of adding a separate one:
 
-| Need                     | Remote, `eve/client`                           | In a route handler                                   |
-| ------------------------ | ---------------------------------------------- | ---------------------------------------------------- |
-| An agent's tools, skills | `client.info()`, mixed with deployment details | internal only (`readAgentInfoRouteResponse`)         |
-| Create an idle session   | `client.sessions.create()`                     | internal only; `attachSession(id)` for existing ones |
-| Session operations       | `ClientSession`: `send`, `stream`, `cancel`, … | `Session`: `send`, `respond`, `cancel`, …            |
-| Run one tool             | missing                                        | missing                                              |
-| Read one skill file      | missing                                        | missing                                              |
+| Need                     | Remote, `eve/client`                                 | In a route handler                                   |
+| ------------------------ | ---------------------------------------------------- | ---------------------------------------------------- |
+| An agent's tools, skills | only inside `client.info()`, with deployment details | internal only (`readAgentInfoRouteResponse`)         |
+| Create an idle session   | `client.sessions.create()`                           | internal only; `attachSession(id)` for existing ones |
+| Session operations       | `ClientSession`: `send`, `stream`, `cancel`, …       | `Session`: `send`, `respond`, `cancel`, …            |
+| Run one tool             | missing                                              | missing                                              |
+| Read one skill file      | missing                                              | missing                                              |
 
 The harness loop does not change. The work adds a tool execution scope that comes from a request
 instead of a turn.
 
-### 1. Agent metadata, split from deployment inspection
+### 1. `describe()`: what the agent offers callers
 
-`GET /eve/v1/info` mixes two things. One is metadata about the agent: its name, description,
-tools, and skills. The other is deployment inspection: `appRoot` and `agentRoot`, source paths,
-config, composition and discovery diagnostics, hooks, kernel effects, sandbox, mode, channels,
-memories, schedules, and connections. Their consumers differ too:
+`GET /eve/v1/info` is an inspection payload, the same view `eve info` prints for the local
+application. Alongside the agent's name, description, tools, and skills, it carries `appRoot` and
+`agentRoot`, source paths, config, composition and discovery diagnostics, hooks, kernel effects,
+sandbox, mode, channels, memories, schedules, and connections. Its consumers need that:
 
 | Consumer                                      | Reads                                          |
 | --------------------------------------------- | ---------------------------------------------- |
@@ -122,17 +123,16 @@ memories, schedules, and connections. Their consumers differ too:
 | eval targets                                  | the agent's name; `mode` and dev-route support |
 | dev TUI, dev-client probe, remote-agent setup | the whole inspection payload                   |
 
-Inspection details must never reach an MCP caller. So the payload splits:
+None of those details may reach an MCP caller, so the caller-facing view is a new, separate
+surface. `info()` and `/eve/v1/info` stay as they are:
 
-- **`info()` returns `AgentInfo`**, the agent's metadata, on `Client` and on route args. This is
-  what the channel publishes.
-- **Deployment inspection moves to its own surface**, for example `client.inspect()` at
-  `/eve/v1/inspect`. It keeps the route's current auth, which is Vercel OIDC outside
-  development. The dev TUI, setup, and eval targets move to it. This is a breaking change,
-  which pre-1.0 eve prefers to a compatibility shim.
+- **`describe()` returns `AgentDescription`**, on `Client` and on route args. This is what the
+  channel publishes.
+- **`info()` stays the inspection surface**, with its current auth, which is Vercel OIDC outside
+  development. Nothing that reads it moves.
 
 ```ts
-interface AgentInfo {
+interface AgentDescription {
   readonly name: string;
   readonly description?: string;
   readonly tools: readonly {
@@ -156,17 +156,38 @@ interface AgentInfo {
 ### 2. Capability sessions: `sessions.create({ capabilities: true })`
 
 Route args gain `sessions.create()`, the same operation clients already have as
-`client.sessions.create()`. With `capabilities: true`, it creates a capability session:
+`client.sessions.create()`. With `capabilities: true`, it creates a capability session. A
+capability session exists for identity and the sandbox. It is a real eve session, created
+without a message through the existing prewarm path, but it has no turns, no steps, and no
+authored state.
 
-- **A real eve session, created without a message** through the existing prewarm path. It is
-  owned by the principal that created it (`auth.current`, `auth.initiator`, and the forwarder, if
-  any). The sandbox idle timeout bounds one that is never used.
-- **Its sandbox starts on create.** A conversation prewarm parks before sandbox setup, and its
-  first turn does the rest. A capability session never runs a turn, so create does the setup the
-  first tool call would otherwise wait for.
-- **It runs tools, not turns.** `send` and `respond` are rejected on it.
-- **The id is server-issued**, as SEP-2567 recommends, instead of derived from a key the client
-  chooses.
+It holds:
+
+- **An owner**: the principal that created it (`auth.current`, `auth.initiator`, and the
+  forwarder, if any). Every call checks it.
+- **A sandbox**, named after the session and started on create. A conversation prewarm parks
+  before sandbox setup, and its first turn does the rest. A capability session never runs a turn,
+  so create does the setup the first tool call would otherwise wait for. The sandbox idle timeout
+  bounds a session that is never used.
+- **The tools, skills, and connections its owner resolves.** `session.started` resolvers run
+  once, at create, and their results hold for the session's lifetime.
+- **Framework-owned sign-in state**, such as a pending sign-in (open question 1).
+- **A server-issued id**, as SEP-2567 recommends, instead of a key the client chooses.
+
+It has none of these, and the channel documentation must say so:
+
+- **No turns and no steps.** No call is wrapped in a turn or a step. `turn.started` and
+  `step.started` never fire, so a tool or connection defined only on those events does not exist
+  in a capability session, and `ctx.session.turn` is absent.
+- **No authored session state.** `defineState` belongs to conversations, where step boundaries
+  give its updates a commit point. A capability session has no such point: `get()` returns the
+  declared initial value, and `update()` throws an error that names the tool. State that must
+  outlive a call lives in the sandbox, or behind a handle the tool returns, the pattern SEP-2567
+  recommends.
+- **No ordering between calls.** Calls may run in parallel, as MCP `tools/call` requests and a
+  model's parallel tool calls already can. Nothing serializes them.
+- **No model, instructions, history, or messages.** Its handle is its own type, without `send`,
+  `respond`, or `stream`.
 
 `capabilities: true` is a placeholder name.
 
@@ -180,6 +201,7 @@ interface Session {
   // ...existing operations
   invokeTool(name: string, input: unknown, options?: InvokeToolOptions): Promise<InvokeToolResult>;
   readSkill(skill: string, path?: string): Promise<string | Uint8Array>; // default: SKILL.md
+  describe(): Promise<AgentDescription>; // includes what session.started resolved for the owner
 }
 
 interface InvokeToolOptions {
@@ -212,7 +234,8 @@ applies to invocations. The tool then sees the same `ctx` it sees in a turn:
   is needed.
 - `ctx.session.turn` and `ctx.session.parent` are absent, because there is no turn. `turn`
   becomes optional in `SessionContext`, and its absence is how a tool knows it was called
-  directly. Every other field is available.
+  directly.
+- Session state reads return initial values, and writes throw (section 2).
 
 **Tools run inside the request and never park.** Parking exists so that a turn can wait for a
 person. MCP's multi round-trip requests already move that wait to the client: the call ends with
@@ -275,12 +298,12 @@ The channel is an adapter. Each MCP method maps onto one of the operations above
 
 | MCP                                                                          | eve                                                |
 | ---------------------------------------------------------------------------- | -------------------------------------------------- |
-| `server/discover`                                                            | `info()`                                           |
+| `server/discover`                                                            | `describe()`                                       |
 | a new capability session, requested by the client                            | `sessions.create({ capabilities: true })`          |
-| `tools/list`                                                                 | `info().tools`, invocable only                     |
-| `skills/list`, `skills/get` (SEP-2640)                                       | `info().skills`                                    |
+| `tools/list`                                                                 | `describe().tools`, invocable only                 |
+| `skills/list`, `skills/get` (SEP-2640)                                       | `describe().skills`                                |
 | `resources/read` for `skill://<skill>/SKILL.md` and `skill://<skill>/<file>` | `session.readSkill`                                |
-| `resources/directory/read` for `skill://<skill>`                             | `info().skills[].files`                            |
+| `resources/directory/read` for `skill://<skill>`                             | `describe().skills[].files`                        |
 | `tools/call`                                                                 | `session.invokeTool`                               |
 | `approval-required`                                                          | MRTR `input_required` with a boolean approval form |
 | `authorization-required`                                                     | MRTR `input_required` with URL elicitations        |
@@ -396,7 +419,8 @@ top of this phase, as the prototype's `discover`, `load_skill`, and `tool_call` 
 4. The client answers interrupts with a person's input, and keeps `requestState` out of the model.
 5. Capability sessions and their sandboxes belong to the principals that created them, and every
    call checks ownership.
-6. Deployment inspection never leaves `/eve/v1/inspect`. MCP callers see only `AgentInfo`.
+6. MCP callers see only `AgentDescription`. The inspection payload from `info()` never reaches
+   them.
 7. Work is bounded: request body 1 MiB, forwarded header 16 KiB, session id 512 characters, skill
    file 512 KiB.
 
@@ -410,13 +434,15 @@ top of this phase, as the prototype's `discover`, `load_skill`, and `tool_call` 
 
 ## Validation
 
-- Unit: the `info()` projection (no inspection fields, invocable filter, order), approval
+- Unit: `describe()` (no inspection fields, invocable filter, order), approval
   re-evaluation (a forged `callId` or missing answer never executes), request-state binding and
   expiry, session ownership, forwarder refusal.
+- Unit: capability session semantics. `session.started` resolves once at create,
+  `turn.started` and `step.started` never fire, state reads return initial values and writes
+  throw, and two calls in one session run in parallel.
 - Scenario: a real HTTP server covering discover, capability session creation with a warm
   sandbox, a plain call, approval, and sign-in with the callback on a different instance from the
   retry.
-- Migration: the dev TUI, setup, and eval targets read `inspect()`.
 - E2E: two fixture agents. One calls the other's tools through an MCP connection, including an
   approval answered through `input.requested` and a skill read.
 - Interop: the MCP Inspector CLI lists, calls, and reads skills against a fixture, as in
@@ -436,8 +462,11 @@ top of this phase, as the prototype's `discover`, `load_skill`, and `tool_call` 
 3. What should `capabilities: true` be called?
 4. Every call reads the session's owner. Is one world read per `tools/call` acceptable, or is the
    owner cached for the session's lifetime?
-5. What are the inspection surface's name and route, and does `/eve/v1/info` keep its path for
-   `AgentInfo`?
+5. What route serves `describe()` for `Client`, for example `GET /eve/v1/describe`, and with which
+   auth?
+6. SEP-2567 lets `tools/list` vary by the caller's authorization but not by session. Dynamic tools
+   resolve on `session.started`. Does the channel resolve them per principal for `tools/list`,
+   and what session does a resolver see there?
 
 ## References
 
