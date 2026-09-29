@@ -488,7 +488,7 @@ who is being asked. When someone else answers, with a structured response or a p
 session ignores it: the question stays pending, no `input.resolved` is emitted, and a plain message
 follows the session's normal `turnPolicy`. For approvals, use an
 [approval response policy](/docs/human-in-the-loop#authorizing-approval-responses) with
-`request.requester` instead.
+`request.principal` instead.
 
 `ctx.ask` composes with the SDK's own constructs; race it against a deadline:
 
