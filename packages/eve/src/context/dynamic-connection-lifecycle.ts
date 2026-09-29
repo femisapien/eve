@@ -1,6 +1,7 @@
+import { TurnContextKey } from "#context/turn-context.js";
 import { getAdapterKind } from "#channel/adapter.js";
 import type { ContextContainer } from "#context/container.js";
-import { AuthKey, InitiatorAuthKey, SessionIdKey, SessionContextKey } from "#context/keys.js";
+import { AuthKey, InitiatorAuthKey, SessionContextKey, SessionIdKey } from "#context/keys.js";
 import { ConnectionRegistryKey } from "#context/providers/connection-key.js";
 import { ALLOWED_DYNAMIC_CONNECTION_EVENTS } from "#dynamic/definition.js";
 import { CONNECTION_SLUG_PATTERN } from "#discover/grammar.js";
@@ -126,6 +127,7 @@ function buildConnectionResolveContext(ctx: ContextContainer): DynamicConnection
     session: {
       id: ctx.get(SessionIdKey) ?? "",
       context: ctx.get(SessionContextKey) ?? {},
+      turn: { context: ctx.get(TurnContextKey) },
       auth: {
         current: ctx.get(AuthKey) ?? null,
         initiator: ctx.get(InitiatorAuthKey) ?? null,

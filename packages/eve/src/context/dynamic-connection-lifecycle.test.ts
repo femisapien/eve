@@ -277,6 +277,7 @@ describe("dynamic connection lifecycle", () => {
           initiator: null,
         },
         id: "session-1",
+        turn: { context: undefined },
       },
     });
     expect(received).not.toHaveProperty("messages");

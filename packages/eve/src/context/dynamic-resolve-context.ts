@@ -1,3 +1,4 @@
+import { TurnContextKey } from "#context/turn-context.js";
 import type { ModelMessage } from "ai";
 
 import type { DynamicResolveContext } from "#dynamic/definition.js";
@@ -6,8 +7,8 @@ import { getEffectiveModelSelection } from "#context/effective-model.js";
 import {
   AuthKey,
   ChannelInstrumentationKey,
-  SessionIdKey,
   SessionContextKey,
+  SessionIdKey,
   InitiatorAuthKey,
   ContinuationTokenKey,
 } from "#context/keys.js";
@@ -40,6 +41,7 @@ export function buildResolveContext(
     session: {
       id: sessionId,
       context: ctx.get(SessionContextKey) ?? {},
+      turn: { context: ctx.get(TurnContextKey) },
       auth: {
         current: currentAuth,
         initiator: initiatorAuth,

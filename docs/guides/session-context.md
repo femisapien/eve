@@ -44,6 +44,7 @@ Public fields include:
 - `context`: the read-only application JSON object supplied at session creation, or `{}`.
 - `turn.id`: the current turn ID.
 - `turn.sequence`: the turn's position in the session.
+- `turn.context`: the `clientContext` sent with the current turn, or `undefined`.
 - `auth.current`: the caller for the active inbound turn.
 - `auth.initiator`: the caller that started the session.
 - `parent`: the parent call, session, root session, and turn for a child subagent session.
@@ -100,7 +101,27 @@ export default defineDynamic({
 
 `sessionContext` must be a JSON object. eve checks that boundary and persists it before initialization, so `session.started` can read it even when the session was prewarmed. It survives later turns, reconnects, and workflow steps. A later session POST cannot replace it. Sessions created without context expose `{}`; child sessions do not inherit their parent's context automatically.
 
-There is no `defineAgent` schema or automatic application type inference. eve does not automatically include `session.context` in prompts: your instructions or tools choose what the model sees. Use [`clientContext`](./client/messages#send-a-full-turn-payload) for ephemeral per-turn model context, and [`defineState`](../concepts/state) for mutable session state.
+### Read context for a turn
+
+The `clientContext` sent with a message or HITL response is available as `ctx.session.turn.context`, exactly as the client sent it: a string, an array of strings, or a JSON object.
+
+```ts
+await (
+  await session.send("Explain this page.", {
+    clientContext: { page: "/docs/redirects" },
+  })
+).result();
+// ctx.session.context: { surface: "docs" }
+// ctx.session.turn.context: { page: "/docs/redirects" }
+
+await (await session.send("Continue our conversation.")).result();
+// ctx.session.context: { surface: "docs" }
+// ctx.session.turn.context: undefined
+```
+
+Turn context is available to dynamic resolvers, hooks, tools, and connections throughout the turn, including resumed workflow steps. Workflow tools capture the context of the turn that launches them. Turns without `clientContext` expose `undefined`, as does `session.started` while prewarming. When several messages merge into one turn, the model sees each message's `clientContext`, and `turn.context` holds the latest one. Use `turn.started` dynamic definitions for behavior that should respond to it.
+
+[`clientContext`](./client/messages#send-a-full-turn-payload) also keeps its model-facing behavior: each value becomes a user-role context message for that turn. Session context is not automatically added to model prompts. There is no `defineAgent` schema or automatic application type inference. Use [`defineState`](../concepts/state) for mutable session state.
 
 ## `ctx.getSandbox()`
 

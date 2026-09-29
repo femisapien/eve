@@ -131,8 +131,9 @@ export interface SendTurnOptions<TOutput = unknown> {
    * Ephemeral client/page context for the current turn.
    *
    * Strings are rendered as user-role model context messages. Objects are
-   * JSON-serialized into one user-role model context message. Client context
-   * rides along with a message or HITL response; it does not dispatch a turn by
+   * JSON-serialized into one user-role model context message. The value as sent
+   * is also available to authored code as `ctx.session.turn.context`. Client
+   * context rides along with a message or HITL response; it does not dispatch a turn by
    * itself, remains available to every model call in the turn, and is never
    * persisted to durable session history or exposed to later turns.
    */

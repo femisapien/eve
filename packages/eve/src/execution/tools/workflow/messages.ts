@@ -2,6 +2,7 @@ import type { SubagentAuthorizationEventHookPayload } from "#channel/types.js";
 import type { SessionAuth } from "#context/session-context.js";
 import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
 import type { AgentSessionAddress } from "#execution/agent-sessions/steps.js";
+import type { ClientContextValue } from "#internal/client-context.js";
 import type { InputRequest } from "#shared/input.js";
 import type { JsonObject, JsonValue } from "#shared/json.js";
 import type {
@@ -149,6 +150,8 @@ export interface WorkflowToolRunCall extends Pick<
   readonly executeInput?: JsonValue;
   /** The call's input, without the `taskId` that named the task. */
   readonly input: JsonObject;
+  /** The calling turn's `clientContext`, which the run exposes as `ctx.session.turn.context`. */
+  readonly turnContext?: ClientContextValue;
 }
 
 /** A person's answer to a `ctx.ask()` question, as the session accepted it. */

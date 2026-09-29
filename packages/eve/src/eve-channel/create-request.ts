@@ -5,6 +5,7 @@ import type {
   SessionCallback,
   SessionCapabilities,
 } from "#channel/types.js";
+import type { ClientContextValue } from "#internal/client-context.js";
 import { parseJsonObject, type JsonObject } from "#shared/json.js";
 
 export interface ParsedCreateBody {
@@ -13,6 +14,7 @@ export interface ParsedCreateBody {
   capabilities?: SessionCapabilities;
   message?: string | UserContent;
   context?: readonly string[];
+  clientContextValue?: ClientContextValue;
   operationId?: string;
   outputSchema?: JsonObject;
   sessionContext?: JsonObject;

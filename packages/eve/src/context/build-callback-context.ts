@@ -1,3 +1,4 @@
+import { TurnContextKey } from "#context/turn-context.js";
 import type { SessionContext } from "#context/session-context.js";
 import type { SandboxEnvironmentIdentity } from "#shared/sandbox-environment.js";
 import type { RuntimeSandboxSession, SandboxSession } from "#shared/sandbox-session.js";
@@ -5,8 +6,8 @@ import { loadContext } from "#context/container.js";
 import {
   DynamicSkillSandboxKey,
   SandboxKey,
-  SessionKey,
   SessionContextKey,
+  SessionKey,
 } from "#context/keys.js";
 
 /**
@@ -24,7 +25,7 @@ export function buildCallbackContext(): SessionContext {
       id: session.sessionId,
       auth: session.auth,
       context: ctx.get(SessionContextKey) ?? {},
-      turn: session.turn,
+      turn: { ...session.turn, context: ctx.get(TurnContextKey) },
       parent: session.parent,
     },
 

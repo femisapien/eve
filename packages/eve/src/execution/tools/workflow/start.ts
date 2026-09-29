@@ -1,3 +1,4 @@
+import type { ClientContextValue } from "#internal/client-context.js";
 import type { JsonObject } from "#shared/json.js";
 import type { SessionAuth, SessionParent } from "#context/session-context.js";
 import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
@@ -61,6 +62,7 @@ export interface StartWorkflowTaskInput {
   readonly parentSession: SessionParent | undefined;
   readonly sessionContext: JsonObject;
   readonly session: HarnessSession;
+  readonly turnContext: ClientContextValue | undefined;
   readonly task: RuntimeWorkflowTaskRequest;
 }
 
@@ -82,7 +84,7 @@ export async function startWorkflowToolCallRun(
       context: input.sessionContext,
       id: session.sessionId,
       parent: input.parentSession,
-      turn: { id: batchEvent.turnId, sequence: batchEvent.sequence },
+      turn: { context: input.turnContext, id: batchEvent.turnId, sequence: batchEvent.sequence },
     },
     stepIndex: batchEvent.stepIndex,
     toolName: task.toolName,

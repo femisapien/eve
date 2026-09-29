@@ -33,6 +33,8 @@ import { activeTurnId } from "#harness/active-turn-id.js";
 import type { ActivityWorkIdentityV1 } from "#protocol/activity.js";
 import type { RuntimeActionResult, RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
 import type { JsonObject } from "#shared/json.js";
+import type { ClientContextValue } from "#internal/client-context.js";
+import { getTurnClientContextState } from "#harness/turn-client-context.js";
 import type { SessionParent } from "#channel/types.js";
 import {
   createDurableSessionState,
@@ -82,6 +84,8 @@ export interface PreparedCoordinationDispatch<PlanEntry = RuntimeWorkflowTaskReq
   /** Lineage of the session running this dispatch, when it is itself a delegated child. */
   readonly parentSession: SessionParent | undefined;
   readonly sessionContext: JsonObject;
+  /** The dispatching turn's `clientContext`, which workflow runs expose as `ctx.session.turn.context`. */
+  readonly turnContext: ClientContextValue | undefined;
   readonly activityObserver?: ActivityObserverConfig & {
     readonly workIdentity: ActivityWorkIdentityV1;
   };
@@ -198,6 +202,7 @@ export async function prepareActionDispatch<PlanEntry>(input: {
     localDevRequest: ctx.get(LocalDevRequestKey),
     parentSession: ctx.get(ParentSessionKey),
     sessionContext: ctx.get(SessionContextKey) ?? {},
+    turnContext: getTurnClientContextState(session.state, batch.event.turnId)?.value,
     plan,
     activityObserver: resolvePreparedActivity(
       ctx.get(ActivityObserverKey),

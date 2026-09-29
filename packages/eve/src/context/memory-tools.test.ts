@@ -164,7 +164,12 @@ describe("memory provider tools", () => {
           channel: {},
           model: null,
           messages: [],
-          session: { context: {}, auth: { current: null, initiator: null }, id: "session_1" },
+          session: {
+            context: {},
+            auth: { current: null, initiator: null },
+            id: "session_1",
+            turn: {},
+          },
         }),
     );
 

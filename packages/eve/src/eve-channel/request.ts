@@ -13,6 +13,7 @@ import {
   validateActivityObserverBinding,
 } from "#eve-channel/activity-observer-request.js";
 import { hasInternalRefScheme } from "#internal/attachments/url-refs.js";
+import type { ClientContextValue } from "#internal/client-context.js";
 import {
   EVE_MESSAGE_STREAM_CONTENT_TYPE,
   EVE_MESSAGE_STREAM_FORMAT,
@@ -125,7 +126,8 @@ export function parseCreateBody(payload: Record<string, unknown>): ParsedCreateB
     activityObserver,
     callback,
     capabilities,
-    context,
+    context: context?.messages,
+    clientContextValue: context?.value,
     sessionContext,
     outputSchema,
   };
@@ -140,6 +142,7 @@ interface ParsedSessionMessageBody {
   message?: string | UserContent;
   inputResponses?: readonly ValidatedInputResponse[];
   context?: readonly string[];
+  clientContextValue?: ClientContextValue;
   outputSchema?: JsonObject;
   turnPolicy?: TurnPolicy;
 }
@@ -197,7 +200,8 @@ export function parseSessionMessageBody(
     callback,
     message,
     inputResponses,
-    context,
+    context: context?.messages,
+    clientContextValue: context?.value,
     outputSchema,
     turnPolicy,
   };
@@ -516,11 +520,13 @@ function parseInputResponses(
 
 const CLIENT_CONTEXT_PREFIX = "Client context:\n";
 
-function parseClientContextField(value: unknown): string[] | Response | undefined {
+function parseClientContextField(
+  value: unknown,
+): { messages: string[]; value: ClientContextValue } | Response | undefined {
   if (value === undefined) return undefined;
 
   if (typeof value === "string") {
-    return value.length > 0 ? [toClientContextMessage(value)] : undefined;
+    return value.length > 0 ? { messages: [toClientContextMessage(value)], value } : undefined;
   }
 
   if (Array.isArray(value)) {
@@ -533,7 +539,7 @@ function parseClientContextField(value: unknown): string[] | Response | undefine
       );
     }
 
-    return value.map((entry) => toClientContextMessage(entry));
+    return { messages: value.map((entry) => toClientContextMessage(entry)), value };
   }
 
   if (value === null || typeof value !== "object") {
@@ -548,7 +554,7 @@ function parseClientContextField(value: unknown): string[] | Response | undefine
 
   try {
     const json = parseJsonObject(value);
-    return [toClientContextMessage(JSON.stringify(json))];
+    return { messages: [toClientContextMessage(JSON.stringify(json))], value: json };
   } catch {
     return Response.json(
       { error: "Expected 'clientContext' to be a JSON-serializable object.", ok: false },

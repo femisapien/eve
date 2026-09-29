@@ -1,6 +1,10 @@
 import type { ContextAccessor } from "#context/key.js";
 import type { StepInput } from "#harness/types.js";
-import { attachClientContext, readClientContext } from "#internal/client-context.js";
+import {
+  attachClientContext,
+  readClientContext,
+  readClientContextValue,
+} from "#internal/client-context.js";
 import { createLogger } from "#internal/logging.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import type { SessionHandle } from "#channel/session.js";
@@ -201,6 +205,7 @@ export function defaultDeliverResult(payload: DeliverPayload): StepInput | undef
         outputSchema: payload.outputSchema,
       },
       readClientContext(payload),
+      readClientContextValue(payload),
     );
   }
 
@@ -212,6 +217,7 @@ export function defaultDeliverResult(payload: DeliverPayload): StepInput | undef
         outputSchema: payload.outputSchema,
       },
       readClientContext(payload),
+      readClientContextValue(payload),
     );
   }
 
@@ -222,6 +228,7 @@ export function defaultDeliverResult(payload: DeliverPayload): StepInput | undef
     return attachClientContext(
       { context: payload.context, outputSchema: payload.outputSchema },
       readClientContext(payload),
+      readClientContextValue(payload),
     );
   }
 

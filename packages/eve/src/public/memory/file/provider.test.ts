@@ -431,6 +431,7 @@ function toolsContext(): MemoryToolsContext {
       context: {},
       auth: { current: null, initiator: null },
       id: "session-1",
+      turn: {},
     },
     turn: { id: "turn-1", input: [], sequence: 1 },
   };

@@ -120,6 +120,7 @@ class WorkflowServeCalls implements WorkflowBodyControl {
       input: this.runRef.input,
       sequence: this.runRef.sequence,
       stepIndex: this.runRef.stepIndex,
+      turnContext: input.session.turn.context,
       turnId: this.runRef.turnId,
     });
     this.waiting = [this.first];
@@ -280,7 +281,7 @@ class WorkflowServeCalls implements WorkflowBodyControl {
       session: {
         ...this.runSession,
         auth: call.auth,
-        turn: { id: call.turnId, sequence: call.sequence },
+        turn: { context: call.turnContext, id: call.turnId, sequence: call.sequence },
       },
     };
   }

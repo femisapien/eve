@@ -6,9 +6,10 @@ export default defineDynamic({
     "session.started": (_, { session }) =>
       session.context.surface === "docs"
         ? defineTool({
-            description: "Read the application context captured when this chat opened.",
+            description: "Read the application and turn context for this chat.",
             inputSchema: z.object({}),
-            execute: (_, ctx) => JSON.stringify(ctx.session.context),
+            execute: (_, ctx) =>
+              JSON.stringify({ session: ctx.session.context, turn: ctx.session.turn.context }),
           })
         : null,
   },

@@ -56,7 +56,7 @@ function context(user = "user-1"): WorkflowStepContext {
       context: { surface: "docs" },
       id: "session-1",
       auth: { current: auth, initiator: auth },
-      turn: { id: "turn-1", sequence: 1 },
+      turn: { context: ["route: /billing"], id: "turn-1", sequence: 1 },
     },
     callId: "call-1",
     toolName: "devbox",
@@ -82,8 +82,14 @@ describe("workflow step authorization", () => {
   });
   afterEach(() => vi.unstubAllEnvs());
   it("restores application context in authored workflow steps", async () => {
-    const result = await runStep((ctx) => ctx.session.context);
-    expect(result).toMatchObject({ kind: "result", output: { surface: "docs" } });
+    const result = await runStep((ctx) => ({
+      session: ctx.session.context,
+      turn: ctx.session.turn.context,
+    }));
+    expect(result).toMatchObject({
+      kind: "result",
+      output: { session: { surface: "docs" }, turn: ["route: /billing"] },
+    });
   });
 
   it.each([

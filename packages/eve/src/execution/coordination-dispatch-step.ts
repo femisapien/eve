@@ -48,6 +48,7 @@ export async function dispatchCoordinationStep(
       owner: input.workflowToolRunOwner,
       parentSession: prepared.parentSession,
       sessionContext: prepared.sessionContext,
+      turnContext: prepared.turnContext,
       session: nextSession,
       task,
     };

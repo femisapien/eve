@@ -13,7 +13,11 @@ import { sessionHookTokens } from "#execution/session/hook-tokens.js";
 import { DEFAULT_SESSION_TIMEOUT_MS, sessionTimeoutDeadline } from "#execution/session/timeout.js";
 import { hasDelegatedSessionContext } from "#execution/delegated-session-context.js";
 import type { DynamicSubagentAgentConfig } from "#runtime/subagents/dynamic-agent-config.js";
-import { attachClientContext, readClientContext } from "#internal/client-context.js";
+import {
+  attachClientContext,
+  readClientContext,
+  readClientContextValue,
+} from "#internal/client-context.js";
 import { settleContinuationConflictStep } from "#execution/continuation-conflict-step.js";
 import {
   SESSION_INBOX_CONTEXT_KEY,
@@ -225,6 +229,7 @@ function createInitialDelivery(
           outputSchema: input.input.outputSchema,
         },
         readClientContext(input.input),
+        readClientContextValue(input.input),
       ),
     ],
     requestId: readChannelRequestId(serializedContext),
