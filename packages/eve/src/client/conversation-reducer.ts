@@ -120,8 +120,8 @@ function reduceConversationLifecycle(
     case "session.failed":
       return state.activeTurnId === undefined ? state : { ...state, activeTurnId: undefined };
     case "task.started": {
-      const { callId, name, taskId, turnId } = event.data;
-      const task = state.tasks[taskId] ?? { taskId, name, calls: {} };
+      const { callId, kind, name, taskId, turnId } = event.data;
+      const task = state.tasks[taskId] ?? { taskId, name, kind, calls: {} };
       if (task.calls[callId] !== undefined) return state;
       return {
         ...state,
@@ -251,14 +251,13 @@ export function reduceConversation(
             },
       );
     case "client.agent.observed":
-      return updateObservation(state, event.data.sessionId, (observation) =>
-        observation.status === "following"
-          ? {
-              status: "following",
-              conversation: reduceConversation(observation.conversation, event.data.event),
-            }
-          : observation,
-      );
+      return updateObservation(state, event.data.sessionId, (observation) => {
+        if (observation.status !== "following") return observation;
+        const conversation = reduceConversation(observation.conversation, event.data.event);
+        return conversation === observation.conversation
+          ? observation
+          : { status: "following", conversation };
+      });
     case "client.agent.idle":
       return updateObservation(state, event.data.sessionId, (observation) =>
         observation.status === "following"
@@ -274,7 +273,10 @@ export function reduceConversation(
       });
     default: {
       const projected = messageReducer.reduce(state, event);
-      return reduceConversationLifecycle({ ...state, ...projected }, event);
+      return reduceConversationLifecycle(
+        projected === state ? state : { ...state, ...projected },
+        event,
+      );
     }
   }
 }
