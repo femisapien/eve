@@ -27,6 +27,7 @@ import type { OnboardingScreenEvent } from "./setup-commands.js";
 import { loadDevelopmentEnvironmentFiles } from "#cli/dev/environment.js";
 import { createEventDeduper } from "#protocol/event-dedupe.js";
 import { isCurrentTurnBoundaryEvent } from "#protocol/message.js";
+import { isTaskControlTool, isTaskRetryRefusal } from "#protocol/task-tools.js";
 import {
   createDevelopmentRuntimeArtifactRefresher,
   type DevelopmentRuntimeArtifactRefresher,
@@ -176,11 +177,35 @@ export type AgentTUIStreamEvent =
   | { type: "reasoning-delta"; id: string; delta: string }
   | { type: "reasoning-complete"; id: string }
   | { type: "tool-call-preparing"; toolCallId: string; toolName: string }
-  | { type: "tool-call"; toolCallId: string; toolName: string; input: unknown }
+  | {
+      type: "tool-call";
+      toolCallId: string;
+      toolName: string;
+      input: unknown;
+      /** The tool's own `label.start` copy, when it defines one. */
+      label?: string;
+    }
   | { type: "tool-approval-request"; approvalId: string; toolCallId: string }
-  | { type: "tool-result"; toolCallId: string; output: unknown }
+  | {
+      type: "tool-result";
+      toolCallId: string;
+      output: unknown;
+      /** The tool's own `label.complete` copy, when it defines one. */
+      label?: string;
+    }
   | { type: "tool-error"; toolCallId: string; errorText: string }
   | { type: "tool-rejected"; toolCallId: string; reason: string }
+  /** A call the session refused for the model to retry; it leaves no trace in the transcript. */
+  | { type: "tool-withdrawn"; toolCallId: string; reason: string }
+  /** A call became a task that keeps working while the turn goes on. */
+  | { type: "task-started"; toolCallId: string; kind: "agent" | "tool"; toolName: string }
+  | {
+      type: "task-settled";
+      toolCallId: string;
+      status: "completed" | "failed" | "cancelled";
+      output?: unknown;
+      errorText?: string;
+    }
   | { type: "error"; errorText: string; hint?: string; detail?: string }
   | { type: "turn-cancelled" }
   | { type: "finish"; usage?: AgentTUIStreamUsage };
@@ -208,7 +233,6 @@ export type AgentTUISessionOptions = {
   continueSession?: boolean;
   tools?: TerminalPartDisplayMode;
   reasoning?: TerminalPartDisplayMode;
-  subagents?: TerminalPartDisplayMode;
   connectionAuth?: TerminalPartDisplayMode;
   assistantResponseStats?: AssistantResponseStatsMode;
   contextSize?: number;
@@ -525,7 +549,6 @@ export class EveTUIRunner {
   readonly #name: string;
   readonly #tools: TerminalPartDisplayMode;
   readonly #reasoning: TerminalPartDisplayMode;
-  readonly #subagents: TerminalPartDisplayMode;
   readonly #connectionAuth: TerminalPartDisplayMode;
   readonly #assistantResponseStats: AssistantResponseStatsMode;
   readonly #contextSize?: number;
@@ -639,7 +662,6 @@ export class EveTUIRunner {
     this.#withExclusiveTerminal = options.withExclusiveTerminal;
     this.#tools = options.tools ?? "full";
     this.#reasoning = options.reasoning ?? "full";
-    this.#subagents = options.subagents ?? "full";
     this.#connectionAuth = options.connectionAuth ?? "full";
     this.#assistantResponseStats = options.assistantResponseStats ?? defaultAssistantResponseStats;
     this.#contextSize = options.contextSize;
@@ -1073,7 +1095,6 @@ export class EveTUIRunner {
             continueSession: Boolean(this.#renderer.readPrompt),
             tools: this.#tools,
             reasoning: this.#reasoning,
-            subagents: this.#subagents,
             connectionAuth: this.#connectionAuth,
             assistantResponseStats: this.#assistantResponseStats,
             contextSize: this.#contextSize,
@@ -1626,7 +1647,6 @@ export class EveTUIRunner {
           this.#subagentPump.taskStarted(event, sourceSession?.state.sessionId),
         onAgentStarted: (event) =>
           this.#subagentPump.agentStarted(event, sourceSession?.state.sessionId),
-        onTaskSettled: (callId) => this.#subagentPump.settle(callId),
         onTurnCancelled: (turnId) => this.#subagentPump.settleCancelledTurn(turnId),
         onConnectionAuthRequired: (event) => this.#handleConnectionAuthRequired(event),
         onConnectionAuthCompleted: (event) => this.#handleConnectionAuthCompleted(event),
@@ -2106,7 +2126,6 @@ type EveStreamTranslatorInput = {
   turnState: AgentTUITurnState;
   onTaskStarted?: (event: TaskStartedStreamEvent) => void;
   onAgentStarted?: (event: AgentStartedStreamEvent) => void;
-  onTaskSettled?: (callId: string) => void;
   onTurnCancelled?: (turnId: string) => void;
   onConnectionAuthRequired?: (event: AuthorizationRequiredStreamEvent) => void;
   onConnectionAuthCompleted?: (event: AuthorizationCompletedStreamEvent) => void;
@@ -2153,7 +2172,6 @@ async function* eveEventsToTUIStream(
     turnState,
     onTaskStarted,
     onAgentStarted,
-    onTaskSettled,
     onTurnCancelled,
     onConnectionAuthRequired,
     onConnectionAuthCompleted,
@@ -2166,13 +2184,18 @@ async function* eveEventsToTUIStream(
   const toolNames = new Map<string, string>();
   // Dropping re-delivered events here means every case below is a new emission.
   const seenEvents = createEventDeduper();
-  // Counts `step.started` events. The harness reuses `stepIndex` across the
-  // model calls of one turn (e.g. the post-subagent call restarts at the same
-  // index), so a part key alone cannot distinguish a new message under a
-  // reused key from a re-emission. A fresh `step.started` since the part
-  // completed is the discriminator.
-  let stepEpoch = 0;
+  // Counts `step.started` and tool events. A part key alone cannot distinguish
+  // a new message from a re-emission: the harness reuses `stepIndex` across
+  // the model calls of one turn (e.g. the post-subagent call restarts at the
+  // same index), and one model call can write text, run a provider-executed
+  // tool, then write more text under the same key. A new step or tool event
+  // since the part completed is the discriminator.
+  let partEpoch = 0;
   const knownToolCalls = new Set<string>();
+  const preparingToolCalls = new Set<string>();
+  // A task's `action.result` is only its start receipt, written for the
+  // model; the call settles with `task.settled`.
+  const taskCallIds = new Set<string>();
   const seenInputRequestIds = new Set<string>();
   // The harness reports one underlying failure as a cascade (`step.failed` →
   // `turn.failed` → `session.failed`) with an identical payload on each
@@ -2207,15 +2230,15 @@ async function* eveEventsToTUIStream(
         break;
 
       case "step.started":
-        stepEpoch += 1;
+        partEpoch += 1;
         yield { type: "step-start", modelId: event.data.modelId };
         break;
 
       case "step.completed": {
         const stepEvent = event as StepCompletedStreamEvent;
         latestStepUsage = stepEvent.data.usage;
-        yield* closeOpenParts(textParts, "assistant-complete", stepEpoch);
-        yield* closeOpenParts(reasoningParts, "reasoning-complete", stepEpoch);
+        yield* closeOpenParts(textParts, "assistant-complete", partEpoch);
+        yield* closeOpenParts(reasoningParts, "reasoning-complete", partEpoch);
         yield { type: "step-finish", usage: stepEvent.data.usage };
         break;
       }
@@ -2226,11 +2249,12 @@ async function* eveEventsToTUIStream(
         const state = partStateFor(textParts, base);
 
         if (state.completed) {
-          // No intervening `step.started`: a retry of the same model call.
-          if (stepEpoch <= state.completedEpoch) break;
+          // No intervening step or tool: a retry of the same model call.
+          if (partEpoch <= state.completedEpoch) break;
           // A fresh model call reusing this part key (the harness restarts
-          // `stepIndex` after a park/resume, e.g. post-subagent): open a new
-          // message generation so it renders as its own block.
+          // `stepIndex` after a park/resume, e.g. post-subagent), or text
+          // after a tool in the same call: open a new message generation so
+          // it renders as its own block.
           state.generation += 1;
           state.text = "";
           state.completed = false;
@@ -2250,12 +2274,12 @@ async function* eveEventsToTUIStream(
         const message = event.data.message;
 
         if (state.completed) {
-          if (stepEpoch <= state.completedEpoch) break;
+          if (partEpoch <= state.completedEpoch) break;
           // Channels that skip per-delta events: a new full message under a
           // reused key after a fresh model call.
           state.generation += 1;
           state.text = message;
-          state.completedEpoch = stepEpoch;
+          state.completedEpoch = partEpoch;
           yield {
             type: "assistant-complete",
             id: partGenerationId(base, state.generation),
@@ -2268,7 +2292,7 @@ async function* eveEventsToTUIStream(
         if (state.text.length === 0) {
           state.text = message;
           state.completed = true;
-          state.completedEpoch = stepEpoch;
+          state.completedEpoch = partEpoch;
           yield { type: "assistant-complete", id, text: message };
         } else if (message.startsWith(state.text)) {
           const suffix = message.slice(state.text.length);
@@ -2278,12 +2302,12 @@ async function* eveEventsToTUIStream(
           }
           state.text = message;
           state.completed = true;
-          state.completedEpoch = stepEpoch;
+          state.completedEpoch = partEpoch;
           yield { type: "assistant-complete", id };
         } else {
           state.text = message;
           state.completed = true;
-          state.completedEpoch = stepEpoch;
+          state.completedEpoch = partEpoch;
           yield { type: "assistant-complete", id, text: message };
         }
         break;
@@ -2295,7 +2319,7 @@ async function* eveEventsToTUIStream(
         const state = partStateFor(reasoningParts, base);
 
         if (state.completed) {
-          if (stepEpoch <= state.completedEpoch) break;
+          if (partEpoch <= state.completedEpoch) break;
           state.generation += 1;
           state.text = "";
           state.completed = false;
@@ -2315,10 +2339,10 @@ async function* eveEventsToTUIStream(
 
         if (state.completed) {
           if (next.length === 0) break;
-          if (stepEpoch <= state.completedEpoch) break;
+          if (partEpoch <= state.completedEpoch) break;
           state.generation += 1;
           state.text = next;
-          state.completedEpoch = stepEpoch;
+          state.completedEpoch = partEpoch;
           const id = partGenerationId(base, state.generation);
           yield { type: "reasoning-delta", id, delta: next };
           yield { type: "reasoning-complete", id };
@@ -2334,7 +2358,7 @@ async function* eveEventsToTUIStream(
           state.generation += 1;
           state.text = next;
           state.completed = true;
-          state.completedEpoch = stepEpoch;
+          state.completedEpoch = partEpoch;
           const replacementId = partGenerationId(base, state.generation);
           yield { type: "reasoning-delta", id: replacementId, delta: next };
           yield { type: "reasoning-complete", id: replacementId };
@@ -2342,33 +2366,51 @@ async function* eveEventsToTUIStream(
         }
 
         state.completed = true;
-        state.completedEpoch = stepEpoch;
+        state.completedEpoch = partEpoch;
         yield { type: "reasoning-complete", id };
+        break;
+      }
+
+      case "action.input.appended": {
+        const { callId, toolName } = event.data;
+        if (knownToolCalls.has(callId) || preparingToolCalls.has(callId)) break;
+        if (isTaskControlTool(toolName)) break;
+        preparingToolCalls.add(callId);
+        yield { type: "tool-call-preparing", toolCallId: callId, toolName };
         break;
       }
 
       case "actions.requested": {
         const data = (event as ActionsRequestedStreamEvent).data;
-        const actions = data.actions.filter((action) => action.kind === "tool-call");
+        const actions = data.actions.flatMap((action) =>
+          action.kind === "tool-call" && !isTaskControlTool(action.toolName) ? [action] : [],
+        );
         if (actions.length === 0) break;
+        partEpoch += 1;
 
         for (const action of actions) {
           toolNames.set(action.callId, action.toolName);
           if (knownToolCalls.has(action.callId)) continue;
           knownToolCalls.add(action.callId);
-          yield {
+          const toolCall: Extract<AgentTUIStreamEvent, { type: "tool-call" }> = {
             type: "tool-call",
             toolCallId: action.callId,
             toolName: action.toolName,
             input: action.input,
           };
+          const label = data.presentation?.[action.callId]?.label;
+          if (label !== undefined) toolCall.label = label;
+          yield toolCall;
         }
         break;
       }
 
       case "input.requested": {
         const data = (event as InputRequestedStreamEvent).data;
-        const requests = data.requests.filter((request) => request.action.kind === "tool-call");
+        const requests = data.requests.filter(
+          (request) =>
+            request.action.kind === "tool-call" && !isTaskControlTool(request.action.toolName),
+        );
         if (requests.length === 0) break;
 
         for (const request of requests) {
@@ -2438,20 +2480,29 @@ async function* eveEventsToTUIStream(
           break;
         }
         const callId = resultEvent.data.result.callId;
-        if (!knownToolCalls.has(callId)) {
-          // Results for calls this turn never announced (e.g. subagent
-          // dispatches, which surface through the subagent section instead)
-          // have no tool block to attach to.
+        // Results for calls this turn never announced (task control calls,
+        // or a call first announced to another stream) have no tool block.
+        if (!knownToolCalls.has(callId) || taskCallIds.has(callId)) break;
+        if (isTaskRetryRefusal(resultEvent)) {
+          yield {
+            type: "tool-withdrawn",
+            toolCallId: callId,
+            reason: formatActionResultError(resultEvent),
+          };
           break;
         }
+        partEpoch += 1;
         switch (resultEvent.data.status) {
           case "completed": {
             const output = resultEvent.data.result.output;
-            yield {
+            const toolResult: Extract<AgentTUIStreamEvent, { type: "tool-result" }> = {
               type: "tool-result",
               toolCallId: callId,
               output,
             };
+            const label = resultEvent.data.presentation?.[callId]?.label;
+            if (label !== undefined) toolResult.label = label;
+            yield toolResult;
             const address = registryHandoffAddress(undefined, toolNames.get(callId), output);
             if (address !== undefined) await onRegistryHandoff?.(address);
             break;
@@ -2489,8 +2540,8 @@ async function* eveEventsToTUIStream(
         const failure = toFailureEvent(event, emittedFailures, failureHintOverride);
         if (failure) yield failure;
         turnState.boundaryEvent = event.type;
-        yield* closeOpenParts(textParts, "assistant-complete", stepEpoch);
-        yield* closeOpenParts(reasoningParts, "reasoning-complete", stepEpoch);
+        yield* closeOpenParts(textParts, "assistant-complete", partEpoch);
+        yield* closeOpenParts(reasoningParts, "reasoning-complete", partEpoch);
         yield {
           type: "finish",
           usage: latestStepUsage,
@@ -2502,8 +2553,8 @@ async function* eveEventsToTUIStream(
       case "session.waiting":
       case "session.completed":
         turnState.boundaryEvent = event.type;
-        yield* closeOpenParts(textParts, "assistant-complete", stepEpoch);
-        yield* closeOpenParts(reasoningParts, "reasoning-complete", stepEpoch);
+        yield* closeOpenParts(textParts, "assistant-complete", partEpoch);
+        yield* closeOpenParts(reasoningParts, "reasoning-complete", partEpoch);
         yield {
           type: "finish",
           usage: latestStepUsage,
@@ -2518,8 +2569,8 @@ async function* eveEventsToTUIStream(
           break;
         }
         turnState.boundaryEvent = event.type;
-        yield* closeOpenParts(textParts, "assistant-complete", stepEpoch);
-        yield* closeOpenParts(reasoningParts, "reasoning-complete", stepEpoch);
+        yield* closeOpenParts(textParts, "assistant-complete", partEpoch);
+        yield* closeOpenParts(reasoningParts, "reasoning-complete", partEpoch);
         yield {
           type: "finish",
           usage: latestStepUsage,
@@ -2529,16 +2580,16 @@ async function* eveEventsToTUIStream(
 
       case "turn.completed":
         visibleTurnCompleted = true;
-        yield* closeOpenParts(textParts, "assistant-complete", stepEpoch);
-        yield* closeOpenParts(reasoningParts, "reasoning-complete", stepEpoch);
+        yield* closeOpenParts(textParts, "assistant-complete", partEpoch);
+        yield* closeOpenParts(reasoningParts, "reasoning-complete", partEpoch);
         break;
 
       case "turn.cancelled":
         // Explicit cooperative cancellation preserves the session.
         // `session.waiting` follows and finishes the stream normally.
         onTurnCancelled?.(event.data.turnId);
-        yield* closeOpenParts(textParts, "assistant-complete", stepEpoch);
-        yield* closeOpenParts(reasoningParts, "reasoning-complete", stepEpoch);
+        yield* closeOpenParts(textParts, "assistant-complete", partEpoch);
+        yield* closeOpenParts(reasoningParts, "reasoning-complete", partEpoch);
         yield { type: "turn-cancelled" };
         break;
 
@@ -2546,16 +2597,32 @@ async function* eveEventsToTUIStream(
       // and re-entry from a later translator live in the pump. The agent's
       // content is observed through its session's stream.
       case "task.started":
+        taskCallIds.add(event.data.callId);
         onTaskStarted?.(event);
+        yield {
+          type: "task-started",
+          toolCallId: event.data.callId,
+          kind: event.data.kind,
+          toolName: event.data.name,
+        };
         break;
 
       case "agent.started":
         onAgentStarted?.(event);
         break;
 
-      case "task.settled":
-        onTaskSettled?.(event.data.callId);
+      case "task.settled": {
+        const { callId, error, output, status } = event.data;
+        const settled: Extract<AgentTUIStreamEvent, { type: "task-settled" }> = {
+          type: "task-settled",
+          toolCallId: callId,
+          status,
+        };
+        if (output !== undefined) settled.output = output;
+        if (error !== undefined) settled.errorText = error.message;
+        yield settled;
         break;
+      }
 
       case "authorization.required":
         onConnectionAuthRequired?.(event as AuthorizationRequiredStreamEvent);
@@ -2572,8 +2639,8 @@ async function* eveEventsToTUIStream(
   }
 
   if (!sentFinish) {
-    yield* closeOpenParts(textParts, "assistant-complete", stepEpoch);
-    yield* closeOpenParts(reasoningParts, "reasoning-complete", stepEpoch);
+    yield* closeOpenParts(textParts, "assistant-complete", partEpoch);
+    yield* closeOpenParts(reasoningParts, "reasoning-complete", partEpoch);
     yield { type: "finish", usage: latestStepUsage };
   }
 }
@@ -2653,7 +2720,7 @@ type StreamPartState = {
   /** Accumulated text of the current generation. */
   text: string;
   completed: boolean;
-  /** Value of the step epoch when the current generation completed. */
+  /** Value of the part epoch when the current generation completed. */
   completedEpoch: number;
 };
 
@@ -2680,12 +2747,12 @@ function partGenerationId(base: string, generation: number): string {
 function* closeOpenParts(
   parts: Map<string, StreamPartState>,
   type: "assistant-complete" | "reasoning-complete",
-  stepEpoch: number,
+  partEpoch: number,
 ): Generator<AgentTUIStreamEvent> {
   for (const [base, state] of parts) {
     if (state.completed || state.text.length === 0) continue;
     state.completed = true;
-    state.completedEpoch = stepEpoch;
+    state.completedEpoch = partEpoch;
     yield { type, id: partGenerationId(base, state.generation) };
   }
 }

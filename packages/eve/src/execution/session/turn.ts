@@ -16,7 +16,8 @@ import {
   type SteeringTurn,
 } from "#execution/session/input-queue.js";
 import { AuthKey } from "#context/keys.js";
-import { TASK_WAIT_TOOL_NAME, taskToolResult, type TaskToolCall } from "#execution/tasks/calls.js";
+import { taskToolResult, type TaskToolCall } from "#execution/tasks/calls.js";
+import { TASK_WAIT_TOOL_NAME } from "#protocol/task-tools.js";
 import { principalOf } from "#execution/session/principal.js";
 import { renderTaskWaitResult } from "#execution/tasks/render.js";
 import {
@@ -153,7 +154,6 @@ export class SessionExecution {
         sessionState: result.sessionState,
       });
       await turn.admitBoundary();
-      turn.resetSteering();
       await this.handleAdmittedTaskEvents(turn);
 
       if (result.action === "cancelled") return await this.finishCancelledTurn();
@@ -417,15 +417,13 @@ interface TaskWait {
   readonly startedAtMs: number;
   /** Resolves with the call's id once the timeout passes; absent without a timeout. */
   readonly timer?: Promise<string>;
-  /** A timeout of 0 has passed already: the wait returns whatever is ready. */
   timedOut: boolean;
 }
 
 function startTaskWait(call: Extract<TaskToolCall, { readonly kind: "task_wait" }>): TaskWait {
   const { callId, timeoutMs } = call;
-  const timer =
-    timeoutMs !== undefined && timeoutMs > 0 ? sleep(timeoutMs).then(() => callId) : undefined;
-  return { callId, startedAtMs: Date.now(), timedOut: timeoutMs === 0, timer };
+  const timer = timeoutMs === undefined ? undefined : sleep(timeoutMs).then(() => callId);
+  return { callId, startedAtMs: Date.now(), timedOut: false, timer };
 }
 
 type RuntimeEvent =
@@ -519,7 +517,7 @@ class ActiveTurn {
     return this.steeringController.signal;
   }
 
-  resetSteering(): void {
+  private resetSteering(): void {
     if (!this.steeringController.signal.aborted) return;
     this.unsubscribeDelivery();
     this.steeringController = new AbortController();
@@ -534,7 +532,11 @@ class ActiveTurn {
     for (const payload of pending) await this.admit(payload);
   }
 
-  /** Steering admitted during this turn, routed to children first and coalesced. */
+  /**
+   * Steering admitted during this turn, routed to children first and coalesced.
+   * The next step reads it as input, so its signal must not interrupt that
+   * step; only deliveries still unread re-signal the next generation.
+   */
   async takeSteering(): Promise<DeliverHookPayload | undefined> {
     const steering: DeliverHookPayload[] = [];
     while (true) {
@@ -548,6 +550,7 @@ class ActiveTurn {
       }
       if (routed.kind === "turn") steering.push(routed.delivery);
     }
+    this.resetSteering();
     if (steering.length === 0) return undefined;
     const delivery = steering.length === 1 ? steering[0]! : coalesceDeliveries(steering);
     if (delivery.caller !== undefined) this.caller = delivery.caller;

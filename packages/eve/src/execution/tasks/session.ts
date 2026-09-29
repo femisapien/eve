@@ -1,19 +1,15 @@
 import type { SessionStateCursor } from "#execution/session/state-cursor.js";
-import {
-  TASK_CANCEL_TOOL_NAME,
-  taskToolResult,
-  type TaskToolCall,
-} from "#execution/tasks/calls.js";
-import { renderUnknownTaskError } from "#execution/tasks/render.js";
+import { taskToolResult, type TaskToolCall } from "#execution/tasks/calls.js";
+import { renderTaskCancelResult, renderUnknownCancelTaskError } from "#execution/tasks/render.js";
 import { cancelTasksStep, type TaskRunMessage } from "#execution/tasks/steps.js";
 import {
   readTaskTable,
   taskCancelResult,
-  taskToolName,
   workingTasks,
   type TaskTable,
 } from "#execution/tasks/table.js";
 import type { WorkflowToolRunMessage } from "#execution/tools/workflow/messages.js";
+import { TASK_CANCEL_TOOL_NAME, UNKNOWN_TASK_CODE } from "#protocol/task-tools.js";
 import type { RuntimeActionResult } from "#shared/action-types.js";
 
 // What the session's workflow body does with tasks between steps: records
@@ -48,13 +44,17 @@ export async function answerTaskCancel(
   const result = taskCancelResult(sessionTaskTable(cursor), call.taskId);
   if (result === undefined) {
     const error = {
-      code: "UNKNOWN_TASK",
-      message: renderUnknownTaskError(call.taskId, taskToolName(call.taskId)),
+      code: UNKNOWN_TASK_CODE,
+      message: renderUnknownCancelTaskError(call.taskId),
     };
     return { ...taskToolResult(call.callId, TASK_CANCEL_TOOL_NAME, error), isError: true };
   }
   if (result.status === "cancelled") {
     await cursor.apply(await cancelTasksStep({ ...cursor.stepState(), taskIds: [call.taskId] }));
   }
-  return taskToolResult(call.callId, TASK_CANCEL_TOOL_NAME, result);
+  return taskToolResult(
+    call.callId,
+    TASK_CANCEL_TOOL_NAME,
+    renderTaskCancelResult(call.taskId, result),
+  );
 }

@@ -2,6 +2,7 @@ import type { SessionAuthContext } from "#channel/types.js";
 
 import { createLogger, extractErrorId, formatErrorHint, logError } from "#internal/logging.js";
 import { describeActionRequests } from "#public/channels/slack/action-status.js";
+import { isTaskControlTool } from "#protocol/task-tools.js";
 import { buildSlackAuthContext, slackUserIdFromAuthContext } from "#public/channels/slack/auth.js";
 import {
   buildAuthCompletedText,
@@ -32,7 +33,6 @@ import type {
   SlackContext,
   SlackMentionResult,
 } from "#public/channels/slack/slackChannel.js";
-import { stepNarration } from "#public/channels/slack/step-text.js";
 import type { InputRequest } from "#shared/input.js";
 
 const log = createLogger("slack.defaults");
@@ -416,6 +416,7 @@ export const defaultEvents: SlackChannelInternalEvents = {
   },
 
   async "turn.started"(_event, channel, _ctx) {
+    channel.state.pendingToolCallMessage = null;
     channel.state.lastReasoningTypingAtMs = null;
     channel.state.lastReasoningTypingStatus = null;
     reasoningByState.delete(channel.state);
@@ -467,14 +468,27 @@ export const defaultEvents: SlackChannelInternalEvents = {
   },
 
   async "actions.requested"(event, channel, _ctx) {
-    const narration = stepNarration(channel.state, event.actions);
-    const narrationLine = narration === null ? undefined : firstNonEmptyLine(narration);
-    const status = narrationLine ?? describeActionRequests(event.actions);
-    await channel.thread.startTyping(truncateTypingStatus(status));
+    const buffered = channel.state.pendingToolCallMessage;
+    channel.state.pendingToolCallMessage = null;
+    if (buffered) {
+      await channel.thread.startTyping(truncateTypingStatus(buffered));
+      return;
+    }
+    const actions = event.actions.filter(
+      (action) => action.kind !== "tool-call" || !isTaskControlTool(action.toolName),
+    );
+    if (actions.length === 0) return;
+    await channel.thread.startTyping(truncateTypingStatus(describeActionRequests(actions)));
   },
 
   async "message.completed"(event, channel, _ctx) {
-    if (event.finishReason === "tool-calls") return;
+    if (event.finishReason === "tool-calls") {
+      channel.state.pendingToolCallMessage = event.message
+        ? (firstNonEmptyLine(event.message) ?? null)
+        : null;
+      return;
+    }
+    channel.state.pendingToolCallMessage = null;
     if (!event.message) {
       await channel.thread.startTyping();
       return;

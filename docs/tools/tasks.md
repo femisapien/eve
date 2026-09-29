@@ -104,7 +104,8 @@ A workflow tool body receives its signals from its context or, in a `serve` body
   every call in one stretch of work shares one signal, and the next stretch gets a new one. Pass it
   to the steps and `ctx.agent` sends that should stop.
 - **`ctx.ask(request)`** withdraws the question when the call's `abortSignal` aborts, and
-  `ctx.ask(request, { signal })` also when `signal` does. The answer resolves as
+  `ctx.ask(request, { signal })` also when `signal` does. In a `serve` body, `ctx.reply()` also
+  withdraws the questions still pending for the calls it settles. The answer resolves as
   `{ status: "cancelled" }`, and the stream reports `input.resolved` with `outcome: "cancelled"` so
   channels stop offering the question. A person's answer that reached the session first still wins:
   the ask resolves as `answered`, so branch on `status`, not on the signal.
@@ -134,16 +135,20 @@ provided `sleep` tool races its timer against the signal.
 ## What the model sees
 
 eve adds `task_wait`, `task_cancel`, and a short system prompt block that explains tasks whenever
-the agent has an agent tool or a `task` or `serve` workflow tool.
+the agent has an agent tool or a `task` or `serve` workflow tool. The block tells the model to call
+`task_wait` when it has nothing to say until a result arrives, and to reply when the person should
+hear from it first, such as a confirmation that work is underway. In a child session or a
+schedule's session, where only the final reply reaches the caller, it tells the model to call
+`task_wait` instead of replying while tasks work.
 
 **Receipts.** A call that starts a task returns a receipt as its tool result. Task ids are the tool
 name and six characters. A resumable task's receipt tells the model how to reach it again, and a
 call that reaches it by `taskId` returns a short receipt of its own:
 
 ```text
-Started task deploy-4hd8sa.
-Started task researcher-7k2m9q. Call researcher again with taskId researcher-7k2m9q to send it another message.
-Sent to task researcher-7k2m9q.
+Started task deploy-4hd8sa. Its result will arrive in a <task_result> message.
+Started task researcher-7k2m9q. Its result will arrive in a <task_result> message. To send it another message, call researcher again with taskId researcher-7k2m9q.
+Sent to task researcher-7k2m9q. Its reply will arrive in a <task_result> message.
 ```
 
 **Results.** Each result arrives once, as a `<task_result>` block in a `task.result` message that
@@ -156,18 +161,24 @@ text is cut and marked `[truncated]`.
 <task_result id="deploy-4hd8sa" tool="deploy" status="completed">{"url":"https://…"}</task_result>
 ```
 
-**`task_wait({ timeout? })`** parks the turn until any task has a result, a new message
-arrives, or `timeout` milliseconds pass. It returns at once when a result is already
-waiting, and a `timeout` of `0` returns at once with any results that are ready. Waiting never
-stops a task. The model reads which tasks settled and which are still working, for example:
+**`task_wait({ timeoutSeconds? })`** parks the turn until any task has a result, a new message
+arrives, or `timeoutSeconds` pass. `timeoutSeconds` is a whole number of at least 1, in seconds
+like `sleep`. It returns at once when a result is already waiting. Waiting never stops a task. The
+model reads which tasks settled and which are still working, for example:
 
 ```text
 deploy-4hd8sa completed; its result follows. 1 task is still working: researcher-7k2m9q.
 ```
 
-**`task_cancel({ taskId })`** stops a task's current work and returns `{ status: "cancelled" }`.
-When the task has no work to stop, because it already finished or is an idle resumable task, it
-returns `{ status: "already_finished" }`.
+**`task_cancel({ taskId })`** stops a task's current work and says so. A resumable task's answer
+also tells the model how to give it new work. When the task has no work to stop, because it already
+finished or is an idle resumable task, `task_cancel` says that instead:
+
+```text
+Stopped deploy-4hd8sa; it won't report back.
+Stopped researcher-7k2m9q's current work; it won't report back. To give it new work, call researcher again with taskId researcher-7k2m9q.
+researcher-7k2m9q had no work to stop.
+```
 
 **`[Tasks]` note.** When the session's tasks change, eve adds a note at the next step boundary that
 lists the working tasks and the 10 most recently used idle resumable tasks. The note returns after
@@ -185,11 +196,11 @@ lists the working tasks and the 10 most recently used idle resumable tasks. The 
 
 **Errors.** Two error codes are specific to tasks:
 
-| Code             | When                                                                                      |
-| ---------------- | ----------------------------------------------------------------------------------------- |
-| `UNKNOWN_TASK`   | A call's `taskId` names no unfinished resumable task that the same tool started           |
-| `UNKNOWN_TASK`   | `task_cancel`'s `taskId` names no task; a finished or idle one returns `already_finished` |
-| `TOO_MANY_TASKS` | A call would start a task, or make an idle one work, while 32 tasks are working           |
+| Code             | When                                                                               |
+| ---------------- | ---------------------------------------------------------------------------------- |
+| `UNKNOWN_TASK`   | A call's `taskId` names no unfinished resumable task that the same tool started    |
+| `UNKNOWN_TASK`   | `task_cancel`'s `taskId` names no task; a finished or idle one has no work to stop |
+| `TOO_MANY_TASKS` | A call would start a task, or make an idle one work, while 32 tasks are working    |
 
 A `final_output` call made while tasks are working returns an error that names them.
 
@@ -218,9 +229,9 @@ In every session, `turn.completed` comes only when the turn really ends. The Typ
 `send(...).result()` and the MCP channel's `agent_get` read past `turn.waiting` and report the
 final reply rather than the text written before the wait. `result()` stops at `turn.waiting` only
 while a question is pending, and returns `status: "waiting"` with it; `respond()` then reads the
-same turn to its end. See [Aggregate a turn](/docs/guides/client/streaming#aggregate-a-turn). The
-[Slack channel](/docs/channels/slack) also posts the text of a step whose only tool call is
-`task_wait`, so people see what the agent is waiting on.
+same turn to its end. See [Aggregate a turn](/docs/guides/client/streaming#aggregate-a-turn).
+Channels such as [Slack](/docs/channels/slack) post a root session's text before the wait as an
+ordinary reply, then post the reply after the results as another message.
 
 A steering message from the turn's own caller, one sent with `turnPolicy: "steer"`, the default,
 ends a `task_wait` and aborts the `abortSignal` of any `execute` call the turn waits on, but it
@@ -246,21 +257,26 @@ same `taskId` continues where it left off. A `serve` body that doesn't return to
 
 ## Stream events
 
-| Event           | When                                                                     | Data                                                            |
-| --------------- | ------------------------------------------------------------------------ | --------------------------------------------------------------- |
-| `task.started`  | A call starts a task, or reaches a resumable task by its `taskId`        | `taskId`, `callId`, `turnId`, and the tool `name`               |
-| `task.settled`  | A reply, return, failure, or cancel settles one call                     | `taskId`, `callId`, `turnId`, `status`, and `output` or `error` |
-| `agent.started` | A workflow run, including an agent tool's, opens a session with an agent | `callId`, `turnId`, `taskId`, `name`, `sessionId`, `streamPath` |
-| `turn.waiting`  | An open turn parks on its tasks, a `task_wait`, a question, or a sign-in | `turnId` and `sequence`                                         |
+| Event           | When                                                                     | Data                                                                             |
+| --------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
+| `task.started`  | A call starts a task, or reaches a resumable task by its `taskId`        | `taskId`, `callId`, `turnId`, the tool `name`, and `kind`                        |
+| `task.settled`  | A reply, return, failure, or cancel settles one call                     | `taskId`, `callId`, `turnId`, `status`, and `output` or `error` unless cancelled |
+| `agent.started` | A workflow run, including an agent tool's, opens a session with an agent | `callId`, `turnId`, `taskId`, `name`, `sessionId`, `streamPath`                  |
+| `turn.waiting`  | An open turn parks on its tasks, a `task_wait`, a question, or a sign-in | `turnId` and `sequence`                                                          |
 
 `task.started` and `task.settled` come once each per call, and `(taskId, callId)` identifies the
 call. Both carry that call's `turnId`, which for a resumable task's later call can be a later turn
-than the one that started the task. `status` is `"completed"`, `"failed"`, or `"cancelled"`.
+than the one that started the task. `kind` is `"agent"` for an agent tool's call and `"tool"`
+otherwise. `status` is `"completed"`, `"failed"`, or `"cancelled"`. A completed call carries
+`output`, a failed call carries `error`, and a cancelled call carries neither.
 `agent.started` names the call and turn whose run opened the session, and its `taskId` is absent
 when an `execute` call opened it. Results reach the model as a message in its history, not as a
 stream event, so read outcomes from `task.settled`. An `input.requested`,
 `authorization.required`, or `authorization.completed` event from a task's run carries its
-`taskId`. Hooks subscribe to the same events. See
+`taskId`. Hooks subscribe to the same events. The stream also carries the model's `task_wait` and
+`task_cancel` calls as ordinary `actions.requested` tool calls, so evals can assert on them. The
+`eve dev` terminal UI and Slack typing indicators leave those calls out; the terminal UI shows each
+task's start and end instead. See
 [Sessions, runs, and streaming](/docs/concepts/sessions-runs-and-streaming#task-events) and
 [Follow a subagent](/docs/guides/client/streaming#follow-a-subagent).
 
