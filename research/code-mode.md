@@ -91,8 +91,8 @@ details are omitted here.
 
 - **Programs.** `workflow()` from `eve/tools/workflow`, enabled by `agent/tools/workflow.ts`, takes
   `{ js }` and runs it in the vendored `@ai-sdk/code-mode` QuickJS sandbox as a side-effect-free
-  step. It runs each call as a task, so the program's value reaches the model later, in a
-  `task.result` message. Its only host binding is `ctx.agent`, capped by `maxSubagents`. Each call
+  step. It is a workflow tool with a `task` entry point, so the program's value reaches the model
+  later, in a `task.result` message. Its only host binding is `ctx.agent`, capped by `maxSubagents`. Each call
   parks the program as an interrupt; the owning durable workflow runs the pending batch, then
   resumes the program from its signed continuation. A failed resolution reaches the program as a
   thrown error that carries only a message.
@@ -138,9 +138,11 @@ An agent has `run_js` when it defines `agent/tools/run_js.ts` or any connection 
 flag, and an agent with neither is unchanged. The documentation lists the model families that pass
 the code-mode eval suite.
 
-Unlike `workflow()`, `run_js` does not run as a task. The call blocks the turn until the program
-returns, and the program's value is the tool result, because the model's next step depends on it.
-While the program waits on a nested call, the turn parks durably without holding compute.
+Like `workflow()`, `run_js` is a workflow tool, and its `"use workflow"` body owns the program's
+nested calls. It uses the `execute` entry point instead of `task`. A call blocks the turn until the
+workflow settles, and the program's value is the tool result rather than a later `task.result`
+message, because the model's next step depends on it. While the workflow waits on a nested call,
+the turn parks without holding compute.
 
 ### Code mode tools
 
