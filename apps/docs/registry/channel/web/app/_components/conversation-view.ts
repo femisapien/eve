@@ -1,19 +1,24 @@
 import type { MessageStreamEvent } from "eve/client";
-import type {
-  ConversationAgentSession,
-  ConversationInput,
-  ConversationState,
-  ConversationTask,
-  ConversationTaskCall,
-  EveAuthorizationPart,
-  EveDynamicToolPart,
-  EveMessage,
-  EveMessagePart,
+import {
+  agentCallTurns,
+  agentToolSession,
+  type ConversationAgentSession,
+  type ConversationInput,
+  type ConversationState,
+  type ConversationTask,
+  type ConversationTaskCall,
+  conversationAuthorizations,
+  type EveAuthorizationPart,
+  type EveDynamicToolPart,
+  type EveMessage,
+  type EveMessagePart,
+  followedAgentToolCallIds,
+  type ToolCallState,
+  toolCallState,
 } from "eve/react";
 
-// Presentation rules for the chat. Several of these mirror the `eve dev` TUI's transcript
-// (packages/eve/src/cli/dev/tui/transcript.ts) and should move into `eve/client` once both
-// surfaces agree on them.
+// How the chat lays out a conversation. Each call's state comes from eve's `toolCallState`, which
+// the `eve dev` TUI shares.
 
 /** One status vocabulary for every row, at every depth. */
 export type ActivityStatus =
@@ -190,59 +195,6 @@ function friendlyFailure(code: string, message: string): string {
 }
 
 // ---------------------------------------------------------------------------
-// Conversation helpers (eve keeps these internal for now)
-// ---------------------------------------------------------------------------
-
-export function conversationAuthorizations(
-  conversation: ConversationState,
-): readonly EveAuthorizationPart[] {
-  return conversation.messages.flatMap((message) =>
-    message.role === "assistant"
-      ? message.parts.filter((part): part is EveAuthorizationPart => part.type === "authorization")
-      : [],
-  );
-}
-
-/** The session an agent tool forwards its task's calls to. */
-function agentToolSession(
-  conversation: ConversationState,
-  task: ConversationTask,
-): ConversationAgentSession | undefined {
-  return Object.values(conversation.agents).find(
-    (agent) => agent.taskId === task.taskId && agent.name === task.name,
-  );
-}
-
-/**
- * Attributes an agent tool session's turns to the calls that produced them: the k-th message the
- * session received came from the task's k-th call, and a turn without a message of its own
- * continues the previous call.
- */
-function agentCallTurns(
-  task: ConversationTask,
-  conversation: ConversationState,
-): ReadonlyMap<string, readonly string[]> {
-  const callIds = Object.keys(task.calls);
-  const owners = new Map<string, string>();
-  let index = 0;
-  for (const message of conversation.messages) {
-    if (message.role !== "user") continue;
-    const callId = callIds[index++];
-    const turnId = message.metadata?.turnId;
-    if (callId !== undefined && turnId !== undefined && !owners.has(turnId)) {
-      owners.set(turnId, callId);
-    }
-  }
-  const turns = new Map<string, string[]>(callIds.map((callId) => [callId, []]));
-  let owner: string | undefined;
-  for (const turnId of Object.keys(conversation.turns)) {
-    owner = owners.get(turnId) ?? owner;
-    if (owner !== undefined) turns.get(owner)?.push(turnId);
-  }
-  return turns;
-}
-
-// ---------------------------------------------------------------------------
 // Projection context
 // ---------------------------------------------------------------------------
 
@@ -269,7 +221,7 @@ export interface ViewContext {
   readonly childToolIds: ReadonlySet<string>;
   /** Inputs each task call asked, including requests its agents passed up. */
   readonly callInputs: ReadonlyMap<string, readonly ConversationInput[]>;
-  /** Whether the session is busy, for turns the conversation doesn't know yet. */
+  /** Whether the session's stream is still delivering, which a call waits on to finish. */
   readonly busy: boolean;
 }
 
@@ -286,7 +238,7 @@ export function viewContext(
     agentCalls: agentCalls(conversation, facts),
     busy,
     callInputs: callInputs(conversation),
-    childToolIds: childToolCallIds(conversation),
+    childToolIds: followedAgentToolCallIds(conversation),
     conversation,
     facts,
     taskCalls,
@@ -341,81 +293,6 @@ function callInputs(conversation: ConversationState): Map<string, ConversationIn
     byCall.set(call.callId, list);
   }
   return byCall;
-}
-
-function childToolCallIds(conversation: ConversationState): Set<string> {
-  const ids = new Set<string>();
-  for (const agent of Object.values(conversation.agents)) {
-    if (agent.observation.status === "not-followed") continue;
-    for (const message of agent.observation.conversation?.messages ?? []) {
-      for (const part of message.parts) {
-        if (part.type === "dynamic-tool") ids.add(part.toolCallId);
-      }
-    }
-  }
-  return ids;
-}
-
-type TurnState = "open" | "cancelled" | "closed";
-
-function turnState(context: ViewContext, turnId: string | undefined): TurnState {
-  const turn = turnId === undefined ? undefined : context.conversation.turns[turnId];
-  if (turn === undefined) return context.busy ? "open" : "closed";
-  if (turn.status === "active") return "open";
-  return turn.status === "cancelled" ? "cancelled" : "closed";
-}
-
-// ---------------------------------------------------------------------------
-// Call status
-// ---------------------------------------------------------------------------
-
-function toolCallState(part: EveDynamicToolPart, context: ViewContext, turn: TurnState): CallState {
-  const state = settledToolState(part, context.conversation);
-  if (state.status !== "working" || turn === "open") return state;
-  return { status: turn === "cancelled" ? "cancelled" : "interrupted" };
-}
-
-function settledToolState(part: EveDynamicToolPart, conversation: ConversationState): CallState {
-  switch (part.state) {
-    case "approval-requested": {
-      const input = conversation.inputs[part.approval.id];
-      if (input === undefined || input.status === "open") return { status: "needs-you" };
-      if (input.request.kind !== "tool-approval") return { status: "working" };
-      return input.response?.optionId === "approve"
-        ? { status: "working" }
-        : { errorText: "Denied", status: "denied" };
-    }
-    case "approval-responded":
-      return part.approval.approved === false
-        ? { errorText: part.approval.reason ?? "Denied", status: "denied" }
-        : { status: "working" };
-    case "output-available":
-      return part.partial === true
-        ? { output: part.output, status: "working" }
-        : { output: part.output, status: "done" };
-    case "output-error":
-      return { errorText: part.errorText, status: "failed" };
-    case "output-denied":
-      return { errorText: part.approval.reason ?? "Denied", status: "denied" };
-    default:
-      return { status: "working" };
-  }
-}
-
-function taskCallState(
-  call: ConversationTaskCall,
-  inputs: readonly ConversationInput[],
-): CallState {
-  switch (call.status) {
-    case "working":
-      return { status: inputs.some((input) => input.status === "open") ? "needs-you" : "working" };
-    case "completed":
-      return { output: call.output, status: "done" };
-    case "failed":
-      return { errorText: call.error?.message, status: "failed" };
-    case "cancelled":
-      return { status: "cancelled" };
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -480,7 +357,6 @@ export function activityItems(
   options: { readonly includeText: boolean },
 ): ActivityItem[] {
   const items: ActivityItem[] = [];
-  const turn = turnState(context, turnId);
   for (const [index, part] of parts.entries()) {
     switch (part.type) {
       case "text":
@@ -512,7 +388,7 @@ export function activityItems(
         });
         break;
       case "dynamic-tool": {
-        const item = toolItem(part, context, turn);
+        const item = toolItem(part, turnId, context);
         if (item !== undefined) items.push(item);
         break;
       }
@@ -523,8 +399,8 @@ export function activityItems(
 
 function toolItem(
   part: EveDynamicToolPart,
+  turnId: string | undefined,
   context: ViewContext,
-  turn: TurnState,
 ): ActivityItem | undefined {
   const callId = part.toolCallId;
   const inputRequest = part.toolMetadata?.eve?.inputRequest;
@@ -540,6 +416,11 @@ function toolItem(
     return undefined;
   }
   const times = context.facts.callTimes.get(callId);
+  const state = (inputs: readonly ConversationInput[] = []) =>
+    callState(
+      toolCallState(context.conversation, part, { streaming: context.busy, turnId }),
+      inputs,
+    );
   const agentCall = context.agentCalls.get(callId);
   if (agentCall !== undefined) {
     const inputs = context.callInputs.get(callId) ?? [];
@@ -550,7 +431,7 @@ function toolItem(
       key: `agent:${callId}`,
       kind: "agent",
       name: agentCall.name,
-      state: taskCallState(agentCall.call, inputs),
+      state: state(inputs),
       times,
     };
   }
@@ -563,7 +444,7 @@ function toolItem(
       kind: "task",
       label: context.facts.labels.get(callId),
       name: taskCall.task.name,
-      state: taskCallState(taskCall.call, inputs),
+      state: state(inputs),
       taskId: taskCall.task.taskId,
       times,
     };
@@ -577,9 +458,24 @@ function toolItem(
     label: context.facts.labels.get(callId),
     name: part.toolMetadata?.eve?.name ?? part.toolName,
     request,
-    state: toolCallState(part, context, turn),
+    state: state(),
     times,
   };
+}
+
+/** A working task that asked something, directly or through its agents, needs the person. */
+function callState(state: ToolCallState, inputs: readonly ConversationInput[]): CallState {
+  switch (state.status) {
+    case "running":
+      return {
+        ...state,
+        status: inputs.some((input) => input.status === "open") ? "needs-you" : "working",
+      };
+    case "awaiting-input":
+      return { ...state, status: "needs-you" };
+    default:
+      return { ...state, status: state.status };
+  }
 }
 
 function authorizationState(part: EveAuthorizationPart): CallState {

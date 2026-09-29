@@ -70,8 +70,8 @@ export function AgentChat({
   const isEmpty = conversation.messages.length === 0;
   const facts = useMemo(() => streamFacts(agent.events), [agent.events]);
   const context = useMemo(
-    () => viewContext(conversation, facts, isBusy),
-    [conversation, facts, isBusy],
+    () => viewContext(conversation, facts, isBusy || isResuming),
+    [conversation, facts, isBusy, isResuming],
   );
   const dock = useMemo(() => dockItems(context), [context]);
   const lastMessage = conversation.messages.at(-1);
