@@ -91,6 +91,8 @@ about to wait, hand off, or end?
 | Session completes or fails                                                   | One dispatch-only step before the terminal event |
 | Handoff to a successor run                                                   | None pending. Handoff happens only after a wait  |
 
+One exception: a model step that fails the session writes `step.failed`, `turn.failed`, and
+`session.failed` itself, so pending dispatches from that step run after those events.
 `bindTurnCallerContextStep` receives only serialized context. It passes pending dispatches on to
 the next step that receives the full session state. Pending dispatches are empty whenever the
 workflow body waits for input, hands off, or ends. Hook latency is bounded by the next boundary,
