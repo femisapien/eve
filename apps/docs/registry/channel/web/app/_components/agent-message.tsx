@@ -1,266 +1,199 @@
 "use client";
 
-import type {
-  EveAuthorizationPart,
-  EveDynamicToolPart,
-  EveMessage,
-  EveMessageInputRequest,
-  EveMessagePart,
-} from "eve/react";
-import { useState } from "react";
-import {
-  ArrowRightIcon,
-  CheckCircleIcon,
-  CheckIcon,
-  ExternalLinkIcon,
-  FileIcon,
-  ImageIcon,
-  KeyRoundIcon,
-  XCircleIcon,
-} from "lucide-react";
+import type { EveMessage, EveMessagePart } from "eve/react";
+import { CircleSlashIcon, ExternalLinkIcon, FileIcon, ImageIcon, XIcon } from "lucide-react";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
-import {
-  Question,
-  QuestionInput,
-  QuestionOption,
-  QuestionOptions,
-  QuestionPrompt,
-  type QuestionResponse,
-  QuestionSubmit,
-  type QuestionValue,
-} from "@/components/ai-elements/question";
-import { Reasoning, ReasoningContent, ReasoningTrigger } from "@/components/ai-elements/reasoning";
-import {
-  BashToolContent,
-  Tool,
-  ToolContent,
-  ToolHeader,
-  ToolInput,
-  ToolOutput,
-} from "@/components/ai-elements/tool";
-import { Button } from "@/components/ui/button";
+import { Shimmer } from "@/components/ai-elements/shimmer";
 import { cn } from "@/lib/utils";
-
-export type AgentInputResponse = {
-  readonly optionId?: string;
-  readonly requestId: string;
-  readonly text?: string;
-};
+import { ActivityDisclosure, Elapsed } from "./activity";
+import {
+  formatDuration,
+  itemStatus,
+  type TurnBreak,
+  type TurnFooter,
+  turnFooter,
+  turnLayout,
+  type ViewContext,
+} from "./conversation-view";
 
 type EveFilePart = Extract<EveMessagePart, { type: "file" }>;
 
-export function AgentMessage({
-  canRespond,
-  isStreaming,
-  message,
-  onInputResponses,
-}: {
-  readonly canRespond: (requestId: string) => boolean;
-  readonly isStreaming: boolean;
-  readonly message: EveMessage;
-  readonly onInputResponses: (responses: readonly AgentInputResponse[]) => void | Promise<void>;
-}) {
-  const lastTextIndex = message.parts.reduce(
-    (last, part, index) => (part.type === "text" ? index : last),
-    -1,
-  );
-  const hasAssistantText =
-    message.role === "assistant" &&
-    message.parts.some((part) => part.type === "text" && part.text.length > 0);
-
+export function UserMessage({ message }: { readonly message: EveMessage }) {
   return (
-    <Message
-      data-optimistic={message.metadata?.optimistic ? "true" : undefined}
-      from={message.role}
-    >
+    <Message data-optimistic={message.metadata?.optimistic ? "true" : undefined} from="user">
       <MessageContent>
         {message.parts.map((part, index) =>
-          hasAssistantText && part.type === "reasoning" ? null : (
-            <AgentMessagePart
-              canRespond={canRespond}
-              key={partKey(part, index)}
-              onInputResponses={onInputResponses}
-              part={part}
-              showCaret={isStreaming && message.role === "assistant" && index === lastTextIndex}
-            />
-          ),
+          part.type === "text" ? (
+            <MessageResponse key={`text:${part.id ?? index}`}>{part.text}</MessageResponse>
+          ) : part.type === "file" ? (
+            <AttachmentPart key={`file:${index}`} part={part} />
+          ) : null,
         )}
       </MessageContent>
     </Message>
   );
 }
 
-function AgentMessagePart({
-  canRespond,
-  onInputResponses,
-  part,
-  showCaret,
+/**
+ * One assistant turn: each stretch of prose, then one folded activity row for the work behind
+ * it. Waits and messages sent into the turn split it, and the turn ends with its live status or
+ * its outcome.
+ */
+export function AssistantTurn({
+  context,
+  isLastTurn,
+  message,
+  steered,
 }: {
-  readonly canRespond: (requestId: string) => boolean;
-  readonly onInputResponses: (responses: readonly AgentInputResponse[]) => void | Promise<void>;
-  readonly part: EveMessagePart;
-  readonly showCaret: boolean;
+  readonly context: ViewContext;
+  readonly isLastTurn: boolean;
+  readonly message: EveMessage;
+  /** User messages sent into this turn while it ran, by message ID. */
+  readonly steered: ReadonlyMap<string, EveMessage>;
 }) {
-  switch (part.type) {
-    case "step-start":
-      return null;
-    case "text":
-      return (
-        <MessageResponse caret="block" isAnimating={showCaret}>
-          {part.text}
-        </MessageResponse>
-      );
-    case "reasoning":
-      return (
-        <Reasoning defaultOpen isStreaming={part.state === "streaming"}>
-          <ReasoningTrigger />
-          <ReasoningContent>{part.text}</ReasoningContent>
-        </Reasoning>
-      );
-    case "file":
-      return <AttachmentPart part={part} />;
-    case "authorization":
-      return <AuthorizationPrompt part={part} />;
-    case "dynamic-tool": {
-      const inputRequest = part.toolMetadata?.eve?.inputRequest;
-      if (inputRequest?.kind === "question") {
-        return (
-          <QuestionRequest
-            canRespond={canRespond(inputRequest.requestId)}
-            inputRequest={inputRequest}
-            inputResponse={part.toolMetadata?.eve?.inputResponse}
-            onInputResponses={onInputResponses}
-          />
-        );
-      }
-
-      return (
-        <Tool
-          defaultOpen={part.state === "approval-requested" || part.state === "approval-responded"}
-        >
-          <ToolHeader
-            state={part.state}
-            title={part.toolName}
-            toolName={part.toolName}
-            type="dynamic-tool"
-          />
-          <ToolContent>
-            {part.toolName === "bash" ? (
-              <BashToolContent errorText={part.errorText} input={part.input} output={part.output} />
-            ) : (
-              <ToolInput input={part.input} />
-            )}
-            <InputRequestActions
-              canRespond={canRespond}
-              part={part}
-              onInputResponses={onInputResponses}
-            />
-            {part.toolName === "bash" ? null : (
-              <ToolOutput errorText={part.errorText} output={part.output} />
-            )}
-          </ToolContent>
-        </Tool>
-      );
-    }
-  }
-}
-
-function QuestionRequest({
-  canRespond,
-  inputRequest,
-  inputResponse,
-  onInputResponses,
-}: {
-  readonly canRespond: boolean;
-  readonly inputRequest: EveMessageInputRequest;
-  readonly inputResponse?: AgentInputResponse;
-  readonly onInputResponses: (responses: readonly AgentInputResponse[]) => void | Promise<void>;
-}) {
-  const hasOptions = (inputRequest.options?.length ?? 0) > 0;
-  const acceptsFreeform = inputRequest.allowFreeform === true || !hasOptions;
-  const [questionValue, setQuestionValue] = useState<QuestionValue>({
-    selectedValues: inputResponse?.optionId ? [inputResponse.optionId] : [],
-    text: inputResponse?.text ?? "",
-  });
-
-  const submitOption = (optionId: string) => {
-    setQuestionValue((value) => ({ ...value, selectedValues: [optionId] }));
-    return onInputResponses([
-      {
-        optionId,
-        requestId: inputRequest.requestId,
-      },
-    ]);
-  };
-
-  const submitResponse = ({ selectedValues, text }: QuestionResponse) =>
-    onInputResponses([
-      {
-        optionId: selectedValues[0],
-        requestId: inputRequest.requestId,
-        text,
-      },
-    ]);
+  const entries = turnLayout(message, context);
+  const turnId = message.metadata?.turnId;
+  const lastText = findLastStreamingText(entries);
+  const hasContent = entries.some((entry) => entry.kind === "segment");
+  const footer = visibleFooter(turnFooter(turnId, context), entries);
 
   return (
-    <Question
-      disabled={!canRespond || inputResponse !== undefined}
-      onSubmit={submitResponse}
-      onValueChange={setQuestionValue}
-      value={questionValue}
-    >
-      <QuestionPrompt>{inputRequest.prompt}</QuestionPrompt>
-      {hasOptions ? (
-        <QuestionOptions className="flex-col items-stretch" aria-label={inputRequest.prompt}>
-          {inputRequest.options?.map((option, index) => (
-            <QuestionOption
-              className="justify-start px-3 py-2 text-left"
-              key={option.id}
-              onClick={() => void submitOption(option.id)}
-              value={option.id}
+    <div className="flex flex-col gap-4">
+      {entries.map((entry) => {
+        if (entry.kind === "break") {
+          if (entry.brk.kind === "wait") return <WaitDivider brk={entry.brk} key={entry.key} />;
+          const steeredMessage =
+            entry.brk.messageId === undefined ? undefined : steered.get(entry.brk.messageId);
+          return steeredMessage === undefined ? null : (
+            <UserMessage key={entry.key} message={steeredMessage} />
+          );
+        }
+        const { segment } = entry;
+        return (
+          <Message from="assistant" key={segment.key}>
+            <MessageContent className="gap-3">
+              {segment.texts.map((text) => (
+                <MessageResponse
+                  caret="block"
+                  isAnimating={isLastTurn && text.streaming && text.key === lastText}
+                  key={text.key}
+                >
+                  {text.text}
+                </MessageResponse>
+              ))}
+              {segment.activity.length > 0 ? <ActivityDisclosure items={segment.activity} /> : null}
+            </MessageContent>
+          </Message>
+        );
+      })}
+      {footer === undefined ? null : <FooterLine footer={footer} hasContent={hasContent} />}
+    </div>
+  );
+}
+
+/** A live activity row or streaming prose already says the turn is working. */
+function visibleFooter(
+  footer: TurnFooter | undefined,
+  entries: ReturnType<typeof turnLayout>,
+): TurnFooter | undefined {
+  if (footer?.kind !== "working") return footer;
+  const last = entries.at(-1);
+  if (last?.kind !== "segment") return footer;
+  const { activity, texts } = last.segment;
+  const streaming = texts.at(-1)?.streaming === true && activity.length === 0;
+  const live = activity.some((item) => itemStatus(item) === "working");
+  return streaming || live ? undefined : footer;
+}
+
+function findLastStreamingText(entries: ReturnType<typeof turnLayout>): string | undefined {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry?.kind !== "segment") continue;
+    const text = entry.segment.texts.at(-1);
+    if (text !== undefined) return text.key;
+  }
+  return undefined;
+}
+
+function WaitDivider({ brk }: { readonly brk: TurnBreak }) {
+  const start = Date.parse(brk.at ?? "");
+  const end = Date.parse(brk.resumedAt ?? "");
+  const waited = Number.isNaN(start) || Number.isNaN(end) ? "" : formatDuration(end - start);
+  return (
+    <div className="flex items-center gap-3 text-muted-foreground text-xs" role="separator">
+      <span className="h-px flex-1 bg-border" />
+      <span>{waited ? `waited ${waited}` : "waited"}</span>
+      <span className="h-px flex-1 bg-border" />
+    </div>
+  );
+}
+
+function FooterLine({
+  footer,
+  hasContent,
+}: {
+  readonly footer: TurnFooter;
+  readonly hasContent: boolean;
+}) {
+  switch (footer.kind) {
+    case "working":
+      return (
+        <div aria-live="polite" className="text-muted-foreground text-sm">
+          <Shimmer as="span" duration={1}>
+            {hasContent ? "Working…" : "Thinking"}
+          </Shimmer>
+        </div>
+      );
+    case "waiting": {
+      const needsYou = footer.on.some((entry) => entry.needsYou);
+      return (
+        <div
+          aria-live="polite"
+          className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-1 text-muted-foreground text-sm"
+        >
+          {needsYou ? (
+            <span>Waiting on</span>
+          ) : (
+            <Shimmer as="span" duration={1.5}>
+              {footer.on.length > 0 ? "Waiting on" : "Waiting"}
+            </Shimmer>
+          )}
+          {footer.on.map((entry, index) => (
+            <span
+              className={cn(entry.needsYou && "text-amber-700 dark:text-amber-500")}
+              key={entry.name}
             >
-              <span className="min-w-0 flex-1">
-                <span className="block text-foreground text-sm leading-tight">{option.label}</span>
-                {option.description ? (
-                  <span className="block text-sm text-muted-foreground leading-tight">
-                    {option.description}
-                  </span>
-                ) : null}
-              </span>
-              {inputResponse === undefined ? (
-                <span aria-hidden="true" className="relative size-6 shrink-0">
-                  <span className="absolute inset-0 flex items-center justify-center rounded-full bg-foreground/8 text-xs text-muted-foreground transition-opacity group-hover/option:opacity-0 group-focus-visible/option:opacity-0">
-                    {index + 1}
-                  </span>
-                  <ArrowRightIcon className="absolute top-1/2 left-1/2 size-4 -translate-x-1/2 -translate-y-1/2 text-muted-foreground opacity-0 transition-[color,opacity] group-hover/option:text-foreground group-hover/option:opacity-100 group-focus-visible/option:opacity-100" />
-                </span>
+              {entry.name === "you" ? (
+                "you"
               ) : (
-                <CheckIcon className="size-4 shrink-0 opacity-0 transition-opacity group-data-[state=checked]/option:opacity-100" />
+                <code className="font-mono text-[12px]">{entry.name}</code>
               )}
-            </QuestionOption>
+              {index < footer.on.length - 1 ? "," : ""}
+            </span>
           ))}
-        </QuestionOptions>
-      ) : null}
-      {acceptsFreeform ? (
-        <div className="relative">
-          <QuestionInput
-            aria-label="Answer"
-            className={inputResponse === undefined ? "pr-12 pb-12" : undefined}
-            placeholder="Type your answer…"
-          />
-          {inputResponse === undefined && questionValue.text.trim().length > 0 ? (
-            <QuestionSubmit
-              aria-label="Answer"
-              className="absolute right-2 bottom-2"
-              size="icon-sm"
-            >
-              <ArrowRightIcon />
-            </QuestionSubmit>
+          {footer.since ? (
+            <span className="text-xs">
+              · <Elapsed live since={footer.since} />
+            </span>
           ) : null}
         </div>
-      ) : null}
-    </Question>
-  );
+      );
+    }
+    case "cancelled":
+      return (
+        <p className="flex items-center gap-1.5 text-muted-foreground text-sm">
+          <CircleSlashIcon className="size-3.5" />
+          Cancelled
+        </p>
+      );
+    case "failed":
+      return (
+        <p className="flex items-start gap-1.5 text-destructive text-sm" role="alert">
+          <XIcon className="mt-0.5 size-3.5 shrink-0" />
+          <span>{footer.message}</span>
+        </p>
+      );
+  }
 }
 
 function AttachmentPart({ part }: { readonly part: EveFilePart }) {
@@ -294,188 +227,9 @@ function AttachmentPart({ part }: { readonly part: EveFilePart }) {
   );
 }
 
-function AuthorizationPrompt({ part }: { readonly part: EveAuthorizationPart }) {
-  const isAuthorized = part.state === "completed" && part.outcome === "authorized";
-  const isCompleted = part.state === "completed";
-  const Icon = isAuthorized ? CheckCircleIcon : isCompleted ? XCircleIcon : KeyRoundIcon;
-  const instructions = part.authorization?.instructions;
-  const shouldShowInstructions = instructions !== undefined && instructions !== part.description;
-
-  return (
-    <div
-      className={cn(
-        "space-y-3 rounded-md border p-3",
-        isAuthorized
-          ? "border-emerald-500/30 bg-emerald-500/5"
-          : isCompleted
-            ? "border-destructive/30 bg-destructive/5"
-            : "border-blue-500/30 bg-blue-500/5",
-      )}
-    >
-      <div className="flex items-start gap-3">
-        <span
-          className={cn(
-            "mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-full",
-            isAuthorized
-              ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
-              : isCompleted
-                ? "bg-destructive/10 text-destructive"
-                : "bg-blue-500/10 text-blue-700 dark:text-blue-300",
-          )}
-        >
-          <Icon className="size-4" />
-        </span>
-        <div className="min-w-0 flex-1 space-y-2">
-          <p className="font-medium text-sm">{authorizationTitle(part)}</p>
-          <p className="text-muted-foreground text-sm">{authorizationDescription(part)}</p>
-          {shouldShowInstructions ? (
-            <p className="text-muted-foreground text-sm">{instructions}</p>
-          ) : null}
-          {part.state === "required" && part.authorization?.userCode ? (
-            <div className="flex flex-wrap items-center gap-2 text-sm">
-              <span className="text-muted-foreground">Code</span>
-              <code className="rounded-md bg-background px-2 py-1 font-mono">
-                {part.authorization.userCode}
-              </code>
-            </div>
-          ) : null}
-          {part.state === "required" && part.authorization?.url ? (
-            <Button asChild size="sm">
-              <a href={part.authorization.url} rel="noreferrer" target="_blank">
-                <ExternalLinkIcon className="size-4" />
-                Sign in with {part.displayName}
-              </a>
-            </Button>
-          ) : null}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function authorizationTitle(part: EveAuthorizationPart): string {
-  if (part.state === "required") {
-    return `Connect ${part.displayName}`;
-  }
-  if (part.outcome === "authorized") {
-    return `${part.displayName} connected`;
-  }
-  return `${part.displayName} authorization ${formatAuthorizationOutcome(part.outcome)}`;
-}
-
-function authorizationDescription(part: EveAuthorizationPart): string {
-  if (part.state === "required") {
-    return part.description;
-  }
-  if (part.outcome === "authorized") {
-    return `${part.displayName} connected.`;
-  }
-  const tail = part.reason !== undefined ? ` (${part.reason})` : "";
-  return `${part.displayName} authorization ${formatAuthorizationOutcome(part.outcome)}${tail}.`;
-}
-
-function formatAuthorizationOutcome(outcome: NonNullable<EveAuthorizationPart["outcome"]>): string {
-  switch (outcome) {
-    case "authorized":
-      return "authorized";
-    case "declined":
-      return "declined";
-    case "failed":
-      return "failed";
-    case "timed-out":
-      return "timed out";
-  }
-}
-
 function formatBytes(size: number | undefined): string | undefined {
-  if (size === undefined) {
-    return undefined;
-  }
-  if (size < 1024) {
-    return `${size} B`;
-  }
-  if (size < 1024 * 1024) {
-    return `${(size / 1024).toFixed(1)} KB`;
-  }
+  if (size === undefined) return undefined;
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function InputRequestActions({
-  canRespond,
-  onInputResponses,
-  part,
-}: {
-  readonly canRespond: (requestId: string) => boolean;
-  readonly onInputResponses: (responses: readonly AgentInputResponse[]) => void | Promise<void>;
-  readonly part: EveDynamicToolPart;
-}) {
-  const inputRequest = part.toolMetadata?.eve?.inputRequest;
-  if (!inputRequest) {
-    return null;
-  }
-
-  const inputResponse = part.toolMetadata?.eve?.inputResponse;
-  const selectedOption = inputRequest.options?.find(
-    (option) => option.id === inputResponse?.optionId,
-  );
-  // An approval can settle before its batch resolves, without an input response.
-  const settledApproval =
-    part.approval?.approved === undefined
-      ? undefined
-      : part.approval.approved
-        ? "Approved"
-        : "Denied";
-
-  return (
-    <div className="space-y-3 rounded-md border border-yellow-500/30 bg-yellow-500/5 p-3">
-      <p className="text-muted-foreground text-sm">{inputRequest.prompt}</p>
-      {inputResponse || settledApproval ? (
-        <p className="font-medium text-sm">
-          Responded:{" "}
-          {selectedOption?.label ??
-            inputResponse?.text ??
-            inputResponse?.optionId ??
-            settledApproval}
-        </p>
-      ) : (
-        <div className="flex flex-wrap gap-2">
-          {inputRequest.options?.map((option) => (
-            <Button
-              disabled={!canRespond(inputRequest.requestId)}
-              key={option.id}
-              onClick={() => {
-                void onInputResponses([
-                  {
-                    optionId: option.id,
-                    requestId: inputRequest.requestId,
-                  },
-                ]);
-              }}
-              size="sm"
-              type="button"
-              variant={option.style === "danger" ? "destructive" : "default"}
-            >
-              {option.label}
-            </Button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function partKey(part: EveMessagePart, index: number): string {
-  switch (part.type) {
-    case "authorization":
-      return part.attemptId === undefined
-        ? `authorization:${part.turnId}:${part.stepIndex}:${part.name}`
-        : `authorization:${part.attemptId}`;
-    case "dynamic-tool":
-      return part.toolCallId;
-    case "reasoning":
-    case "text":
-      return `${part.type}:${part.id ?? index}`;
-    default:
-      return `${part.type}:${index}`;
-  }
 }
