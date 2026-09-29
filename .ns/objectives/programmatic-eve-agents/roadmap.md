@@ -10,9 +10,9 @@
       Confirmed generated entry imports with member selection, application-root/registration-key resource isolation, no adjacent discovery throughout preparation, and existing deployment affinity and idle handoff. Retain Next.js forwarding only for service `/eve/v1/*`; arbitrary paths and conventional Workflow webhooks receive no new automatic forwarding.
       Evidence: user-approved source-grounded proposal recorded in `updates/20260928T233326Z-entry-bindings-and-registration-isolation.md`. Source inspection identified concrete missing capabilities; no implementation or runtime qualification is claimed.
 
-- [ ] Finalize the implementation proposal in the Objective files.
-      Keep the confirmed contract, integration design, and progress in this repo-only Objective; no GitHub issue or issue-backed research document is a prerequisite. Settle map-key validation/collision diagnostics, internal binding representation, and propagation through generated service commands.
-      Evidence: a compact proposal identifies implementation slices and behavioral evidence for the complete supported path and distinguishes design from runtime evidence.
+- [x] Finalize the implementation proposal in the Objective files.
+      Specified literal map-key validation and deterministic ordering, existing collision semantics, entry-backed namespace projection, and typed host selection with internal environment transport through generated commands. Keep proposal and progress repo-only; no GitHub issue is required.
+      Evidence: `objective.md` “Implementation Proposal” defines three delivery slices and their behavioral evidence; `updates/20260929T000301Z-implementation-proposal.md` records source grounding and remaining runtime risks. This completes proposal work only, not implementation or runtime qualification.
 
 - [ ] Connect programmatic definitions to shared compilation.
       Adapt `createAgent` values from the explicitly selected module into existing source composition, normalization, and executable-binding machinery. Preserve existing defaults and configuration controls; use map keys for primitive identity and the registration key for agent identity. Resolve filesystem-shaped assumptions without introducing a parallel compiler or implicit discovery in entry mode.
