@@ -27,6 +27,7 @@ import {
 import type { ResolvedDynamicInstructionsResolver } from "#runtime/types.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import type { DynamicResolveContext } from "#dynamic/definition.js";
+import { captureLogRecords } from "#internal/testing/log-records.js";
 
 function createResolver(
   slug: string,
@@ -186,6 +187,7 @@ describe("dispatchDynamicInstructionEvent", () => {
   });
 
   it("logs and skips unbranded return values", async () => {
+    const logs = captureLogRecords();
     const ctx = createCtx();
     const resolver = createResolver("context", ["session.started"], () => ({
       markdown: "not branded",
@@ -199,9 +201,17 @@ describe("dispatchDynamicInstructionEvent", () => {
     });
 
     expect(buildDynamicInstructionMessages(ctx)).toEqual([]);
+    expect(logs.records).toContainEqual(
+      expect.objectContaining({
+        level: "error",
+        message:
+          'Dynamic instructions resolver "context" returned an unbranded value — wrap with defineInstructions().',
+      }),
+    );
   });
 
   it("logs and skips throwing resolvers", async () => {
+    const logs = captureLogRecords();
     const ctx = createCtx();
     const resolver = createResolver("broken", ["session.started"], () => {
       throw new Error("resolver exploded");
@@ -215,6 +225,12 @@ describe("dispatchDynamicInstructionEvent", () => {
     });
 
     expect(buildDynamicInstructionMessages(ctx)).toEqual([]);
+    expect(logs.records).toContainEqual(
+      expect.objectContaining({
+        level: "error",
+        message: "Dynamic instructions resolver (session.started) threw — skipping.",
+      }),
+    );
   });
 
   it("unions messages from different resolver slugs", async () => {
@@ -267,6 +283,7 @@ describe("dispatchDynamicInstructionEvent", () => {
   });
 
   it("clears stale turn system instructions on role changes and resolver failures", async () => {
+    const logs = captureLogRecords();
     const ctx = createCtx();
     let result: "system" | "user" | "throw" = "system";
     const resolver = createResolver("context", ["turn.started"], () => {
@@ -308,9 +325,16 @@ describe("dispatchDynamicInstructionEvent", () => {
       event: makeEvent("turn.started"),
     });
     expect(buildDynamicInstructionMessages(ctx)).toEqual([]);
+    expect(logs.records).toContainEqual(
+      expect.objectContaining({
+        level: "error",
+        message: "Dynamic instructions resolver (turn.started) threw — skipping.",
+      }),
+    );
   });
 
   it("keeps valid session system instructions when refresh resolution fails", async () => {
+    const logs = captureLogRecords();
     const ctx = createCtx();
     let throws = false;
     const resolver = createResolver("context", ["session.started"], () => {
@@ -335,6 +359,12 @@ describe("dispatchDynamicInstructionEvent", () => {
     expect(buildDynamicInstructionMessages(ctx)).toEqual([
       { content: "Durable session context.", role: "system" },
     ]);
+    expect(logs.records).toContainEqual(
+      expect.objectContaining({
+        level: "error",
+        message: "Dynamic instructions resolver (session.started) threw — skipping.",
+      }),
+    );
   });
 
   it("materializes no message for blank user content", async () => {

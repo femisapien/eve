@@ -63,6 +63,51 @@ describe("projectActivityEvents", () => {
     ]);
   });
 
+  it("projects no activity for the model's own task calls", () => {
+    const at = "2026-01-01T00:00:00Z";
+    const turn = { sequence: 0, stepIndex: 0, turnId: "turn" };
+    expect(
+      [
+        projectActivityEvents({
+          at,
+          event: {
+            data: {
+              ...turn,
+              actions: [
+                { callId: "wait-1", input: {}, kind: "tool-call", toolName: "task_wait" },
+                {
+                  callId: "cancel-1",
+                  input: { taskId: "t1" },
+                  kind: "tool-call",
+                  toolName: "task_cancel",
+                },
+              ],
+            },
+            type: "actions.requested",
+          },
+          lineage,
+        }),
+        projectActivityEvents({
+          at,
+          event: {
+            data: {
+              ...turn,
+              result: {
+                callId: "wait-1",
+                kind: "tool-result",
+                output: "done",
+                toolName: "task_wait",
+              },
+              status: "completed",
+            },
+            type: "action.result",
+          },
+          lineage,
+        }),
+      ].flat(),
+    ).toEqual([]);
+  });
+
   it("normalizes and bounds authorization blocker labels", () => {
     const [event] = projectActivityEvents({
       at: "2026-01-01T00:00:00Z",
@@ -272,41 +317,5 @@ describe("projectActivityEvents", () => {
         workId,
       },
     ]);
-  });
-
-  it("keeps delegated work active for a background receipt", () => {
-    expect(
-      projectActivityEvents({
-        at: "2026-01-01T00:00:02Z",
-        event: {
-          data: {
-            result: {
-              backgroundTask: { status: "working", taskId: "task-1" },
-              callId: "child-1",
-              kind: "subagent-result",
-              origin: "child",
-              outcome: {
-                kind: "parked",
-                result: { kind: "succeeded", output: "working" },
-                usageDelta: {
-                  cacheReadTokens: 0,
-                  cacheWriteTokens: 0,
-                  inputTokens: 0,
-                  outputTokens: 0,
-                },
-              },
-              output: "working",
-              subagentName: "researcher",
-            },
-            sequence: 0,
-            status: "completed",
-            stepIndex: 0,
-            turnId: "turn",
-          },
-          type: "action.result",
-        },
-        lineage: { ...lineage, sessionId: "root", turnId: "turn" },
-      }),
-    ).toEqual([]);
   });
 });

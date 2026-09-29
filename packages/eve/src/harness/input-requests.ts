@@ -1,6 +1,5 @@
 import type { ModelMessage } from "ai";
 
-import type { RuntimeToolCallActionRequest } from "#shared/action-types.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
 import { resolveTextToResponses } from "#channel/resolve-text.js";
 import { hasTailApprovalResponse } from "#harness/current-messages.js";
@@ -22,7 +21,6 @@ import type {
   ResolvePendingInputResult,
   ResolvedStepInput,
 } from "#harness/hitl/pending-input-resolution.js";
-import { resolveToolCallInputObject } from "#harness/coordination.js";
 import {
   clearPendingSessionLimitPrompt,
   isSessionLimitInputBatch,
@@ -38,7 +36,6 @@ export {
   appendPendingInputBatch,
   consumeDeferredStepInput,
   getPendingInputRequestIds,
-  hasDeferredStepInput,
   hasPendingInputBatch,
 } from "#harness/pending-input-batches.js";
 
@@ -78,13 +75,6 @@ export function hasRunnableDeferredStepInput(session: HarnessSession): boolean {
   }
 }
 
-/** Returns true when any pending batch still contains a tool approval. */
-export function hasPendingApprovalBatch(session: HarnessSession): boolean {
-  return getPendingInputBatches(session.state).some((batch) =>
-    batch.requests.some((request) => isApprovalRequest(request)),
-  );
-}
-
 /** Selects the complete approval batch that pending-input resolution will resume. */
 export function selectApprovalReplayBatch(
   session: HarnessSession,
@@ -119,7 +109,6 @@ export function resolvePendingInput(input: {
   readonly activeTurnId?: string;
   /** True while the harness has an open turn to continue. */
   readonly internalStep?: boolean;
-  readonly deferMessagesWhileApprovalsPending?: boolean;
   readonly history?: readonly ModelMessage[];
   readonly resolveApprovalKey?: (request: InputRequest) => string | undefined;
   readonly session: HarnessSession;
@@ -158,20 +147,6 @@ export function resolvePendingInput(input: {
         resolvedStepInput === undefined
           ? input.session
           : queueDeferredStepInput(input.session, compactStepInput(resolvedStepInput)),
-    };
-  }
-
-  if (
-    route.kind === "approvals" &&
-    input.deferMessagesWhileApprovalsPending === true &&
-    resolvedStepInput?.message !== undefined &&
-    findAnsweredApprovalBatches(batches, responses).length === 0
-  ) {
-    return {
-      deferredMessage: true,
-      outcome: "unresolved",
-      messages: baseHistory,
-      session: queueDeferredStepInput(input.session, compactStepInput(resolvedStepInput)),
     };
   }
 
@@ -276,23 +251,4 @@ function resolveTextMessageInput(
     messageConsumed: true,
     message: undefined,
   });
-}
-
-/** Creates a runtime tool-call action shape from an AI SDK tool call. */
-export function createRuntimeToolCallActionFromToolCall(input: {
-  readonly toolCall: {
-    readonly input: unknown;
-    readonly toolCallId: string;
-    readonly toolName: string;
-  };
-}): RuntimeToolCallActionRequest {
-  return {
-    callId: input.toolCall.toolCallId,
-    input: resolveToolCallInputObject(input.toolCall.input, {
-      callId: input.toolCall.toolCallId,
-      toolName: input.toolCall.toolName,
-    }),
-    kind: "tool-call",
-    toolName: input.toolCall.toolName,
-  };
 }

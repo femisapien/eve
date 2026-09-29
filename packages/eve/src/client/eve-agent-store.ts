@@ -21,7 +21,7 @@ import { EveAgentProjection } from "#client/eve-agent-projection.js";
 import { OptimisticMessageSubmissions } from "#client/optimistic-message-submissions.js";
 import type { ClientSession } from "#client/session.js";
 import { createEventDeduper } from "#protocol/event-dedupe.js";
-import { isCurrentTurnBoundaryEvent, type MessageStreamEvent } from "#protocol/message.js";
+import type { MessageStreamEvent } from "#protocol/message.js";
 import {
   assertExclusiveTurnInput,
   createAbortSignal,
@@ -32,8 +32,11 @@ import {
   toTerminalStreamFailureError,
   waitWithSignal,
 } from "#client/eve-agent-store-helpers.js";
-import { updatePendingAuthorizations } from "#client/session-utils.js";
-import { parseJsonObject, type JsonObject } from "#shared/json.js";
+import {
+  isTurnSegmentBoundary,
+  updatePendingAuthorizations,
+  updatePendingInputRequests,
+} from "#client/session-utils.js";
 import { toError } from "#shared/errors.js";
 import type { CancelSessionResult, SendTurnPayload } from "#client/types.js";
 
@@ -56,10 +59,11 @@ const attachStore = Symbol("attachEveAgentStore");
 export class EveAgentStore<TData> {
   readonly #client: Client | undefined;
   readonly #autoPrewarm: boolean;
-  readonly #sessionContext: JsonObject | undefined;
+  readonly #sessionContext: EveAgentStoreInit<TData>["sessionContext"];
   #attached = false;
   #stream: SessionEventStream | undefined;
   readonly #pendingAuthorizations = new Set<string>();
+  readonly #pendingInputRequests = new Set<string>();
   readonly #externalSession: boolean;
   readonly #optimistic: boolean;
   readonly #projection: EveAgentProjection<TData>;
@@ -83,8 +87,7 @@ export class EveAgentStore<TData> {
 
   constructor(init: EveAgentStoreInit<TData>) {
     this.#autoPrewarm = init.prewarm ?? false;
-    this.#sessionContext =
-      init.sessionContext === undefined ? undefined : parseJsonObject(init.sessionContext);
+    this.#sessionContext = init.sessionContext;
     this.#externalSession = init.session !== undefined;
     this.#client = this.#externalSession
       ? undefined
@@ -98,7 +101,7 @@ export class EveAgentStore<TData> {
     const initialEvents: MessageStreamEvent[] = [];
     for (const event of init.initialEvents ?? []) {
       if (this.#seenEvents.admit(event)) initialEvents.push(event);
-      updatePendingAuthorizations(this.#pendingAuthorizations, event);
+      this.#trackPendingRequests(event);
     }
     this.#events = initialEvents;
     this.#projection = new EveAgentProjection(init.reducer, this.#events);
@@ -151,10 +154,8 @@ export class EveAgentStore<TData> {
     this.#prewarmController = controller;
     const promise = (async () => {
       try {
-        const created = await client.sessions.create({
-          signal: controller.signal,
-          sessionContext: this.#sessionContext,
-        });
+        const sessionContext = this.#sessionContext;
+        const created = await client.sessions.create({ signal: controller.signal, sessionContext });
         if (generation !== this.#prewarmGeneration) return;
         this.#session = created.session;
         this.#error = undefined;
@@ -341,7 +342,7 @@ export class EveAgentStore<TData> {
           if (!this.#isActiveTurn(turn)) return;
           turn.receivedFollowUps += turn.receivedFollowUpEvents.get(event) ?? 0;
           turn.receivedFollowUpEvents.delete(event);
-          if (isCurrentTurnBoundaryEvent(event) && this.#pendingAuthorizations.size === 0) break;
+          if (this.#isSettledAt(event)) break;
         }
       }
       await followSteeredTurns(turn, reader, () => this.#isActiveTurn(turn));
@@ -395,6 +396,7 @@ export class EveAgentStore<TData> {
     this.#stream?.close();
     this.#stream = undefined;
     this.#pendingAuthorizations.clear();
+    this.#pendingInputRequests.clear();
     const turn = this.#activeTurn;
     this.#activeTurn = undefined;
     turn?.resolveResponse(undefined);
@@ -604,21 +606,35 @@ export class EveAgentStore<TData> {
   #acceptServerEvent(event: MessageStreamEvent): void {
     if (!this.#seenEvents.admit(event)) return;
     const wasStreaming = this.#status === "streaming";
-    updatePendingAuthorizations(this.#pendingAuthorizations, event);
+    this.#trackPendingRequests(event);
     this.#events = [...this.#events, event];
     this.#handleReconciliation(this.#messageSubmissions.apply(event));
     this.#callbacks.onEvent?.(event);
     this.#applyTerminalStreamFailure(event);
-    const settled = isCurrentTurnBoundaryEvent(event) && this.#pendingAuthorizations.size === 0;
+    const settled = this.#isSettledAt(event);
     if (this.#status !== "resuming" && this.#error === undefined) {
       if ("data" in event && "turnId" in event.data) this.#status = "streaming";
       if (this.#activeTurn === undefined && settled) this.#status = "ready";
     }
     this.#callbacks.onSessionChange?.(this.#session?.state);
-    this.#publish();
+    // Catch-up publishes once when it ends; a notification per replayed event would force one
+    // React commit per event within a single task and trip React's nested update limit.
+    if (this.#status !== "resuming") this.#publish();
     if (this.#activeTurn === undefined && wasStreaming && settled) {
       this.#callbacks.onFinish?.(this.#snapshot);
     }
+  }
+
+  #trackPendingRequests(event: MessageStreamEvent): void {
+    updatePendingAuthorizations(this.#pendingAuthorizations, event);
+    updatePendingInputRequests(this.#pendingInputRequests, event);
+  }
+
+  #isSettledAt(event: MessageStreamEvent): boolean {
+    return (
+      isTurnSegmentBoundary(event, this.#pendingInputRequests) &&
+      this.#pendingAuthorizations.size === 0
+    );
   }
 
   #handleReconciliation(

@@ -13,6 +13,7 @@ import type { ChannelRouteMethod } from "#public/definitions/channel.js";
 import type { NormalizedChannelCorsOptions } from "#channel/cors.js";
 import type { InternalInstructionsDefinition } from "#shared/instructions-definition.js";
 import { jsonObjectSchema } from "#shared/json-schemas.js";
+import type { JsonObject } from "#shared/json.js";
 import type { Node } from "#shared/node.js";
 import type {
   MarkdownSourceRef,
@@ -28,6 +29,7 @@ import {
   type AgentBuildDefinition,
   type ModelRouting,
 } from "#shared/agent-definition.js";
+import type { VercelConnectMetadata } from "#shared/vercel-connect-metadata.js";
 import type { InternalToolDefinition } from "#tools/definition.js";
 import type { CompiledToolBehavior } from "#tools/behavior.js";
 import type {
@@ -55,12 +57,7 @@ export const ROOT_COMPILED_AGENT_NODE_ID = "__root__";
 /**
  * Current compiled manifest schema version.
  */
-export const COMPILED_AGENT_MANIFEST_VERSION = 51;
-
-/**
- * Compiled channel entry preserved in the compiled manifest.
- */
-export type CompiledChannelEntry = CompiledChannelDefinition;
+export const COMPILED_AGENT_MANIFEST_VERSION = 52;
 
 /**
  * Active compiled channel entry — backed by an authored `Channel` module.
@@ -89,6 +86,8 @@ export interface CompiledChannelDefinition {
    * channel leaves CORS untouched.
    */
   readonly cors?: NormalizedChannelCorsOptions;
+  readonly manifest?: JsonObject;
+  readonly vercelConnect?: VercelConnectMetadata;
 }
 
 /**
@@ -488,6 +487,21 @@ const compiledChannelCorsSchema = z
   })
   .strict() satisfies z.ZodType<NormalizedChannelCorsOptions>;
 
+const compiledVercelConnectMetadataSchema = z
+  .object({
+    connector: z.string(),
+    requirement: z
+      .object({
+        method: z.string().optional(),
+        reference: z.string(),
+        service: z.string(),
+        subjectTypes: z.array(z.enum(["app", "user"])).readonly(),
+      })
+      .strict()
+      .optional(),
+  })
+  .strict() satisfies z.ZodType<VercelConnectMetadata>;
+
 const compiledChannelDefinitionSchema = z
   .object({
     kind: z.literal("channel"),
@@ -500,6 +514,8 @@ const compiledChannelDefinitionSchema = z
     exportName: z.string().optional(),
     adapterKind: z.string().optional(),
     cors: compiledChannelCorsSchema.optional(),
+    manifest: jsonObjectSchema.optional(),
+    vercelConnect: compiledVercelConnectMetadataSchema.optional(),
   })
   .strict();
 
@@ -604,7 +620,6 @@ const compiledAgentConfigBaseFields = {
     .strict()
     .optional(),
   name: z.string(),
-  outputSchema: jsonObjectSchema.optional(),
   reasoning: z
     .enum(["provider-default", "none", "minimal", "low", "medium", "high", "xhigh"])
     .optional(),
@@ -781,12 +796,7 @@ const compiledConnectionDefinitionSchema = z
      * or opaque service-connector key (`"scl_..."`); both forms address
      * the same connector on the Vercel Connect side.
      */
-    vercelConnect: z
-      .object({
-        connector: z.string(),
-      })
-      .strict()
-      .optional(),
+    vercelConnect: compiledVercelConnectMetadataSchema.optional(),
   })
   .strict();
 
@@ -804,12 +814,12 @@ const compiledDynamicConnectionDefinitionSchema: z.ZodType<CompiledDynamicConnec
 
 const compiledToolBehaviorSchema: z.ZodType<CompiledToolBehavior> = z
   .object({
-    availability: z.array(z.enum(["delegated-task-child", "root-session"])).readonly(),
+    availability: z.array(z.literal("root-session")).readonly(),
     handling: z
       .discriminatedUnion("kind", [
         z
           .object({
-            action: z.enum(["self-agent", "task-cancel"]),
+            action: z.literal("self-agent"),
             kind: z.literal("dispatch"),
           })
           .strict(),
@@ -821,6 +831,7 @@ const compiledToolBehaviorSchema: z.ZodType<CompiledToolBehavior> = z
           .strict(),
         z
           .object({
+            entryPoint: z.enum(["execute", "task", "serve"]),
             kind: z.literal("workflow-tool"),
             workflowId: z.string(),
           })
@@ -830,7 +841,6 @@ const compiledToolBehaviorSchema: z.ZodType<CompiledToolBehavior> = z
     presentation: z.literal("load-skill").optional(),
     shape: z
       .object({
-        lifetime: z.enum(["step", "task"]),
         suspend: z.enum(["none", "workflow"]),
       })
       .strict()
@@ -843,7 +853,6 @@ const compiledToolDefinitionSchema = z
     availableInSubagents: z.boolean().optional(),
     behavior: compiledToolBehaviorSchema.optional(),
     description: z.string(),
-    execution: z.literal("background").optional(),
     exportName: z.string().optional(),
     hasExecute: z.boolean(),
     hasModelOutputProjection: z.boolean(),
@@ -1191,7 +1200,6 @@ function cloneCompiledAgentDefinition(config: CompiledAgentDefinition): Compiled
                   },
           },
     name: config.name,
-    outputSchema: config.outputSchema,
     reasoning: config.reasoning,
     limits:
       config.limits === undefined

@@ -5,7 +5,6 @@
  */
 
 import type { JsonObject } from "#shared/json.js";
-import { TASK_DELIVERY_POLICY_CONTEXT_KEY_NAME } from "#context/key-names.js";
 import type { LanguageModel, ModelMessage, SystemModelMessage } from "ai";
 
 import type {
@@ -18,7 +17,6 @@ import type {
   SessionParent,
   SessionTraceContext,
   SessionTurn,
-  TaskDeliveryPolicy,
 } from "#channel/types.js";
 import { ContextKey } from "#context/key.js";
 import {
@@ -33,7 +31,6 @@ import type { PersistedDynamicToolMetadata } from "#context/dynamic-tool-metadat
 import type { DynamicSubagentAgentConfig } from "#runtime/subagents/dynamic-agent-config.js";
 import type { DynamicRemoteAgentConfig } from "#runtime/subagents/dynamic-remote-agent-config.js";
 import type { SandboxAccess } from "#sandbox/state.js";
-import type { RunMode } from "#shared/run-mode.js";
 import type { HistoryViewProjector } from "#shared/history-view.js";
 import type { RuntimeModelReference } from "#runtime/agent/bootstrap.js";
 import type { PreparedRuntimeDelegationTool } from "#runtime/sessions/turn.js";
@@ -108,19 +105,9 @@ export const SessionTitleKey = new ContextKey<string>("eve.sessionTitle");
 export const ChannelDeliveryKey = new ContextKey<ChannelDeliveryMetadata>("eve.channelDelivery");
 /** Accepted messages whose response owns the current turn's durable stream events. */
 export const TurnDeliveryIdsKey = new ContextKey<readonly string[]>("eve.turnDeliveryIds");
-/** Resolved task delivery policy, also read by the workflow inbox. */
-export const TaskDeliveryPolicyKey = new ContextKey<TaskDeliveryPolicy>(
-  TASK_DELIVERY_POLICY_CONTEXT_KEY_NAME,
-);
-/** Task-reporting phase for the active root turn. */
-export const TurnTaskDeliveryKey = new ContextKey<"none" | "initiating" | "pending" | "settled">(
-  "eve.turnTaskDelivery",
-);
 /** Last framework announcements recorded in the retained session history. */
 export interface HistoryState {
   readonly availableSkills?: string;
-  readonly taskState?: string;
-  readonly deliveryInstruction?: string;
 }
 export const HistoryStateKey = new ContextKey<HistoryState>("eve.historyState");
 export interface ActiveChannelDelivery {
@@ -139,8 +126,6 @@ export const ActiveChannelDeliveriesKey = new ContextKey<readonly ActiveChannelD
 export const ChannelInstrumentationKey = new ContextKey<ChannelInstrumentationProjection>(
   "eve.channelInstrumentation",
 );
-/** Trace ceiling and immutable origin accepted from a trusted forwarding deployment. */
-export const ModeKey = new ContextKey<RunMode>("eve.mode");
 export const ParentSessionKey = new ContextKey<SessionParent>("eve.parentSession");
 /** Separate from {@link ParentSessionKey} so it stays out of what extensions read. */
 export const ParentTraceContextKey = new ContextKey<SessionTraceContext>("eve.parentTraceContext");
@@ -162,6 +147,13 @@ export const ActivityRootTurnIdKey = new ContextKey<string>("eve.activityRootTur
 export const ActivityPendingBlockersKey = new ContextKey<readonly string[]>(
   "eve.activityPendingBlockers",
 );
+/**
+ * Call IDs that got `task.started` this turn, so their `action.result` is a
+ * receipt that leaves the activity running. Not read from the task table: a
+ * call leaves it once it settles, which can happen before its receipt is
+ * published. Cleared at turn end.
+ */
+export const ActivityTaskCallsKey = new ContextKey<readonly string[]>("eve.activityTaskCalls");
 
 /**
  * Optional framework-owned caller callback captured when the session is created.
@@ -267,8 +259,8 @@ export interface PreparedMemoryPreamble {
 }
 
 export interface PendingMemoryCommit {
-  readonly history: readonly ModelMessage[];
-  readonly projectedMessages: readonly ModelMessage[];
+  /** Records recalled by this operation, to append after the prepared history. */
+  readonly recalledMessages: readonly ModelMessage[];
   readonly state: Readonly<Record<string, unknown>>;
 }
 

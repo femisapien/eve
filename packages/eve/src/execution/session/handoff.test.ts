@@ -42,9 +42,8 @@ describe("SessionHandoff", () => {
       activationToken: "owner-1:handoff",
       anchorRunId: "session-1",
       checkpoint: expect.objectContaining({
-        mode: "conversation",
         sessionTimeoutMs: 60_000,
-        version: 8,
+        version: 9,
       }),
       delivery: trigger.delivery,
       targetDeploymentId: "deployment-b",
@@ -211,7 +210,7 @@ function state(
 
 function createHandoff(inbox: SessionInboxHandle): SessionHandoff {
   return new SessionHandoff({
-    checkpoint: { mode: "conversation", sessionTimeoutMs: 60_000 },
+    checkpoint: { sessionTimeoutMs: 60_000 },
     deploymentId: "deployment-a",
     inbox,
     isInitialOwner: true,
@@ -227,8 +226,10 @@ function createInbox(input: { released?: SessionInboxPayload[] } = {}): SessionI
     dispose: vi.fn(async () => {}),
     drain: vi.fn(() => []),
     hasPending: vi.fn(() => false),
+    whenPending: () => new Promise<void>(() => {}),
     next: vi.fn(),
     onDelivery: vi.fn(() => () => {}),
+    onAgentStarted: () => () => {},
     onInterrupt: vi.fn(() => () => {}),
     release: vi.fn(async () => input.released ?? []),
     restore: vi.fn(),

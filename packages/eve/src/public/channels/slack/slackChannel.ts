@@ -8,8 +8,9 @@ import type {
 } from "#channel/channel-operations.js";
 import { defaultDeliverResult } from "#channel/adapter.js";
 import type { Session, SessionHandle } from "#channel/session.js";
-import { setChannelActivityRenderers } from "#channel/compiled-channel.js";
-import type { SessionAuthContext, TurnPolicy, TaskDeliveryPolicy } from "#channel/types.js";
+import { setChannelActivityRenderers, setChannelBuildMetadata } from "#channel/compiled-channel.js";
+import type { SessionAuthContext, TurnPolicy } from "#channel/types.js";
+import type { VercelConnectMetadata } from "#shared/vercel-connect-metadata.js";
 import type { CardElement } from "#compiled/chat/index.js";
 import type { SessionContext } from "#public/definitions/callback-context.js";
 import type { ChannelContinuationOps } from "#public/definitions/channel.js";
@@ -70,6 +71,7 @@ import {
 } from "#public/channels/slack/thread.js";
 import { buildSlackAuthContext, slackUserIdFromAuthContext } from "#public/channels/slack/auth.js";
 import { SLACK_CHANNEL_DEFAULT_ROUTE } from "#public/channels/slack/constants.js";
+import { defineSlackAppManifest } from "#public/channels/slack/app-manifest.js";
 import { handleInteractionPost } from "#public/channels/slack/interactions.js";
 import {
   bindSlackSessionOperations,
@@ -303,6 +305,8 @@ export interface SlackChannelCredentials {
    * integrations (e.g. Connect) that authenticate webhooks out-of-band.
    */
   readonly webhookVerifier?: SlackWebhookVerifier;
+  /** Build-time metadata supplied by Vercel Connect credential helpers. */
+  readonly vercelConnect?: VercelConnectMetadata;
 }
 
 /** Target accepted by `ctx.to(slack, target)` from route and schedule handlers. */
@@ -340,8 +344,6 @@ export interface SlackInitialMessage {
  * Options for one turn requested by a generic Slack event handler.
  */
 export interface SlackEventSendOptions {
-  /** Updates the session policy; omission preserves it. */
-  readonly taskDeliveryPolicy?: TaskDeliveryPolicy;
   readonly auth: SessionAuthContext | null;
   readonly target: SlackReceiveTarget;
   /** Overrides the workflow run title without changing the message sent to the model. */
@@ -1061,6 +1063,12 @@ export function slackChannel(config: SlackChannelConfig = {}): SlackChannel {
     },
     renderers: activityRenderers,
   });
+  const credentials = config.credentials as { readonly vercelConnect?: unknown } | undefined;
+  const manifest = defineSlackAppManifest({ botName: config.botName });
+  setChannelBuildMetadata(channel, (channelName) => ({
+    externalCredentials: credentials?.vercelConnect,
+    manifest: manifest.build(channelName),
+  }));
   return channel;
 }
 
@@ -1078,7 +1086,6 @@ async function receiveOnSlack(
     readonly message: string | UserContent;
     readonly target: SlackReceiveTarget;
     readonly title?: string;
-    readonly taskDeliveryPolicy?: TaskDeliveryPolicy;
   },
   deps: {
     readonly from: ChannelFrom<SlackChannelState>;
@@ -1159,7 +1166,6 @@ async function receiveOnSlack(
     auth: input.auth,
     state,
     title: input.title,
-    taskDeliveryPolicy: input.taskDeliveryPolicy,
   });
 }
 
@@ -1493,9 +1499,9 @@ async function dispatchSlackEvent(input: {
       input.resolveSession(slackContinuationToken(target.channelId, target.threadTs)),
     respond: (inputResponses, { auth, target }) =>
       sourceFor(target).respond(inputResponses, { auth }),
-    send: (message, { auth, target, title, taskDeliveryPolicy }) =>
+    send: (message, { auth, target, title }) =>
       receiveOnSlack(
-        { auth, message, target, title, taskDeliveryPolicy },
+        { auth, message, target, title },
         {
           from: input.from,
           api: input.api,

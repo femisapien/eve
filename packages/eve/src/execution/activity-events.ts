@@ -1,18 +1,26 @@
 import { normalizePresentationText } from "#shared/presentation-text.js";
 import { deriveChildActivityWorkId } from "#execution/activity-work-id.js";
-import type { ActivityEventV1, ActivityWorkIdentityV1 } from "#protocol/activity.js";
+import type {
+  ActivityActionPhase,
+  ActivityEventV1,
+  ActivityWorkIdentityV1,
+} from "#protocol/activity.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
+import { isTaskControlTool } from "#protocol/task-tools.js";
 
 export function projectActivityEvents(input: {
   readonly at: string;
   readonly event: UnstampedMessageStreamEvent;
   readonly eventId?: string;
   readonly lineage: ActivityWorkIdentityV1;
+  /** Calls to tasks: their `action.result` is a receipt, and `task.settled` settles them. */
+  readonly taskCallIds?: readonly string[];
 }): readonly ActivityEventV1[] {
   const { event, lineage } = input;
   if (event.type === "actions.requested") {
     return event.data.actions.flatMap((action) => {
       if (action.kind === "subagent-call" || action.kind === "remote-agent-call") return [];
+      if (action.kind === "tool-call" && isTaskControlTool(action.toolName)) return [];
       const kind = action.kind === "load-skill" ? ("skill" as const) : ("tool" as const);
       const rawName = action.kind === "load-skill" ? "load_skill" : action.toolName;
       const name = normalizePresentationText(rawName) || (kind === "skill" ? "Skill" : "Tool");
@@ -62,7 +70,6 @@ export function projectActivityEvents(input: {
   if (event.type === "action.result") {
     const result = event.data.result;
     if (result.kind === "subagent-result") {
-      if ("backgroundTask" in result && result.backgroundTask !== undefined) return [];
       const workId = deriveChildActivityWorkId({
         callId: result.callId,
         parentSessionId: lineage.sessionId ?? lineage.rootSessionId,
@@ -86,10 +93,11 @@ export function projectActivityEvents(input: {
         },
       ];
     }
+    if (result.kind === "tool-result" && isTaskControlTool(result.toolName)) return [];
     const id = actionId(lineage.id, result.callId);
     const label = activityLabel(event.data.presentation?.[result.callId]?.label);
-    return [
-      ...(label === undefined
+    const labelUpdates =
+      label === undefined
         ? []
         : [
             {
@@ -98,15 +106,14 @@ export function projectActivityEvents(input: {
               kind: "action.label.updated" as const,
               label,
             },
-          ]),
-      {
-        actionId: id,
-        eventId: `${id}:settled:${event.data.status}`,
-        kind: "action.settled",
-        outcome: event.data.status,
-        settledAt: input.at,
-      },
-    ];
+          ];
+    const isTaskReceipt = input.taskCallIds?.includes(result.callId) === true;
+    if (isTaskReceipt) return labelUpdates;
+    return [...labelUpdates, actionSettled(id, event.data.status, input.at)];
+  }
+  if (event.type === "task.settled") {
+    const id = actionId(lineage.id, event.data.callId);
+    return [actionSettled(id, event.data.status, input.at)];
   }
   if (event.type === "authorization.required") {
     const id = blockerId(
@@ -245,6 +252,20 @@ export function projectActivityEvents(input: {
     ];
   }
   return [];
+}
+
+function actionSettled(
+  id: string,
+  outcome: Exclude<ActivityActionPhase, "running">,
+  settledAt: string,
+): ActivityEventV1 {
+  return {
+    actionId: id,
+    eventId: `${id}:settled:${outcome}`,
+    kind: "action.settled",
+    outcome,
+    settledAt,
+  };
 }
 
 function activityLabel(value: string | undefined): string | undefined {

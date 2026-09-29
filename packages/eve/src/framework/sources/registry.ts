@@ -9,7 +9,7 @@ import {
   type ProgrammaticModuleNamespace,
 } from "#compiler/source-graph.js";
 
-const revision = `eve@${resolveInstalledPackageInfo().version}:compiled-manifest-v50`;
+const revision = `eve@${resolveInstalledPackageInfo().version}:compiled-manifest-v52`;
 
 const localDefaults = defineProgrammaticAgentSource({
   id: "eve:defaults",
@@ -44,10 +44,6 @@ const localDefaults = defineProgrammaticAgentSource({
     {
       logicalPath: "tools/connection_search.ts",
       loadNamespace: () => import("#tools/framework/connection-search.js"),
-    },
-    {
-      logicalPath: "tools/task_cancel.ts",
-      loadNamespace: () => import("#tools/framework/task-cancel.js"),
     },
     {
       logicalPath: "tools/web_search.ts",

@@ -51,13 +51,13 @@ import { summarizeLocalTrace } from "#tracing/local-trace-summary.js";
 import { buildConversationItems } from "#cli/dev/tui/traces/trace-conversation.js";
 import { contentFilteringProcessor } from "#tracing/content-span-processor.js";
 import { ConversationContextKey } from "#shared/conversation-context.js";
+import { captureLogRecords } from "#internal/testing/log-records.js";
 
 const traceContext = (agentName: string, audience: "public" | "private") => ({
   agentName,
   audience,
   channel: { kind: "http" as const },
   environment: "production" as const,
-  mode: "conversation" as const,
   principalType: "anonymous",
 });
 
@@ -199,6 +199,7 @@ describe("exported agent telemetry contract", () => {
   it.each(["throw", "reject"] as const)(
     "preserves the settlement context when invocation materialization fails (%s)",
     async (failure) => {
+      const logs = captureLogRecords();
       const runtime = createRuntime();
       const flush = vi.spyOn(runtime, "flushSettledInvocations").mockImplementation(() => {
         const error = new Error("Span processor unavailable");
@@ -214,6 +215,12 @@ describe("exported agent telemetry contract", () => {
           serializedContext,
         );
         expect(flush).toHaveBeenCalledOnce();
+        expect(logs.records).toContainEqual(
+          expect.objectContaining({
+            level: "warn",
+            message: "could not materialize settled invocation traces",
+          }),
+        );
       } finally {
         registered.mockRestore();
         await runtime.shutdown();
@@ -360,12 +367,11 @@ describe("exported agent telemetry contract", () => {
           turnId: "turn_0",
           sessionState: {
             "eve.workflowTool": {
-              version: 3,
+              version: 4,
               runs: [
                 {
                   callId: "workflow",
                   toolName: "coordinate",
-                  lifetime: "turn" as const,
                   origin: { turnId: "turn-1", stepIndex: 0 },
                   address: { runId: "workflow-run", hookToken: "hook" },
                 },
@@ -410,7 +416,7 @@ describe("exported agent telemetry contract", () => {
           scope: childScope,
           type: "step.attempt.started",
         });
-        const modelKey = modelCallIdempotencyKey(childScope, 0);
+        const modelKey = modelCallIdempotencyKey(childScope, 0, 0);
         await childHooks.publish({
           idempotencyKey: modelKey,
           model: { modelId: "test", provider: "test" },
@@ -751,6 +757,7 @@ describe("exported agent telemetry contract", () => {
   ] as const)(
     "bounds public-channel principal IDs by origin %s and input/output ceiling %s/%s",
     async (originAudience, recordInputs, recordOutputs) => {
+      const logs = captureLogRecords();
       const runtime = createRuntime();
       const hooks = runtime.hooks.forTrace!(traceContext("child", "public"));
       const registered = vi
@@ -769,6 +776,9 @@ describe("exported agent telemetry contract", () => {
       const includesIds = originAudience === "public" && recordInputs && recordOutputs;
       try {
         instrumentation.initializeSessionInstrumentation({ agentName: "child", ctx });
+        expect(logs.records).toContainEqual(
+          expect.objectContaining({ level: "info", message: "resolved forwarded trace policy" }),
+        );
         expect(ctx.get(SessionTraceSeedKey)?.decision).toEqual({
           action: "record",
           recordInputs: originAudience === "public" && recordInputs,

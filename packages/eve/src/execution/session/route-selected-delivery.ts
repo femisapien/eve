@@ -2,7 +2,7 @@ import { routeDeliverToChildren } from "#execution/route-child-delivery.js";
 import type { TurnSelection } from "#execution/session/input-queue.js";
 import type { SessionStateCursor } from "#execution/session/state-cursor.js";
 
-export type RoutedTurnSelection =
+type RoutedTurnSelection =
   | { readonly kind: "cancel-turn" }
   | { readonly kind: "consumed" }
   | TurnSelection;
@@ -14,9 +14,7 @@ export async function routeSelectedDelivery(
 ): Promise<RoutedTurnSelection> {
   const routed = await routeDeliverToChildren({
     delivery: selection.delivery,
-    sessionWritable: cursor.sessionWritable,
-    serializedContext: cursor.serializedContext,
-    sessionState: cursor.sessionState,
+    ...cursor.stepState(),
   });
   await cursor.apply(routed);
   if (routed.kind === "cancel-turn") return { kind: "cancel-turn" };
