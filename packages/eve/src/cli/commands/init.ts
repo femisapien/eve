@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rename, rm } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { basename, join, resolve } from "node:path";
 import { performance } from "node:perf_hooks";
 
@@ -453,6 +453,9 @@ async function runInitSteps(input: {
       );
     }
     initLog.debug("dependencies installed", { ms: installElapsedMs });
+    if (project.packageManager === "pnpm" && evePackage !== undefined) {
+      await repairInitTarballIntegrity(project.projectPath, evePackage.version);
+    }
 
     if (project.kind === "created") {
       activeInitStep = "initialize_git";
@@ -609,6 +612,26 @@ export async function runInitCommand(
   ) {
     throw new Error(`Development server exited unsuccessfully in "${result.projectPath}".`);
   }
+}
+
+// Some pnpm versions omit the integrity field for a tarball spec during install,
+// then reject that lockfile during the first `eve add` in interactive onboarding.
+async function repairInitTarballIntegrity(projectPath: string, spec: string): Promise<void> {
+  const match = /^(https:\/\/[^#]+)#(sha512-[A-Za-z0-9+/]+={0,2})$/.exec(spec);
+  if (match === null) return;
+
+  const lockfilePath = join(projectPath, "pnpm-lock.yaml");
+  if (!(await pathExists(lockfilePath))) return;
+  const lockfile = await readFile(lockfilePath, "utf8");
+  const entry = `  eve@${spec}:\n    resolution: {tarball: ${match[1]}}`;
+  if (lockfile.split(entry).length !== 2) return;
+  await writeFile(
+    lockfilePath,
+    lockfile.replace(
+      entry,
+      `  eve@${spec}:\n    resolution: {tarball: ${match[1]}, integrity: ${match[2]}}`,
+    ),
+  );
 }
 
 function resolveInitEvePackageOverride(): EvePackageContract | undefined {

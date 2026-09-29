@@ -609,6 +609,28 @@ describe("runInitCommand", () => {
     expect(packageJson.dependencies.eve).toBe("file:/tmp/eve-0.11.5.tgz");
   });
 
+  it("repairs a pnpm tarball lockfile before interactive onboarding", async () => {
+    const parentDirectory = await mkdtemp(join(tmpdir(), "eve-init-tarball-integrity-"));
+    const projectRoot = join(parentDirectory, "my-agent");
+    const spec = "https://pkg.eve.dev/abc/eve.tgz#sha512-dGVzdA==";
+    const entry = `  eve@${spec}:\n    resolution: {tarball: https://pkg.eve.dev/abc/eve.tgz}`;
+    const deps = dependencies();
+    vi.stubEnv(EVE_INIT_PACKAGE_SPEC_ENV, spec);
+    deps.runPackageManagerInstall.mockImplementation(async () => {
+      await writeFile(join(projectRoot, "pnpm-lock.yaml"), `packages:\n${entry}\n`, "utf8");
+      return packageInstallResult();
+    });
+    deps.spawnPackageManager.mockImplementation(async () => {
+      expect(await readFile(join(projectRoot, "pnpm-lock.yaml"), "utf8")).toContain(
+        "resolution: {tarball: https://pkg.eve.dev/abc/eve.tgz, integrity: sha512-dGVzdA==}",
+      );
+      return packageProcessResult();
+    });
+
+    await runInitCommand(logger(), parentDirectory, "my-agent", {}, deps);
+    expect(deps.spawnPackageManager).toHaveBeenCalled();
+  });
+
   it("uses an explicit init package spec when adding to an existing project", async () => {
     const parentDirectory = await mkdtemp(join(tmpdir(), "eve-init-existing-package-spec-"));
     const projectRoot = await createHostProject(parentDirectory);
