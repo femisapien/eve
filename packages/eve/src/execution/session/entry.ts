@@ -104,7 +104,6 @@ async function bootInitialOwner(
         outputSchema: input.input.outputSchema,
         rootSessionId: readRootSessionId(serializedContext),
         sessionId,
-        taskId: input.taskId,
       }),
       inbox.claimSessionHook(sessionCommandHookToken(sessionId)),
       continuationToken === "" ? Promise.resolve() : inbox.claimSessionHook(continuationToken),
