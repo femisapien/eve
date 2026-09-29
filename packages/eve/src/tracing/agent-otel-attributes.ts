@@ -1,4 +1,5 @@
 import { operationConversationId } from "#tracing/conversation-context.js";
+import type { InstrumentationModelCallCompletedEvent } from "#instrumentation/lifecycle.js";
 import { AGENT_TRACE_SCHEMA_VERSION } from "#tracing/agent-span-contract.js";
 
 export function traceSessionIdOf(scope: {
@@ -22,6 +23,22 @@ export function agentTraceIdentityAttributes(input: {
   };
   if (process.env.VERCEL_ENV !== undefined) {
     attributes["vercel.session_id"] = input.traceSessionId;
+  }
+  return attributes;
+}
+
+export function modelCallCompletedAttributes(
+  event: InstrumentationModelCallCompletedEvent,
+  recordOutputs: boolean,
+): Record<string, string | boolean> {
+  const attributes: Record<string, string | boolean> = {
+    "agent.trace.content.output": recordOutputs && event.content !== undefined,
+  };
+  if (event.gateway?.generationId !== undefined) {
+    attributes["gen_ai.generation.id"] = event.gateway.generationId;
+  }
+  if (event.gateway?.transcriptsEnabled === true) {
+    attributes["vercel.ai_gateway.transcript.enabled"] = true;
   }
   return attributes;
 }
