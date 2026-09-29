@@ -526,7 +526,8 @@ can be built in userland on top of this phase, as the prototype's `discover`, `l
 ## Out of scope
 
 - Phase 2: agents as task-returning tools over the MCP tasks extension (SEP-2663), one
-  `mcpChannel` for tools, skills, and agents, and removing `defineRemoteAgent`.
+  `mcpChannel` for tools, skills, and agents, and removing `defineRemoteAgent`. Its requirements
+  are tracked in #4000.
 - Client-side discovery: search, visibility, remote skills, and connection calls from authored
   tools.
 - Tabled: whether authors choose which tools the channel exposes, beyond the invocable filter.
