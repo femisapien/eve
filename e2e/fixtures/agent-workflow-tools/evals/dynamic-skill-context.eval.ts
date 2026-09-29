@@ -90,6 +90,7 @@ export default (["direct", "waiting"] as const).map((mode) =>
           session: {
             id: started.sessionId,
             context: {},
+            turn: { context: null },
             auth: {
               current: expectedAuth(last ? "bob" : "alice"),
               initiator: expectedAuth("alice"),
