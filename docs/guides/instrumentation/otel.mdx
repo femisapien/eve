@@ -163,6 +163,8 @@ each turn. Remote requests carry the conversation ID in W3C Baggage.
 `trustedForwarders` controls whether the receiver accepts parent session data
 and the trace-content policy. See
 [Remote agents](../guides/remote-agents#preserving-trace-content).
+Gateway-routed model requests include the active span's W3C `traceparent`, so
+Gateway spans join the `eve` turn trace.
 
 ## Local traces
 
