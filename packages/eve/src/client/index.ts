@@ -9,13 +9,7 @@ export { HealthResponseError } from "#client/health-response-error.js";
 export { ClientError } from "#client/client-error.js";
 export { defaultMessageReducer } from "#client/message-reducer.js";
 export { conversationReducer } from "#client/conversation-reducer.js";
-export {
-  agentCallTurns,
-  agentToolSession,
-  conversationAuthorizations,
-  followedAgentToolCallIds,
-  openConversationInputs,
-} from "#client/conversation-state.js";
+export { openConversationInputs } from "#client/conversation-state.js";
 export {
   toolCallState,
   type ToolCallContext,

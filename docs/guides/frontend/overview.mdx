@@ -180,7 +180,7 @@ Detailed child progress lives on the child session's stream, not in the root `da
 
 If you manage your own session rather than using the hook, pass an `agent.started` event from `events` to [`session.agent()`](../client/streaming#follow-a-subagent) and follow the child with `stream()`. It follows local and remote children through the parent, so the browser never calls a remote deployment directly. See [What the parent sees](../../subagents#what-the-parent-sees) for the complete contract.
 
-To render a followed session inside its call, `agentToolSession(conversation, task)` returns the session an agent tool's task sends its calls to, and `agentCallTurns(task, child)` maps each of the task's calls to the turns it produced in that session's `conversation`. eve also projects a followed session's tool calls into the parent, so skip the IDs in `followedAgentToolCallIds(conversation)` at the parent when you render them under the call instead.
+To render a followed session inside its call, find the entry in `conversation.agents` whose `taskId` names the call's task. Each call to an agent tool sends that session one message, in call order, so the session's user messages line up with `task.calls`, and each call's turns run from its message's turn up to the next call's. eve also projects a followed session's tool calls into the parent, so skip those tool call IDs at the parent when you render them under the call instead.
 
 ## Tool call status
 
@@ -334,7 +334,7 @@ function AuthorizationPrompt({ part }: { part: EveMessagePart }) {
 }
 ```
 
-`conversationAuthorizations(conversation)` returns every authorization part across the session's messages. With a custom reducer, authorization attempts remain available in `conversation.messages`; `authorization.required` and `authorization.completed` are also available on `events` and `onEvent`.
+With a custom reducer, authorization attempts remain available in `conversation.messages`; `authorization.required` and `authorization.completed` are also available on `events` and `onEvent`.
 
 ## Attach page context per turn
 
