@@ -14,8 +14,8 @@ agent's tools, including connection tools.
 - `run_js` runs on the sandbox and parking bridge that `workflow()` uses today, keeps
   `ctx.agent`, and adds `ctx.tools`, `ctx.search`, and `ctx.describe`. `workflow()` and
   `connection_search` are removed.
-- Each tool has one route, `"direct"` or `"code"`. Authored tools default to direct; connection
-  tools default to code.
+- `codemode: true` makes a tool callable only from `run_js` programs. Authored tools default to
+  `false` and connection tools to `true`; no tool is callable both ways.
 - Nested calls go through the ordinary harness tool path, so approvals, sign-in, validation, and
   events behave as they do for direct calls. Replay is per nested call.
 - The model's tool list and the `run_js` description stay fixed for the session, so discovery
@@ -142,7 +142,7 @@ Unlike `workflow()`, `run_js` does not run as a task. The call blocks the turn u
 returns, and the program's value is the tool result, because the model's next step depends on it.
 While the program waits on a nested call, the turn parks durably without holding compute.
 
-### Tool routes
+### Code mode tools
 
 ```ts title="agent/tools/get_order.ts"
 import { defineTool } from "eve/tools";
@@ -153,20 +153,20 @@ export default defineTool({
   description: "Look up an order by id.",
   inputSchema: z.object({ id: z.string() }),
   outputSchema: orderSchema,
-  route: "code",
+  codemode: true,
   async execute({ id }) {
     return orders.get(id);
   },
 });
 ```
 
-A tool's route is `"direct"` (the default) or `"code"`. A `"code"` tool leaves the model's tool list
-and is callable only as `ctx.tools.<name>(input)` from `run_js` programs. No route exposes a tool
-both ways. `route: "code"` is a definition error when the agent has no `run_js` tool, when the
-tool defines `toModelOutput`, when it has no `execute`, as with provider-executed tools, or when it
-is itself a workflow tool.
+A tool with `codemode: true`, a code mode tool, leaves the model's tool list and is callable only
+as `ctx.tools.<name>(input)` from `run_js` programs. `false`, the default for authored tools, keeps
+it a direct model tool. No setting makes a tool callable both ways. `codemode: true` is a definition
+error when the agent has no `run_js` tool, when the tool defines `toModelOutput`, when it has no
+`execute`, as with provider-executed tools, or when it is itself a workflow tool.
 
-### Connection routes
+### Connections
 
 ```ts title="agent/connections/linear.ts"
 import { defineMcpClientConnection } from "eve/connections";
@@ -174,20 +174,21 @@ import { defineMcpClientConnection } from "eve/connections";
 export default defineMcpClientConnection({
   url: "https://mcp.linear.app/mcp",
   description: "Linear issues, projects, and comments.",
-  routes: { create_issue: "direct" },
+  codemode: { create_issue: false },
 });
 ```
 
-A connection's tools default to `"code"`. `route` changes the default for every tool the connection
-exposes after its filter, `tools.allow` or `tools.block` for MCP and `operations` for OpenAPI.
-`routes` overrides it per tool, keyed by MCP tool name or OpenAPI `operationId`. MCP tool names are
-known only once the connection lists its tools, so a `routes` key the server does not publish is a
-runtime warning, logged when the connection's tools are first fetched.
+Connection tools default to `codemode: true`. On a connection, `codemode` is either a boolean for
+every tool the connection exposes after its filter (`tools.allow` or `tools.block` for MCP,
+`operations` for OpenAPI), or an object of per-tool exceptions to that default, keyed by MCP tool
+name or OpenAPI `operationId`. MCP tool names are known only once the connection lists its tools,
+so an exception for a tool the server does not publish is a runtime warning, logged when the
+connection's tools are first fetched.
 
-A `"direct"` connection tool is in the model's tool list from the start of the session, with no
-search; eve fetches that connection's tools when the session starts. Only static connections and
-`session.started` connections can route a tool `"direct"`. `turn.started` connections are code-only,
-so the tool list never changes during a session.
+A connection tool with `codemode: false` is in the model's tool list from the start of the session,
+with no search; eve fetches that connection's tools when the session starts. Only static connections
+and `session.started` connections can set `codemode: false`. `turn.started` connections are
+code-mode only, so the tool list never changes during a session.
 
 ## Design by dimension
 
@@ -201,10 +202,10 @@ Each dimension lists what the six implementations do, what eve does, and why.
   toolset or connectors, Codex's turn registry), from saved integrations (Executor), or from MCP
   configuration (OpenCode 2, Codex, Amp).
 - **eve.** No new registry. Authored tools come from `agent/tools/` and extensions, and connection
-  tools from `agent/connections/`, with names derived from paths and server tool names. Routes
-  decide which tools the program can call.
+  tools from `agent/connections/`, with names derived from paths and server tool names. `codemode`
+  decides which tools the program can call.
 - **Why.** eve's registries already carry schemas, approval policies, and authorization. Code mode
-  needs a route, not a second catalog.
+  needs a flag, not a second catalog.
 
 #### Calling routes
 
@@ -213,13 +214,14 @@ Each dimension lists what the six implementations do, what eve does, and why.
   directly (Cloudflare). Amp routes by where an MCP server is configured: saved remote servers are
   code-only, and local ones are direct. Codex's `code_mode` mode exposes nested tools both ways; its
   `code_mode_only` mode does not.
-- **eve.** One route per tool, `"direct"` or `"code"`, set on the definition or on the connection.
-  Authored tools default to direct and connection tools to code. No route exposes a tool both ways.
+- **eve.** `codemode` on the tool definition or the connection, as in OpenCode 2. Each tool is
+  either a direct model tool or a code mode tool, never both. Authored tools default to direct and
+  connection tools to code mode.
 - **Why.** Offered both routes, the model never picked code mode. Anthropic advises choosing one
   caller per tool "rather than enabling both", and its `allowed_callers` "is not a hard API-level
   block on direct invocation" ([programmatic tool
   calling](https://platform.claude.com/docs/en/agents-and-tools/tool-use/programmatic-tool-calling)).
-  A route is enforced only by exposure.
+  Only exposure enforces how a tool is called.
 
 #### Initial tool context
 
@@ -227,7 +229,7 @@ Each dimension lists what the six implementations do, what eve does, and why.
   about 2,000 tokens; Codex lists non-deferred tools), namespace names only (Executor, Cloudflare
   durable), every definition (Cloudflare simple), or instructions only (Amp). Codex's
   `code_mode_only` omits deferred MCP tools entirely, even by name.
-- **eve.** The `run_js` description holds the runtime rules, signatures of code-route authored
+- **eve.** The `run_js` description holds the runtime rules, signatures of code mode authored
   tools up to a token budget, names for the rest, and static connections by name and description. It
   is fixed for the session.
 - **Why.** Search-only discovery led models to guess names (9/20). Selection accuracy barely
@@ -252,7 +254,7 @@ Each dimension lists what the six implementations do, what eve does, and why.
 - **Observed.** An in-code API (OpenCode 2's `search`, Executor's `tools.search`, Cloudflare
   durable's `codemode.search`, Codex's `ALL_TOOLS`), a direct model tool (Amp's `tool_search`,
   Executor's passthrough mode, Codex's `code_mode` mode), or none (Cloudflare simple).
-- **eve.** `ctx.search(query)` and `ctx.describe(names)` inside the program, over code-route
+- **eve.** `ctx.search(query)` and `ctx.describe(names)` inside the program, over code mode
   authored tools and connection tools. There is no model-facing search tool; `connection_search` is
   removed.
 - **Why.** Search as its own model turn cost 127% more wall time on one task, and
@@ -389,7 +391,7 @@ Each dimension lists what the six implementations do, what eve does, and why.
 - **Observed.** The return value plus logs (OpenCode 2, Executor, Cloudflare), explicit emissions
   only (Codex), and host transforms; output caps can truncate without saying so.
 - **eve.** The model receives the program's JSON return value, up to a size cap, and a truncated
-  result says that it was truncated. Tools with `toModelOutput` cannot be code-route, since a
+  result says that it was truncated. Tools with `toModelOutput` cannot be code mode tools, since a
   program could return the raw result and bypass the projection.
 - **Why.** The return value is the reduction the program was written to produce. A silent cut
   changes the answer.
@@ -470,8 +472,8 @@ becomes a code mode page.
 
 A unit test over the rendered model request checks that the tool list and the `run_js`
 description do not change when a program finds a connection tool or a `turn.started` connection
-resolves. Unit tests also cover route defaults and definition errors, signature rendering, non-JSON
-input rejection, output validation, and error mapping.
+resolves. Unit tests also cover `codemode` defaults and definition errors, signature rendering,
+non-JSON input rejection, output validation, and error mapping.
 
 Scenario tests extend the existing program-step coverage. A nested tool call parks and resumes. A
 process killed after a nested call completes resumes without re-running it. A nested call that needs
@@ -492,11 +494,11 @@ and cancelling a turn while subagents run inside `run_js`.
 | H4  | Does per-call replay prevent duplicate writes?             | Kill the process mid-program on a task with writes                                                             | Zero duplicates of completed calls at k ≥ 20                                       |
 | H5  | Does approval inside a program work end to end?            | A refund that needs approval: accept, decline, and replay                                                      | No write before approval, and none repeated after                                  |
 | H6  | Does the benefit hold across eve's model providers?        | The same suite across providers                                                                                | The documented model-family list                                                   |
-| H7  | Does hiding intermediate results hurt exploratory answers? | Real-prompt suite with expected answers                                                                        | Recommend direct routes for exploratory tools if quality drops                     |
-| H8  | Could a tool usefully be exposed both ways?                | Exclusive routes against both routes, on fitting and non-fitting tasks                                         | Add a dual route only if the model picks correctly at an agreed rate               |
+| H7  | Does hiding intermediate results hurt exploratory answers? | Real-prompt suite with expected answers                                                                        | Keep exploratory tools direct if quality drops                                     |
+| H8  | Could a tool usefully be exposed both ways?                | Exclusive exposure against both, on fitting and non-fitting tasks                                              | Allow both only if the model picks correctly at an agreed rate                     |
 | H9  | Does the tool name matter?                                 | `run_js` against `execute` on the same suite, with `bash` present                                              | Keep `run_js` unless `execute` lowers wrong-tool calls or syntax errors            |
 
-Every eval of an agent with code-route tools reports programs per answer and the share of
+Every eval of an agent with code mode tools reports programs per answer and the share of
 single-call programs, alongside success, tokens, cost, and latency.
 
 ## Evidence limits
