@@ -203,10 +203,11 @@ Each dimension lists what the six implementations do, what eve does, and why.
 
 #### Calling routes
 
-- **Observed.** Every implementation lets the host choose: per tool (OpenCode 2's
-  `options.codemode`), per session (Executor's `codemode` or `passthrough` mode; Codex's tool mode),
-  or by which tools the host also lists directly (Cloudflare). Codex's `code_mode` mode exposes
-  nested tools both ways; its `code_mode_only` mode does not.
+- **Observed.** The host chooses per tool (OpenCode 2's `options.codemode`), per session
+  (Executor's `codemode` or `passthrough` mode; Codex's tool mode), or by which tools it also lists
+  directly (Cloudflare). Amp routes by where an MCP server is configured: saved remote servers are
+  code-only, and local ones are direct. Codex's `code_mode` mode exposes nested tools both ways; its
+  `code_mode_only` mode does not.
 - **eve.** One route per tool, `"direct"` or `"code"`, set on the definition or on the connection.
   Authored tools default to direct and connection tools to code. No route exposes a tool both ways.
 - **Why.** Offered both routes, the model never picked code mode. Anthropic advises choosing one
