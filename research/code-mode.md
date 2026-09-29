@@ -8,17 +8,17 @@ last_updated: "2026-09-29"
 
 Code mode lets the model write a program that calls tools, instead of calling one tool per model
 turn. eve already runs model-written programs through `workflow()`, but they can only call
-`ctx.agent`. This document proposes a `code_mode` tool that supersedes `workflow()` and can call the
+`ctx.agent`. This document proposes a `run_js` tool that supersedes `workflow()` and can call the
 agent's tools, including connection tools.
 
-- `code_mode` runs on the sandbox and parking bridge that `workflow()` uses today, keeps
+- `run_js` runs on the sandbox and parking bridge that `workflow()` uses today, keeps
   `ctx.agent`, and adds `ctx.tools`, `ctx.search`, and `ctx.describe`. `workflow()` and
   `connection_search` are removed.
 - Each tool has one route, `"direct"` or `"code"`. Authored tools default to direct; connection
   tools default to code.
 - Nested calls go through the ordinary harness tool path, so approvals, sign-in, validation, and
   events behave as they do for direct calls. Replay is per nested call.
-- The model's tool list and the `code_mode` description stay fixed for the session, so discovery
+- The model's tool list and the `run_js` description stay fixed for the session, so discovery
   never invalidates the prompt cache.
 
 The design follows from two bodies of evidence: measurements of when code mode's premises hold, and
@@ -115,25 +115,30 @@ details are omitted here.
 
 ## Authoring API
 
-### The code-mode tool
+### The `run_js` tool
 
-```ts title="agent/tools/code_mode.ts"
-import { codeMode } from "eve/tools/code-mode";
+```ts title="agent/tools/run_js.ts"
+import { runJs } from "eve/tools/run_js";
 
-export default codeMode({ maxSubagents: 20 });
+export default runJs({ maxSubagents: 20 });
 ```
 
-`code_mode` supersedes `workflow()`. It keeps the `{ js }` input, `ctx.agent`, and `maxSubagents`,
-and adds `ctx.tools`, `ctx.search`, and `ctx.describe`. `workflow()` and `eve/tools/workflow` are
+`run_js` supersedes `workflow()`. It keeps the `{ js }` input, `ctx.agent`, and `maxSubagents`, and
+adds `ctx.tools`, `ctx.search`, and `ctx.describe`. `workflow()` and `eve/tools/workflow` are
 removed in the same release, so the model never sees two JavaScript tools. Authored durable tools,
 defined with `defineWorkflowTool`, are unaffected.
 
-An agent has `code_mode` when it defines `agent/tools/code_mode.ts` or any connection under
+The tool is named for what the model does with it. `run_js` follows eve's verb-and-noun tool names
+(`read_file`, `web_fetch`) and states the language, so it cannot be mistaken for `bash`. Names like
+`execute` or `exec` would sit next to `bash` with overlapping meaning; OpenCode 2 can use `execute`
+because its shell tool is `shell`. "Code mode" stays the name of the feature.
+
+An agent has `run_js` when it defines `agent/tools/run_js.ts` or any connection under
 `agent/connections/`; an agent with connections and no file gets the defaults. There is no separate
 flag, and an agent with neither is unchanged. The documentation lists the model families that pass
 the code-mode eval suite.
 
-Unlike `workflow()`, `code_mode` does not run as a task. The call blocks the turn until the program
+Unlike `workflow()`, `run_js` does not run as a task. The call blocks the turn until the program
 returns, and the program's value is the tool result, because the model's next step depends on it.
 While the program waits on a nested call, the turn parks durably without holding compute.
 
@@ -156,8 +161,8 @@ export default defineTool({
 ```
 
 A tool's route is `"direct"` (the default) or `"code"`. A `"code"` tool leaves the model's tool list
-and is callable only as `ctx.tools.<name>(input)` from `code_mode` programs. No route exposes a tool
-both ways. `route: "code"` is a definition error when the agent has no `code_mode` tool, when the
+and is callable only as `ctx.tools.<name>(input)` from `run_js` programs. No route exposes a tool
+both ways. `route: "code"` is a definition error when the agent has no `run_js` tool, when the
 tool defines `toModelOutput`, when it has no `execute`, as with provider-executed tools, or when it
 is itself a workflow tool.
 
@@ -222,7 +227,7 @@ Each dimension lists what the six implementations do, what eve does, and why.
   about 2,000 tokens; Codex lists non-deferred tools), namespace names only (Executor, Cloudflare
   durable), every definition (Cloudflare simple), or instructions only (Amp). Codex's
   `code_mode_only` omits deferred MCP tools entirely, even by name.
-- **eve.** The `code_mode` description holds the runtime rules, signatures of code-route authored
+- **eve.** The `run_js` description holds the runtime rules, signatures of code-route authored
   tools up to a token budget, names for the rest, and static connections by name and description. It
   is fixed for the session.
 - **Why.** Search-only discovery led models to guess names (9/20). Selection accuracy barely
@@ -235,7 +240,7 @@ Each dimension lists what the six implementations do, what eve does, and why.
   JSON Schema, inside plain-text instructions. JSON Schema appears only for direct tools and
   passthrough search.
 - **eve.** TypeScript declarations rendered from input and output schemas. Constraints such as
-  `minimum`, `maximum`, and `pattern` are kept as comments. `code_mode` itself is a JSON Schema tool
+  `minimum`, `maximum`, and `pattern` are kept as comments. `run_js` itself is a JSON Schema tool
   with a `js` string.
 - **Why.** Generated TypeScript that dropped a Zod maximum led the model to send `30` where the
   maximum was `25`.
@@ -439,8 +444,8 @@ Each dimension lists what the six implementations do, what eve does, and why.
 - **Observed.** Parent call ids (OpenCode 2, Cloudflare durable), nested spans (Executor, Codex), a
   durable audit log (Cloudflare durable), or none (Cloudflare simple). Codex's nested call items
   carry fresh ids with no link to the program.
-- **eve.** Action events gain `parentCallId`, which is the `code_mode` call id for a nested call.
-  The nested action span is a child of the `code_mode` action span, and usage is attributed per
+- **eve.** Action events gain `parentCallId`, which is the `run_js` call id for a nested call.
+  The nested action span is a child of the `run_js` action span, and usage is attributed per
   call.
 - **Why.** Approvals, logs, and evals need to see nested calls as the same actions as direct calls.
 
@@ -448,11 +453,11 @@ Each dimension lists what the six implementations do, what eve does, and why.
 
 One release removes `workflow()` and `connection_search`.
 
-- **`workflow()`.** Agents rename `agent/tools/workflow.ts` to `agent/tools/code_mode.ts` and
-  export `codeMode()` with the same options. Programs that call `ctx.agent` keep working, and their
+- **`workflow()`.** Agents rename `agent/tools/workflow.ts` to `agent/tools/run_js.ts` and
+  export `runJs()` with the same options. Programs that call `ctx.agent` keep working, and their
   value now arrives as the tool result instead of a `task.result` message. A file that still imports
-  `eve/tools/workflow` fails the build with an error that names `codeMode()`. The `agent-subagents`
-  and `agent-cancellation` fixtures move to `code_mode`.
+  `eve/tools/workflow` fails the build with an error that names `runJs()`. The `agent-subagents`
+  and `agent-cancellation` fixtures move to `run_js`.
 - **`connection_search`.** It and the `<connection>__<tool>` model tools are removed. The
   `agent-workflow-tools` and `agent-openapi-swagger` fixtures and their connection evals move to
   `ctx.search` and `ctx.tools`.
@@ -463,7 +468,7 @@ becomes a code mode page.
 
 ## Verification
 
-A unit test over the rendered model request checks that the tool list and the `code_mode`
+A unit test over the rendered model request checks that the tool list and the `run_js`
 description do not change when a program finds a connection tool or a `turn.started` connection
 resolves. Unit tests also cover route defaults and definition errors, signature rendering, non-JSON
 input rejection, output validation, and error mapping.
@@ -475,7 +480,7 @@ approval is approved in one run and declined in another.
 Fixture evals cover a deep composition task and a single-call control, a connection tool found with
 `ctx.search` and called in the same program, sign-in in the middle of a program, an MCP tool without
 `outputSchema`, a program that fans out to subagents and combines their replies with tool results,
-and cancelling a turn while subagents run inside `code_mode`.
+and cancelling a turn while subagents run inside `run_js`.
 
 ## Evaluation plan
 
@@ -489,6 +494,7 @@ and cancelling a turn while subagents run inside `code_mode`.
 | H6  | Does the benefit hold across eve's model providers?        | The same suite across providers                                                                                | The documented model-family list                                                   |
 | H7  | Does hiding intermediate results hurt exploratory answers? | Real-prompt suite with expected answers                                                                        | Recommend direct routes for exploratory tools if quality drops                     |
 | H8  | Could a tool usefully be exposed both ways?                | Exclusive routes against both routes, on fitting and non-fitting tasks                                         | Add a dual route only if the model picks correctly at an agreed rate               |
+| H9  | Does the tool name matter?                                 | `run_js` against `execute` on the same suite, with `bash` present                                              | Keep `run_js` unless `execute` lowers wrong-tool calls or syntax errors            |
 
 Every eval of an agent with code-route tools reports programs per answer and the share of
 single-call programs, alongside success, tokens, cost, and latency.
@@ -503,6 +509,6 @@ single-call programs, alongside success, tokens, cost, and latency.
 
 - Whether eve enforces the model-family list or only documents it.
 - How a tool declares that it is read-only, so that reads can run concurrently.
-- Whether `code_mode` takes raw JavaScript through grammar-constrained tools where the provider
+- Whether `run_js` takes raw JavaScript through grammar-constrained tools where the provider
   supports them.
 - Whether console output reaches the model when a program fails.
