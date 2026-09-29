@@ -18,14 +18,16 @@ halved median latency (15 s against 28 s), and used about a quarter of the token
 
 This plan covers the first phase of that work:
 
-1. **Core**: additions to surfaces eve already has, on `eve/client` and in route handlers.
+1. **Core**: additions to the route handler surface eve already has, as TypeScript APIs only.
    `describe()` returns what the agent offers callers: its tools and skills, without deployment
    details.
-   `sessions.create({ capabilities: true })` creates a session that runs tools instead of turns.
+   `toolSessions.open()` opens a tool session: an identity and a sandbox, with no turns and no
+   workflow run.
    `session.invokeTool` runs one tool with the context it gets in a turn, inside the request and
    without parking. `session.readSkill` reads one skill file.
 2. **Server**: `mcpCapabilitiesChannel`, a stateless MCP `2026-07-28` server that only adapts MCP
-   onto those operations.
+   onto those operations. Clients can also subscribe to tool and skill changes over a
+   server-sent stream.
 3. **Client**: MCP connections that can consume it, including interrupts answered by a person.
 
 Once it lands, any MCP client can call an eve agent's tools with a plain `tools/call`, the MCP
@@ -97,7 +99,9 @@ Two alternatives were considered and rejected:
   channel or extension could reuse it.
 
 Almost everything the channel needs exists already, on the client (`eve/client`) or inside the
-framework. The changes extend those surfaces instead of adding a separate one:
+framework. Phase 1 extends route args, the right-hand column, instead of adding a separate
+surface. Remote callers reach the new operations through the channel, so `eve/client` gains no
+routes:
 
 | Need                     | Remote, `eve/client`                                 | In a route handler                                   |
 | ------------------------ | ---------------------------------------------------- | ---------------------------------------------------- |
@@ -126,8 +130,9 @@ sandbox, mode, channels, memories, schedules, and connections. Its consumers nee
 None of those details may reach an MCP caller, so the caller-facing view is a new, separate
 surface. `info()` and `/eve/v1/info` stay as they are:
 
-- **`describe()` returns `AgentDescription`**, on `Client` and on route args. This is what the
-  channel publishes.
+- **`describe()` returns `AgentDescription`**, on route args. This is what the channel publishes.
+  It is a TypeScript API only; remote callers get the same data through the channel, and there
+  is no new HTTP route.
 - **`info()` stays the inspection surface**, with its current auth, which is Vercel OIDC outside
   development. Nothing that reads it moves.
 
@@ -151,57 +156,66 @@ interface AgentDescription {
   workflow tools, background tools, and tools with special handling. They suspend, run past the
   request, or change the harness itself. The channel lists only invocable tools.
 - The order is deterministic, so callers can cache the list.
+- Only compiled tools and skills are listed. Dynamic tools, skills, and connections, which
+  `session.started` and `turn.started` resolvers add, are not in phase 1, so every caller sees
+  the same list. This may change later.
 - Subagents are not listed in phase 1.
 
-### 2. Capability sessions: `sessions.create({ capabilities: true })`
+### 2. Tool sessions: `toolSessions.open()`
 
-Route args gain `sessions.create()`, the same operation clients already have as
-`client.sessions.create()`. With `capabilities: true`, it creates a capability session. A
-capability session exists for identity and the sandbox. It is a real eve session, created
-without a message through the existing prewarm path, but it has no turns, no steps, and no
-authored state.
+Route args gain `toolSessions`. A tool session is what a caller holds to call an
+agent's tools: an identity and a sandbox. It is not a conversation, and no workflow run backs it.
+Its handle is its own type, `ToolSession`, because it has none of `send`, `respond`, or `stream`.
 
-It holds:
+```ts
+interface ToolSessions {
+  open(options?: {
+    key?: string; // the caller's name for the session; omit for a one-off session
+    auth?: SessionAuthContext; // route handlers: the caller this request authenticated
+  }): Promise<ToolSession>;
+}
+```
 
-- **An owner**: the principal that created it (`auth.current`, `auth.initiator`, and the
-  forwarder, if any). Every call checks it.
-- **A sandbox**, named after the session and started on create. A conversation prewarm parks
-  before sandbox setup, and its first turn does the rest. A capability session never runs a turn,
-  so create does the setup the first tool call would otherwise wait for. The sandbox idle timeout
-  bounds a session that is never used.
-- **The tools, skills, and connections its owner resolves.** `session.started` resolvers run
-  once, at create, and their results hold for the session's lifetime.
-- **Framework-owned sign-in state**, such as a pending sign-in (open question 1).
-- **A server-issued id**, as SEP-2567 recommends, instead of a key the client chooses.
+The session is derived, not stored: its id is `sha256(forwarder, auth.current, key)`.
 
-It has none of these, and the channel documentation must say so:
+- **Ownership holds by construction.** Every request derives the id from its own authenticated
+  principals and the key it sends, so no other caller, and no other user behind the same
+  forwarder, reaches the session. Nothing is stored, and no call reads an owner record. This
+  meets SEP-2567's rule to check the handle against the caller on every call. Its preference for
+  opaque handles issued by the server is guidance, and assumes a server-side record.
+- **Opening warms the sandbox.** A conversation prewarm parks before sandbox setup, and its first
+  turn does the rest. Opening a tool session starts the sandbox named after it, which is the
+  setup a first call would otherwise wait for. Opening is idempotent. The sandbox idle timeout
+  bounds a session nobody uses, and the same key later opens a fresh sandbox.
+- **No key means a one-off session.** Its sandbox is deleted after the call.
 
-- **No turns and no steps.** No call is wrapped in a turn or a step. `turn.started` and
-  `step.started` never fire, so a tool or connection defined only on those events does not exist
-  in a capability session, and `ctx.session.turn` is absent.
+A tool session has none of these, and the channel documentation must say so:
+
+- **No turns and no steps.** No call is wrapped in a turn or a step, and `ctx.session.turn` is
+  absent. Dynamic resolvers do not run (section 1).
 - **No authored session state.** `defineState` belongs to conversations, where step boundaries
-  give its updates a commit point. A capability session has no such point: `get()` returns the
-  declared initial value, and `update()` throws an error that names the tool. State that must
-  outlive a call lives in the sandbox, or behind a handle the tool returns, the pattern SEP-2567
+  give its updates a commit point. A tool session has no such point: `get()` returns the declared
+  initial value, and `update()` throws an error that names the tool. State that must outlive a
+  call lives in the sandbox, or behind a handle the tool returns, the pattern SEP-2567
   recommends.
 - **No ordering between calls.** Calls may run in parallel, as MCP `tools/call` requests and a
   model's parallel tool calls already can. Nothing serializes them.
-- **No model, instructions, history, or messages.** Its handle is its own type, without `send`,
-  `respond`, or `stream`.
+- **No at-most-once guarantee.** A call retried after a lost response runs again. In a turn,
+  durable steps prevent that. A tool session keeps no record to check against, like any
+  stateless MCP server: MCP notes that bounding replay does not make state single-use, and that
+  an operation that must happen at most once needs a server-side record.
+- **No model, instructions, history, or messages.**
 
-`capabilities: true` is a placeholder name.
+### 3. `ToolSession`: `invokeTool` and `readSkill`
 
-### 3. Session operations: `invokeTool` and `readSkill`
-
-Both are added to the route `Session` and to `ClientSession`. The client form uses a new eve
-HTTP route, so an eve caller can run another eve agent's tools without MCP.
+Route handlers get the handle in process. Remote callers, other eve agents included, reach it
+through the channel.
 
 ```ts
-interface Session {
-  // ...existing operations
+interface ToolSession {
+  readonly id: string;
   invokeTool(name: string, input: unknown, options?: InvokeToolOptions): Promise<InvokeToolResult>;
   readSkill(skill: string, path?: string): Promise<string | Uint8Array>; // default: SKILL.md
-  describe(): Promise<AgentDescription>; // includes what session.started resolved for the owner
 }
 
 interface InvokeToolOptions {
@@ -224,10 +238,10 @@ type InvokeToolResult =
     };
 ```
 
-Every call checks that the caller owns the session, which is the rule `mcpChannel` already
-applies to invocations. The tool then sees the same `ctx` it sees in a turn:
+Every call derives its session from the caller's principals and key, so a caller only ever
+reaches its own session. The tool then sees the same `ctx` it sees in a turn:
 
-- `ctx.session.id` is the capability session. `ctx.session.auth.current` is the caller, and
+- `ctx.session.id` is the tool session. `ctx.session.auth.current` is the caller, and
   `.initiator` is the session's creator.
 - `ctx.getSandbox()` opens the session's sandbox.
 - `ctx.getToken()` resolves the user's grant, and returns `authorization-required` when a sign-in
@@ -256,17 +270,32 @@ forged `callId` can make a response policy refuse, but it cannot grant anything.
 carried an "approved" flag in client-held state, and a client could set it to skip approval.
 This contract removes that possibility at the primitive, instead of relying on each channel.
 
-**Sign-in stores the grant, not the call.** When `getToken` needs a sign-in, the result is
-`authorization-required` with its challenges. The provider's callback lands on eve's existing
-connection callback route. The route has no parked run to resume, so it completes the exchange
-itself, and the retry runs the tool from the start.
+**In phase 1, sign-in requires a provider that runs the OAuth flow.** When `getToken` needs a
+sign-in, the result is `authorization-required` with the strategy's challenge, and the retry runs
+the tool from the start. The retry succeeds only if `getToken` can then find the grant. MCP's
+URL-mode flow shows what that takes: a server records the pending authorization for the user,
+checks that the browser's user is that user, receives the redirect, exchanges the code, and
+stores the tokens for that user. The redirect comes from the browser, not the MCP client, so it
+carries no `requestState`, and a tool session keeps nothing between requests.
 
-- **The grant must outlive the request.** Today the callback resumes a parked run, and eve keeps
-  the minted token only in a per-step cache. A strategy that stores grants, such as Vercel
-  Connect, works unchanged. Other interactive strategies need a place for the grant.
-- **So must the attempt's start state**, such as a PKCE verifier. Today the parked run holds it.
-- **The person completing a sign-in must be the one who started it.** MCP requires this for
-  URL-mode elicitation. The prototype did not check it.
+- **Supported: strategies whose provider runs that flow**, such as Vercel Connect. Its
+  `startAuthorization` returns only a challenge, and its `completeAuthorization` reads the same
+  grant `getToken` does, so eve holds nothing between the challenge and the retry. The callback
+  URL eve passes is only the page the browser lands on.
+- **Not supported: strategies that return `resume`**, such as a PKCE verifier. They need a record
+  of the pending sign-in until the code arrives. In a tool session, a `startAuthorization` that
+  returns `resume` fails the call with an error that names the connection and says why.
+  Conversations are unaffected. The current pilot does not require these strategies, so phase 1
+  leaves them out.
+- **A retry before the sign-in finishes gets `input_required` again.** In URL mode, `accept`
+  means only that the person opened the page.
+- **Nothing checks that the person completing a sign-in is the one who started it.** MCP
+  requires this check for URL-mode elicitation. Connect does not make it. The subject is an id
+  the calling project asserts with its OIDC token, not an identity Connect can authenticate in
+  the browser. Whoever completes the provider sign-in grants that subject access. So a link
+  someone else completes grants the requesting user access through that other person's
+  provider account. Conversations with Connect behave the same way today. Phase 1 does not
+  change this, and closing the gap belongs to Connect and eve's Connect adapter.
 - **Retries rerun the tool from the start.** Tools should resolve credentials before side effects.
 
 ## Server: `mcpCapabilitiesChannel`
@@ -299,20 +328,21 @@ The channel is an adapter. Each MCP method maps onto one of the operations above
 | MCP                                                                          | eve                                                |
 | ---------------------------------------------------------------------------- | -------------------------------------------------- |
 | `server/discover`                                                            | `describe()`                                       |
-| a new capability session, requested by the client                            | `sessions.create({ capabilities: true })`          |
+| `dev.eve/tool-sessions` extension, below                                     | `toolSessions.open({ key })`                       |
 | `tools/list`                                                                 | `describe().tools`, invocable only                 |
 | `skills/list`, `skills/get` (SEP-2640)                                       | `describe().skills`                                |
 | `resources/read` for `skill://<skill>/SKILL.md` and `skill://<skill>/<file>` | `session.readSkill`                                |
 | `resources/directory/read` for `skill://<skill>`                             | `describe().skills[].files`                        |
 | `tools/call`                                                                 | `session.invokeTool`                               |
+| `subscriptions/listen`                                                       | change notifications, below                        |
 | `approval-required`                                                          | MRTR `input_required` with a boolean approval form |
 | `authorization-required`                                                     | MRTR `input_required` with URL elicitations        |
 
 The MCP rules the channel must follow:
 
 - Every request authenticates again. Principals come from route auth plus
-  `eve-forwarded-principal`, checked by `trustedForwarders`. Calls name their session with the
-  server-issued id, and the session operations check ownership.
+  `eve-forwarded-principal`, checked by `trustedForwarders`. The tool session is derived from
+  those principals and the key the call sends.
 - **`requestState` carries only `callId` and a binding** to the session, tool, and argument hash.
   It is never evidence that a check passed; the operation re-evaluates everything. A retry whose
   binding does not match is rejected. The state has an expiry.
@@ -320,10 +350,63 @@ The MCP rules the channel must follow:
 - `_meta` keys use the reverse-DNS prefix `dev.eve/`, such as `dev.eve/owner` and
   `dev.eve/approval`.
 - Elicitations are only sent in the modes the client declared. List results carry `ttlMs` and
-  `cacheScope`, and responses are JSON only. The official SDK already enforces these.
+  `cacheScope`, and responses are JSON, except the `subscriptions/listen` stream. The official SDK
+  already enforces these.
 - Skills follow SEP-2640. The channel declares `io.modelcontextprotocol/skills`, and the last
   segment of a skill path is the skill's `name`. The server already scopes the URI, so it carries
   no agent prefix.
+
+### Tool sessions over MCP
+
+MCP has no session API. SEP-2567 removed sessions, leaves state handles to tool design, and
+forbids list results that vary per connection, so a session cannot ride on `server/discover`.
+The channel carries tool sessions in a vendor extension instead, which clients opt into per
+request:
+
+- **The channel advertises `dev.eve/tool-sessions`** in `server/discover`. The advertisement is
+  the same for every caller, so discover stays cacheable.
+- **A client that declares it sends `_meta["dev.eve/tool-session"]`** with its key on
+  `tools/call` and `resources/read`, retries included. `requestState` binds to the key.
+- **`dev.eve/tool-sessions/prewarm { key }` starts the sandbox** before the first call, through
+  `toolSessions.open({ key })`. It is a hint, not a handshake. It creates no record, calls never
+  require it, and if it fails the first call waits for the sandbox instead. That keeps SEP-2567's
+  removal of session setup intact. No existing request can carry the warm-up: `server/discover`
+  must be the same for every caller, and a client may answer `tools/list` from its cache. eve
+  connections send it when the caller's session starts.
+- **A client that does not declare it gets a one-off tool session per call**, as the
+  extensions guidance asks: the fallback is core behavior, not an error. Skill reads need no
+  session.
+
+### Change notifications
+
+Clients can subscribe to changes instead of polling. The channel declares `tools.listChanged`,
+`resources.listChanged`, and `resources.subscribe`, and serves `subscriptions/listen`. The spec
+defines it as one long-lived SSE stream per subscription, replacing `resources/subscribe` and the
+HTTP `GET` endpoint:
+
+| Filter in `notifications`                                  | Server sends                           | When                                                           |
+| ---------------------------------------------------------- | -------------------------------------- | -------------------------------------------------------------- |
+| `toolsListChanged`                                         | `notifications/tools/list_changed`     | the invocable tools `describe()` returns to this caller change |
+| `resourcesListChanged`                                     | `notifications/resources/list_changed` | the skills or their files change                               |
+| `resourceSubscriptions: ["skill://usage-triage/SKILL.md"]` | `notifications/resources/updated`      | that file changes                                              |
+
+- The first message is `notifications/subscriptions/acknowledged`, listing only the filters the
+  channel honors.
+- The stream authenticates like every request, and carries notifications only about tools and
+  resources that the caller can list or read.
+- The function's maximum duration bounds the stream. At the limit, the channel closes the
+  transport without a completion result, which the spec treats as a disconnect that the client
+  may reconnect from. A completion result would tell the client the subscription ended on
+  purpose. After reconnecting, the client lists again, which also picks up a new deployment
+  behind the same URL.
+- Notifications invalidate caches. List results still carry `ttlMs` for clients that do not
+  subscribe.
+
+In phase 1, lists change only when a new deployment starts serving the URL. Within a deployment
+they are fixed, because only compiled tools and skills are listed. An open stream belongs to the
+old deployment, so it never carries a notification. It ends, the client reconnects, and its next
+list shows the new deployment. Notifications within a deployment wait until something there can
+change, such as dynamic tools.
 
 ### Calling it from any MCP client
 
@@ -345,8 +428,8 @@ mcp --method resources/read --uri skill://usage-triage/SKILL.md
 - `tools/list` returns the invocable tools with their input and output schemas.
 - `tools/call` runs the tool as the authenticated caller and returns `structuredContent`. A
   failing tool returns `isError: true`, and the Inspector exits `5`.
-- A call that names no capability session runs in a one-off session. Its sandbox does not outlive
-  the call (see open question 2).
+- The Inspector does not declare `dev.eve/tool-sessions`, so each call runs in a one-off tool
+  session, and its sandbox does not outlive the call.
 - Tools that need approval or a sign-in answer with `input_required`. They run only for a client
   that answers it; a client that cannot gets the request and nothing executes.
 - A deployed agent needs a channel `auth` the client can satisfy: a bearer token through
@@ -374,18 +457,27 @@ tools in the orchestrator that call MCP directly.
 1. **Multi round-trip support in the client**, wrapped behind the existing connection API: return
    `input_required` with its `inputRequests` and `requestState` instead of failing, and retry with
    `inputResponses`. This lands upstream in `@ai-sdk/mcp` or in an eve-owned wrapper.
-2. **The caller's harness waits for its person (core).** The provider never parks, but the
-   caller has to wait for its own user's answer. A connection tool call that returns
-   `input_required` parks the way connection authorization already does. The harness emits `input.requested`,
-   which the channel renders as it renders its own approvals, and on the answer retries the call
-   with `inputResponses`. `requestState` stays in the tool call's durable state, never in model
-   history. A person answers, not the model. This must be core: only the harness can park an
-   ordinary tool call and resume it. The userland alternative, a workflow tool that calls
-   `ctx.ask()`, works for one bespoke tool but not for connection tools in general.
+2. **The calling turn waits for its user (core).** Say Alice asks the router agent a question,
+   and the router calls the analytics agent's `run_query`, which needs approval. Analytics
+   answers `input_required` and forgets the call. Someone has to ask Alice and wait for her.
+   Only the router can: its turn is durable, and it already waits like this when a connection
+   needs Alice to sign in. So the router's harness:
+   1. parks the turn and emits `input.requested`, which Alice's channel shows like any approval;
+   2. when Alice answers, calls `run_query` again with her answer (`inputResponses`) and the
+      `requestState` analytics returned.
+
+   Alice answers, not the model, and the model never sees `requestState`. This has to be core
+   because a connection tool is an ordinary tool call, and only the harness can pause one and
+   resume it. Userland can do this for one hand-written workflow tool with `ctx.ask()`, but not
+   for every connection tool.
+
 3. **Forwarding and session scope.** `defineMcpClientConnection({ forwardPrincipal: true })` sends
-   `eve-forwarded-principal`, with the same semantics as remote agents. The connection requests
-   one capability session per caller session and keeps its id with the caller session, so one
-   conversation keeps one provider sandbox.
+   `eve-forwarded-principal`, with the same semantics as remote agents. The connection declares
+   `dev.eve/tool-sessions` and sends a key derived from the caller's session, so one conversation
+   keeps one provider sandbox. It sends the prewarm when the caller's session starts.
+4. **Change notifications.** A connection may subscribe with `toolsListChanged` and
+   `resourcesListChanged` to invalidate its cached tool and skill lists, instead of relying only
+   on `ttlMs`.
 
 ```ts title="agent/connections/analytics.ts"
 import { getVercelOidcToken } from "@vercel/oidc";
@@ -414,15 +506,16 @@ top of this phase, as the prototype's `discover`, `load_skill`, and `tool_call` 
 1. Every request authenticates, and forwarded identity is accepted only through
    `trustedForwarders`.
 2. Client-held state never grants authority. Approval is re-evaluated on every call.
-3. No call state outlives a request. The person who starts a sign-in completes it, and the grant
-   is stored rather than the call.
+3. No call state outlives a request, and eve keeps no record of a tool session. In phase 1,
+   sign-in requires a provider that runs the OAuth flow.
 4. The client answers interrupts with a person's input, and keeps `requestState` out of the model.
-5. Capability sessions and their sandboxes belong to the principals that created them, and every
-   call checks ownership.
+5. A tool session is derived from the forwarder, the user, and the key, so a caller reaches only
+   its own sessions and sandboxes.
 6. MCP callers see only `AgentDescription`. The inspection payload from `info()` never reaches
    them.
-7. Work is bounded: request body 1 MiB, forwarded header 16 KiB, session id 512 characters, skill
-   file 512 KiB.
+7. Work is bounded: request body 1 MiB, forwarded header 16 KiB, tool-session key 512 characters, skill
+   file 512 KiB, 100 resource URIs per subscription, and a bounded number of open subscriptions
+   per caller.
 
 ## Follow-up plans
 
@@ -437,43 +530,27 @@ top of this phase, as the prototype's `discover`, `load_skill`, and `tool_call` 
 - Unit: `describe()` (no inspection fields, invocable filter, order), approval
   re-evaluation (a forged `callId` or missing answer never executes), request-state binding and
   expiry, session ownership, forwarder refusal.
-- Unit: capability session semantics. `session.started` resolves once at create,
-  `turn.started` and `step.started` never fire, state reads return initial values and writes
-  throw, and two calls in one session run in parallel.
-- Scenario: a real HTTP server covering discover, capability session creation with a warm
-  sandbox, a plain call, approval, and sign-in with the callback on a different instance from the
-  retry.
+- Unit: tool session semantics. The same key from another user or forwarder reaches a different
+  session, dynamic resolvers never run, state reads return initial values and writes throw, two
+  calls run in parallel, and a strategy that returns `resume` fails with an error naming the
+  connection.
+- Scenario: a subscription that is acknowledged, closes at its duration limit without a
+  completion result, and lists again after reconnecting.
+- Scenario: a real HTTP server covering discover, opening a tool session with a warm sandbox, a
+  plain call, approval, a provider-run sign-in whose retry lands on a different instance, and the
+  one-off fallback for a client without the extension.
 - E2E: two fixture agents. One calls the other's tools through an MCP connection, including an
   approval answered through `input.requested` and a skill read.
 - Interop: the MCP Inspector CLI lists, calls, and reads skills against a fixture, as in
   [Calling it from any MCP client](#calling-it-from-any-mcp-client).
-
-## Open questions
-
-1. Where do grants and sign-in start state live for interactive strategies that do not store
-   their own, now that no parked run holds them? Is Vercel Connect the only supported strategy
-   in phase 1?
-2. How does an MCP client request a capability session and learn its id? MCP defines no session
-   API. SEP-2567 makes handles a tool pattern: a `create_*` tool returns an opaque id that later
-   calls pass, and the server checks `(handle, auth_context)` on every call. It also forbids list
-   results that vary per connection, so session creation cannot ride on `server/discover`. One
-   option is an `open_session` tool, with eve connections sending the id in
-   `_meta["dev.eve/session"]` so it stays out of the model.
-3. What should `capabilities: true` be called?
-4. Every call reads the session's owner. Is one world read per `tools/call` acceptable, or is the
-   owner cached for the session's lifetime?
-5. What route serves `describe()` for `Client`, for example `GET /eve/v1/describe`, and with which
-   auth?
-6. SEP-2567 lets `tools/list` vary by the caller's authorization but not by session. Dynamic tools
-   resolve on `session.started`. Does the channel resolve them per principal for `tools/list`,
-   and what session does a resolver see there?
 
 ## References
 
 - MCP 2026-07-28: [changelog](https://modelcontextprotocol.io/specification/2026-07-28/changelog),
   [tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools),
   [multi round-trip requests](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr),
-  [elicitation](https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation).
+  [elicitation](https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation),
+  [subscriptions](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions).
 - [SEP-2567, sessionless MCP](https://modelcontextprotocol.io/seps/2567-sessionless-mcp);
   [SEP-2640, skills over MCP](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/seps/2640-skills-extension.md);
   [SEP-2663, tasks](https://modelcontextprotocol.io/seps/2663-tasks-extension).

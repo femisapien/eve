@@ -63,7 +63,7 @@ const result = await analytics.callTool("query_usage", input);
 const skill = await analytics.readResource("skill://usage-triage/SKILL.md");
 ```
 
-It would reuse the connection's auth, principal forwarding, capability session, and
+It would reuse the connection's auth, principal forwarding, tool session, and
 `input_required` handling from the capabilities channel's client work, so userland patterns get
 the same guarantees as framework ones. This is the only framework change this plan proposes
 before a pattern is chosen.
