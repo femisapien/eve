@@ -154,8 +154,9 @@ export function routeDeliverPayload(input: {
   const message = resolveMessageAgainstQuestions({
     enabled: input.resolveMessage === true,
     entries,
+    answerable,
     payload: input.payload,
-    routable: (requestId, route) => routable(requestId, route) && answerable(route),
+    routable,
   });
   const inputResponses = [...(input.payload.inputResponses ?? []), ...message.responses];
 
@@ -304,6 +305,7 @@ function toInputResolution(
 }
 
 function resolveMessageAgainstQuestions(input: {
+  readonly answerable: (route: ProxyInputRequest) => boolean;
   readonly enabled: boolean;
   readonly entries: ReadonlyMap<string, ProxyInputRequest>;
   readonly payload: DeliverPayload;
@@ -328,9 +330,15 @@ function resolveMessageAgainstQuestions(input: {
   });
   if (questions.length === 0) return none;
 
+  // Every pending question counts toward ambiguity, even one this responder
+  // can't answer; only then may the one question take their text.
   const [only] = questions;
+  const onlyRoute = pending.length === 1 ? pending[0]?.[1] : undefined;
   const answer =
-    pending.length === 1 && only !== undefined && typeof input.payload.message === "string"
+    onlyRoute !== undefined &&
+    input.answerable(onlyRoute) &&
+    only !== undefined &&
+    typeof input.payload.message === "string"
       ? resolveTextToResponse(input.payload.message, only)
       : undefined;
   if (answer !== undefined) return { consumed: true, responses: [answer] };

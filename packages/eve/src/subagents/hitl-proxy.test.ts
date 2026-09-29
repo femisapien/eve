@@ -461,6 +461,37 @@ describe("routeDeliverPayload requester-only questions", () => {
     expect(anonymous.forChildren).toEqual([]);
   });
 
+  it("keeps someone else's text for the turn while an open question is also pending", () => {
+    const state = upsertProxyInputRequests({
+      entries: [
+        [
+          "ask-2",
+          {
+            childContinuationToken: "hook-ask-2",
+            event: REQUEST_EVENT,
+            kind: "question",
+            workflowAsk: {
+              control: "control-ask-2",
+              question: { allowFreeform: true },
+              runId: "run-ask-2",
+            },
+          },
+        ],
+      ],
+      forChildContinuationToken: "hook-ask-2",
+      session: bobsQuestion(),
+    }).state;
+
+    const routed = routeDeliverPayload({
+      payload: { message: "ship it" },
+      resolveMessage: true,
+      responder: carol,
+      state,
+    });
+    expect(routed.forChildren).toEqual([]);
+    expect(routed.forSelf).toEqual({ message: "ship it" });
+  });
+
   it("routes the requester's structured and text answers", () => {
     const state = bobsQuestion().state;
     for (const payload of [
