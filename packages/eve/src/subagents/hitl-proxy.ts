@@ -1,7 +1,6 @@
 import type { SessionInboxAddress } from "#execution/session-inbox/address.js";
 import type {
   DeliverPayload,
-  SessionAuthContext,
   SubagentAuthorizationEventHookPayload,
   SubagentInputRequestHookPayload,
 } from "#channel/types.js";
@@ -21,7 +20,6 @@ import {
 } from "#protocol/message.js";
 import type { InputResponse } from "#shared/input.js";
 import { resolveTextToResponse } from "#channel/resolve-text.js";
-import { mayAnswerInputRequest } from "#shared/input-principal.js";
 import { SESSION_LIMIT_STOP_OPTION_ID } from "#harness/session-limit-continuation.js";
 
 // ---------------------------------------------------------------------------
@@ -133,28 +131,19 @@ interface ChildResponseBucket {
  * `ctx.ask()` questions: when exactly one question is pending, a matching option or
  * permitted free text answers it and consumes the message. Otherwise the
  * message stays with the parent.
- *
- * A request only its requester may answer takes an answer only from
- * `responder`'s principal: another person's structured answer is dropped and
- * their text is not matched, so the request stays pending for the requester.
  */
 export function routeDeliverPayload(input: {
   readonly allowRoute?: (requestId: string, route: ProxyInputRequest) => boolean;
   readonly payload: DeliverPayload;
   readonly resolveMessage?: boolean;
-  /** Who sent the payload; absent, no restricted request accepts it. */
-  readonly responder?: SessionAuthContext | null;
   readonly state: SessionStateMap | undefined;
 }): RoutedDeliverPayload {
   const entries = getProxyInputRequests(input.state);
-  const answerable = (route: ProxyInputRequest) =>
-    mayAnswerInputRequest(route.answerableBy, input.responder);
   const routable = (requestId: string, route: ProxyInputRequest | undefined) =>
     route !== undefined && input.allowRoute?.(requestId, route) !== false;
   const message = resolveMessageAgainstQuestions({
     enabled: input.resolveMessage === true,
     entries,
-    answerable,
     payload: input.payload,
     routable,
   });
@@ -164,7 +153,7 @@ export function routeDeliverPayload(input: {
   const unroutedResponses: InputResponse[] = [];
   let parentAction: RoutedDeliverPayload["parentAction"];
 
-  const bucketFor = (route: ProxyInputRequest): ChildResponseBucket => {
+  const bucketFor = (route: ProxyInputRequest, requestId: string): ChildResponseBucket => {
     const bucketKey = JSON.stringify([
       route.childContinuationToken,
       route.childSessionInbox?.sessionId ?? "",
@@ -173,6 +162,7 @@ export function routeDeliverPayload(input: {
       route.event.stepIndex,
       route.event.turnId,
       route.inputSource ?? null,
+      route.workflowAsk !== undefined ? requestId : null,
     ]);
     const existing = responsesByChild.get(bucketKey);
     if (existing !== undefined) return existing;
@@ -200,7 +190,6 @@ export function routeDeliverPayload(input: {
       unroutedResponses.push(response);
       continue;
     }
-    if (!answerable(route)) continue;
     // A request takes one answer; the first one in the payload wins.
     if (routedRequestIds.has(response.requestId)) continue;
     routedRequestIds.add(response.requestId);
@@ -209,7 +198,7 @@ export function routeDeliverPayload(input: {
       parentAction = { kind: "cancel-turn" };
     }
 
-    const bucket = bucketFor(route);
+    const bucket = bucketFor(route, response.requestId);
     bucket.parentRequestIds.push(response.requestId);
     bucket.responses.push(response);
     bucket.routes.push(route);
@@ -305,7 +294,6 @@ function toInputResolution(
 }
 
 function resolveMessageAgainstQuestions(input: {
-  readonly answerable: (route: ProxyInputRequest) => boolean;
   readonly enabled: boolean;
   readonly entries: ReadonlyMap<string, ProxyInputRequest>;
   readonly payload: DeliverPayload;
@@ -330,15 +318,9 @@ function resolveMessageAgainstQuestions(input: {
   });
   if (questions.length === 0) return none;
 
-  // Every pending question counts toward ambiguity, even one this responder
-  // can't answer; only then may the one question take their text.
   const [only] = questions;
-  const onlyRoute = pending.length === 1 ? pending[0]?.[1] : undefined;
   const answer =
-    onlyRoute !== undefined &&
-    input.answerable(onlyRoute) &&
-    only !== undefined &&
-    typeof input.payload.message === "string"
+    pending.length === 1 && only !== undefined && typeof input.payload.message === "string"
       ? resolveTextToResponse(input.payload.message, only)
       : undefined;
   if (answer !== undefined) return { consumed: true, responses: [answer] };

@@ -1,11 +1,26 @@
-import { defineWorkflowTool } from "eve/tools";
+import {
+  defineWorkflowTool,
+  type QuestionResponseContext,
+  type QuestionResponseDecision,
+} from "eve/tools";
 import { z } from "zod";
 
-/**
- * Asks for a release sign-off that only the person who requested the release
- * may give. Another participant's answer is ignored, so the question stays
- * pending until the requester answers.
- */
+async function authorizeSignoff({
+  request,
+  response,
+}: QuestionResponseContext): Promise<QuestionResponseDecision> {
+  "use step";
+  const requester = request.principal;
+  const responder = response.principal;
+  return requester !== null &&
+    requester.principalId === responder.principalId &&
+    requester.principalType === responder.principalType &&
+    requester.authenticator === responder.authenticator &&
+    requester.issuer === responder.issuer
+    ? { status: "allowed" }
+    : { status: "rejected", reason: "The person who requested the release must answer." };
+}
+
 export default defineWorkflowTool({
   description: "Release a service after the person who asked for it signs off.",
   inputSchema: z.strictObject({ service: z.string() }),
@@ -21,7 +36,7 @@ export default defineWorkflowTool({
         ],
         prompt: `Release ${service}?`,
       },
-      { answerableBy: "requester" },
+      { response: authorizeSignoff },
     );
     return { released: answer.status === "answered" && answer.optionId === "approve", service };
   },

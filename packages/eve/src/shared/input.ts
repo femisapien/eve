@@ -31,19 +31,6 @@ export type InputRequestKind = z.infer<typeof inputRequestKindSchema>;
 /** Zod schema for the framework-owned source of an input request. */
 export const inputRequestKindSchema = z.enum(["question", "session-limit", "tool-approval"]);
 
-/** The one principal who may answer an input request. */
-export type InputPrincipal = z.infer<typeof inputPrincipalSchema>;
-
-/** Zod schema for the principal who may answer an input request. */
-export const inputPrincipalSchema = z
-  .object({
-    authenticator: z.string().describe("Authenticator that verified the principal."),
-    issuer: z.string().describe("Issuer of the principal's identity.").optional(),
-    principalId: z.string().describe("Stable identifier of the principal."),
-    principalType: z.string().describe("Kind of principal, such as `user`."),
-  })
-  .strict();
-
 /** Unified input request surfaced when the agent needs user input. */
 export type InputRequest = z.infer<typeof inputRequestSchema>;
 
@@ -53,15 +40,14 @@ export type InputRequest = z.infer<typeof inputRequestSchema>;
 export const inputRequestSchema = z
   .object({
     action: runtimeToolCallActionRequestSchema,
+    responsePolicy: z
+      .literal(true)
+      .describe("Answers require server-side response authorization.")
+      .optional(),
     allowFreeform: z
       .boolean()
       .describe(
         "Whether the user may answer with freeform text instead of selecting one of the provided options.",
-      )
-      .optional(),
-    answerableBy: inputPrincipalSchema
-      .describe(
-        "The only principal whose answer the session accepts: the person who requested the work. Absent when anyone in the conversation may answer.",
       )
       .optional(),
     display: z

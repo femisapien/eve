@@ -22,8 +22,8 @@ function respond(
 
 /**
  * Alice asks for a release in a thread Bob also takes part in. The sign-off
- * question names Alice as the only one who can answer it. Bob answers first
- * and is ignored; Alice's answer is the one the release receives.
+ * question has a policy allowing Alice to answer. Bob answers first
+ * and his answer is rejected; Alice's answer is the one the release receives.
  */
 export default defineEval({
   description: "A requester-only question accepts only the requester's answer.",
@@ -40,9 +40,7 @@ export default defineEval({
     if (requested?.type !== "input.requested") throw new Error("The sign-off question is missing.");
     const [question] = requested.data.requests;
     if (question === undefined) throw new Error("The sign-off question is missing.");
-    t.check(question.answerableBy?.principalId, equals("workflow-e2e-user")).label(
-      "only Alice may answer",
-    );
+    t.check(question.responsePolicy, equals(true)).label("answers require response authorization");
 
     const startIndex = parked.session.state.streamIndex;
     await respond(t.target, {

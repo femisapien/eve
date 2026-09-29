@@ -23,7 +23,7 @@ interface ActionDescriptor {
 export function toMessageInputRequest(request: InputRequest): EveMessageInputRequest {
   return {
     allowFreeform: request.allowFreeform,
-    answerableBy: request.answerableBy,
+    responsePolicy: request.responsePolicy,
     display: request.display,
     kind: request.kind,
     options: request.options,

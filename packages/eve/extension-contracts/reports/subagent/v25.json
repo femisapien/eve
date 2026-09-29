@@ -2,7 +2,7 @@
   "kind": "eve-extension-capability-contract",
   "capability": "subagent",
   "epoch": 25,
-  "sha256": "ce6c7ecad39638855510fc05894fc2def4d63d0eaac4427f1134cb6907f02e32",
+  "sha256": "5ef921d4ff92f2e6c849e307e434e6ffc8a0b4db19ca01a233fbd08d6e51484f",
   "exports": [
     "AgentCompactionDefinition",
     "AgentDefinition",

@@ -2,7 +2,7 @@
   "kind": "eve-extension-capability-contract",
   "capability": "tool",
   "epoch": 65,
-  "sha256": "b16575494f9c727ce8565a79329f0f15ae955716f4217f33d012dab25e4ba54e",
+  "sha256": "9acb567342236be45bad666baf0746da181d82b440e761f0cc67f05a8cdcb59f",
   "exports": [
     "AgentRouterInput",
     "AgentRouterTool",

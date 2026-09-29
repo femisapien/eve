@@ -1,6 +1,5 @@
 import type { SubagentInputRequestHookPayload } from "#channel/types.js";
 import type {
-  WorkflowToolAskRequest,
   WorkflowToolRunOutcomeMessage,
   WorkflowToolRunRef,
   WorkflowToolInputRequestBatch,
@@ -8,6 +7,7 @@ import type {
   WorkflowToolRunRequestMessage,
 } from "#execution/tools/workflow/messages.js";
 import type { RuntimeToolResultActionResult } from "#shared/action-types.js";
+import type { WorkflowToolAskRequest } from "#execution/tools/workflow/messages.js";
 import type { InputRequest } from "#shared/input.js";
 import { parseJsonValue, type JsonValue } from "#shared/json.js";
 
@@ -121,11 +121,11 @@ function normalizeAskRequest(
   }
   const normalized: InputRequest = {
     action: { callId: from.callId, input: from.input, kind: "tool-call", toolName: from.toolName },
+    ...(ask.responsePolicy === true && { responsePolicy: true }),
     kind: "question",
     prompt: authored.prompt,
     requestId,
   };
-  if (ask.answerableBy !== undefined) normalized.answerableBy = ask.answerableBy;
   if (authored.allowFreeform !== undefined) normalized.allowFreeform = authored.allowFreeform;
   if (authored.display !== undefined) normalized.display = authored.display;
   if (authored.options !== undefined) normalized.options = [...authored.options];

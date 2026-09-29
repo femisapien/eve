@@ -1,4 +1,4 @@
-import type { InputPrincipal, InputRequest, InputResponse } from "#shared/input.js";
+import type { InputRequest, InputResponse } from "#shared/input.js";
 import type { AuthorizationOutcome } from "#protocol/message.js";
 
 /**
@@ -238,12 +238,11 @@ export interface EveMessageToolMetadata {
  * optional `style`), and `allowFreeform` permits a typed response alongside the
  * options. `kind` identifies the framework-owned request source. `requestId`
  * is the stable identifier the client returns in the responding
- * {@link InputResponse}. `answerableBy`, when present, is the only principal
- * whose answer the session accepts.
+ * {@link InputResponse}.
  */
 export interface EveMessageInputRequest {
+  readonly responsePolicy?: true;
   readonly allowFreeform?: boolean;
-  readonly answerableBy?: InputPrincipal;
   readonly display?: "confirmation" | "select" | "text";
   readonly kind: InputRequest["kind"];
   readonly options?: readonly {
