@@ -1,6 +1,35 @@
 import { describe, expect, it } from "vitest";
 
-import { createCurrentMessages } from "#harness/current-messages.js";
+import { createCurrentMessages, preservePendingApprovalTail } from "#harness/current-messages.js";
+
+describe("preservePendingApprovalTail", () => {
+  it("moves a separated approval exchange to the tail without splitting it", () => {
+    const call = {
+      content: [
+        { input: {}, toolCallId: "call-1", toolName: "gate", type: "tool-call" as const },
+        {
+          approvalId: "approval-1",
+          toolCallId: "call-1",
+          type: "tool-approval-request" as const,
+        },
+      ],
+      role: "assistant" as const,
+    };
+    const response = {
+      content: [
+        { approvalId: "approval-1", approved: true, type: "tool-approval-response" as const },
+      ],
+      role: "tool" as const,
+    };
+    const recalled = { content: "recalled", kind: "memory.load" as const, role: "user" as const };
+
+    expect(preservePendingApprovalTail([call, response, recalled])).toEqual([
+      recalled,
+      call,
+      response,
+    ]);
+  });
+});
 
 describe("createCurrentMessages", () => {
   it("partitions existing history by role", () => {

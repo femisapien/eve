@@ -107,3 +107,59 @@ export function hasTailApprovalResponse(messages: readonly ModelMessage[]): bool
     tail?.role === "tool" && tail.content.some((part) => part.type === "tool-approval-response")
   );
 }
+
+/** Keeps a resumed approval exchange at the prompt tail where the AI SDK consumes it. */
+export function preservePendingApprovalTail(
+  messages: readonly ModelMessage[],
+): readonly ModelMessage[] {
+  const responseIndex = messages.findLastIndex(
+    (message) =>
+      message.role === "tool" &&
+      message.content.some((part) => part.type === "tool-approval-response"),
+  );
+  if (responseIndex === -1 || responseIndex === messages.length - 1) return messages;
+
+  const response = messages[responseIndex];
+  if (response?.role !== "tool") return messages;
+  const approvalIds = new Set(
+    response.content.flatMap((part) =>
+      part.type === "tool-approval-response" ? [part.approvalId] : [],
+    ),
+  );
+  const requestIndex = messages.findLastIndex(
+    (message, index) =>
+      index < responseIndex &&
+      message.role === "assistant" &&
+      Array.isArray(message.content) &&
+      message.content.some(
+        (part) => part.type === "tool-approval-request" && approvalIds.has(part.approvalId),
+      ),
+  );
+  if (requestIndex === -1) return messages;
+
+  const request = messages[requestIndex];
+  if (request?.role !== "assistant" || !Array.isArray(request.content)) return messages;
+  const pendingCallIds = new Set(
+    request.content.flatMap((part) =>
+      part.type === "tool-approval-request" && approvalIds.has(part.approvalId)
+        ? [part.toolCallId]
+        : [],
+    ),
+  );
+  const alreadyResolved = messages
+    .slice(responseIndex + 1)
+    .some(
+      (message) =>
+        message.role === "tool" &&
+        message.content.some(
+          (part) => part.type === "tool-result" && pendingCallIds.has(part.toolCallId),
+        ),
+    );
+  if (alreadyResolved) return messages;
+
+  return [
+    ...messages.slice(0, requestIndex),
+    ...messages.slice(responseIndex + 1),
+    ...messages.slice(requestIndex, responseIndex + 1),
+  ];
+}

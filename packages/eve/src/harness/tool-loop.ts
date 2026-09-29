@@ -81,7 +81,7 @@ import {
   resolveCompactionModel,
   shouldCompact,
 } from "#harness/compaction.js";
-import { createCurrentMessages } from "#harness/current-messages.js";
+import { createCurrentMessages, preservePendingApprovalTail } from "#harness/current-messages.js";
 import { estimateTokens } from "#harness/token-estimate.js";
 import {
   accumulateTurnUsage,
@@ -1566,7 +1566,9 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       // cached prompt prefix valid, and handleStepResult rebuilds history
       // from the step's prompt messages, so the note exists only on this
       // call's wire request.
-      const callMessages = withTrailingUserNote(modelMessages, opts.trailingUserNote);
+      const callMessages = preservePendingApprovalTail(
+        withTrailingUserNote(modelMessages, opts.trailingUserNote),
+      );
 
       const instrumentationTurnId = activeTurnId(emissionState);
       const attempt = stepInstrumentation?.prepareAttempt({
