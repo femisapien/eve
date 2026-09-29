@@ -466,6 +466,16 @@ tools in the orchestrator that call MCP directly.
    resume it. Userland can do this for one hand-written workflow tool with `ctx.ask()`, but not
    for every connection tool.
 
+   Two rules hold wherever the question is asked:
+   - **Only Alice's answer counts.** In a shared thread, Bob can click Approve. The provider
+     treats every answer as Alice's, because hers is the forwarded identity, so the caller checks
+     that the answer's `responder` is the forwarded user and refuses any other.
+     `ToolInputRequest` names no expected responder today, so a channel that cannot report the
+     responder fails the call.
+   - **No person, no retry.** A caller with no input surface, such as a scheduled run, gets
+     `unavailable` from `ctx.ask()`. The call then fails with an error that names the tool
+     instead of asking again. Re-asks after an unfinished sign-in are bounded.
+
 3. **Forwarding and session scope.** `defineMcpClientConnection({ forwardPrincipal: true })` sends
    `eve-forwarded-principal`, with the same semantics as remote agents. The connection declares
    `dev.eve/tool-sessions` and sends a key derived from the caller's session, so one conversation
@@ -503,7 +513,8 @@ can be built in userland on top of this phase, as the prototype's `discover`, `l
 2. Client-held state never grants authority. Approval is re-evaluated on every call.
 3. No call state outlives a request, and eve keeps no record of a tool session. In phase 1,
    sign-in requires a provider that runs the OAuth flow.
-4. The client answers interrupts with a person's input, and keeps `requestState` out of the model.
+4. The client answers interrupts only with the forwarded user's input, fails when nobody can
+   answer, and keeps `requestState` out of the model.
 5. A tool session is derived from the forwarder, the user, and the key, so a caller reaches only
    its own sessions and sandboxes.
 6. MCP callers see only `AgentDescription`. The inspection payload from `info()` never reaches
@@ -519,6 +530,9 @@ can be built in userland on top of this phase, as the prototype's `discover`, `l
 - Client-side discovery: search, visibility, remote skills, and connection calls from authored
   tools.
 - Tabled: whether authors choose which tools the channel exposes, beyond the invocable filter.
+  Until then, adding the channel publishes every invocable tool to every caller its `auth`
+  admits, with approval policies still enforced. Add it only to agents whose tools are safe to
+  call directly.
 
 ## Validation
 
@@ -536,6 +550,8 @@ can be built in userland on top of this phase, as the prototype's `discover`, `l
   one-off fallback for a client without the extension.
 - E2E: two fixture agents. One calls the other's tools through an MCP connection, including an
   approval answered through `input.requested` and a skill read.
+- Unit (client): an approval answered by a second user in the thread is refused, and
+  `unavailable` from `ctx.ask()` fails the call without asking again.
 - Interop: the MCP Inspector CLI lists, calls, and reads skills against a fixture, as in
   [Calling it from any MCP client](#calling-it-from-any-mcp-client).
 
