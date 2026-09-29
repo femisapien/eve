@@ -3,6 +3,7 @@ import {
   getPendingCoordinationBatch,
 } from "#harness/coordination.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
+import { retainAnswerableActivityBlockers } from "#execution/activity-cohort.js";
 import {
   createDurableSessionState,
   type DurableSessionState,
@@ -10,6 +11,10 @@ import {
 } from "#execution/durable-session-store.js";
 import { withSessionEventEmitter } from "#execution/publish-session-events.js";
 import { reconcileSessionContinuationToken } from "#execution/reconcile-session-continuation-token.js";
+import {
+  withSessionStateDelta,
+  type WithSessionStateDelta,
+} from "#execution/session/state-delta.js";
 import { emitCancelledTurn } from "#harness/cancelled-turn-emission.js";
 import { clearPendingSessionLimitPrompt } from "#harness/input-requests.js";
 import { getHarnessEmissionState, setHarnessEmissionState } from "#harness/emission.js";
@@ -25,13 +30,7 @@ export interface CancelledTurnSettleResult {
   readonly usage?: TokenUsage;
 }
 
-/**
- * Settles one cancelled turn: emits `turn.cancelled` → `session.waiting`,
- * drops pending coordination state, and persists the between-turns
- * session. Runs in the owner, whose wake sources exclude the
- * cancel hook, so a queued cancel wake cannot re-dispatch it.
- */
-export async function settleCancelledTurnStep(input: {
+interface CancelledTurnSettleInput {
   /**
    * Whether a caller receives the turn's usage. Only then is it marked
    * reported; otherwise the next settled turn reports it.
@@ -40,11 +39,29 @@ export async function settleCancelledTurnStep(input: {
   readonly sessionWritable: WritableStream<Uint8Array>;
   readonly serializedContext: Record<string, unknown>;
   readonly sessionState: DurableSessionState;
-}): Promise<CancelledTurnSettleResult> {
-  "use step";
+}
 
+/**
+ * Settles one cancelled turn: emits `turn.cancelled` → `session.waiting`,
+ * drops pending coordination state, and persists the between-turns
+ * session. Runs in the owner, whose wake sources exclude the
+ * cancel hook, so a queued cancel wake cannot re-dispatch it.
+ */
+export async function settleCancelledTurnStep(
+  input: CancelledTurnSettleInput,
+): Promise<WithSessionStateDelta<CancelledTurnSettleResult>> {
+  "use step";
+  return await withSessionStateDelta(input, settleCancelledTurn);
+}
+
+/** {@link settleCancelledTurnStep} for a caller that is already a step and adopts the whole state. */
+export async function settleCancelledTurn(
+  input: CancelledTurnSettleInput,
+): Promise<CancelledTurnSettleResult> {
   const durableSession = readDurableSession(input.sessionState);
   const ctx = await deserializeContext(input.serializedContext);
+  // Before `turn.cancelled` projects, so only what stays answerable holds the work open.
+  retainAnswerableActivityBlockers(ctx, durableSession.state);
   const emitted = await withSessionEventEmitter(
     { ctx, durableSession, origin: "own", sessionWritable: input.sessionWritable },
     async (emit, scopedSession) => ({

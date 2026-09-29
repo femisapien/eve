@@ -7,6 +7,7 @@ import type {
 } from "#execution/session-inbox/inbox.js";
 import { SessionInputQueue } from "#execution/session/input-queue.js";
 import { SessionStateCursor } from "#execution/session/state-cursor.js";
+import { withSessionStateDelta } from "#execution/session/state-delta.js";
 import { SessionExecution } from "#execution/session/turn.js";
 import { turnStep } from "#execution/session/turn-step.js";
 import { publishWrittenEventsStep } from "#execution/tools/workflow/emit-workflow-tool-run-report-step.js";
@@ -211,15 +212,17 @@ async function createSession(hook?: ReturnType<typeof defineHook>) {
     async runTurn(
       duringStep: (pump: ReturnType<typeof createInbox>) => Promise<(() => void) | void>,
     ) {
-      vi.mocked(turnStep).mockImplementationOnce(async (step) => {
-        const atEnd = await duringStep(inbox);
-        atEnd?.();
-        return {
-          action: "done",
-          serializedContext: { ...step.serializedContext, [STEP_MARKER]: "after the step" },
-          sessionState: step.sessionState,
-        };
-      });
+      vi.mocked(turnStep).mockImplementationOnce((input) =>
+        withSessionStateDelta(input, async (step) => {
+          const atEnd = await duringStep(inbox);
+          atEnd?.();
+          return {
+            action: "done" as const,
+            serializedContext: { ...step.serializedContext, [STEP_MARKER]: "after the step" },
+            sessionState: step.sessionState,
+          };
+        }),
+      );
       await runtime.run(async () => await execution.runTurn(undefined));
     },
   };

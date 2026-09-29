@@ -934,7 +934,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
           ]),
           state: memoryCommit?.state ?? parkedSession.state,
         };
-        emissionState = await emitTurnEpilogue(emit, emissionState);
+        emissionState = await emitTurnEpilogue(emit, emissionState, parkedSession.history);
         return {
           next: null,
           session: setHarnessEmissionState(parkedSession, emissionState),
@@ -943,7 +943,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
 
       if (resolvedCoordination.outcome === "resolved") {
         if (emit) {
-          emissionState = await emitTurnEpilogue(emit, emissionState);
+          emissionState = await emitTurnEpilogue(emit, emissionState, parkedSession.history);
           parkedSession = setHarnessEmissionState(parkedSession, emissionState);
         }
         return { next: null, session: parkedSession };
@@ -2664,6 +2664,7 @@ async function handleStepResult(input: {
       },
       requests: inputRequests,
       toolReplayIdentities: captureToolReplayIdentities(config, approvalRequests),
+      responseAuthRequiredRequestIds: responsePolicyRequestIds(config, approvalRequests),
       responseMessages: [],
       session: parkedSession,
     });
@@ -2688,10 +2689,6 @@ async function handleStepResult(input: {
   // --- Park on input requests -----------------------------------------------
 
   if (inputRequests.length > 0) {
-    const responseAuthorizationTools = buildResponseAuthorizationTools({
-      authoredTools: config.tools,
-      context: contextStorage.getStore(),
-    });
     let parkedSession = appendPendingInputBatch({
       event: {
         sequence: emissionState.sequence,
@@ -2700,16 +2697,7 @@ async function handleStepResult(input: {
       },
       requests: inputRequests,
       toolReplayIdentities: captureToolReplayIdentities(config, approvalRequests),
-      responseAuthRequiredRequestIds: approvalRequests
-        .filter((request) => {
-          const approval = responseAuthorizationTools.get(request.action.toolName)?.approval;
-          return (
-            approval !== undefined &&
-            typeof approval !== "function" &&
-            approval.response !== undefined
-          );
-        })
-        .map((request) => request.requestId),
+      responseAuthRequiredRequestIds: responsePolicyRequestIds(config, approvalRequests),
       responseMessages: pendingResponseMessages,
       session: { ...baseSession, history: parkedInputHistory },
     });
@@ -2724,7 +2712,7 @@ async function handleStepResult(input: {
         }),
       );
 
-      emissionState = await emitTurnEpilogue(emit, emissionState);
+      emissionState = await emitTurnEpilogue(emit, emissionState, parkedSession.history);
       parkedSession = setHarnessEmissionState(parkedSession, emissionState);
     }
 
@@ -2780,7 +2768,7 @@ async function handleStepResult(input: {
       // above: the session keeps serving ordinary turns while the challenge
       // is open, so the stream must close its turn boundary — clients wait
       // on `session.waiting` and would otherwise hang on the parked turn.
-      emissionState = await emitTurnEpilogue(emit, emissionState);
+      emissionState = await emitTurnEpilogue(emit, emissionState, authorizationHistory);
     }
 
     return {
@@ -2966,6 +2954,7 @@ async function emitStructuredResult(
   emit: NonNullable<ToolLoopHarnessConfig["handleEvent"]>,
   emissionState: ReturnType<typeof getHarnessEmissionState>,
   structured: JsonValue,
+  history: readonly HarnessModelMessage[],
 ): Promise<ReturnType<typeof getHarnessEmissionState>> {
   await emit(
     createResultCompletedEvent({
@@ -2975,7 +2964,7 @@ async function emitStructuredResult(
       turnId: emissionState.turnId,
     }),
   );
-  return emitTurnEpilogue(emit, emissionState);
+  return emitTurnEpilogue(emit, emissionState, history);
 }
 
 /**
@@ -2998,7 +2987,7 @@ async function finishTurn(input: {
 
   if (schema === undefined) {
     if (emit) {
-      emissionState = await emitTurnEpilogue(emit, emissionState);
+      emissionState = await emitTurnEpilogue(emit, emissionState, session.history);
       session = setHarnessEmissionState(session, emissionState);
     }
     const settledTurn = { output: stepOutput ?? "" } satisfies SettledTurn;
@@ -3026,7 +3015,7 @@ async function finishTurn(input: {
 
   session = persistStructuredAssistantTurn(session, history, structured);
   if (emit) {
-    emissionState = await emitStructuredResult(emit, emissionState, structured);
+    emissionState = await emitStructuredResult(emit, emissionState, structured, session.history);
     session = setHarnessEmissionState(session, emissionState);
   }
   const settledTurn = { output: structured } satisfies SettledTurn;
@@ -3248,6 +3237,28 @@ function captureToolReplayIdentities(
     return identity === undefined ? [] : [[request.requestId, identity]];
   });
   return identities.length === 0 ? undefined : Object.fromEntries(identities);
+}
+
+/**
+ * The approvals whose tool defines a response policy. Every park path records
+ * them, so no Approve or Cancel of such an approval skips the policy.
+ */
+function responsePolicyRequestIds(
+  config: ToolLoopHarnessConfig,
+  requests: readonly InputRequest[],
+): readonly string[] {
+  const tools = buildResponseAuthorizationTools({
+    authoredTools: config.tools,
+    context: contextStorage.getStore(),
+  });
+  return requests
+    .filter((request) => {
+      const approval = tools.get(request.action.toolName)?.approval;
+      return (
+        approval !== undefined && typeof approval !== "function" && approval.response !== undefined
+      );
+    })
+    .map((request) => request.requestId);
 }
 
 function resolveApprovalKeyFromTools(

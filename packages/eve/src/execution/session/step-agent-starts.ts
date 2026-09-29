@@ -15,10 +15,10 @@ import type { MessageStreamEvent } from "#protocol/message.js";
  * step lasts as long as the model thinks, and clients follow a child from its
  * `agent.started`, so the event can't wait for the boundary.
  *
- * The step's result replaces the session state at the boundary, so a channel
+ * The step's delta applies to the state the step was given, so a channel
  * handler or hook that changes state can't run during the step. When one
  * subscribes, the event is only written during the step, and
- * {@link publishWritten} runs the handlers once the step's result is applied,
+ * {@link publishWritten} runs the handlers once the step's delta is applied,
  * where their state is kept. They run after the hooks of every event the step
  * wrote itself. Every other run message waits for the boundary.
  */
@@ -61,30 +61,29 @@ export class StepAgentStarts {
     } finally {
       unsubscribe();
     }
-    try {
-      return await step;
-    } catch (error) {
-      // A failed step leaves no state, so these handlers run against the state
-      // before it, as the hooks of the events the step wrote ran during it. The
-      // session fails with the step's error; the workflow run records any
-      // failure of this publication as its own failed step.
-      await this.publishWritten().catch(() => undefined);
-      throw error;
-    }
+    return await step;
   }
 
   /**
    * Runs the channel handlers and hooks of the events written during the last
-   * step, in the order written. Call once the step's result is applied; a
-   * failed step runs them itself.
+   * step, in the order written. Call once the step's delta is applied.
    */
   async publishWritten(): Promise<void> {
     if (this.written.length === 0) return;
     const events = this.written.splice(0);
-    const { serializedContext, sessionState } = this.cursor;
-    await this.cursor.apply(
-      await publishWrittenEventsStep({ events, serializedContext, sessionState }),
+    await this.cursor.advance(({ serializedContext, sessionState }) =>
+      publishWrittenEventsStep({ events, serializedContext, sessionState }),
     );
+  }
+
+  /**
+   * Runs them for a step that failed, against the state before it, as the hooks
+   * of the events the step wrote ran during it. The session fails with the
+   * step's error; the workflow run records any failure of this publication as
+   * its own failed step.
+   */
+  async publishWrittenAfterFailure(): Promise<void> {
+    await this.publishWritten().catch(() => undefined);
   }
 
   /** Whether the payload was published already, so admission skips it. */
