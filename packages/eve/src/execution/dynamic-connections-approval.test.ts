@@ -13,7 +13,6 @@ const alice = {
   principalType: "user" as const,
 };
 const bob = { ...alice, principalId: "bob" };
-const state = { sequence: 8, sessionStarted: true, stepIndex: 0, turnId: "" };
 const runtime = { agentId: "test", eveVersion: "test" };
 const origin = { sequence: 2, stepIndex: 1, turnId: "turn_2" };
 
@@ -44,10 +43,9 @@ function setup() {
 }
 
 describe("approval-only connection restoration", () => {
-  it("uses the matching parked turn, not the upcoming turn, without changing auth or emission state", async () => {
+  it("uses the matching parked turn, not the upcoming turn, without changing auth", async () => {
     const fixture = setup();
-    const before = structuredClone(state);
-    await fixture.lifecycle.rehydrate(state, runtime, origin);
+    await fixture.lifecycle.rehydrate(true, runtime, origin);
     expect(fixture.turn).toHaveBeenCalledWith(
       expect.objectContaining({
         type: "turn.started",
@@ -59,12 +57,11 @@ describe("approval-only connection restoration", () => {
     );
     expect(fixture.registry.getConnectionNames()).toEqual(["notes"]);
     expect(fixture.ctx.get(AuthKey)).toEqual(bob);
-    expect(state).toEqual(before);
   });
 
   it("keeps ordinary active-turn restoration unchanged", async () => {
     const fixture = setup();
-    await fixture.lifecycle.rehydrate({ ...state, turnId: "turn_8" }, runtime, {
+    await fixture.lifecycle.rehydrate(true, runtime, {
       sequence: 8,
       turnId: "turn_8",
     });
@@ -76,7 +73,7 @@ describe("approval-only connection restoration", () => {
 
   it("does not resolve any connections before session start", async () => {
     const fixture = setup();
-    await fixture.lifecycle.rehydrate({ ...state, sessionStarted: false }, runtime);
+    await fixture.lifecycle.rehydrate(false, runtime);
     expect(fixture.session).not.toHaveBeenCalled();
     expect(fixture.turn).not.toHaveBeenCalled();
   });

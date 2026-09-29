@@ -4,7 +4,7 @@ import {
   createPresentedRuntimeActionRequestFromToolCall,
   type RuntimeActionRequestProjection,
 } from "#harness/action-presentation.js";
-import { resolveToolCallInputObject } from "#harness/coordination.js";
+import { resolveToolCallInputObject } from "#harness/runtime-calls.js";
 import type { HarnessToolMap } from "#harness/types.js";
 
 /**

@@ -13,7 +13,7 @@ import type {
 } from "#tracing/agent-trace-state.js";
 import { actionIdempotencyKey } from "#instrumentation/lifecycle.js";
 import type { SessionStateMap } from "#harness/types.js";
-import { getBlockingWorkflowToolRuns } from "#harness/workflow-tool-runs.js";
+import { readTurnState, workflowRuns } from "#harness/turn-state.js";
 
 import { createLogger } from "#internal/logging.js";
 import type { InstrumentationDecision } from "#shared/instrumentation-decision.js";
@@ -59,7 +59,7 @@ function pruneTraceOwnership(
 ): void {
   const state = context.get(AgentTraceContextKey);
   if (state === undefined) return;
-  const calls = new Set(getBlockingWorkflowToolRuns(sessionState).map((run) => run.callId));
+  const calls = new Set(workflowRuns(readTurnState(sessionState)).map((run) => run.callId));
   const actionAnchors = Object.fromEntries(
     Object.entries(state.actionAnchors).filter(
       ([key, action]) =>

@@ -17,10 +17,7 @@ import {
   workflowToolRunOutcomeToToolResult,
   workflowToolRunRequestToInputRequestPayload,
 } from "#execution/tools/workflow/owner-inbox.js";
-import {
-  findBlockingWorkflowToolRun,
-  isInboxToolResultFromRecordedWorkflowToolRun,
-} from "#harness/workflow-tool-runs.js";
+import { findWorkflowRun, readTurnState } from "#harness/turn-state.js";
 import { runProxySubagentEventStep } from "#subagents/event-proxy-step.js";
 import type { WorkflowAskRoute } from "#harness/proxy-input-requests.js";
 import type { RuntimeActionResult } from "#shared/action-types.js";
@@ -68,19 +65,19 @@ async function handleWorkflowToolRunOutcome(
   input: HandlerInput<WorkflowToolRunOutcomeMessage>,
 ): Promise<RuntimeActionResult | undefined> {
   const { cursor, message } = input;
-  const recorded = findBlockingWorkflowToolRun(
-    cursor.sessionState.snapshot.session.state,
+  const recorded = findWorkflowRun(
+    readTurnState(cursor.sessionState.snapshot.session.state),
     message.from.callId,
-    message.from.turnId,
   );
-  if (recorded?.address.runId !== message.from.runId) return undefined;
-
+  if (
+    recorded === undefined ||
+    recorded.address.runId !== message.from.runId ||
+    recorded.origin.turnId !== message.from.turnId
+  ) {
+    return undefined;
+  }
   const result = workflowToolRunOutcomeToToolResult(message);
-
-  return isInboxToolResultFromRecordedWorkflowToolRun(
-    cursor.sessionState.snapshot.session.state,
-    result,
-  )
+  return result.kind === "tool-result" && result.toolName === recorded.toolName
     ? result
     : undefined;
 }

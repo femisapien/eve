@@ -46,14 +46,10 @@ import type {
 } from "#execution/session/turn-step-types.js";
 import { StepAgentStarts } from "#execution/session/step-agent-starts.js";
 import { turnStep } from "#execution/session/turn-step.js";
-import { activeTurnId } from "#harness/active-turn-id.js";
 import { coalesceDeliveries } from "#harness/messages.js";
 import { TurnCancelledError } from "#harness/turn-cancellation.js";
 import { decodeSessionInboxPayload } from "#execution/session-inbox/protocol.js";
-import {
-  findBlockingWorkflowToolRun,
-  isInboxToolResultFromRecordedWorkflowToolRun,
-} from "#harness/workflow-tool-runs.js";
+import { findWorkflowRun, readTurnState } from "#harness/turn-state.js";
 import { resolveRuntimeActionResultsForCallIds } from "#runtime/actions/results.js";
 import type { RuntimeActionResult } from "#shared/action-types.js";
 import type { TokenUsage } from "#shared/token-usage.js";
@@ -331,11 +327,11 @@ export class SessionExecution {
         continue;
       }
       if (next.kind === "runtime-action-result") {
-        const snapshot = this.input.cursor.sessionState.snapshot.session.state;
+        const turnState = readTurnState(this.input.cursor.sessionState.snapshot.session.state);
         const accepted = next.results.filter(
           (result) =>
             result.kind === "tool-result" &&
-            isInboxToolResultFromRecordedWorkflowToolRun(snapshot, result),
+            findWorkflowRun(turnState, result.callId)?.toolName === result.toolName,
         );
         if (accepted.length > 0) {
           const acceptedAtMs = Date.now();
@@ -403,11 +399,11 @@ export class SessionExecution {
     pendingCallIds: readonly string[],
     settled: readonly RuntimeActionResult[],
   ): Promise<void> {
-    const state = this.input.cursor.sessionState.snapshot.session.state;
+    const turnState = readTurnState(this.input.cursor.sessionState.snapshot.session.state);
     const settledCallIds = new Set(settled.map((result) => result.callId));
     const waited = pendingCallIds.filter((callId) => !settledCallIds.has(callId));
     const runs = waited.flatMap((callId) => {
-      const run = findBlockingWorkflowToolRun(state, callId);
+      const run = findWorkflowRun(turnState, callId);
       return run === undefined ? [] : [run.address];
     });
     await Promise.all(runs.map((run) => interruptWorkflowToolRun(run)));
@@ -487,7 +483,7 @@ class ActiveTurn {
     this.input = input;
     this.caller = owner.caller;
     this.identity = { callerCallId: owner.caller?.callId, principal: owner.principal };
-    this.expectedTurnId = activeTurnId(input.cursor.sessionState.emissionState);
+    this.expectedTurnId = input.cursor.sessionState.turn.turnId;
     this.unsubscribe = input.inbox.onInterrupt((payload) => {
       if (this.cancelsThisTurn(payload)) this.abort();
     });

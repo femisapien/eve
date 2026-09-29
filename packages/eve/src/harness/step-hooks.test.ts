@@ -4,12 +4,11 @@ import { describe, expect, it, vi } from "vitest";
 import { ContextContainer, contextStorage } from "#context/container.js";
 import { ConversationIdKey } from "#context/keys.js";
 import { buildStepHooks } from "#harness/step-hooks.js";
-import type { HarnessEmissionState } from "#harness/emission.js";
+import type { EventCoordinates } from "#harness/turn-state.js";
 import type { HarnessSession } from "#harness/types.js";
 
-const emissionState: HarnessEmissionState = {
+const coordinates: EventCoordinates = {
   sequence: 0,
-  sessionStarted: true,
   stepIndex: 0,
   turnId: "turn_0",
 };
@@ -34,7 +33,7 @@ describe("buildStepHooks", () => {
     const hooks = buildStepHooks({
       cachePath: { kind: "none" },
       emit,
-      emissionState,
+      coordinates: coordinates,
       marker: undefined,
       session: createSession(),
     });
@@ -84,7 +83,12 @@ describe("buildStepHooks", () => {
       model: LanguageModel,
       cachePath: Parameters<typeof buildStepHooks>[0]["cachePath"],
     ) =>
-      buildStepHooks({ emissionState, marker: undefined, cachePath, session }).prepareStep({
+      buildStepHooks({
+        coordinates: coordinates,
+        marker: undefined,
+        cachePath,
+        session,
+      }).prepareStep({
         messages: [],
         model,
         instructions: undefined,
@@ -139,7 +143,7 @@ describe("buildStepHooks", () => {
   it("preserves an authored Gateway session ID", async () => {
     const hooks = buildStepHooks({
       cachePath: { kind: "none" },
-      emissionState,
+      coordinates: coordinates,
       marker: undefined,
       session: {
         ...createSession(),

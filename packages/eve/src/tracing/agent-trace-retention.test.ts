@@ -23,7 +23,7 @@ const anchor = {
 };
 
 describe("trace retention by live work", () => {
-  it("does not turn a task-index compatibility problem into an execution failure", () => {
+  it("does not turn a session state compatibility problem into an execution failure", () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const context = new ContextContainer();
     contextStorage.run(context, () =>
@@ -32,7 +32,7 @@ describe("trace retention by live work", () => {
     const before = serializeContext(context);
     expect(() =>
       pruneAgentTraceState(context, "session", {
-        "eve.workflowTool": { version: 99, runs: [] },
+        "eve.session": { version: 99, steps: [] },
       }),
     ).not.toThrow();
     expect(serializeContext(context)).toEqual(before);

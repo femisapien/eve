@@ -26,7 +26,7 @@ describe("bindDynamicConnections", () => {
     });
 
     await lifecycle.rehydrate(
-      { sequence: 3, sessionStarted: true, stepIndex: 1, turnId: "turn_3" },
+      true,
       { agentId: "agent", eveVersion: "test" },
       { sequence: 3, turnId: "turn_3" },
     );
@@ -51,11 +51,7 @@ describe("bindDynamicConnections", () => {
       },
     });
 
-    await lifecycle.rehydrate(
-      { sequence: 4, sessionStarted: true, stepIndex: 0, turnId: "" },
-      { agentId: "agent", eveVersion: "test" },
-      undefined,
-    );
+    await lifecycle.rehydrate(true, { agentId: "agent", eveVersion: "test" }, undefined);
 
     expect(seen).toEqual(["session.started"]);
     expect(registry.getConnectionNames()).toEqual(["session"]);

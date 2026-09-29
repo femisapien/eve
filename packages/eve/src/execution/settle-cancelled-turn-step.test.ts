@@ -5,7 +5,7 @@ import { ActivityPendingBlockersKey } from "#context/keys.js";
 import { deserializeContext } from "#context/serialize.js";
 import type { HarnessSession, SessionStateMap } from "#harness/types.js";
 import { readDurableSession } from "#execution/durable-session-store.js";
-import { appendPendingInputBatch } from "#harness/pending-input-batches.js";
+import { readTurnState, writeTurnState, type ParkedCall } from "#harness/turn-state.js";
 import type { InputRequest } from "#shared/input.js";
 import { settleCancelledTurnStep } from "#execution/settle-cancelled-turn-step.js";
 import {
@@ -59,32 +59,73 @@ function request(requestId: string, kind: InputRequest["kind"]): InputRequest {
   };
 }
 
+function approval(requestId: string): ParkedCall {
+  return {
+    approval: { request: request(requestId, "tool-approval") },
+    callId: requestId,
+    input: {},
+    status: "awaiting-approval",
+    toolName: "deploy",
+  };
+}
+
 describe("settleCancelledTurnStep", () => {
   it("leaves only the requests the session can still answer holding its activity open", async () => {
-    const base = createTestSessionState({
-      emissionState: { sequence: 1, sessionStarted: true, stepIndex: 0, turnId: "turn_1" },
-      sessionId: "deploy-session",
+    const base = createTestSessionState({ sessionId: "deploy-session" });
+    // An earlier turn parked Alice's staging approval. Her current turn waits
+    // on a research run beside its production approval, and on a session-limit
+    // prompt, when Bob cancels it.
+    const parked = writeTurnState(base.snapshot.session, {
+      ...readTurnState(undefined),
+      prompt: {
+        origin: { sequence: 1, stepIndex: 1, turnId: "turn_1" },
+        request: request("limit-1", "session-limit"),
+      },
+      sequence: 1,
+      started: true,
+      steps: [
+        {
+          calls: [approval("approval-0")],
+          origin: { sequence: 0, stepIndex: 0, turnId: "turn_0" },
+          response: [],
+        },
+        {
+          calls: [
+            approval("approval-1"),
+            { callId: "research-1", input: {}, status: "running", toolName: "research" },
+          ],
+          origin: { sequence: 1, stepIndex: 0, turnId: "turn_1" },
+          response: [],
+        },
+      ],
+      turn: { id: "turn_1", stepIndex: 1 },
     });
-    // Alice's turn waits on its own deploy approval, a session-limit prompt,
-    // and a question a child asked through it when Bob cancels the turn.
-    const parked = [request("approval-1", "tool-approval"), request("limit-1", "session-limit")]
-      .map((pending) => [pending])
-      .reduce(
-        (session, requests) => appendPendingInputBatch({ requests, responseMessages: [], session }),
-        { state: base.snapshot.session.state } as HarnessSession,
-      );
     const ctx = new ContextContainer();
-    ctx.set(ActivityPendingBlockersKey, ["child-question-1", "approval-1", "limit-1"]);
+    ctx.set(ActivityPendingBlockersKey, [
+      "child-question-1",
+      "approval-0",
+      "approval-1",
+      "limit-1",
+    ]);
     vi.mocked(deserializeContext).mockResolvedValueOnce(ctx);
 
-    await settleCancelledTurnStep({
-      reportUsage: false,
-      serializedContext: {},
-      sessionState: { ...base, snapshot: { session: { ...base.snapshot.session, ...parked } } },
-      sessionWritable: new WritableStream<Uint8Array>(),
-    });
+    const result = await runSessionStateStep(
+      {
+        reportUsage: false,
+        serializedContext: {},
+        sessionState: { ...base, snapshot: { session: parked } },
+        sessionWritable: new WritableStream<Uint8Array>(),
+      },
+      settleCancelledTurnStep,
+    );
 
-    expect(ctx.get(ActivityPendingBlockersKey)).toEqual(["approval-1"]);
+    expect(ctx.get(ActivityPendingBlockersKey)).toEqual(["approval-0"]);
+    const turnState = readTurnState(readDurableSession(result.sessionState).state);
+    expect(turnState.turn).toBeUndefined();
+    expect(turnState.prompt).toBeUndefined();
+    expect(turnState.steps.flatMap((step) => step.calls.map((call) => call.callId))).toEqual([
+      "approval-0",
+    ]);
   });
 
   it.each([
@@ -93,10 +134,7 @@ describe("settleCancelledTurnStep", () => {
   ])(
     "reports only what the session spent since its caller's last report (reports usage: $reportUsage)",
     async ({ reportUsage, reported, nextSettled }) => {
-      const base = createTestSessionState({
-        emissionState: { sequence: 1, sessionStarted: true, stepIndex: 0, turnId: "turn_2" },
-        sessionId: "reviewer-session",
-      });
+      const base = createTestSessionState({ sessionId: "reviewer-session" });
       // The reviewer's first turn spent 100 tokens and settled, reporting them.
       const settled = takeSessionUsageDelta(spend(base.snapshot.session, 100, "turn_1")).session;
       // Its next turn spent 50 more before Alice cancelled it.

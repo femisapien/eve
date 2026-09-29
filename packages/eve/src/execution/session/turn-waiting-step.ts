@@ -12,7 +12,7 @@ export async function publishTurnWaitingStep(
   "use step";
 
   return await withSessionStateDelta(target, async (input) => {
-    const { sequence, turnId } = input.sessionState.emissionState;
+    const { sequence, turnId } = input.sessionState.turn;
     return await publishSessionEvents(input, [createTurnWaitingEvent({ sequence, turnId })]);
   });
 }

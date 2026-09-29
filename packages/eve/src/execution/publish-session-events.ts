@@ -18,8 +18,7 @@ import { resolveEffectiveAgentRuntime } from "#execution/effective-agent-config.
 import { reconcileSessionContinuationToken } from "#execution/reconcile-session-continuation-token.js";
 import { observeSessionActivity } from "#execution/session-activity-projection.js";
 import { hydrateDurableSession } from "#execution/session.js";
-import { activeTurnId } from "#harness/active-turn-id.js";
-import { getHarnessEmissionState } from "#harness/emission.js";
+import { activeTurnId, readTurnState } from "#harness/turn-state.js";
 import type { HandleEventFn, HarnessSession } from "#harness/types.js";
 import { bindSessionInstrumentation } from "#instrumentation/runtime.js";
 import { createLogger } from "#internal/logging.js";
@@ -167,7 +166,7 @@ export async function withSessionEventEmitter<T>(
       const emit =
         instrumentation?.createHandleEvent({
           handleEvent: publish,
-          turnId: activeTurnId(getHarnessEmissionState(input.durableSession.state)),
+          turnId: activeTurnId(readTurnState(input.durableSession.state)),
         }) ?? publish;
       return await emitEvents(emit, enrichedSession);
     });

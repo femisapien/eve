@@ -24,6 +24,7 @@ import {
 } from "#runtime/sessions/runtime-context-keys.js";
 import { emitProxiedSubagentEvent } from "#subagents/event-proxy-step.js";
 import { routeDeliverPayload } from "#subagents/hitl-proxy.js";
+import { atSessionTurn } from "#internal/testing/turn-state.js";
 
 function fixture() {
   const order: string[] = [];
@@ -71,20 +72,15 @@ function fixture() {
   ctx.set(ChannelKey, adapter);
   ctx.set(ContinuationTokenKey, "http:parent");
   ctx.set(SessionIdKey, "parent-session");
-  const durableSession: DurableSession = {
-    agent: { system: "" },
-    continuationToken: "http:parent",
-    history: [],
-    sessionId: "parent-session",
-    state: {
-      "eve.harness.emission": {
-        turnId: "parent-turn",
-        sequence: 1,
-        stepIndex: 0,
-        sessionStarted: true,
-      },
+  const durableSession = atSessionTurn<DurableSession>(
+    {
+      agent: { system: "" },
+      continuationToken: "http:parent",
+      history: [],
+      sessionId: "parent-session",
     },
-  };
+    { sequence: 1, turn: { id: "parent-turn", stepIndex: 0 } },
+  );
   const request = createSessionLimitContinuationRequest({
     sessionId: "child-session",
     violation: { kind: "input", limit: 100, usedTokens: 101 },
@@ -147,7 +143,11 @@ describe("proxied stream hooks", () => {
     });
     expect(result.sessionState.continuationToken).toBe("http:parent-thread");
     expect(result.sessionState.hasProxyInputRequests).toBe(true);
-    expect(result.sessionState.emissionState).toMatchObject({ sequence: 1, turnId: "parent-turn" });
+    expect(result.sessionState.turn).toMatchObject({
+      open: true,
+      sequence: 1,
+      turnId: "parent-turn",
+    });
     const routed = routeDeliverPayload({
       payload: { inputResponses: [{ requestId: f.request.requestId, optionId: "continue" }] },
       state: result.sessionState.snapshot.session.state,

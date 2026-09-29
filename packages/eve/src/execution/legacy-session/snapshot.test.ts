@@ -37,7 +37,7 @@ describe("conversation import", () => {
       "eve.runtime.pendingCoordinationBatch",
     );
     expect(result.snapshot.session.state).not.toHaveProperty("eve.agent.handles");
-    expect(result.emissionState.sequence).toBe(9);
+    expect(result.turn.sequence).toBe(9);
     expect(result.snapshot.session.history[0]).toMatchObject({
       kind: "user",
       content: "Alice chose blue.",

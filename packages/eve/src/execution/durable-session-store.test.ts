@@ -22,7 +22,7 @@ describe("durable session checkpoints", () => {
       continuationToken: "alias",
       version: DURABLE_SESSION_VERSION,
       hasProxyInputRequests: false,
-      emissionState: { sequence: 0, sessionStarted: false, stepIndex: 0, turnId: "" },
+      turn: { open: false, sequence: 0, stepIndex: 0, turnId: "turn_0" },
       snapshot: { session: projectToDurableSession(session) },
     });
     expect(readDurableSession(state)).toBe(state.snapshot.session);
@@ -40,7 +40,7 @@ describe("durable session checkpoints", () => {
     expect(state.continuationToken).toBe("old");
   });
 
-  it.each([{ version: 2, snapshot: { session: {} } }, { version: 1 }])(
+  it.each([{ version: 1, snapshot: { session: {} } }, { version: 2 }])(
     "rejects unsupported checkpoints without a storage fallback",
     (state) => {
       expect(() => readDurableSession(state as DurableSessionState)).toThrow(

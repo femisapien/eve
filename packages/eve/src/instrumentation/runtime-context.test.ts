@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 
 import { ContextContainer, contextStorage } from "#context/container.js";
 import { AuthKey, ChannelInstrumentationKey } from "#context/keys.js";
-import type { HarnessEmissionState } from "#harness/emission.js";
+import type { EventCoordinates } from "#harness/turn-state.js";
 import {
   buildTelemetryRuntimeContext,
   type BuildTelemetryRuntimeContextInput,
@@ -25,8 +25,7 @@ const session: HarnessSession = {
   sessionId: "test-session",
 };
 
-const emissionState: HarnessEmissionState = {
-  sessionStarted: true,
+const coordinates: EventCoordinates = {
   sequence: 2,
   stepIndex: 1,
   turnId: "turn_2",
@@ -50,7 +49,7 @@ function build(
   return buildTelemetryRuntimeContext({
     capturesContent: false,
     eveVersion: "0.0.0-test",
-    emissionState,
+    coordinates,
     environment: "test",
     modelInput: { instructions: undefined, messages },
     providerResolvers: [() => undefined],

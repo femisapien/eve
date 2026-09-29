@@ -12,10 +12,11 @@ import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import type { SessionAuthContext } from "#channel/types.js";
 import { settleDirectApprovalResponse } from "#harness/approval-candidates.js";
 import { coordinateApprovalDelivery } from "#harness/approval-delivery-coordinator.js";
-import { selectApprovalReplayBatch } from "#harness/input-requests.js";
-import { appendPendingInputBatch, getPendingInputBatches } from "#harness/pending-input-batches.js";
+import { currentRequester } from "#harness/parked-calls.js";
+import { openApprovalRequests, readTurnState } from "#harness/turn-state.js";
 import type { HarnessSession } from "#harness/types.js";
 import type { InputRequest } from "#shared/input.js";
+import { parkApprovalStep } from "#internal/testing/turn-state.js";
 
 const request: InputRequest = {
   action: { callId: "call-1", input: { marker: "durable" }, kind: "tool-call", toolName: "gate" },
@@ -37,18 +38,20 @@ const responder: SessionAuthContext = {
   principalType: "user",
 };
 
-function parkedSession(): HarnessSession {
-  return appendPendingInputBatch({
+const baseSession: HarnessSession = {
+  agent: { modelReference: { id: "test" }, system: "", tools: [] },
+  compaction: { recentWindowSize: 10, threshold: 0.8 },
+  continuationToken: "test",
+  history: [],
+  sessionId: "session-1",
+};
+
+function parkedSession(requester?: SessionAuthContext | null): HarnessSession {
+  return parkApprovalStep(baseSession, {
+    requester,
     requests: [request],
-    responseAuthRequiredRequestIds: [request.requestId],
-    responseMessages: [],
-    session: {
-      agent: { modelReference: { id: "test" }, system: "", tools: [] },
-      compaction: { recentWindowSize: 10, threshold: 0.8 },
-      continuationToken: "test",
-      history: [],
-      sessionId: "session-1",
-    },
+    response: [],
+    responsePolicy: true,
   });
 }
 
@@ -92,7 +95,7 @@ describe("coordinateApprovalDelivery", () => {
   function parkedBy(auth: SessionAuthContext): HarnessSession {
     const ctx = new ContextContainer();
     ctx.set(AuthKey, auth);
-    return contextStorage.run(ctx, parkedSession);
+    return contextStorage.run(ctx, () => parkedSession(currentRequester()));
   }
 
   it("passes the requester the batch parked with to the response policy", async () => {
@@ -124,7 +127,7 @@ describe("coordinateApprovalDelivery", () => {
     );
     expect(rejected.stepInput?.inputResponses ?? []).toEqual([]);
     expect(getApprovalAuditState(rejected.session.state).settlements).toEqual([]);
-    expect(getPendingInputBatches(rejected.session.state)).toHaveLength(1);
+    expect(openApprovalRequests(readTurnState(rejected.session.state))).toHaveLength(1);
 
     const requesterCancel = await coordinateApprovalDelivery({
       now: 102,
@@ -299,16 +302,9 @@ describe("coordinateApprovalDelivery", () => {
       prompt: "Approve tool call: gate-2",
       requestId: "approval-2",
     };
-    const parked = appendPendingInputBatch({
+    const parked = parkApprovalStep(baseSession, {
       requests: [request, secondRequest],
-      responseMessages: [],
-      session: {
-        agent: { modelReference: { id: "test" }, system: "", tools: [] },
-        compaction: { recentWindowSize: 10, threshold: 0.8 },
-        continuationToken: "test",
-        history: [],
-        sessionId: "session-1",
-      },
+      response: [],
     });
     const settled = settleDirectApprovalResponse({
       actor: responder,
@@ -351,83 +347,7 @@ describe("coordinateApprovalDelivery", () => {
     expect(result.stepInput?.message).toBe("What else can you help with?");
     expect(result.stepInput?.messageAuth).toEqual(messageAuth);
     expect(
-      getPendingInputBatches(result.session.state).flatMap((batch) =>
-        batch.requests.map((pending) => pending.requestId),
-      ),
+      openApprovalRequests(readTurnState(result.session.state)).map((pending) => pending.requestId),
     ).toEqual([request.requestId]);
-  });
-});
-
-describe("text approval replay preparation", () => {
-  function shouldPrepareApprovalReplayTools(input: {
-    session: HarnessSession;
-    stepInput?: import("#harness/types.js").StepInput;
-  }) {
-    return selectApprovalReplayBatch(input.session, input.stepInput) !== undefined;
-  }
-  function sessionWithRequests(
-    requests: InputRequest[] = [request],
-    responseAuthRequiredRequestIds?: string[],
-  ) {
-    const base = parkedSession();
-    return appendPendingInputBatch({
-      requests,
-      responseAuthRequiredRequestIds,
-      responseMessages: [],
-      session: { ...base, state: undefined },
-    });
-  }
-
-  it.each(["approve", "APPROVE", "1"])("prepares a matching text approval: %s", (message) => {
-    expect(
-      shouldPrepareApprovalReplayTools({ session: sessionWithRequests(), stepInput: { message } }),
-    ).toBe(true);
-  });
-
-  it.each(["cancel", "unrelated follow-up"])("does not prepare tools for %s", (message) => {
-    expect(
-      shouldPrepareApprovalReplayTools({ session: sessionWithRequests(), stepInput: { message } }),
-    ).toBe(false);
-  });
-
-  it("does not treat a question option named approve as tool approval", () => {
-    expect(
-      shouldPrepareApprovalReplayTools({
-        session: sessionWithRequests([{ ...request, kind: "question" }]),
-        stepInput: { message: "approve" },
-      }),
-    ).toBe(false);
-  });
-
-  it("does not bypass responder authorization with text", () => {
-    expect(
-      shouldPrepareApprovalReplayTools({
-        session: sessionWithRequests([request], [request.requestId]),
-        stepInput: { message: "approve" },
-      }),
-    ).toBe(false);
-  });
-
-  it("does not interpret text when multiple batches are pending", () => {
-    const session = appendPendingInputBatch({
-      requests: [{ ...request, requestId: "approval-2" }],
-      responseMessages: [],
-      session: sessionWithRequests(),
-    });
-    expect(shouldPrepareApprovalReplayTools({ session, stepInput: { message: "approve" } })).toBe(
-      false,
-    );
-  });
-
-  it("preserves an explicit cancellation over approval text", () => {
-    expect(
-      shouldPrepareApprovalReplayTools({
-        session: sessionWithRequests(),
-        stepInput: {
-          message: "approve",
-          inputResponses: [{ optionId: "cancel", requestId: request.requestId }],
-        },
-      }),
-    ).toBe(false);
   });
 });

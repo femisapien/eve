@@ -27,7 +27,7 @@ import {
   type AuthorizationChallenge,
 } from "#harness/authorization.js";
 import { isApprovalRequest } from "#harness/input-request-class.js";
-import { getPendingInputBatches, pendingInputRequester } from "#harness/pending-input-batches.js";
+import { allCalls, findStepForRequest, readTurnState } from "#harness/turn-state.js";
 import type { HarnessSession, HarnessToolMap, StepInput } from "#harness/types.js";
 import type { InputRequest } from "#shared/input.js";
 
@@ -88,10 +88,11 @@ export async function coordinateApprovalDelivery(input: {
     state: clearPendingAuthorization(expiredState, expiredChallengeIds),
   };
   const audit = getApprovalAuditState(session.state);
-  const batches = getPendingInputBatches(session.state);
-  const pendingRequestIds = new Set(
-    batches.flatMap((batch) => batch.requests.map((request) => request.requestId)),
+  const turnState = readTurnState(session.state);
+  const approvals = allCalls(turnState).filter(
+    (call) => call.status === "awaiting-approval" && call.approval !== undefined,
   );
+  const pendingRequestIds = new Set(approvals.map((call) => call.approval!.request.requestId));
   const pendingSettlements = audit.settlements.filter((settlement) =>
     pendingRequestIds.has(settlement.requestId),
   );
@@ -114,14 +115,17 @@ export async function coordinateApprovalDelivery(input: {
   ) {
     return deliveryResult(session, deduplicatedInput, "park");
   }
-  if (batches.length === 0) return deliveryResult(session, deduplicatedInput);
+  if (approvals.length === 0) return deliveryResult(session, deduplicatedInput);
 
   const stepInput = deduplicatedInput;
   const authorizationRequiredRequestIds = new Set(
-    batches.flatMap((batch) => batch.responseAuthRequiredRequestIds ?? []),
+    approvals.flatMap((call) =>
+      call.approval!.responsePolicy === true ? [call.approval!.request.requestId] : [],
+    ),
   );
-  const allRequests = batches.flatMap((batch) => batch.requests);
-  const requests = new Map(allRequests.map((request) => [request.requestId, request]));
+  const requests = new Map(
+    approvals.map((call) => [call.approval!.request.requestId, call.approval!.request]),
+  );
   const challenges: AuthorizationChallenge[] = [];
   const feedback: string[] = [];
   const consumed = new Set<string>();
@@ -309,7 +313,7 @@ async function authorizeCandidate(input: {
         request: {
           callId: input.request.action.callId,
           requestId: input.request.requestId,
-          principal: pendingInputRequester(session.state, input.request.requestId),
+          principal: requesterOf(session, input.request.requestId),
           toolInput: input.request.action.input,
           toolName: input.request.action.toolName,
         },
@@ -526,4 +530,9 @@ async function withAuthorizerTimeout<T>(promise: Promise<T> | T): Promise<T> {
   } finally {
     if (timer !== undefined) clearTimeout(timer);
   }
+}
+
+/** The requester recorded on the parked step that holds `requestId`. */
+function requesterOf(session: HarnessSession, requestId: string): SessionAuthContext | null {
+  return findStepForRequest(readTurnState(session.state), requestId)?.requester ?? null;
 }

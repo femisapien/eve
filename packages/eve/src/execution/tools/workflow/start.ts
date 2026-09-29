@@ -1,7 +1,7 @@
 import type { SessionAuth, SessionParent } from "#context/session-context.js";
 import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
 import { createRuntimeToolResultFromValue } from "#harness/action-result-helpers.js";
-import { registerWorkflowToolRun } from "#harness/workflow-tool-runs.js";
+import { startWorkflowCall, updateTurnState } from "#harness/turn-state.js";
 import { createLogger, logError } from "#internal/logging.js";
 import type { HarnessSession } from "#harness/types.js";
 import type {
@@ -91,16 +91,13 @@ export async function startWorkflowToolCallRun(
 export async function startWorkflowTask(
   input: StartWorkflowTaskInput,
 ): Promise<{ readonly result?: RuntimeToolResultActionResult; readonly session: HarnessSession }> {
-  const { task, batchEvent, session } = input;
+  const { task, session } = input;
   try {
     const started = await startWorkflowToolCallRun(input, { entryPoint: "execute" });
     return {
-      session: registerWorkflowToolRun(session, {
-        callId: task.callId,
-        origin: { turnId: batchEvent.turnId, stepIndex: batchEvent.stepIndex },
-        address: started,
-        toolName: task.toolName,
-      }),
+      session: updateTurnState(session, (turnState) =>
+        startWorkflowCall(turnState, task.callId, started),
+      ),
     };
   } catch (error) {
     logError(log, "workflow tool run failed to start", error, {

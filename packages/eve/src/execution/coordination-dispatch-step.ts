@@ -1,4 +1,4 @@
-/** Starts workflow-tool runs for pending coordination. */
+/** Starts the runs of the workflow calls the turn state holds ready. */
 
 import {
   prepareCoordinationDispatch,
@@ -57,7 +57,7 @@ async function dispatchCoordination(
     const start = {
       agentContext: captureAgentSessionContext(prepared, task.callId, agentLimits),
       auth: { current: prepared.auth, initiator: prepared.initiatorAuth },
-      batchEvent: batch.event,
+      batchEvent: prepared.origins?.get(task.callId) ?? batch.event,
       owner: input.workflowToolRunOwner,
       parentSession: prepared.parentSession,
       session: nextSession,

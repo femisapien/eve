@@ -1,7 +1,7 @@
 import type { ToolSet, TypedToolCall } from "ai";
 
 import type { ActionPresentationByCallId } from "#protocol/message.js";
-import { createRuntimeActionRequestFromToolCall } from "#harness/coordination.js";
+import { createRuntimeActionRequestFromToolCall } from "#harness/runtime-calls.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import type { HarnessToolMap } from "#harness/types.js";
 import type { RuntimeActionRequest } from "#shared/action-types.js";

@@ -1,5 +1,8 @@
 import { createDurableSessionState } from "#execution/durable-session-store.js";
-import { derivePendingState } from "#execution/session/pending-turn-state.js";
+import type { TaskToolCall } from "#execution/tasks/calls.js";
+import { getPendingAuthorization } from "#harness/authorization.js";
+import { hasOpenInput, readTurnState, runtimeCalls } from "#harness/turn-state.js";
+import type { HarnessSession } from "#harness/types.js";
 import type { DurableStepResult } from "#execution/session/turn-step-types.js";
 import { getTurnUsageState, takeSessionUsageDelta, toUsage } from "#harness/turn-tag-state.js";
 import type { StepResult } from "#harness/types.js";
@@ -73,5 +76,31 @@ export function resolveSessionStepResult(
     action: "continue",
     serializedContext: nextSerializedContext,
     sessionState: nextState,
+  };
+}
+
+/** What the session owner reads at a park boundary to pick its next action. */
+export function derivePendingState(session: HarnessSession): {
+  readonly authorizationAttemptIds?: readonly string[];
+  readonly hasPendingAuthorization: boolean;
+  readonly hasPendingInputBatch: boolean;
+  readonly pendingCoordinationCallIds?: readonly string[];
+  readonly pendingTaskToolCalls?: readonly TaskToolCall[];
+} {
+  const turnState = readTurnState(session.state);
+  const pendingAuth = getPendingAuthorization(session.state);
+  const waited = runtimeCalls(turnState);
+  const base = {
+    authorizationAttemptIds: pendingAuth?.challenges.flatMap((challenge) =>
+      challenge.attemptId === undefined ? [] : [challenge.attemptId],
+    ),
+    hasPendingAuthorization: pendingAuth !== undefined,
+    hasPendingInputBatch: hasOpenInput(turnState),
+  };
+  if (waited.length === 0) return base;
+  return {
+    ...base,
+    pendingCoordinationCallIds: waited.map((call) => call.callId),
+    pendingTaskToolCalls: waited.flatMap((call) => (call.task === undefined ? [] : [call.task])),
   };
 }

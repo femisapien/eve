@@ -13,7 +13,7 @@ import {
   InitiatorAuthKey,
   ParentSessionKey,
 } from "#context/keys.js";
-import type { HarnessEmissionState } from "#harness/emission.js";
+import type { EventCoordinates } from "#harness/turn-state.js";
 import type { HarnessSession } from "#harness/types.js";
 import type { RuntimeContextResolver } from "#tracing/otel-declaration.js";
 import {
@@ -34,7 +34,7 @@ export interface BuildTelemetryRuntimeContextInput {
   readonly capturesContent: boolean;
   readonly context?: InstrumentationRuntimeContextSnapshot;
   readonly eveVersion: string;
-  readonly emissionState: HarnessEmissionState;
+  readonly coordinates: EventCoordinates;
   readonly environment: string;
   readonly modelInput: {
     readonly instructions: string | SystemModelMessage | undefined;
@@ -94,9 +94,9 @@ export function buildTelemetryRuntimeContext(
     "eve.channel.kind": normalizeInstrumentationChannelKind(projection?.kind),
     "eve.environment": input.environment,
     "eve.session.id": input.session.sessionId,
-    "eve.step.index": String(input.emissionState.stepIndex),
-    "eve.turn.id": input.emissionState.turnId,
-    "eve.turn.sequence": String(input.emissionState.sequence),
+    "eve.step.index": String(input.coordinates.stepIndex),
+    "eve.turn.id": input.coordinates.turnId,
+    "eve.turn.sequence": String(input.coordinates.sequence),
     "eve.version": input.eveVersion,
   };
 }
@@ -124,11 +124,11 @@ function buildInstrumentationStepStartedInput(
       parent: context.parent,
     },
     step: {
-      index: input.emissionState.stepIndex,
+      index: input.coordinates.stepIndex,
     },
     turn: {
-      id: input.emissionState.turnId,
-      sequence: input.emissionState.sequence,
+      id: input.coordinates.turnId,
+      sequence: input.coordinates.sequence,
     },
   };
 }

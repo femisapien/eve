@@ -19,7 +19,7 @@ import { createActivitySnapshot, reduceActivityBatch } from "#execution/session-
 import type { ActivitySnapshotV1, ActivityWorkIdentityV1 } from "#protocol/activity.js";
 import type { MessageStreamEvent } from "#protocol/message.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
-import { appendPendingInputBatch } from "#harness/pending-input-batches.js";
+import { parkApprovalStep } from "#internal/testing/turn-state.js";
 import type { HarnessSession, SessionStateMap } from "#harness/types.js";
 
 const at = "2026-01-01T00:00:00.000Z";
@@ -372,10 +372,9 @@ describe("projectSessionActivity", () => {
 
   it("keeps work open after a cancel while its own approval can still be answered", () => {
     const approval = inputRequested("approval-1", "tool-approval");
-    const stillAwaitingApproval = appendPendingInputBatch({
+    const stillAwaitingApproval = parkApprovalStep({} as HarnessSession, {
       requests: approval.type === "input.requested" ? approval.data.requests : [],
-      responseMessages: [],
-      session: {} as HarnessSession,
+      response: [],
     });
 
     const snapshot = projectDelegated(

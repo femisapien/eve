@@ -27,7 +27,7 @@ import {
   writeTaskTable,
 } from "#execution/tasks/table.js";
 import { getSessionTokenUsage } from "#harness/turn-tag-state.js";
-import { registerWorkflowToolRun } from "#harness/workflow-tool-runs.js";
+import { parkWorkflowRuns } from "#internal/testing/turn-state.js";
 import { interruptWorkflowToolRun } from "#execution/tools/workflow/interrupt.js";
 import type { TokenUsage } from "#shared/token-usage.js";
 
@@ -802,12 +802,13 @@ describe("SessionExecution checkpoints", () => {
     const sessionState: DurableSessionState = {
       ...base,
       snapshot: {
-        session: registerWorkflowToolRun(base.snapshot.session, {
-          address: { hookToken: "deploy-control", runId: "deploy-run" },
-          callId: "deploy-call",
-          origin: { stepIndex: 0, turnId: "turn_0" },
-          toolName: "deploy",
-        }),
+        session: parkWorkflowRuns(base.snapshot.session, [
+          {
+            callId: "deploy-call",
+            run: { hookToken: "deploy-control", runId: "deploy-run" },
+            toolName: "deploy",
+          },
+        ]),
       },
     };
     const correction: DeliverHookPayload = {
@@ -1054,15 +1055,13 @@ describe("SessionExecution checkpoints", () => {
     const sessionState: DurableSessionState = {
       ...base,
       snapshot: {
-        session: tools.reduce(
-          (session, name) =>
-            registerWorkflowToolRun(session, {
-              address: { hookToken: `${name}-control`, runId: `${name}-run` },
-              callId: `${name}-call`,
-              origin: { stepIndex: 0, turnId: "turn_0" },
-              toolName: name,
-            }),
+        session: parkWorkflowRuns(
           base.snapshot.session,
+          tools.map((name) => ({
+            callId: `${name}-call`,
+            run: { hookToken: `${name}-control`, runId: `${name}-run` },
+            toolName: name,
+          })),
         ),
       },
     };
@@ -1245,9 +1244,8 @@ function createExecution(input: {
 function state(continuationToken: string): DurableSessionState {
   return createTestSessionState({
     continuationToken,
-    emissionState: { sequence: 0, sessionStarted: true, stepIndex: 0, turnId: "turn_0" },
+    turn: { open: true, sequence: 0, stepIndex: 0, turnId: "turn_0" },
     hasProxyInputRequests: false,
     sessionId: "session-1",
-    version: 1,
   });
 }

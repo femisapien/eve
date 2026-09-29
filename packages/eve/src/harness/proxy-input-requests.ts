@@ -1,5 +1,5 @@
 import type { SubagentInputRequestHookPayload } from "#channel/types.js";
-import type { PendingInputBatchEvent } from "#harness/pending-input-batches.js";
+import type { EventCoordinates as PendingInputBatchEvent } from "#harness/turn-state.js";
 import type { HarnessSession, SessionStateMap } from "#harness/types.js";
 import { inputOptionSchema, type InputOption, type InputRequestKind } from "#shared/input.js";
 import {

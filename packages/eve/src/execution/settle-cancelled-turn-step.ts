@@ -1,7 +1,3 @@
-import {
-  commitCancelledCoordinationBatch,
-  getPendingCoordinationBatch,
-} from "#harness/coordination.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
 import { retainAnswerableActivityBlockers } from "#execution/activity-cohort.js";
 import {
@@ -15,11 +11,15 @@ import {
   withSessionStateDelta,
   type WithSessionStateDelta,
 } from "#execution/session/state-delta.js";
-import { emitCancelledTurn } from "#harness/cancelled-turn-emission.js";
-import { clearPendingSessionLimitPrompt } from "#harness/input-requests.js";
-import { getHarnessEmissionState, setHarnessEmissionState } from "#harness/emission.js";
+import { emitTurnCancelled } from "#harness/session-lifecycle.js";
+import {
+  cancelTurnWork,
+  readTurnState,
+  takeSettledSteps,
+  writeTurnState,
+} from "#harness/turn-state.js";
+import { validateHarnessModelMessages } from "#harness/messages.js";
 import { clearAllProxyInputRequests } from "#harness/proxy-input-requests.js";
-import { removeBlockingWorkflowToolRuns } from "#harness/workflow-tool-runs.js";
 import { getTurnUsageState, takeSessionUsageDelta } from "#harness/turn-tag-state.js";
 import type { TokenUsage } from "#shared/token-usage.js";
 
@@ -42,8 +42,8 @@ interface CancelledTurnSettleInput {
 }
 
 /**
- * Settles one cancelled turn: emits `turn.cancelled` → `session.waiting`,
- * drops pending coordination state, and persists the between-turns
+ * Settles one cancelled turn: settles the turn's calls as cancelled, emits
+ * `turn.cancelled` → `session.waiting`, and persists the between-turns
  * session. Runs in the owner, whose wake sources exclude the
  * cancel hook, so a queued cancel wake cannot re-dispatch it.
  */
@@ -60,42 +60,37 @@ export async function settleCancelledTurn(
 ): Promise<CancelledTurnSettleResult> {
   const durableSession = readDurableSession(input.sessionState);
   const ctx = await deserializeContext(input.serializedContext);
+  // Every call the turn made or waits on settles as cancelled, and so does the
+  // session-limit prompt: the cancel withdraws what nobody may answer now.
+  const cancelled = takeSettledSteps(cancelTurnWork(readTurnState(durableSession.state)));
+  const cancelledDurable = writeTurnState(
+    {
+      ...durableSession,
+      history: validateHarnessModelMessages([...durableSession.history, ...cancelled.messages]),
+      outputSchema: undefined,
+    },
+    cancelled.turnState,
+  );
   // Before `turn.cancelled` projects, so only what stays answerable holds the work open.
-  retainAnswerableActivityBlockers(ctx, durableSession.state);
+  retainAnswerableActivityBlockers(ctx, cancelledDurable.state);
   const emitted = await withSessionEventEmitter(
-    { ctx, durableSession, origin: "own", sessionWritable: input.sessionWritable },
+    {
+      ctx,
+      durableSession: cancelledDurable,
+      origin: "own",
+      sessionWritable: input.sessionWritable,
+    },
     async (emit, scopedSession) => ({
-      result: await emitCancelledTurn(emit, getHarnessEmissionState(durableSession.state)),
+      result: await emitTurnCancelled(emit, cancelled.turnState),
       session: scopedSession,
     }),
   );
-  const emissionState = emitted.result;
-  const session = emitted.session;
-
-  // `clearPendingSessionLimitPrompt`: cancellation settles with the step's
-  // input snapshot, which can resurrect an already-answered session-limit
-  // prompt (the decline that cancelled this turn consumed the answer in the
-  // discarded turn state). The pre-model gate re-raises the prompt while the
-  // violation holds, so the next delivery gets a fresh prompt instead of
-  // queueing forever behind a stale one.
-  const owningTurnId =
-    getPendingCoordinationBatch(session.state)?.event.turnId ??
-    input.sessionState.emissionState.turnId;
   const cancelledSession = reconcileSessionContinuationToken(
     ctx,
-    setHarnessEmissionState(
-      clearPendingSessionLimitPrompt(
-        clearAllProxyInputRequests(
-          commitCancelledCoordinationBatch(
-            removeBlockingWorkflowToolRuns({ ...session, outputSchema: undefined }, owningTurnId),
-          ),
-        ),
-      ),
-      emissionState,
-    ),
+    clearAllProxyInputRequests(writeTurnState(emitted.session, emitted.result)),
   );
   const base = { serializedContext: serializeContext(ctx) };
-  if (!input.reportUsage || getTurnUsageState(session.state) === undefined) {
+  if (!input.reportUsage || getTurnUsageState(cancelledSession.state) === undefined) {
     return { ...base, sessionState: createDurableSessionState({ session: cancelledSession }) };
   }
   // Reported like a settled turn, as usage since the last report, so the

@@ -1,10 +1,6 @@
-import { getPendingCoordinationBatch } from "#harness/coordination.js";
 import { readDurableSession, type DurableSessionState } from "#execution/durable-session-store.js";
 import { cancelWorkflowToolRun } from "#execution/tools/workflow/cancel.js";
-import {
-  getBlockingWorkflowToolRuns,
-  type BlockingWorkflowToolRun,
-} from "#harness/workflow-tool-runs.js";
+import { readTurnState, workflowRuns } from "#harness/turn-state.js";
 import { createLogger, logError } from "#internal/logging.js";
 
 const log = createLogger("execution.cancel-descendant-turns");
@@ -15,14 +11,9 @@ export async function cancelDescendantTurnsStep(input: {
 }): Promise<void> {
   "use step";
 
-  let workflowToolRuns: readonly BlockingWorkflowToolRun[];
+  let runs: ReturnType<typeof workflowRuns>;
   try {
-    const session = readDurableSession(input.sessionState);
-    workflowToolRuns = getBlockingWorkflowToolRuns(
-      session.state,
-      getPendingCoordinationBatch(session.state)?.event.turnId ??
-        input.sessionState.emissionState.turnId,
-    );
+    runs = workflowRuns(readTurnState(readDurableSession(input.sessionState).state));
   } catch (error) {
     logError(log, "failed to read pending descendants during cancellation", error, {
       sessionId: input.sessionState.sessionId,
@@ -31,7 +22,7 @@ export async function cancelDescendantTurnsStep(input: {
   }
 
   await Promise.all(
-    workflowToolRuns.map((record) =>
+    runs.map((record) =>
       cancelWorkflowToolRun(record.address, {
         kind: "cancel",
         reason: "The turn that called the tool was cancelled.",

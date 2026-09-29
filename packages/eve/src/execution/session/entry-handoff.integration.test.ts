@@ -60,17 +60,7 @@ describe("workflowEntry integration", () => {
               Object.assign(session, {
                 state: {
                   ...session.state,
-                  "eve.workflowTool": {
-                    version: 4,
-                    runs: [
-                      {
-                        callId: "call",
-                        toolName: "research",
-                        origin: { turnId: "turn", stepIndex: 0 },
-                        address: { runId: "run", hookToken: 42 },
-                      },
-                    ],
-                  },
+                  "eve.session": { version: 1, steps: "research" },
                 },
               });
 

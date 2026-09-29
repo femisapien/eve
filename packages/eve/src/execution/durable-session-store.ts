@@ -1,4 +1,4 @@
-import { getHarnessEmissionState, type HarnessEmissionState } from "#harness/emission.js";
+import { eventCoordinates, readTurnState } from "#harness/turn-state.js";
 import type { HarnessModelMessage } from "#harness/messages.js";
 import { hasProxyInputRequests } from "#harness/proxy-input-requests.js";
 import type { HarnessSession, SessionStateMap } from "#harness/types.js";
@@ -7,7 +7,7 @@ import type { SandboxState } from "#sandbox/state.js";
 import type { JsonObject } from "#shared/json.js";
 
 /** Explicit checkpoint contract shared by deployment handoffs. */
-export const DURABLE_SESSION_VERSION = 1;
+export const DURABLE_SESSION_VERSION = 2;
 
 /**
  * Serializable handle to a durable session.
@@ -17,7 +17,7 @@ export const DURABLE_SESSION_VERSION = 1;
  * hook continuation token,
  * `hasProxyInputRequests` (a closed-contract short-circuit that lets
  * the owner skip a per-delivery proxy-routing step when no
- * descendant subagent is active), and `emissionState` (so workflow-body
+ * descendant subagent is active), and `turn` (so workflow-body
  * framework steps can stamp protocol events
  * with `{ turnId, sequence, stepIndex }` without reading the full
  * durable session). Turn steps return state transitions to the owning
@@ -28,7 +28,7 @@ export interface DurableSessionState {
   readonly sessionId: string;
   readonly continuationToken: string;
   readonly hasProxyInputRequests: boolean;
-  readonly emissionState: HarnessEmissionState;
+  readonly turn: DurableTurnProjection;
   readonly snapshot: DurableSessionSnapshot;
 }
 
@@ -102,10 +102,23 @@ export function replaceDurableSessionSnapshot(input: {
 function projectDurableSessionState(session: DurableSession): DurableSessionState {
   return {
     continuationToken: session.continuationToken,
-    emissionState: getHarnessEmissionState(session.state),
+    turn: projectTurn(session.state),
     hasProxyInputRequests: hasProxyInputRequests(session.state),
     sessionId: session.sessionId,
     version: DURABLE_SESSION_VERSION,
     snapshot: { session },
   };
+}
+
+/** The open turn's coordinates, or the next turn's when `open` is false. */
+export interface DurableTurnProjection {
+  readonly open: boolean;
+  readonly sequence: number;
+  readonly stepIndex: number;
+  readonly turnId: string;
+}
+
+export function projectTurn(state: DurableSession["state"]): DurableTurnProjection {
+  const turnState = readTurnState(state);
+  return { ...eventCoordinates(turnState), open: turnState.turn !== undefined };
 }

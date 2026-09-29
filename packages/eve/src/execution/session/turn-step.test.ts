@@ -27,13 +27,16 @@ import {
 } from "#context/keys.js";
 import { BundleKey, ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
 import { serializeContext } from "#context/serialize.js";
-import { getPendingCoordinationBatch, setPendingCoordinationBatch } from "#harness/coordination.js";
 import { TurnCancelledError } from "#harness/turn-cancellation.js";
-import { setHarnessEmissionState } from "#harness/emission-state.js";
 import { getPendingAuthorization, setPendingAuthorization } from "#harness/authorization.js";
 import { upsertProxyInputRequests } from "#harness/proxy-input-requests.js";
-import { appendPendingInputBatch } from "#harness/input-requests.js";
-import { queueDeferredStepInput } from "#harness/pending-input-batches.js";
+import {
+  readTurnState,
+  setQueuedInput,
+  updateTurnState,
+  writeTurnState,
+} from "#harness/turn-state.js";
+import { atSessionTurn, parkApprovalStep } from "#internal/testing/turn-state.js";
 import type { HarnessSession, StepFn, StepResult } from "#harness/types.js";
 import { createRuntimeHookRegistry } from "#runtime/hooks/registry.js";
 import {
@@ -58,6 +61,7 @@ import { defineMemory } from "#public/memory/index.js";
 import { defineState } from "#public/definitions/state.js";
 import { stampDurableDynamicCallback } from "#tools/durable-callbacks.js";
 import { dispatchCoordinationStep } from "#execution/coordination-dispatch-step.js";
+import { startWorkflowTask } from "#execution/tools/workflow/start.js";
 import { runProxySubagentEventStep } from "#subagents/event-proxy-step.js";
 import { emitTerminalSessionFailureStep } from "#execution/terminal-session-failure-step.js";
 import { turnStep as runTurnStep } from "#execution/session/turn-step.js";
@@ -164,10 +168,9 @@ function installSessionStoreMocks(
 function createStubSessionState(overrides: Partial<DurableSessionState> = {}): DurableSessionState {
   return createTestSessionState({
     continuationToken: "test-token",
-    emissionState: { sequence: 0, sessionStarted: false, stepIndex: 0, turnId: "" },
+    turn: { open: false, sequence: 0, stepIndex: 0, turnId: "turn_0" },
     hasProxyInputRequests: false,
     sessionId: "sess-test",
-    version: 1,
     ...overrides,
   });
 }
@@ -657,7 +660,7 @@ function currentSessionHook(token: string) {
 }
 
 describe("dispatchCoordinationStep", () => {
-  it("repairs an empty pending turn id from the active session turn", async () => {
+  it("starts each ready workflow call from the step that made it", async () => {
     vi.mocked(getCompiledRuntimeAgentBundle).mockResolvedValue({
       adapterRegistry: {
         adaptersByKind: new Map([[threadContextAdapter.kind, threadContextAdapter]]),
@@ -673,28 +676,43 @@ describe("dispatchCoordinationStep", () => {
       toolRegistry: {},
       turnAgent: TestTurnAgent,
     } as never);
-    const session = setPendingCoordinationBatch({
-      tasks: [
+    const request = {
+      callId: "call-1",
+      entry: { entryPoint: "execute" },
+      executeInput: {},
+      input: {},
+      kind: "workflow-task",
+      toolName: "research",
+      workflowId: "workflow//eve//research",
+    } as const;
+    const origin = { sequence: 3, stepIndex: 2, turnId: "turn_3" };
+    const session = writeTurnState(createStubSession(), {
+      ...readTurnState(undefined),
+      sequence: 3,
+      started: true,
+      steps: [
         {
-          callId: "call-1",
-          executeInput: {},
-          input: {},
-          entry: { entryPoint: "execute" },
-          kind: "workflow-task",
-          toolName: "research",
-          workflowId: "workflow//eve//research",
+          calls: [
+            {
+              callId: "call-1",
+              input: {},
+              status: "ready",
+              toolName: "research",
+              workflow: { request },
+            },
+          ],
+          origin,
+          response: [],
         },
       ],
-      event: { sequence: 3, stepIndex: 2, turnId: "" },
-      responseMessages: [],
-      session: createStubSession(),
+      turn: { id: "turn_3", stepIndex: 3 },
     });
     installSessionStoreMocks([session]);
     const sessionState = createStubSessionState({
-      emissionState: { sequence: 3, sessionStarted: true, stepIndex: 2, turnId: "" },
+      turn: { open: true, sequence: 3, stepIndex: 3, turnId: "turn_3" },
     });
 
-    const result = await dispatchCoordinationStep({
+    await dispatchCoordinationStep({
       action: "park",
       workflowToolRunOwner: { inbox: "generated-owner-token" },
       sessionWritable: createTestWritable(),
@@ -702,9 +720,9 @@ describe("dispatchCoordinationStep", () => {
       sessionState,
     });
 
-    const persisted = vi.mocked(createDurableSessionState).mock.calls.at(-1)?.[0].session;
-    expect(result.stateDelta.sessionState).toBeDefined();
-    expect(getPendingCoordinationBatch(persisted?.state)?.event.turnId).toBe("turn_3");
+    expect(startWorkflowTask).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ batchEvent: origin, task: request }),
+    );
   });
 });
 
@@ -732,10 +750,9 @@ describe("turnStep", () => {
       adapterRegistry: { adaptersByKind: new Map([[adapter.kind, adapter]]) },
     }) as never;
     vi.mocked(getCompiledRuntimeAgentBundle).mockResolvedValue(bundle);
-    const emissionState = { sequence: 0, sessionStarted: true, stepIndex: 1, turnId: "turn_0" };
-    const session = setHarnessEmissionState(
+    const session = atSessionTurn(
       createStubSession({ history: [{ role: "user", kind: "user", content: "Original request" }] }),
-      emissionState,
+      { sequence: 0, turn: { id: "turn_0", stepIndex: 1 } },
     );
     installSessionStoreMocks([session]);
     const execute = vi.fn(async (current: HarnessSession): Promise<StepResult> => {
@@ -769,12 +786,14 @@ describe("turnStep", () => {
       },
       sessionWritable: createTestWritable(),
       serializedContext: serializeContext(ctx),
-      sessionState: createStubSessionState({ emissionState }),
+      sessionState: createStubSessionState({
+        turn: { open: true, sequence: 0, stepIndex: 1, turnId: "turn_0" },
+      }),
     });
     expect(result).toMatchObject({ action: "done", output: "Original answer" });
     expect(execute).toHaveBeenCalledOnce();
     expect(execute.mock.calls[0]?.[0].history).toEqual(session.history);
-    expect(result.sessionState.emissionState.turnId).toBe("turn_0");
+    expect(result.sessionState.turn.turnId).toBe("turn_0");
     expect(result.serializedContext[AuthKey.name]).toEqual(originalAuth);
     expect(result.serializedContext[TurnDeliveryIdsKey.name]).toEqual(["original-delivery"]);
   });
@@ -913,17 +932,16 @@ describe("turnStep", () => {
     const continueStep: StepFn = async (session) => ({ next: null, session });
     const execute = vi.fn(async (session: HarnessSession): Promise<StepResult> => ({
       next: continueStep,
-      session: appendPendingInputBatch({
+      session: parkApprovalStep(session, {
         requests: [
           {
             action: { callId: "call-confirm", input: {}, kind: "tool-call", toolName: "confirm" },
-            kind: "question",
-            prompt: "Continue?",
+            kind: "tool-approval",
+            prompt: "Approve tool call: confirm",
             requestId: "request-confirm",
           },
         ],
-        responseMessages: [],
-        session,
+        response: [],
       }),
     }));
     vi.mocked(createExecutionNodeStep).mockImplementation(() => execute);
@@ -940,15 +958,9 @@ describe("turnStep", () => {
   });
 
   it("retains coalesced delivery ownership when a message steers the active turn", async () => {
-    const session = createStubSession({
-      state: {
-        "eve.harness.emission": {
-          sequence: 1,
-          sessionStarted: true,
-          stepIndex: 0,
-          turnId: "turn_1",
-        },
-      },
+    const session = atSessionTurn(createStubSession(), {
+      sequence: 1,
+      turn: { id: "turn_1", stepIndex: 0 },
     });
     installSessionStoreMocks([session]);
     vi.mocked(getCompiledRuntimeAgentBundle).mockResolvedValue({
@@ -1055,16 +1067,7 @@ describe("turnStep", () => {
       resolvedAgent: { config: {}, dynamicToolResolvers: [dynamicToolResolver] },
     } as never;
     vi.mocked(getCompiledRuntimeAgentBundle).mockResolvedValue(compiledBundle);
-    const session = createStubSession({
-      state: {
-        "eve.harness.emission": {
-          sequence: 1,
-          sessionStarted: true,
-          stepIndex: 0,
-          turnId: "",
-        },
-      },
-    });
+    const session = atSessionTurn(createStubSession(), { sequence: 1 });
     installSessionStoreMocks([session]);
 
     const ctx = new ContextContainer();
@@ -1100,12 +1103,7 @@ describe("turnStep", () => {
       sessionWritable: createTestWritable(),
       serializedContext: serializeContext(ctx),
       sessionState: createStubSessionState({
-        emissionState: {
-          sequence: 1,
-          sessionStarted: true,
-          stepIndex: 0,
-          turnId: "",
-        },
+        turn: { open: false, sequence: 1, stepIndex: 0, turnId: "turn_1" },
       }),
     });
 
@@ -1164,21 +1162,16 @@ describe("turnStep", () => {
       turnAgent: TestTurnAgent,
     } as never;
     vi.mocked(getCompiledRuntimeAgentBundle).mockResolvedValue(compiledBundle);
-    const session = createStubSession({
-      history: [
-        { content: "first", kind: "user", role: "user" },
-        hidden,
-        { content: "second", role: "assistant" },
-      ],
-      state: {
-        "eve.harness.emission": {
-          sequence: 1,
-          sessionStarted: true,
-          stepIndex: 0,
-          turnId: "",
-        },
-      },
-    });
+    const session = atSessionTurn(
+      createStubSession({
+        history: [
+          { content: "first", kind: "user", role: "user" },
+          hidden,
+          { content: "second", role: "assistant" },
+        ],
+      }),
+      { sequence: 1 },
+    );
     installSessionStoreMocks([session]);
 
     const ctx = new ContextContainer();
@@ -1206,12 +1199,7 @@ describe("turnStep", () => {
       sessionWritable: createTestWritable(),
       serializedContext: serializeContext(ctx),
       sessionState: createStubSessionState({
-        emissionState: {
-          sequence: 1,
-          sessionStarted: true,
-          stepIndex: 0,
-          turnId: "",
-        },
+        turn: { open: false, sequence: 1, stepIndex: 0, turnId: "turn_1" },
       }),
     });
 
@@ -1999,8 +1987,8 @@ describe("turnStep", () => {
     });
   });
 
-  it("carries a settled turn while an older input batch remains pending", async () => {
-    const session = appendPendingInputBatch({
+  it("carries a settled turn while an older approval remains pending", async () => {
+    const session = parkApprovalStep(createStubSession(), {
       requests: [
         {
           action: {
@@ -2009,13 +1997,12 @@ describe("turnStep", () => {
             kind: "tool-call",
             toolName: "confirm",
           },
-          kind: "question",
-          prompt: "Continue?",
+          kind: "tool-approval",
+          prompt: "Approve tool call: confirm",
           requestId: "request-existing-input",
         },
       ],
-      responseMessages: [],
-      session: createStubSession(),
+      response: [],
     });
     installSessionStoreMocks([session]);
     vi.mocked(createExecutionNodeStep).mockImplementation(() => {
@@ -2065,9 +2052,9 @@ describe("turnStep", () => {
       }),
     },
     {
-      name: "input batch",
+      name: "approval",
       withPending: (session: HarnessSession): HarnessSession =>
-        appendPendingInputBatch({
+        parkApprovalStep(session, {
           requests: [
             {
               action: {
@@ -2076,13 +2063,12 @@ describe("turnStep", () => {
                 kind: "tool-call",
                 toolName: "confirm",
               },
-              kind: "question",
-              prompt: "Continue?",
+              kind: "tool-approval",
+              prompt: "Approve tool call: confirm",
               requestId: "request-input",
             },
           ],
-          responseMessages: [],
-          session,
+          response: [],
         }),
     },
   ])("does not infer settled output from a pending $name", async ({ withPending }) => {
@@ -2433,16 +2419,7 @@ describe("turnStep", () => {
       };
     });
 
-    const session = createStubSession({
-      state: {
-        "eve.harness.emission": {
-          sequence: 1,
-          sessionStarted: true,
-          stepIndex: 0,
-          turnId: "",
-        },
-      },
-    });
+    const session = atSessionTurn(createStubSession(), { sequence: 1 });
     installSessionStoreMocks([session]);
 
     const ctx = new ContextContainer();
@@ -2473,12 +2450,7 @@ describe("turnStep", () => {
       sessionWritable: createTestWritable(),
       serializedContext: serializeContext(ctx),
       sessionState: createStubSessionState({
-        emissionState: {
-          sequence: 1,
-          sessionStarted: true,
-          stepIndex: 0,
-          turnId: "",
-        },
+        turn: { open: false, sequence: 1, stepIndex: 0, turnId: "turn_1" },
       }),
     });
 
@@ -2556,7 +2528,9 @@ describe("turnStep", () => {
       message: "Alice follows up after signing in.",
     };
     installSessionStoreMocks([
-      inputKind === "deferred" ? queueDeferredStepInput(session, turnInput) : session,
+      inputKind === "deferred"
+        ? updateTurnState(session, (turnState) => setQueuedInput(turnState, turnInput))
+        : session,
     ]);
     vi.mocked(getCompiledRuntimeAgentBundle).mockResolvedValue({
       adapterRegistry: {

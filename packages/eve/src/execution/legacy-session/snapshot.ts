@@ -1,13 +1,18 @@
 import type { ModelMessage } from "ai";
-import { getHarnessEmissionState } from "#harness/emission.js";
 import { isUserMessageKind, validateHarnessModelMessages } from "#harness/messages.js";
-import type { DurableSession, DurableSessionState } from "#execution/durable-session-store.js";
+import {
+  DURABLE_SESSION_VERSION,
+  projectTurn,
+  type DurableSession,
+  type DurableSessionState,
+} from "#execution/durable-session-store.js";
+import { readTurnState, writeTurnState } from "#harness/turn-state.js";
 import { isObject } from "#shared/guards.js";
 
 export type LegacySession = Omit<DurableSession, "history"> & { readonly history: ModelMessage[] };
 
+const LEGACY_EMISSION_STATE_KEY = "eve.harness.emission";
 const PRESERVED_FRAMEWORK_STATE = new Set([
-  "eve.harness.emission",
   "eve.harness.turnUsage",
   "eve.harness.reportedSessionUsage",
   "eve.harness.sessionRuntimeTokenLimit",
@@ -38,14 +43,32 @@ export function importConversation(session: LegacySession): DurableSessionState 
     ),
   );
   const history = normalizeHistory(session.history);
-  const emissionState = getHarnessEmissionState(state);
-  const imported = { ...session, history, state };
+  // Only the turn coordinates carry over, so the importer can cancel an open turn.
+  const emission = session.state?.[LEGACY_EMISSION_STATE_KEY];
+  const legacy = isObject(emission) ? emission : {};
+  const turn =
+    typeof legacy.turnId === "string" && legacy.turnId !== ""
+      ? {
+          id: legacy.turnId,
+          stepIndex: typeof legacy.stepIndex === "number" ? legacy.stepIndex : 0,
+        }
+      : undefined;
+  const turnState = {
+    ...readTurnState(undefined),
+    sequence: typeof legacy.sequence === "number" ? legacy.sequence : 0,
+    started: legacy.sessionStarted === true,
+  };
+  const importedState = writeTurnState(
+    { state },
+    turn === undefined ? turnState : { ...turnState, turn },
+  ).state;
+  const imported = { ...session, history, state: importedState };
   return {
-    version: 1,
+    version: DURABLE_SESSION_VERSION,
     sessionId: session.sessionId,
     continuationToken: session.continuationToken,
     hasProxyInputRequests: false,
-    emissionState,
+    turn: projectTurn(importedState),
     snapshot: { session: imported },
   };
 }

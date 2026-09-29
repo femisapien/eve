@@ -76,7 +76,7 @@ export async function interruptLegacySessionStep(prepared: PreparedLegacySession
         throw error;
     }
   }
-  if (prepared.input.inputCommitted || prepared.sessionState.emissionState.turnId === "")
+  if (prepared.input.inputCommitted || !prepared.sessionState.turn.open)
     return {
       sessionState: prepared.sessionState,
       serializedContext: prepared.serializedContext,

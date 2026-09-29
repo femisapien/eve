@@ -8,12 +8,7 @@ import {
   ActivityRootTurnIdKey,
   ActivityTaskCallsKey,
 } from "#context/keys.js";
-import { isSessionLimitPromptBatch } from "#harness/hitl/session-limit-input-requests.js";
-import {
-  activityRequestIdsForRootTurn,
-  activityRootTurnIdForInputResponses,
-  getPendingInputBatches,
-} from "#harness/pending-input-batches.js";
+import { openApprovalRequests, readTurnState } from "#harness/turn-state.js";
 import type { SessionStateMap } from "#harness/types.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 
@@ -38,14 +33,27 @@ export function updateActivityRootForDelivery(input: {
     ),
   );
   if (responseIds.size === 0) return;
+  const steps = readTurnState(input.sessionState).steps;
   const rootTurnId =
-    activityRootTurnIdForInputResponses(input.sessionState, responseIds) ??
+    steps.find((step) =>
+      step.calls.some(
+        (call) => call.approval !== undefined && responseIds.has(call.approval.request.requestId),
+      ),
+    )?.activityRootTurnId ??
     input.ctx.get(ActivityRootTurnIdKey) ??
     input.activeTurnId;
   input.ctx.set(ActivityRootTurnIdKey, rootTurnId);
   input.ctx.set(
     ActivityPendingBlockersKey,
-    activityRequestIdsForRootTurn(input.sessionState, rootTurnId),
+    steps.flatMap((step) =>
+      step.activityRootTurnId === rootTurnId
+        ? step.calls.flatMap((call) =>
+            call.status === "awaiting-approval" && call.approval !== undefined
+              ? [call.approval.request.requestId]
+              : [],
+          )
+        : [],
+    ),
   );
 }
 
@@ -113,9 +121,7 @@ export function retainAnswerableActivityBlockers(
   const pending = ctx.get(ActivityPendingBlockersKey);
   if (pending === undefined) return;
   const answerable = new Set([
-    ...getPendingInputBatches(sessionState).flatMap((batch) =>
-      isSessionLimitPromptBatch(batch) ? [] : batch.requests.map((request) => request.requestId),
-    ),
+    ...openApprovalRequests(readTurnState(sessionState)).map((request) => request.requestId),
     ...(getPendingAuthorization(sessionState)?.challenges ?? []).flatMap(
       (challenge) => challenge.attemptId ?? challenge.candidateId ?? [],
     ),

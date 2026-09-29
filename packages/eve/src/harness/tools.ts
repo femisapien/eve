@@ -16,7 +16,11 @@ import {
 } from "#harness/authorization.js";
 import { stashToolInterrupt } from "#harness/tool-interrupts.js";
 import { toModelSchema } from "#tools/schema.js";
-import { normalizeToolJsonOutput, normalizeToolModelOutput } from "#harness/tool-model-output.js";
+import {
+  normalizeToolJsonOutput,
+  normalizeToolModelOutput,
+  type ToolModelOutputValue,
+} from "#harness/tool-model-output.js";
 import type { ToolExecuteOptions } from "#tools/definition.js";
 import { isAsyncIterable } from "#shared/async-iterable.js";
 
@@ -51,62 +55,15 @@ export function buildToolSet(input: {
       continue;
     }
 
-    const authorToModelOutput = definition.toModelOutput;
     const approval = buildApprovalFn(definition, input);
+    const toModelOutput = buildToolModelOutput(definition);
     const aiTool = tool({
       description: definition.description,
       execute: wrapToolExecute(definition),
       inputSchema: toModelSchema(definition.inputSchema, "input"),
       strict: false,
       outputSchema: toModelSchema(definition.outputSchema, "output"),
-      ...(definition.execute !== undefined
-        ? {
-            toModelOutput: async ({
-              output,
-              toolCallId,
-            }: {
-              readonly output: unknown;
-              readonly toolCallId?: string;
-            }) => {
-              if (isAuthorizationPendingModelOutput(output)) {
-                return {
-                  type: "text" as const,
-                  value: authorizationPendingModelText(output.connections),
-                };
-              }
-              if (authorToModelOutput !== undefined) {
-                return normalizeToolModelOutput({
-                  output: await authorToModelOutput(output),
-                  toolCallId,
-                  toolName: definition.name,
-                });
-              }
-              if (typeof output === "string") {
-                return { type: "text" as const, value: output };
-              }
-              return normalizeToolModelOutput({
-                output: { type: "json" as const, value: output ?? null },
-                toolCallId,
-                toolName: definition.name,
-              });
-            },
-          }
-        : authorToModelOutput !== undefined
-          ? {
-              toModelOutput: async ({
-                output,
-                toolCallId,
-              }: {
-                readonly output: unknown;
-                readonly toolCallId?: string;
-              }) =>
-                normalizeToolModelOutput({
-                  output: await authorToModelOutput(output),
-                  toolCallId,
-                  toolName: definition.name,
-                }),
-            }
-          : {}),
+      toModelOutput,
     });
     tools[definition.name] = aiTool;
     if (definition.approval !== undefined) {
@@ -115,6 +72,84 @@ export function buildToolSet(input: {
   }
 
   return tools as ToolSet;
+}
+
+type ModelOutputProjection = (options: {
+  readonly output: unknown;
+  readonly toolCallId?: string;
+}) => Promise<ToolModelOutputValue>;
+
+/** Projects a tool's output into what the model reads, hiding sign-in details. */
+function buildToolModelOutput(
+  definition: HarnessToolDefinition,
+): ModelOutputProjection | undefined {
+  const authorToModelOutput = definition.toModelOutput;
+  if (definition.execute === undefined) {
+    if (authorToModelOutput === undefined) return undefined;
+    return async ({ output, toolCallId }) =>
+      normalizeToolModelOutput({
+        output: await authorToModelOutput(output),
+        toolCallId,
+        toolName: definition.name,
+      });
+  }
+  return async ({ output, toolCallId }) => {
+    if (isAuthorizationPendingModelOutput(output)) {
+      return { type: "text", value: authorizationPendingModelText(output.connections) };
+    }
+    if (authorToModelOutput !== undefined) {
+      return normalizeToolModelOutput({
+        output: await authorToModelOutput(output),
+        toolCallId,
+        toolName: definition.name,
+      });
+    }
+    if (typeof output === "string") return { type: "text", value: output };
+    return normalizeToolModelOutput({
+      output: { type: "json", value: output ?? null },
+      toolCallId,
+      toolName: definition.name,
+    });
+  };
+}
+
+/**
+ * Runs one approved call the way its assembled tool would. The tool's
+ * approval policy decides again first, as the AI SDK does when it replays an
+ * approval, and a policy that now denies the call stops it.
+ */
+export async function runApprovedToolCall(input: {
+  readonly abortSignal?: AbortSignal;
+  readonly definition: HarnessToolDefinition;
+  readonly input: unknown;
+  readonly messages: ToolExecuteOptions["messages"];
+  readonly toolCallId: string;
+}): Promise<
+  | { readonly denied: true }
+  | { readonly denied: false; readonly modelOutput: ToolModelOutputValue; readonly output: unknown }
+> {
+  const { definition, toolCallId } = input;
+  const execute = wrapToolExecute(definition);
+  const toModelOutput = buildToolModelOutput(definition);
+  if (execute === undefined || toModelOutput === undefined) {
+    throw new Error(`Tool "${definition.name}" cannot run outside the model step.`);
+  }
+  const status = await buildApprovalFn(definition, {})(input.input, toolCallId, input.abortSignal);
+  if (status === "denied" || (isObject(status) && status.type === "denied")) {
+    return { denied: true };
+  }
+  const execution = execute(input.input, {
+    abortSignal: input.abortSignal,
+    messages: input.messages,
+    toolCallId,
+  });
+  let output: unknown;
+  if (isAsyncIterable(execution)) {
+    for await (const value of execution) output = value;
+  } else {
+    output = await execution;
+  }
+  return { denied: false, modelOutput: await toModelOutput({ output, toolCallId }), output };
 }
 
 /**

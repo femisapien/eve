@@ -1,5 +1,5 @@
 import type { RuntimeToolCallActionRequest } from "#shared/action-types.js";
-import { resolveToolCallInputObject } from "#harness/coordination.js";
+import { resolveToolCallInputObject } from "#harness/runtime-calls.js";
 
 /** Creates a runtime tool-call action shape from an AI SDK tool call. */
 export function createRuntimeToolCallActionFromToolCall(input: {

@@ -1,4 +1,4 @@
-import type { ModelMessage, SystemModelMessage } from "ai";
+import type { SystemModelMessage } from "ai";
 import type { HistoryState } from "#context/keys.js";
 
 import {
@@ -50,18 +50,12 @@ export function createCurrentMessages(
   let userInsertionIndex = currentTurnInsertionIndex ?? nonSystemMessages.length;
   const currentInputIndex = history.findIndex((message) => currentTurnMessages.has(message));
   let historyInsertionIndex = currentInputIndex === -1 ? history.length : currentInputIndex;
-  // The AI SDK collects approval responses only from the tail tool message.
-  // Appending user-role context there would skip the approved tool's
-  // execution and send the provider a tool call with no result.
-  const canAppendUserMessages =
-    currentTurnInsertionIndex !== undefined || !hasTailApprovalResponse(nonSystemMessages);
-
   function add(
     message: string,
     kind: FrameworkMessageKind,
     { cacheFriendly = true }: AddCurrentMessageOptions = {},
   ): boolean {
-    if (cacheFriendly && canAppendUserMessages) {
+    if (cacheFriendly) {
       const entry = createFrameworkUserMessage(kind, message);
       nonSystemMessages.splice(userInsertionIndex, 0, entry);
       durableMessages.splice(historyInsertionIndex, 0, entry);
@@ -98,12 +92,4 @@ export function createCurrentMessages(
       return [...systemMessages];
     },
   };
-}
-
-/** True when the history ends with a tool message carrying a tool-approval-response. */
-export function hasTailApprovalResponse(messages: readonly ModelMessage[]): boolean {
-  const tail = messages.at(-1);
-  return (
-    tail?.role === "tool" && tail.content.some((part) => part.type === "tool-approval-response")
-  );
 }

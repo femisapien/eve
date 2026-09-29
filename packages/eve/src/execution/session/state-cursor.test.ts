@@ -132,9 +132,8 @@ describe("SessionStateCursor", () => {
 function state(continuationToken: string): DurableSessionState {
   return createTestSessionState({
     continuationToken,
-    emissionState: { sequence: 0, sessionStarted: true, stepIndex: 0, turnId: "turn_0" },
+    turn: { open: true, sequence: 0, stepIndex: 0, turnId: "turn_0" },
     hasProxyInputRequests: false,
     sessionId: "session-1",
-    version: 1,
   });
 }

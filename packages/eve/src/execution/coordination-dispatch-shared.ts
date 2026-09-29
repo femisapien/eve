@@ -24,19 +24,15 @@ import { deserializeContext } from "#context/serialize.js";
 import type { HarnessSession } from "#harness/types.js";
 import { deriveRootTurnActivityWorkId } from "#execution/activity-work-id.js";
 import {
-  assertUniqueCoordinationCallIds,
-  getPendingCoordinationBatch,
-  setPendingCoordinationBatch,
-} from "#harness/coordination.js";
-import { activeTurnId } from "#harness/active-turn-id.js";
+  callOrigin,
+  readTurnState,
+  readyWorkflowCalls,
+  type EventCoordinates,
+} from "#harness/turn-state.js";
 import type { ActivityWorkIdentityV1 } from "#protocol/activity.js";
 import type { RuntimeActionResult, RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
 import type { SessionParent } from "#channel/types.js";
-import {
-  createDurableSessionState,
-  type DurableSessionState,
-  readDurableSession,
-} from "#execution/durable-session-store.js";
+import { type DurableSessionState, readDurableSession } from "#execution/durable-session-store.js";
 import { hydrateDurableSession } from "#execution/session.js";
 import { buildSubagentRunInput } from "#subagents/tool.js";
 import { resolveEffectiveAgentRuntime } from "#execution/effective-agent-config.js";
@@ -85,6 +81,8 @@ export interface PreparedCoordinationDispatch<PlanEntry = RuntimeWorkflowTaskReq
   readonly sandboxSessionId: string;
   readonly serializedContext: Record<string, unknown>;
   readonly plan: readonly PlanEntry[];
+  /** The step each planned call came from, which its run is attributed to. */
+  readonly origins?: ReadonlyMap<string, EventCoordinates>;
   readonly session: HarnessSession;
   readonly sessionState: DurableSessionState;
   readonly workflowAgents: Readonly<Record<string, WorkflowAgentMetadata>>;
@@ -94,46 +92,30 @@ export interface PreparedCoordinationDispatch<PlanEntry = RuntimeWorkflowTaskReq
  * Runs every dispatch precondition that may throw — durable reads, context
  * deserialization, handle-store validation, and batch planning — before
  * the caller acquires the parent stream writer, so a preflight failure
- * never leaks the writer lock. Returns undefined when no actions are
- * pending.
+ * never leaks the writer lock. Returns undefined when no workflow call is
+ * ready to start.
  */
 export async function prepareCoordinationDispatch(input: {
   readonly serializedContext: Record<string, unknown>;
   readonly sessionState: DurableSessionState;
 }): Promise<PreparedCoordinationDispatch | undefined> {
   const durableSession = readDurableSession(input.sessionState);
-  const pending = getPendingCoordinationBatch(durableSession.state);
-
-  if (pending === undefined) return undefined;
-  const requests = pending.tasks;
-  if (requests.length === 0) return undefined;
-  const turnId = pending.event.turnId || activeTurnId(input.sessionState.emissionState);
-  const event = pending.event.turnId === turnId ? pending.event : { ...pending.event, turnId };
+  const turnState = readTurnState(durableSession.state);
+  const ready = readyWorkflowCalls(turnState);
+  if (ready.length === 0) return undefined;
+  const requests = ready.map((call) => call.workflow!.request);
+  const origins = new Map(
+    requests.map((request) => [request.callId, callOrigin(turnState, request.callId)!]),
+  );
   const ctx = await deserializeContext(input.serializedContext);
   const prepared = await prepareActionDispatch({
-    batch: {
-      event,
-      requests,
-    },
+    batch: { event: origins.get(requests[0]!.callId)!, requests },
     ctx,
     durableSession,
     plan: () => requests,
     serializedContext: input.serializedContext,
   });
-  if (event === pending.event) {
-    return { ...prepared, sessionState: input.sessionState };
-  }
-
-  const session = setPendingCoordinationBatch({
-    ...pending,
-    event,
-    session: prepared.session,
-  });
-  return {
-    ...prepared,
-    session,
-    sessionState: createDurableSessionState({ session }),
-  };
+  return { ...prepared, origins, sessionState: input.sessionState };
 }
 
 interface DispatchBatch {
@@ -158,7 +140,6 @@ export async function prepareActionDispatch<PlanEntry>(input: {
   readonly serializedContext: Record<string, unknown>;
 }): Promise<Omit<PreparedCoordinationDispatch<PlanEntry>, "sessionState">> {
   const { batch, durableSession } = input;
-  assertUniqueCoordinationCallIds(batch.requests);
 
   const ctx = input.ctx;
   const bundle = ctx.require(BundleKey);
