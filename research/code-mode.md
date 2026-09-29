@@ -92,9 +92,9 @@ details are omitted here.
 - **Programs.** `workflow()` from `eve/tools/workflow`, enabled by `agent/tools/workflow.ts`, takes
   `{ js }` and runs it in the vendored `@ai-sdk/code-mode` QuickJS sandbox as a side-effect-free
   step. It is a workflow tool with a `task` entry point, so the program's value reaches the model
-  later, in a `task.result` message. Its only host binding is `ctx.agent`, capped by `maxSubagents`. Each call
-  parks the program as an interrupt; the owning durable workflow runs the pending batch, then
-  resumes the program from its signed continuation. A failed resolution reaches the program as a
+  later, in a `task.result` message. Its only host binding is `ctx.agent`, capped by
+  `maxSubagents`. Each call parks the program as an interrupt; the owning durable workflow runs the
+  pending batch, then resumes the program from its signed continuation. A failed resolution reaches the program as a
   thrown error that carries only a message.
 - **Direct tools.** A `defineTool` call runs inline in the step that holds the model call. A
   completed step replays from its record; a step interrupted mid-execution re-runs, tool calls
