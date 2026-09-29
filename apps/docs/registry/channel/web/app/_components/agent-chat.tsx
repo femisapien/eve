@@ -3,7 +3,7 @@
 import type { UserContent } from "ai";
 import { useEveAgent } from "eve/react";
 import { CircleAlertIcon, PlusIcon, SquareIcon } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Conversation,
   ConversationContent,
@@ -23,8 +23,8 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { WEB_CHAT_AGENT } from "@/app/eve-agent";
 import { AssistantMessage, UserMessage } from "./agent-message";
-import { dockItems, viewContext } from "./conversation-view";
-import { InputDock } from "./input-dock";
+import { viewContext } from "./conversation-view";
+import type { AgentInputResponse } from "./input-request";
 
 const DEFAULT_AGENT_NAME = "eve-agent";
 const AGENT_NAME = WEB_CHAT_AGENT ?? DEFAULT_AGENT_NAME;
@@ -70,7 +70,6 @@ export function AgentChat({
     () => viewContext(conversation, isBusy || isResuming),
     [conversation, isBusy, isResuming],
   );
-  const dock = useMemo(() => dockItems(conversation), [conversation]);
   const lastMessage = conversation.messages.at(-1);
   const isPendingAssistantShell =
     lastMessage?.role === "assistant" &&
@@ -84,16 +83,10 @@ export function AgentChat({
   const showConversationLayout = isResuming || hasConversationContent;
   const activeSessionId = sessionId ?? agent.session?.sessionId;
 
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const [bottomHeight, setBottomHeight] = useState(0);
-  useEffect(() => {
-    const element = bottomRef.current;
-    if (element === null) return;
-    const observer = new ResizeObserver(() => setBottomHeight(element.offsetHeight));
-    observer.observe(element);
-    setBottomHeight(element.offsetHeight);
-    return () => observer.disconnect();
-  }, [showConversationLayout]);
+  const respond = async (response: AgentInputResponse) => {
+    setCancellationError(undefined);
+    await agent.respond([response]);
+  };
 
   const requestCancellation = () => {
     setCancellationError(undefined);
@@ -165,19 +158,18 @@ export function AgentChat({
           }
         >
           <ConversationTopFade className="top-14" />
-          <ConversationContent
-            className="mx-auto w-full max-w-3xl gap-6 px-4 pt-20 sm:px-6"
-            style={{ paddingBottom: Math.max(144, bottomHeight + 32) }}
-          >
+          <ConversationContent className="mx-auto w-full max-w-3xl gap-6 px-4 pt-20 pb-36 sm:px-6">
             {conversation.messages.map((message) =>
               message.role === "user" ? (
                 <UserMessage key={message.id} message={message} />
               ) : (
                 <AssistantMessage
+                  canRespond={!isResuming}
                   context={context}
                   isStreaming={isBusy && message === lastMessage}
                   key={message.id}
                   message={message}
+                  onRespond={respond}
                 />
               ),
             )}
@@ -201,17 +193,7 @@ export function AgentChat({
             <h1 className="font-medium text-5xl tracking-tighter">{AGENT_NAME}</h1>
           </div>
         )}
-        <div className="w-full" ref={bottomRef}>
-          <InputDock
-            canRespond={!isResuming}
-            items={dock}
-            onRespond={async (response) => {
-              setCancellationError(undefined);
-              await agent.respond([response]);
-            }}
-          />
-          {composer}
-        </div>
+        <div className="w-full">{composer}</div>
       </div>
     </main>
   );

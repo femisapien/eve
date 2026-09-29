@@ -6,7 +6,6 @@ import {
   type ConversationState,
   type ConversationTask,
   type ConversationTaskCall,
-  conversationAuthorizations,
   type EveAuthorizationPart,
   type EveMessage,
   type EveMessagePart,
@@ -74,11 +73,26 @@ export type ActivityItem =
       readonly state: ToolCallState;
     };
 
+/** Something that waits on the person, shown outside the folded activity until it's done. */
+export type PendingRequest =
+  | {
+      readonly kind: "input";
+      readonly key: string;
+      readonly input: ConversationInput;
+      /** The subagent or task that passed the request up, when this session didn't ask. */
+      readonly from?: string;
+    }
+  | { readonly kind: "auth"; readonly key: string; readonly part: EveAuthorizationPart };
+
 export type MessageBlock =
   | { readonly kind: "text"; readonly key: string; readonly text: string; streaming: boolean }
-  | { readonly kind: "activity"; readonly key: string; readonly items: ActivityItem[] };
+  | { readonly kind: "activity"; readonly key: string; readonly items: ActivityItem[] }
+  | { readonly kind: "requests"; readonly key: string; readonly requests: PendingRequest[] };
 
-/** Splits an assistant message into its prose and one activity block for each run of work. */
+/**
+ * Splits an assistant message into its prose, one activity block for each run of work, and one
+ * block for each run of requests that wait on the person.
+ */
 export function messageBlocks(message: EveMessage, context: ViewContext): MessageBlock[] {
   const blocks: MessageBlock[] = [];
   const turnId = message.metadata?.turnId;
@@ -89,13 +103,52 @@ export function messageBlocks(message: EveMessage, context: ViewContext): Messag
       blocks.push({ key, kind: "text", streaming: part.state === "streaming", text: part.text });
       continue;
     }
+    const last = blocks.at(-1);
+    const request = pendingRequest(part, context.conversation);
+    if (request !== undefined) {
+      if (last?.kind === "requests") last.requests.push(request);
+      else blocks.push({ key: `requests:${request.key}`, kind: "requests", requests: [request] });
+      continue;
+    }
     const item = activityItem(part, index, turnId, context);
     if (item === undefined) continue;
-    const last = blocks.at(-1);
     if (last?.kind === "activity") last.items.push(item);
     else blocks.push({ items: [item], key: `activity:${item.key}`, kind: "activity" });
   }
   return blocks;
+}
+
+function pendingRequest(
+  part: EveMessagePart,
+  conversation: ConversationState,
+): PendingRequest | undefined {
+  if (part.type === "authorization") {
+    if (part.state !== "required") return undefined;
+    const key = `auth:${part.attemptId ?? `${part.turnId}:${part.stepIndex}:${part.name}`}`;
+    return { key, kind: "auth", part };
+  }
+  if (part.type !== "dynamic-tool") return undefined;
+  const requestId = part.toolMetadata?.eve?.inputRequest?.requestId;
+  const input = requestId === undefined ? undefined : conversation.inputs[requestId];
+  if (input === undefined || !isPending(input)) return undefined;
+  const task = input.taskId === undefined ? undefined : conversation.tasks[input.taskId];
+  const from =
+    task === undefined ? undefined : (agentToolSession(conversation, task)?.name ?? task.name);
+  return { from, input, key: `input:${input.request.requestId}`, kind: "input" };
+}
+
+/**
+ * A root tool approval ends its turn, and nothing runs until every approval that turn asked for
+ * is answered and the next turn starts. An answered approval stays with its batch until then.
+ * Any other request is done once it settles.
+ */
+function isPending(input: ConversationInput): boolean {
+  if (input.status !== "settled") return true;
+  return (
+    input.request.kind === "tool-approval" &&
+    input.taskId === undefined &&
+    input.resumeTurnId === undefined
+  );
 }
 
 /** A subagent's work for one call, prose included, with the same rules as the root. */
@@ -177,38 +230,12 @@ export function itemStatus(item: ActivityItem): ToolCallStatus {
   return item.kind === "tool" || item.kind === "auth" ? item.state.status : "done";
 }
 
-// ---------------------------------------------------------------------------
-// Everything waiting on the person
-// ---------------------------------------------------------------------------
-
-export type DockItem =
-  | {
-      readonly kind: "input";
-      readonly key: string;
-      readonly input: ConversationInput;
-      /** The subagent or task that passed the request up, when this session didn't ask. */
-      readonly from?: string;
-    }
-  | { readonly kind: "auth"; readonly key: string; readonly part: EveAuthorizationPart };
-
-export function dockItems(conversation: ConversationState): DockItem[] {
-  const items: DockItem[] = [];
-  for (const input of Object.values(conversation.inputs)) {
-    if (input.status !== "open") continue;
-    const task = input.taskId === undefined ? undefined : conversation.tasks[input.taskId];
-    const from =
-      task === undefined ? undefined : (agentToolSession(conversation, task)?.name ?? task.name);
-    items.push({ from, input, key: `input:${input.request.requestId}`, kind: "input" });
-  }
-  for (const part of conversationAuthorizations(conversation)) {
-    if (part.state !== "required") continue;
-    items.push({
-      key: `auth:${part.attemptId ?? `${part.turnId}:${part.stepIndex}:${part.name}`}`,
-      kind: "auth",
-      part,
-    });
-  }
-  return items;
+/** The chosen option's label, or the typed text, once a request has an answer. */
+export function inputAnswer(input: ConversationInput): string | undefined {
+  const response = input.response;
+  if (response === undefined) return input.outcome;
+  const option = input.request.options?.find((candidate) => candidate.id === response.optionId);
+  return option?.label ?? response.text ?? response.optionId;
 }
 
 // ---------------------------------------------------------------------------

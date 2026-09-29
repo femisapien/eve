@@ -1850,9 +1850,9 @@
           "target": "apps/web/app/_components/conversation-view.ts"
         },
         {
-          "path": "registry/channel/web/app/_components/input-dock.tsx",
+          "path": "registry/channel/web/app/_components/input-request.tsx",
           "type": "registry:file",
-          "target": "apps/web/app/_components/input-dock.tsx"
+          "target": "apps/web/app/_components/input-request.tsx"
         },
         {
           "path": "registry/channel/web/app/globals.css",

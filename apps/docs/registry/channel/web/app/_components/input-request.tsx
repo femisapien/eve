@@ -14,7 +14,7 @@ import {
   type QuestionValue,
 } from "@/components/ai-elements/question";
 import { Button } from "@/components/ui/button";
-import { type DockItem, formatJson } from "./conversation-view";
+import { formatJson, inputAnswer, type PendingRequest } from "./conversation-view";
 
 export type AgentInputResponse = {
   readonly optionId?: string;
@@ -23,31 +23,34 @@ export type AgentInputResponse = {
 };
 
 /**
- * Everything waiting on the person, from anywhere in the agent tree, in the order it arrived.
- * Each answer sends on its own, so an agent waiting on one resumes without the rest.
+ * A run of requests waiting on the person, in the order they arrived. Each answer sends on its
+ * own; an answered approval stays here until its whole batch is answered and the agent picks it up.
  */
-export function InputDock({
+export function RequestGroup({
   canRespond,
-  items,
   onRespond,
+  requests,
 }: {
   readonly canRespond: boolean;
-  readonly items: readonly DockItem[];
   readonly onRespond: (response: AgentInputResponse) => Promise<void>;
+  readonly requests: readonly PendingRequest[];
 }) {
-  if (items.length === 0) return null;
   return (
-    <section
-      aria-label="Waiting for you"
-      className="mb-2 max-h-[45dvh] divide-y overflow-y-auto rounded-2xl border bg-background"
-    >
-      {items.map((item) => (
-        <div className="space-y-2 p-4" key={item.key}>
-          <p className="text-muted-foreground text-xs">{dockLabel(item)}</p>
-          {item.kind === "auth" ? (
-            <SignIn part={item.part} />
+    <section aria-label="Waiting for you" className="divide-y rounded-xl border">
+      {requests.map((request) => (
+        <div className="space-y-2 p-4" key={request.key}>
+          <p className="text-muted-foreground text-xs">{requestLabel(request)}</p>
+          {request.kind === "auth" ? (
+            <SignIn part={request.part} />
+          ) : request.input.status === "open" ? (
+            <InputRequest canRespond={canRespond} input={request.input} onRespond={onRespond} />
           ) : (
-            <InputRequest canRespond={canRespond} input={item.input} onRespond={onRespond} />
+            <p className="text-sm">
+              {request.input.request.prompt}{" "}
+              <span className="text-muted-foreground">
+                → {inputAnswer(request.input) ?? "sent"}
+              </span>
+            </p>
           )}
         </div>
       ))}
@@ -55,16 +58,16 @@ export function InputDock({
   );
 }
 
-function dockLabel(item: DockItem): string {
-  if (item.kind === "auth") return "Sign-in";
-  const { request } = item.input;
+function requestLabel(request: PendingRequest): string {
+  if (request.kind === "auth") return "Sign-in";
+  const { request: asked } = request.input;
   const kind =
-    request.kind === "tool-approval"
-      ? `Approval for ${request.action.toolName}`
-      : request.kind === "question"
+    asked.kind === "tool-approval"
+      ? `Approval for ${asked.action.toolName}`
+      : asked.kind === "question"
         ? "Question"
         : "Session limit";
-  return item.from === undefined ? kind : `${kind} · from ${item.from}`;
+  return request.from === undefined ? kind : `${kind} · from ${request.from}`;
 }
 
 function InputRequest({
@@ -192,7 +195,7 @@ function QuestionRequest({
   );
 }
 
-function SignIn({ part }: { readonly part: Extract<DockItem, { kind: "auth" }>["part"] }) {
+function SignIn({ part }: { readonly part: Extract<PendingRequest, { kind: "auth" }>["part"] }) {
   const challenge = part.authorization;
   return (
     <>

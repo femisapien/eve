@@ -5,6 +5,7 @@ import { ExternalLinkIcon, FileIcon, ImageIcon } from "lucide-react";
 import { Message, MessageContent, MessageResponse } from "@/components/ai-elements/message";
 import { Activity } from "./activity";
 import { messageBlocks, type ViewContext } from "./conversation-view";
+import { type AgentInputResponse, RequestGroup } from "./input-request";
 
 type EveFilePart = Extract<EveMessagePart, { type: "file" }>;
 
@@ -24,15 +25,22 @@ export function UserMessage({ message }: { readonly message: EveMessage }) {
   );
 }
 
-/** One assistant turn: its prose in order, with the work between each stretch folded. */
+/**
+ * One assistant turn: its prose in order, the work between each stretch folded, and anything
+ * waiting on the person where it arrived.
+ */
 export function AssistantMessage({
+  canRespond,
   context,
   isStreaming,
   message,
+  onRespond,
 }: {
+  readonly canRespond: boolean;
   readonly context: ViewContext;
   readonly isStreaming: boolean;
   readonly message: EveMessage;
+  readonly onRespond: (response: AgentInputResponse) => Promise<void>;
 }) {
   const blocks = messageBlocks(message, context);
   const lastText = blocks.findLast((block) => block.kind === "text")?.key;
@@ -52,8 +60,15 @@ export function AssistantMessage({
             >
               {block.text}
             </MessageResponse>
-          ) : (
+          ) : block.kind === "activity" ? (
             <Activity items={block.items} key={block.key} />
+          ) : (
+            <RequestGroup
+              canRespond={canRespond}
+              key={block.key}
+              onRespond={onRespond}
+              requests={block.requests}
+            />
           ),
         )}
         {cancelled ? <p className="text-muted-foreground text-sm">Cancelled</p> : null}
