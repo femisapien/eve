@@ -1,8 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { posix } from "node:path";
-
 import type { AgentSourceManifest } from "#discover/manifest.js";
-import { mountRefNamespace } from "#discover/extensions.js";
 import {
   type CompiledAgentDefinition,
   type CompiledAgentManifest,
@@ -61,7 +58,6 @@ import {
   normalizeSubagentConfig,
 } from "#compiler/normalize-subagent.js";
 import { compileToolEntry } from "#compiler/normalize-tool.js";
-import { createCompiledChannelRoutePlan } from "#compiler/channel-route-plan.js";
 import {
   finalizeNodeSourceState,
   type ComposedNodeSourceGraph,
@@ -76,6 +72,8 @@ import {
   assertUniqueBy,
   assertUniqueRegistryIds,
   compileExtensionMounts,
+  compileChannelRoutes,
+  createExtensionCompileMounts,
   createCompiledRemoteAgent,
   expectSubagentDescription,
   mergeExternalDependencies,
@@ -89,7 +87,6 @@ import {
   composeAgentModuleCandidates,
   createAgentModuleBinding,
   createProgrammaticModuleCandidates,
-  describeAgentSourceCandidate,
   disableComposedCandidate,
   instantiateProgrammaticTemplate,
   isAgentModuleCandidate,
@@ -444,32 +441,11 @@ class AgentGraphCompiler {
     externalDependencies: readonly string[],
   ): Promise<PhaseOneNodeSourceState> {
     const graph = this.composeNodeSources(input, externalDependencies);
-    const mountsById = new Map(
-      input.manifest.resolvedExtensions.map((mount) => [
-        posix.join(input.nodePath, "extensions", mount.namespace),
-        mount.programmaticDeclaration?.sourceId ??
-          input.manifest.extensions.find(
-            (ref) => mountRefNamespace(ref.logicalPath) === mount.namespace,
-          )?.sourceId,
-      ]),
+    const { mounts, sourceIds: mountsById } = createExtensionCompileMounts(
+      input.manifest,
+      input.nodePath,
     );
-    for (const mount of input.manifest.resolvedExtensions) {
-      const mountId = posix.join(input.nodePath, "extensions", mount.namespace);
-      const logicalPath = input.manifest.extensions.find(
-        (ref) => mountRefNamespace(ref.logicalPath) === mount.namespace,
-      )?.logicalPath;
-      this.mounts.set(mountId, {
-        mountId,
-        programmatic: mount.programmaticDeclaration !== undefined,
-        mountSourcePath: posix.join(
-          input.manifest.agentRoot,
-          logicalPath ?? `extensions/${mount.namespace}.ts`,
-        ),
-        packageName: mount.packageName,
-        sourceRoot: mount.sourceRoot,
-        specifier: mount.specifier,
-      });
-    }
+    for (const [mountId, mount] of mounts) this.mounts.set(mountId, mount);
     const evaluation = new NodeModuleEvaluationContext(
       this.registries,
       (binding) => {
@@ -681,21 +657,7 @@ class AgentGraphCompiler {
     assertUniqueBy(dynamicConnections, (connection) => connection.slug, "dynamic connection slug");
     assertUniqueBy(skills, (skill) => skill.name, "skill name");
 
-    const channelRoutes = createCompiledChannelRoutePlan({
-      bindings: state.bindings,
-      channels,
-      diagnostics: this.diagnostics,
-      nodeId: input.nodeId,
-      sources: Object.fromEntries(
-        state.orderedCandidates.map((candidate) => [
-          candidate.sourceId,
-          describeAgentSourceCandidate(candidate),
-        ]),
-      ),
-    });
-    for (const channel of channelRoutes.effective) {
-      state.evaluation.requireRuntimeEntry(channel.sourceId);
-    }
+    const channelRoutes = compileChannelRoutes(state, channels, this.diagnostics, input.nodeId);
     const extensionMounts = compileExtensionMounts(input.manifest, state.composed, input.nodePath);
     for (const mount of extensionMounts) {
       state.evaluation.requireRuntimeEntry(mount.mountSourceId);

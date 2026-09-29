@@ -13,7 +13,7 @@ import { memoizeModuleNamespaceFactories } from "#compiler/source-graph.js";
 import {
   collectRuntimeModuleBindingsForManifest,
   compiledModuleMapSchema,
-  resolveCompiledModuleExtensionScopeNamespace,
+  resolveExtensionBindingMountId,
   type CompiledModuleMap,
 } from "#compiler/module-map.js";
 import { loadFrameworkProgrammaticModule } from "#framework/sources/registry.js";
@@ -65,6 +65,7 @@ async function hydrateCompiledModuleMapFromManifest(
       appRoot: authoredAppRoot,
       manifest,
       moduleMapPath,
+      resolveExternalPaths: true,
     });
     const hash = createHash("sha256").update(code).digest("hex");
     const fileName = `authored-module-map-${hash}.mjs`;
@@ -129,7 +130,10 @@ async function hydrateCompiledNodeScope(
         : memoizeModuleNamespaceFactories(
             await loadAuthoredModuleNamespace(resolveSourcePath(binding.backing.sourcePath), {
               externalDependencies: binding.backing.externalDependencies,
-              extensionScopeNamespace: resolveCompiledModuleExtensionScopeNamespace(binding),
+              extension: (() => {
+                const mountId = resolveExtensionBindingMountId(binding);
+                return mountId === undefined ? undefined : { mountId };
+              })(),
             }),
           );
   }

@@ -5,7 +5,10 @@ import {
   memoizeModuleNamespaceFactories,
   type ProgrammaticModuleNamespace,
 } from "#compiler/source-graph.js";
-import { loadAuthoredModuleNamespace } from "#internal/authored-module-loader.js";
+import {
+  loadAuthoredModuleNamespace,
+  type AuthoredModuleLoadOptions,
+} from "#internal/authored-module-loader.js";
 
 export type CompiledBindingNamespaceLoader = (
   sourceId: string,
@@ -13,11 +16,7 @@ export type CompiledBindingNamespaceLoader = (
 
 export interface ExtensionCompileMount {
   readonly mountId: string;
-  readonly programmatic?: boolean;
-  readonly mountSourcePath: string;
-  readonly packageName: string;
-  readonly sourceRoot: string;
-  readonly specifier: string;
+  readonly entry?: NonNullable<AuthoredModuleLoadOptions["extension"]>["entry"];
 }
 
 /** Loads one node's selected bindings with dependency ordering and per-phase caching. */
@@ -84,11 +83,17 @@ async function loadCompiledBindingNamespace(input: {
     if (mountId !== undefined && input.mounts !== undefined && mount === undefined) {
       throw new Error(`Missing mount "${mountId}" for extension contribution.`);
     }
+    const extension: AuthoredModuleLoadOptions["extension"] =
+      mountId === undefined
+        ? undefined
+        : {
+            mountId,
+            evaluationId: input.evaluationId,
+            entry: mount?.entry,
+          };
     return await loadAuthoredModuleNamespace(input.binding.backing.sourcePath, {
       externalDependencies: input.binding.backing.externalDependencies,
-      extensionScopeNamespace: mountId,
-      mount: mount?.programmatic ? undefined : mount,
-      evaluationId: input.evaluationId,
+      extension,
     });
   }
   const dependencyNamespaces = Object.fromEntries(
@@ -106,8 +111,6 @@ async function loadCompiledBindingNamespace(input: {
 }
 
 /** Derives the owning mount for state handles in an extension module. */
-export function resolveCompiledModuleExtensionScopeNamespace(
-  binding: AgentModuleBinding,
-): string | undefined {
+export function resolveExtensionBindingMountId(binding: AgentModuleBinding): string | undefined {
   return binding.owner.kind === "extension" ? binding.owner.mountId : undefined;
 }

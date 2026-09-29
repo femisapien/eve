@@ -950,7 +950,7 @@ const compiledExtensionMountSchema: z.ZodType<CompiledExtensionMount> = z
       .object({
         specifier: z.string(),
         entryPath: z.string(),
-        config: z.record(z.string(), z.unknown()),
+        config: jsonObjectSchema,
       })
       .strict()
       .optional(),
@@ -1057,7 +1057,7 @@ export interface CompiledExtensionMount {
   readonly programmaticImport?: {
     readonly specifier: string;
     readonly entryPath: string;
-    readonly config: Record<string, unknown>;
+    readonly config: JsonObject;
   };
 }
 
