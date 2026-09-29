@@ -1,5 +1,7 @@
 import {
   publishSessionEvents,
+  publishWrittenSessionEvents,
+  writeSessionEventAhead,
   type PublishedSessionEvents,
   type SessionStepState,
 } from "#execution/publish-session-events.js";
@@ -8,7 +10,12 @@ import type {
   WorkflowToolRunRef,
 } from "#execution/tools/workflow/messages.js";
 import { createRuntimeToolResultFromValue } from "#harness/action-result-helpers.js";
-import { createActionPartialEvent, createAgentStartedEvent } from "#protocol/message.js";
+import {
+  createActionPartialEvent,
+  createAgentStartedEvent,
+  type MessageStreamEvent,
+  type UnstampedMessageStreamEvent,
+} from "#protocol/message.js";
 import type { JsonValue } from "#shared/json.js";
 
 /** Publishes a workflow tool run's `ctx.report()` update as `action.partial`. */
@@ -41,8 +48,39 @@ export async function emitAgentStartedStep(
 ): Promise<PublishedSessionEvents> {
   "use step";
 
+  return await publishSessionEvents(input, [agentStartedEvent(input)]);
+}
+
+/**
+ * Writes `agent.started` while the session's turn step runs, so clients can
+ * follow the child at once. Returns the written event when a channel handler
+ * or hook subscribes to it; publish it with {@link publishWrittenEventsStep}
+ * once the turn step's result is adopted.
+ */
+export async function writeAgentStartedStep(
+  input: SessionStepState & {
+    readonly message: WorkflowToolRunAgentStartedMessage;
+  },
+): Promise<MessageStreamEvent | undefined> {
+  "use step";
+
+  return await writeSessionEventAhead(input, agentStartedEvent(input));
+}
+
+/** Runs channel handlers and hooks for events written while a turn step ran. */
+export async function publishWrittenEventsStep(
+  input: SessionStepState & { readonly events: readonly MessageStreamEvent[] },
+): Promise<PublishedSessionEvents> {
+  "use step";
+
+  return await publishWrittenSessionEvents(input, input.events);
+}
+
+function agentStartedEvent(
+  input: SessionStepState & { readonly message: WorkflowToolRunAgentStartedMessage },
+): UnstampedMessageStreamEvent {
   const { from, session } = input.message;
-  const event = createAgentStartedEvent({
+  return createAgentStartedEvent({
     callId: from.callId,
     name: session.name,
     parentSessionId: input.sessionState.sessionId,
@@ -57,5 +95,4 @@ export async function emitAgentStartedStep(
     ...(from.taskId !== undefined && { taskId: from.taskId }),
     turnId: from.turnId,
   });
-  return await publishSessionEvents(input, [event]);
 }

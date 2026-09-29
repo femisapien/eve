@@ -154,6 +154,7 @@ export class SessionExecution {
         serializedContext: result.serializedContext,
         sessionState: result.sessionState,
       });
+      await turn.agentStarts.publishWritten();
       await turn.admitBoundary();
       await this.handleAdmittedTaskEvents(turn);
 

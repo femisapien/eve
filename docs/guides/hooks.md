@@ -91,12 +91,11 @@ For `task.started`, `task.settled`, and `agent.started`, `ctx.session.id`
 identifies the session that started the task or opened the subagent session.
 Typed handlers and `*` handlers receive this context even when the event
 arrives between turns. These hooks can use `ctx.getSandbox()` against that
-session. For `task.started` and `task.settled`, sandbox changes they make are
-kept for its next turn. eve publishes `agent.started` as soon as the child
-session opens, even while the parent's model step is still running, and
-changes an `agent.started` hook makes to session state at that point are not
-kept. Use `agent.started` hooks to observe the event, not to change session
-state.
+session, and the session state and sandbox changes they make are kept for its
+next turn. eve writes `agent.started` to the stream as soon as the child
+session opens, even while the parent's model step is still running, so clients
+can follow the child right away. When that happens, the event's hooks run once
+the model step ends, against the session state that step leaves.
 
 ### Narrowing tool results
 
@@ -185,6 +184,8 @@ When a stream event fires, three things happen in order:
 3. Model preparation, for model lifecycle events. Dynamic resolvers subscribed to those events update the model context. Subagent notifications do not run model preparation.
 
 Hooks always run after the event is durably recorded, so if a hook throws, the stream stays consistent. The persisted event and every hook observe the same `meta.id`.
+
+`agent.started` can arrive while a model step is running. eve then stamps and writes the event right away and runs its hooks when that step ends, so a hook's state changes are kept.
 
 ## What happens when a hook throws
 

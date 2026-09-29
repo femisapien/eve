@@ -79,6 +79,58 @@ export async function relaySessionEvents(
   return await publishFromStep(target, "relayed", events);
 }
 
+/**
+ * Writes one of the session's own events while its turn step runs, so clients
+ * see it at once. That step's result replaces the session state at the next
+ * boundary, so a channel handler or hook subscribed to the event, which may
+ * change the state, cannot run yet: the event is only stamped and written, and
+ * returned for {@link publishWrittenSessionEvents} at the boundary.
+ *
+ * Without a subscriber, the event is published completely and `undefined`
+ * returned. Its caller keeps no state, so use this only for an event whose
+ * publication changes state through subscribers alone, such as `agent.started`.
+ */
+export async function writeSessionEventAhead(
+  target: SessionStepState,
+  event: UnstampedMessageStreamEvent,
+): Promise<MessageStreamEvent | undefined> {
+  const ctx = await deserializeContext(target.serializedContext);
+  if (!hasSubscribers(ctx, event.type)) {
+    await publishInContext(ctx, target, "own", [event]);
+    return undefined;
+  }
+  const writer = target.sessionWritable.getWriter();
+  try {
+    const stamped = stampMessageStreamEvent(event, ctx.get(TurnDeliveryIdsKey));
+    await writer.write(encodeMessageStreamEvent(stamped));
+    return stamped;
+  } finally {
+    writer.releaseLock();
+  }
+}
+
+/**
+ * Publishes events {@link writeSessionEventAhead} wrote, as
+ * {@link publishSessionEvents} does but without writing them again. Adopt the
+ * result.
+ */
+export async function publishWrittenSessionEvents(
+  target: SessionStepState,
+  events: readonly MessageStreamEvent[],
+): Promise<PublishedSessionEvents> {
+  const ctx = await deserializeContext(target.serializedContext);
+  return await publishInContext(ctx, { ...target, sessionWritable: undefined }, "own", events);
+}
+
+function hasSubscribers(ctx: ContextContainer, type: MessageStreamEvent["type"]): boolean {
+  const { hookRegistry } = ctx.require(BundleKey);
+  return (
+    ctx.require(ChannelKey)[type] !== undefined ||
+    (hookRegistry.streamEventsByType.get(type)?.length ?? 0) > 0 ||
+    hookRegistry.streamEventsWildcard.length > 0
+  );
+}
+
 async function publishFromStep(
   target: SessionStepState,
   origin: SessionEventOrigin,
@@ -87,7 +139,23 @@ async function publishFromStep(
   if (events.length === 0) {
     return { serializedContext: target.serializedContext, sessionState: target.sessionState };
   }
-  const ctx = await deserializeContext(target.serializedContext);
+  return await publishInContext(
+    await deserializeContext(target.serializedContext),
+    target,
+    origin,
+    events,
+  );
+}
+
+async function publishInContext(
+  ctx: ContextContainer,
+  target: {
+    readonly sessionState: DurableSessionState;
+    readonly sessionWritable: WritableStream<Uint8Array> | undefined;
+  },
+  origin: SessionEventOrigin,
+  events: readonly UnstampedMessageStreamEvent[],
+): Promise<PublishedSessionEvents> {
   const { session } = await withSessionEventEmitter(
     {
       ctx,
@@ -118,7 +186,8 @@ export async function withSessionEventEmitter<T>(
     readonly ctx: ContextContainer;
     readonly durableSession: DurableSession;
     readonly origin: SessionEventOrigin;
-    readonly sessionWritable: WritableStream<Uint8Array>;
+    /** `undefined` for events written ahead; see {@link writeSessionEventAhead}. */
+    readonly sessionWritable: WritableStream<Uint8Array> | undefined;
   },
   emitEvents: (
     emit: HandleEventFn,
@@ -205,18 +274,19 @@ function openSessionEventStream(input: {
   readonly ctx: ContextContainer;
   readonly origin: SessionEventOrigin;
   readonly sessionId: string;
-  readonly sessionWritable: WritableStream<Uint8Array>;
+  /** `undefined` when every event was written ahead with its stamp, so none is written again. */
+  readonly sessionWritable: WritableStream<Uint8Array> | undefined;
 }): SessionEventSink {
   const { ctx, origin } = input;
   const adapter = ctx.require(ChannelKey);
   const adapterCtx = buildAdapterContext(adapter, ctx);
-  const writer = input.sessionWritable.getWriter();
+  const writer = input.sessionWritable?.getWriter();
 
   let released = false;
   const release = (): void => {
     if (released) return;
     released = true;
-    writer.releaseLock();
+    writer?.releaseLock();
   };
   return {
     adapterCtx,
@@ -224,18 +294,24 @@ function openSessionEventStream(input: {
       if (origin === "own") activityCohort.updateActivityState(ctx, event);
       const routed = await callAdapterEventHandler(adapter, event, adapterCtx);
       setChannelContext(ctx, { ...adapter, state: { ...adapterCtx.state } });
-      const stamped = stampMessageStreamEvent(
-        routed,
-        origin === "own" ? ctx.get(TurnDeliveryIdsKey) : undefined,
-      );
-      await writer.write(encodeMessageStreamEvent(stamped));
+      let stamped: MessageStreamEvent;
+      if (writer === undefined) {
+        // Written ahead: routing keeps the event's stamp, which hooks must see.
+        stamped = routed as MessageStreamEvent;
+      } else {
+        stamped = stampMessageStreamEvent(
+          routed,
+          origin === "own" ? ctx.get(TurnDeliveryIdsKey) : undefined,
+        );
+        await writer.write(encodeMessageStreamEvent(stamped));
+      }
       if (origin === "own") {
         void observeSessionActivity({ ctx, event: stamped, sessionId: input.sessionId });
       }
       return stamped;
     },
     close: async () => {
-      await writer.close();
+      await writer?.close();
       release();
     },
     release,
