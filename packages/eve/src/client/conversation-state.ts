@@ -19,8 +19,9 @@ export interface ConversationInput {
   readonly response?: InputResponse;
   readonly outcome?: string;
   /**
-   * The first turn that started after the request settled. Asking for input ends the turn, and an
-   * approved or answered call finishes in this one.
+   * For a root tool approval, the first turn that started after it settled. Asking for approval
+   * ends the turn, and the approved call runs in this one. Absent for questions, whose turn parks
+   * and resumes under its own ID, and for requests a task asked.
    */
   readonly resumeTurnId?: string;
 }

@@ -11,7 +11,10 @@ import {
   createInputRequestedEvent,
   createTurnCancelledEvent,
   createTurnCompletedEvent,
+  createInputResolvedEvent,
+  createTaskStartedEvent,
   createTurnStartedEvent,
+  createTurnWaitingEvent,
   type UnstampedMessageStreamEvent,
 } from "#protocol/message.js";
 
@@ -123,5 +126,98 @@ describe("toolCallState", () => {
       askedForApproval,
     );
     expect(statuses(state)).toEqual({ alice_lookup: "cancelled", bob_lookup: "cancelled" });
+  });
+
+  it("keeps an answered question on the turn it parked, which resumes rather than ending", () => {
+    const asked = reduce([
+      createTurnStartedEvent({ sequence: 0, turnId: "turn_1" }),
+      createActionsRequestedEvent({
+        actions: [{ callId: "ask_bob", input: {}, kind: "tool-call", toolName: "ask_question" }],
+        sequence: 1,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
+      createInputRequestedEvent({
+        requests: [
+          {
+            action: { callId: "ask_bob", input: {}, kind: "tool-call", toolName: "ask_question" },
+            kind: "question",
+            prompt: "Which report should Bob review?",
+            requestId: "question_bob",
+          },
+        ],
+        sequence: 2,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
+      createTurnWaitingEvent({ sequence: 3, turnId: "turn_1" }),
+      createInputResolvedEvent({
+        resolutions: [
+          {
+            kind: "question",
+            outcome: "answered",
+            requestId: "question_bob",
+            response: { requestId: "question_bob", text: "The quarterly one" },
+          },
+        ],
+        sequence: 4,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
+    ]);
+    expect(statuses(asked)).toEqual({ ask_bob: "running" });
+
+    const cancelled = reduce([createTurnCancelledEvent({ sequence: 5, turnId: "turn_1" })], asked);
+    expect(cancelled.inputs.question_bob?.resumeTurnId).toBeUndefined();
+    expect(statuses(cancelled)).toEqual({ ask_bob: "cancelled" });
+
+    const next = reduce([createTurnStartedEvent({ sequence: 6, turnId: "turn_2" })], cancelled);
+    expect(next.inputs.question_bob?.resumeTurnId).toBeUndefined();
+    expect(statuses(next)).toEqual({ ask_bob: "cancelled" });
+  });
+
+  it("runs a call approved for a subagent while the subagent's task works", () => {
+    const state = reduce([
+      createTurnStartedEvent({ sequence: 0, turnId: "turn_1" }),
+      createActionsRequestedEvent({
+        actions: [{ callId: "delegate", input: {}, kind: "tool-call", toolName: "researcher" }],
+        sequence: 1,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
+      createTaskStartedEvent({
+        callId: "delegate",
+        kind: "agent",
+        name: "researcher",
+        taskId: "task_1",
+        turnId: "turn_1",
+      }),
+      createInputRequestedEvent({
+        requests: [
+          {
+            action: { callId: "child_lookup", input: {}, kind: "tool-call", toolName: "lookup" },
+            kind: "tool-approval",
+            prompt: "Approve the researcher's lookup?",
+            requestId: "approve_child_lookup",
+          },
+        ],
+        sequence: 2,
+        stepIndex: 0,
+        taskId: "task_1",
+        turnId: "turn_1",
+      }),
+      createTurnCompletedEvent({ sequence: 3, turnId: "turn_1" }),
+      createApprovalSettledEvent({
+        outcome: "approved",
+        requestId: "approve_child_lookup",
+        responderPrincipalId: "alice",
+        sequence: 4,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
+      createTurnStartedEvent({ sequence: 5, turnId: "turn_2" }),
+      createTurnCompletedEvent({ sequence: 6, turnId: "turn_2" }),
+    ]);
+    expect(statuses(state)).toEqual({ child_lookup: "running", delegate: "running" });
   });
 });

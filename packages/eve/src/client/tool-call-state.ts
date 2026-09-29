@@ -35,10 +35,11 @@ export interface ToolCallContext {
 /**
  * The state of one tool call, from its part and the conversation around it.
  *
- * A call that started a task runs until its task settles, even after its turn ends. An approved or
- * answered call runs in the turn that starts after the request settles, since asking ends the turn.
- * Any other call that is still running when its turn ends is interrupted, or cancelled when the
- * turn was.
+ * A call that started a task runs until its task settles, even after its turn ends. Asking for a
+ * root tool approval ends the turn, so an approved call runs in the turn that starts after the
+ * approval settles. A question parks its turn instead, which resumes under the same ID, and a
+ * request a subagent's task passed up runs while that task works. Any other call that is still
+ * running when its turn ends is interrupted, or cancelled when the turn was.
  */
 export function toolCallState(
   conversation: ConversationState,
@@ -52,10 +53,13 @@ export function toolCallState(
 
   const state = partState(part, conversation);
   if (state.status !== "running") return state;
+  const input = part.approval === undefined ? undefined : conversation.inputs[part.approval.id];
+  // A task's request resumes the task's own session, which runs the call while the task works.
+  if (input?.taskId !== undefined && isTaskWorking(conversation, input.taskId)) return state;
   const runsIn =
-    part.approval === undefined
-      ? context.turnId
-      : conversation.inputs[part.approval.id]?.resumeTurnId;
+    input?.request.kind === "tool-approval" && input.taskId === undefined
+      ? input.resumeTurnId
+      : context.turnId;
   switch (turnLiveness(conversation, runsIn)) {
     case "open":
       return context.streaming === false ? { status: "interrupted" } : state;
@@ -64,6 +68,11 @@ export function toolCallState(
     case "closed":
       return { status: "interrupted" };
   }
+}
+
+function isTaskWorking(conversation: ConversationState, taskId: string): boolean {
+  const calls = Object.values(conversation.tasks[taskId]?.calls ?? {});
+  return calls.some((call) => call.status === "working");
 }
 
 function taskCallState(call: ConversationTaskCall): ToolCallState {

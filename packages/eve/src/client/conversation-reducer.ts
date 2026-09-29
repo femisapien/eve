@@ -54,13 +54,24 @@ function updateTask(
   return next === task ? state : { ...state, tasks: { ...state.tasks, [taskId]: next } };
 }
 
-function resumeSettledInputs(
+/**
+ * A root tool approval ends its turn, so the next turn runs the approved call. A question parks
+ * its turn, which resumes under the same ID, and a task's request resumes the task's own session.
+ */
+function resumeSettledApprovals(
   inputs: ConversationState["inputs"],
   turnId: string,
 ): ConversationState["inputs"] {
   let next: Record<string, ConversationInput> | undefined;
   for (const [requestId, input] of Object.entries(inputs)) {
-    if (input.status !== "settled" || input.resumeTurnId !== undefined) continue;
+    if (
+      input.status !== "settled" ||
+      input.request.kind !== "tool-approval" ||
+      input.taskId !== undefined ||
+      input.resumeTurnId !== undefined
+    ) {
+      continue;
+    }
     next ??= { ...inputs };
     next[requestId] = { ...input, resumeTurnId: turnId };
   }
@@ -97,7 +108,7 @@ function reduceConversationLifecycle(
           ...state.turns,
           [event.data.turnId]: { turnId: event.data.turnId, status: "active" },
         },
-        inputs: resumeSettledInputs(state.inputs, event.data.turnId),
+        inputs: resumeSettledApprovals(state.inputs, event.data.turnId),
       };
     case "turn.waiting":
       return updateTurn(state, event.data.turnId, (turn) =>
