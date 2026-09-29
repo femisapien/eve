@@ -6,75 +6,77 @@ last_updated: "2026-09-29"
 
 # Owning-step event dispatch
 
+This plan separates writing a session event from dispatching it to its channel adapter handler and
+stream-event hooks, so every hook's session state writes are kept. It states the semantics and
+cost, inventories what is removed or reshaped, and lands the change as a stack of pull requests.
+Paths are relative to `packages/eve/src/`.
+
 ## Summary
 
-A session event has two parts: the write to the session stream, and the
-dispatch to its channel adapter handler and stream-event hooks. On main the
-session emitter does both in one call. Dispatch can change session state through
-`defineState`, sandbox access, and adapter state, and only the step that owns
-session state can keep those changes. One event breaks this rule. An
-`agent.started` that arrives while a model step runs is dispatched outside the
-owning step, so its hooks' state writes are dropped. `docs/guides/hooks.md` therefore tells authors to use `agent.started`
-hooks only to observe.
+1. **Session state has one writer at a time.** Each state-owning step returns a delta from the
+   state it was given, and `SessionStateCursor.advance` throws if the state changed while the step
+   ran. A write made beside the running step is lost.
+2. **Dispatch can write state.** Hooks write through `defineState` and the sandbox, and adapter
+   handlers write adapter state, so dispatch must run inside a state-owning step.
+3. **One event breaks this today.** An `agent.started` that arrives while a model step runs is
+   published by `StepAgentStarts.publishWhile` in a separate step whose result is never adopted.
+   `docs/guides/hooks.md` tells authors to treat `agent.started` hooks as observers.
+4. **The rule:** every event is written when it happens. Its dispatch runs in the step that
+   produced it, or, for an event written beside another step, first thing in the next
+   state-owning step. A dispatch-only step runs whatever is still pending before the session
+   waits, hands off, or ends.
+5. **Delete first, then rebuild.** PR 1 removes the mid-step path, so `agent.started` publishes at
+   the next boundary and keeps its hooks' state. Later PRs split write from dispatch and restore the
+   early write through the general path.
 
-This plan splits write from dispatch for every event under one rule:
+No public API changes. `HookContext` is unchanged.
 
-- An event is written to the stream when it happens.
-- Dispatch runs only inside a step that owns session state. Events a step
-  produces are dispatched in that step, as today.
-- An event written while another step owns state becomes a _pending dispatch_.
-  The next state-owning step runs pending dispatches before its own events.
+## 1. Current behavior
 
-In the common case this adds no durable step. There is no public API change.
-`agent.started` becomes the first user of the pending path, and no dispatch code
-names it.
+The session workflow body threads one state pair through its steps with `SessionStateCursor`
+(`execution/session/state-cursor.ts`). Every step that changes session state goes through
+`cursor.advance` and returns a delta through `withSessionStateDelta`
+(`execution/session/state-delta.ts`).
 
-## Current behavior
+Nearly every event is dispatched inside a state-owning step:
 
-The session workflow body threads one state pair through its steps with
-`SessionStateCursor`. Each state-owning step goes through `cursor.advance` and
-returns a delta from the state it was given, through `withSessionStateDelta`.
-The cursor applies the delta to that same base. If the state changed while the
-step ran, the cursor throws. It treats this as a sequencing bug and never
-merges. So each session has one writer at a time.
+- **Turn events.** `turnStep` dispatches `step.*`, `action.*`, `turn.*`, and message events inline
+  through `createTurnEventHandler` (`execution/session/turn-event-handler.ts`). Hooks there can
+  call `ctx.cancel()`.
+- **Boundary events.** Messages from other workflow runs, such as task replies, `ctx.report()`
+  updates, questions, and withdrawals, wait in the session inbox. Each is applied in its own step
+  at the next boundary, such as `applyTaskRunMessageStep`, `emitWorkflowToolRunReportStep`, or
+  `runProxySubagentEventStep`. Each costs one durable step, and its hooks' state writes are kept.
+- **`agent.started` outside a model step.** During a blocking wait, a held turn, or between
+  turns, `agent.started` takes the boundary path through `emitAgentStartedStep`, and its hooks'
+  state writes are kept.
 
-Most events already follow the rule:
+The exception is an `agent.started` that arrives while `turnStep` runs. Clients follow a child from
+that event, and the remote-agent stream proxy binds a remote child by finding it in the parent
+stream (`findRemoteAgentBinding` in `eve-channel/support.ts`). A model step can run for a long
+time, so `publishWhile` publishes the event right away in a separate `emitAgentStartedStep` and
+drops that step's result. The adapter handler and hooks run against a copy of state that is then
+thrown away.
 
-- The turn step dispatches `step.*`, `action.*`, `turn.*`, and message events
-  inline through `createTurnEventHandler`. Hooks can call `ctx.cancel()` there.
-- Messages from other workflow runs, such as task replies, `ctx.report()`
-  updates, questions, and withdrawals, wait in the session inbox. The turn
-  admits them at the next boundary and applies each one in its own
-  state-owning step, such as `applyTaskRunMessageStep` or
-  `emitWorkflowToolRunReportStep`. Their hooks' state writes are kept, and each
-  message costs one durable step.
-- An `agent.started` that arrives during a blocking wait, a held turn, or
-  between turns takes the same path through `emitAgentStartedStep`, and its
-  hooks' state writes are kept.
+Terminal `session.completed` and `session.failed` events are a separate case. They are published
+outside a turn by `publishTerminalSessionEvent`, which calls the adapter handler with no session
+scope and runs no hooks. #3401 tracks this. This plan does not change it unless that is decided
+(§8).
 
-The exception is `StepAgentStarts.publishWhile`. Clients follow a child session
-from `agent.started`, and the remote-agent stream proxy binds a remote child by
-finding that event in the parent stream. A model step can run for a long time.
-So while `turnStep` runs, eve publishes each arriving `agent.started` in a
-separate `emitAgentStartedStep` and never adopts that step's result. The event,
-its adapter handler, and its hooks all run against a copy of state that is then
-discarded. No built-in channel adapter handles `agent.started`. An authored
-adapter may, and its adapter-state changes are discarded the same way.
-
-## Proposed semantics
+## 2. Semantics
 
 ```text
 workflow body (cursor)                 durable steps
 ────────────────────────────           ──────────────────────────────────────
 advance(turnStep N) ─────────────────▶ turnStep N
-                                         own events: write, then dispatch
+                                         own events: deliver, write, hooks
   run message arrives mid-step
-  └─ write step ─────────────────────▶ write agent.started (no dispatch)
+  └─ write step ─────────────────────▶ write agent.started only
      pending += stamped event
 adopt delta N
 advance(next step, pending) ─────────▶ next state-owning step
                                          1. dispatch pending, in write order
-                                         2. own events: write, then dispatch
+                                         2. own events: deliver, write, hooks
 adopt delta; pending = []
 about to wait, hand off, or end?
   pending non-empty ─────────────────▶ dispatch-only step
@@ -82,194 +84,250 @@ about to wait, hand off, or end?
 
 ### Where pending dispatches run
 
-| After the step that was running                                                    | Pending dispatches run in                        |
-| ---------------------------------------------------------------------------------- | ------------------------------------------------ |
-| Next model step, coordination dispatch, task message, steering route, cancel       | That step, before its own events                 |
-| Turn parks, is held on tasks, waits on runtime results, or session waits for input | One dispatch-only step before the body waits     |
-| Session completes or fails                                                         | One dispatch-only step before the terminal event |
-| Handoff to a successor run                                                         | None pending. Handoff happens only after a wait  |
+| After the step that was running                                              | Pending dispatches run in                        |
+| ---------------------------------------------------------------------------- | ------------------------------------------------ |
+| Next model step, coordination dispatch, task message, steering route, cancel | That step, before its own events                 |
+| Turn parks, holds on tasks, or waits on results, or the session awaits input | One dispatch-only step before the body waits     |
+| Session completes or fails                                                   | One dispatch-only step before the terminal event |
+| Handoff to a successor run                                                   | None pending. Handoff happens only after a wait  |
 
-The invariant: pending dispatches are empty whenever the workflow body waits
-for input, hands off, or ends. Hook latency is therefore bounded by the next
-boundary and never by the next user message.
+`bindTurnCallerContextStep` receives only serialized context. It passes pending dispatches on to
+the next step that receives the full session state. Pending dispatches are empty whenever the
+workflow body waits for input, hands off, or ends. Hook latency is bounded by the next boundary,
+never by the next user message.
 
 ### Durability and replay
 
-The write step returns the stamped event, so pending dispatches come from
-durable step results, and workflow replay rebuilds them. The cursor passes them
-in the next step's input and clears them only when it adopts that step's
-result.
+The write step returns the stamped event, so pending dispatches are derived from durable step
+results, and replay rebuilds them. The cursor passes them in the next step's input and clears them
+only when it adopts that step's result.
 
-A retried step runs its pending dispatches again with the same event and
-`meta.id`. The failed attempt's state is discarded with it, so each dispatch's
-state writes land in committed session state exactly once. Handler invocation
-and external side effects stay at-least-once, which matches the contract in
-`docs/guides/hooks.md`. Exactly-once handler execution is not achievable for
-in-step events today, and this plan does not promise it. A retried write step
-can still write the event twice, as documented today. Only the attempt that
-completes becomes pending, so the event is dispatched once.
+A retried step dispatches them again with the same event and `meta.id`. The failed attempt's state
+is discarded with it, so each dispatch's state writes land in committed state exactly once. Handler
+invocation and external side effects stay at-least-once, which is the contract
+`docs/guides/hooks.md` documents for every hook. A retried write step can write the event twice,
+as documented today. Only the attempt that completes becomes pending.
 
 ### Ordering
 
 - Every event is dispatched after it is written. This is unchanged.
-- Events one step produces are dispatched in stream order within that step.
-  This is unchanged.
-- Pending events are dispatched in write order, before any event of the step
-  that runs them.
-- A pending event is dispatched after the hooks of every event the running step
-  wrote after it. If a child opens during the model step that ends the turn, a
-  `*` hook sees `turn.completed` and `session.waiting` before `agent.started`.
+- Events one step produces are dispatched in stream order within that step. This is unchanged.
+- Pending events are dispatched in write order, before any event of the step that runs them.
+- A pending event is dispatched after the hooks of every event the running step wrote after it. If
+  a child opens during the model step that ends the turn, a `*` hook sees `turn.completed` and
+  `session.waiting` before `agent.started`.
 
-Hook order is stream order per producing step, not global stream order. This
-matches #3982 and is inherent to single-writer dispatch, because the only other
-option is to delay dispatch of in-step events. Consumers that need global order
-sort by `meta.id`.
+Hook order is stream order within each producing step, not global stream order. With one writer
+at a time, the only way to avoid this is to delay in-step dispatch, which would break
+`ctx.cancel()` and model preparation. Consumers that need global order sort by `meta.id`.
 
 ### Hook and channel context
 
-- A pending dispatch sees session state as committed when the next step starts.
-  That state can include changes from the step that was running when the event
-  was written.
-- `ctx.cancel()` from a pending dispatch is ignored with the existing "not part
-  of a running turn" warning. The turn the event arrived during has already
-  reached its boundary. Boundary publications behave this way today.
-- For a pending event, the channel adapter handler and activity-state update
-  run with the hooks, after the write. For in-step events, the documented order
-  stays: adapter handler, stamp, write, hooks. eve ignores adapter handler
-  return values, so a handler for a pending event loses only one ability: it can
-  no longer mutate the event's data before the write. The outbound activity
-  projection also moves with dispatch, because it reads the activity state that
-  dispatch updates. Both are no-ops for `agent.started` today.
+- A pending dispatch sees session state as committed when its step starts. That state can include
+  changes from the step that was running when the event was written.
+- `ctx.cancel()` from a pending dispatch is ignored with the existing "not part of a running turn"
+  warning, as it is for boundary events today.
+- For a pending event, channel delivery runs after the write, together with the hooks. Channel
+  delivery covers the activity-state update, the adapter handler (or `forwardSessionInput` for a
+  remote session's input events), and the channel context. For in-step events, the documented order
+  is unchanged: deliver, stamp, write, hooks. A pending event's adapter handler can no longer
+  mutate the event's data before the write. The outbound activity projection already runs after the
+  write, and it moves with dispatch. For `agent.started`, both activity paths are no-ops today.
 
 ### Failure paths
 
-- A retried step behaves as described in
-  [Durability and replay](#durability-and-replay).
-- If a step fails the session, finalization runs pending dispatches in one
-  dispatch-only step before `session.failed`. They run against the last
-  committed state. Their state writes don't matter because the session ends,
-  but external side effects, such as a `*` audit hook, still run. That matches
-  in-step events, whose hooks ran during the failed attempt. A failure in this
-  step is logged and does not block the terminal event.
-- If a turn is cancelled, `settleCancelledTurnStep` owns state, so pending
-  dispatches run there.
+- If a step fails the session, finalization runs pending dispatches in one dispatch-only step
+  before `session.failed`, against the last committed state. Their state writes don't matter
+  because the session ends. External side effects, such as a `*` audit hook, still run. That
+  matches in-step events, whose hooks ran during the failed attempt. A failure in this step is
+  logged and does not block the terminal event.
+- If a turn is cancelled, `settleCancelledTurnStep` owns state, so pending dispatches run there.
 
 ### What stays the same
 
-For events produced inside a state-owning step, nothing changes. Dispatch
-timing, `ctx.cancel()` eligibility, memory lifecycle, dynamic model, tool,
-skill, and instruction preparation, instrumentation, and the documented emit
-order are all unchanged. `agent.started` is still written to the stream as soon
-as it arrives.
+For events a state-owning step produces, nothing changes: dispatch timing, `ctx.cancel()`
+eligibility, memory lifecycle, dynamic model, tool, skill, and instruction preparation,
+instrumentation, and the documented emit order.
 
-## Cost
+## 3. Cost
 
-Costs are durable steps for each `agent.started` that arrives while a model step
-runs. No latency was measured for this plan.
+Costs are durable steps per `agent.started` that arrives while a model step runs. No latency was
+measured for this plan.
 
-| Scenario                 | Extra durable steps                                             | Critical-path effect                                                 |
-| ------------------------ | --------------------------------------------------------------- | -------------------------------------------------------------------- |
-| main                     | 1 write-and-dispatch step beside the model step                 | Overlaps the model step. Hook state is dropped                       |
-| #3982, subscribed        | Main's step, plus 1 dispatch step per model step that wrote one | +1 sequential durable step before the next boundary                  |
-| Proposal, subscribed     | Main's step, plus 0 when a state-owning step follows, 1 if not  | The hooks' own duration in the next step. See the dispatch-only step |
-| Proposal, not subscribed | Main's step only. Nothing becomes pending                       | Same as main                                                         |
+| State                    | Extra durable steps                                               | Critical-path effect                                              |
+| ------------------------ | ----------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `main` today             | 1 write-and-dispatch step beside the model step                   | Overlaps the model step. Hook state is dropped                    |
+| After PR 1               | 1 boundary step after the model step                              | +1 sequential step, and clients see the event only after the step |
+| After PR 3, subscribed   | 1 write step beside the model step, plus 0 or 1 dispatch step     | The hooks' own duration in the next step                          |
+| After PR 3, unsubscribed | 1 write step beside the model step. Nothing becomes pending       | Same as `main`                                                    |
+| #3982, subscribed        | 1 write step beside, plus 1 dispatch step per model step with one | +1 sequential durable step before the next boundary               |
 
-On main and in the proposal, adoption of the model step's result waits for any
-write step still in flight. A subscriber is an adapter handler for the event
-type, a typed hook, or a `*` hook. `*` persisters are common, so the subscribed
-case is the realistic one.
+A subscriber is an adapter handler for the event type, a typed hook, or a `*` hook. `*`
+persisters are common, so the subscribed case is realistic. After PR 3, the dispatch step is
+needed only when no state-owning step follows before the body waits or ends. That step runs after
+the turn's terminal events and any delegated-caller notification, so it does not delay the turn a
+client or parent sees. Input that arrives during it waits for it. Before a terminal event, it delays
+`session.completed` or `session.failed` by one step.
 
-The dispatch-only step runs after the turn's terminal events and after any
-delegated-caller notification, so it does not delay the turn that a client or
-parent sees. Input that arrives during the step waits until the step ends.
-Before a terminal event, the step delays `session.completed` or
-`session.failed` by one durable step.
+## 4. Removed and changed
 
-## Scope of the change
+The removable surface is small. One special-case path is duplicate and wrong. The rest of the
+publication machinery is either legitimately distinct or fused in a way that needs reshaping, not
+deleting.
 
-The change stays in the session workflow layer and the emitter. It does not
-touch the harness or tool loop.
+| Item                                                                    | Verdict                | Evidence                                                                                    |
+| ----------------------------------------------------------------------- | ---------------------- | ------------------------------------------------------------------------------------------- |
+| `StepAgentStarts`, its `publishWhile` wrapper, and its `consume` check  | Delete (PR 1)          | The only publisher beside the owning step. Its step result is never adopted                 |
+| `onAgentStarted` on the session inbox                                   | Delete (PR 1)          | Only `StepAgentStarts` calls it. 21 test fakes stub it as `() => () => {}`                  |
+| `emitAgentStartedStep`                                                  | Keep                   | The boundary path runs it through `cursor.advance`, where state is kept                     |
+| `hasStreamEventHooks`                                                   | Not on `main`          | It existed only on #3982                                                                    |
+| `openSessionEventStream().emit`                                         | Reshape (PR 2)         | The only caller of the adapter handler and activity paths. It fuses delivery with the write |
+| `withSessionEventEmitter`, `publishSessionEvents`, `relaySessionEvents` | Reshape (PR 2)         | One composition. The wrappers exist for the distinct `own` and `relayed` origins            |
+| `createSessionEventSink` with `createTurnEventHandler`                  | Keep, recompose (PR 2) | Turn-only memory, cancel, and resolver dispatch. It repeats only write-then-hooks           |
+| `publishTerminalSessionEvent`                                           | Reshape write (PR 2)   | Its unrouted fallback write keeps the stream ending. Its missing hooks are #3401            |
+| Publication envelope in three places                                    | Merge (PR 2)           | `publishFromStep`, `emitProxiedSubagentEvent`, and `settleCancelledTurn` repeat it          |
+| Per-message publish steps                                               | Keep                   | Each makes a distinct state change in its own state-owning step                             |
+| `dispatchStreamEventHooks` and `HOOK_CANCELLABLE_EVENTS`                | Keep                   | One fan-out with failure isolation, and a total map over hook events                        |
+| Publication and hook-lifecycle integration tests                        | Keep                   | They pin behavior, not the special case. No test pins `publishWhile`                        |
 
-- The emitter exposes the write and the dispatch as two named operations. Its
-  combined emit for in-step events is those two in the documented order. No
-  optional writable stands in for "already written."
-- The cursor already sequences every state-owning step, so it also owns pending
-  dispatches. On the step side, the shared `withSessionStateDelta` wrapper is
-  where they run before the step's own work.
-- The mid-step write keeps its own step, because the workflow body cannot write
-  the stream directly.
+The per-message publish steps are `emit-workflow-tool-run-report-step.ts`, `tasks/steps.ts`,
+`coordination-dispatch-step.ts`, `settle-cancelled-turn-step.ts`, `turn-waiting-step.ts`,
+`subagents/event-proxy-step.ts`, `withdraw-step.ts`, and `proxied-deliver-step.ts`. The
+integration tests are `publish-session-events.integration.test.ts` (2 tests) and
+`hook-lifecycle.integration.test.ts` (6 tests).
 
-The inbox still decides which run messages are written during a model step.
-That is a stream-latency policy, not a dispatch rule. A message qualifies only
-when producing its event requires no session state change. `agent.started`
-qualifies. `task.settled` does not, because it is produced by the task-table
-update that it reports.
+User-visible changes over the stack: `agent.started` hooks keep their session state and sandbox
+changes. The observer-only note in `docs/guides/hooks.md` is replaced with the general rule and the
+ordering caveat.
 
-## Alternatives considered
+## 5. Delivery
 
-- **Special-case `agent.started` (#3982, rejected).** This PR wrote the event
-  mid-step with no dispatch, then ran its adapter handler and hooks in a new
-  `publishWrittenEventsStep` after the model step's result was applied. To mark
-  "already written," it made `sessionWritable` optional on the emitter, and
-  review flagged that as a smell. It cost one sequential durable step for each
-  model step that wrote a subscribed `agent.started`. Its first revision also
-  skipped the deferred hooks when the model step failed. It was closed in favor
-  of a structural fix, because one event needed its own dispatch path. This plan reaches the same
-  hook semantics through a rule that applies to every event, and it removes the
-  extra step in the common case.
-- **Merge concurrent state deltas.** Merging would give up single-writer state
-  and require conflict rules for arbitrary `defineState` values. The cursor
-  rejects that on purpose.
-- **Hold `agent.started` until the boundary.** Clients could not follow a child
-  until the model step ended. The remote-agent stream proxy could not bind the
-  child until then either.
-- **Pre-assign the child session id in `task.started`.** This does not remove
-  mid-step publication:
-  - A local child's session id is its workflow run id. `createSession` returns
-    `run.runId`, and `startLocalSession` returns `owner.runId`. That id exists
-    only after the task's own run calls `openAgentSessionStep`, not during the
-    parent's dispatch step. Pre-assigning it would require eve-generated
-    session ids separate from run ids, which changes session identity and
-    stream routing.
-  - A remote child's id comes from the remote deployment, and the proxy binds
-    the child from `agent.started`.
-  - `ctx.agent` in `execute` and `serve` bodies opens sessions at any point,
-    and possibly more than once per call. The parent cannot know those sessions
-    at dispatch.
+The work lands as a stack of pull requests on top of this plan's PR. Each PR is one coherent step
+from the one below it, passes CI on its own, and updates the docs its behavior change makes false.
+`main` may lose features between PRs, never correctness. From PR 1 on, every hook state write is
+kept. Every PR carries a `patch` changeset, as `AGENTS.md` requires. **Hold the Changesets release
+from PR 1 until PR 3 merges**, so no release ships `agent.started` delayed to the boundary.
 
-  With this plan, pre-assignment is not needed for hook correctness. It would
-  only be a client-latency optimization with a large identity cost, so it is
-  out of scope.
+### Implementation rules
 
-## Compatibility
+- **Remove first, then narrow steps.** PR 1 deletes the special case and the test stubs that exist
+  for it. Every later PR changes only what its step needs, and unrelated cleanup waits.
+- **The bar for each PR is a passing build.** `pnpm build`, `pnpm typecheck`, `pnpm lint`, and
+  `pnpm guard:invariants` pass, and CI is green. An existing test that a PR breaks is updated if it
+  still describes intended behavior and deleted if it doesn't.
+- **Few tests during implementation.** Don't add tests that restate the code just written.
+  Reviewers prove each PR correct by reading it. Add a test only when a PR can't be trusted without
+  one. PR 3's replay behavior is the likely exception. Coverage comes after the stack (§6).
+- **Code quality comes first.**
+  - Write readable code, not compact code. Name each step, and extract a helper wherever a step has
+    a name.
+  - Define explicit interfaces at module boundaries: the session event writer, the dispatcher, a
+    pending dispatch record, and the early-write classification of run messages.
+  - Keep publication in `execution/publish-session-events.ts`. Keep the core lean: no harness or
+    tool-loop changes, no legacy fallbacks.
 
-- Hook state writes from `agent.started` are kept, including sandbox changes.
-  The observer-only note in `docs/guides/hooks.md` is replaced with the general
-  rule and the ordering caveat.
-- `agent.started` hooks for mid-step arrivals run later than they do today. They
-  run at the next boundary instead of beside the model step.
-- The change needs a patch changeset. There is no hook contract epoch change,
-  because `HookContext` does not change.
+| #   | PR                                       | Main after it lands                                                                 |
+| --- | ---------------------------------------- | ----------------------------------------------------------------------------------- |
+| 1   | Remove the mid-step `agent.started` path | `agent.started` publishes at the next boundary, and its hooks keep state            |
+| 2   | Split write from dispatch                | Same behavior. Delivery, write, and observation are operations every publisher uses |
+| 3   | Pending dispatch and early write         | `agent.started` is written mid-step again, and dispatched in the next owning step   |
+| 4   | Tests and release readiness              | E2E coverage, the hooks guide, release                                              |
 
-## Validation
+**1. Remove the mid-step `agent.started` path.** Delete `step-agent-starts.ts`, the
+`publishWhile` wrapper in `SessionExecution.runTurnSteps`, `ActiveTurn.agentStarts` and its
+`consume` check in `admit`, `onAgentStarted` on the inbox, and the 21 test stubs. `agent.started`
+from a task run is then admitted at the boundary, taken by `takeTaskMessages`, and published through
+`cursor.advance(emitAgentStartedStep)`. From an `execute` run, it already arrives during the turn's
+wait. Update the `agent.started` paragraph in `docs/guides/hooks.md`. `agent-fanout.wait` opens its
+children during a blocking wait, so it keeps passing unchanged.
 
-- Integration: a pending dispatch runs first in the next state-owning step, and
-  the cursor adopts its `defineState` write. A step retry leaves one copy of
-  that write. Pending dispatches run before a park, a held-turn wait, a
-  completion, and a failure. Pending dispatches are empty at handoff.
-- E2E (`agent-workflow-tools`): Alice starts a background research task whose
-  run opens a helper agent while the parent keeps answering her. An
-  `agent.started` hook records the helper in session state, and a tool in
-  Alice's next turn reads it back.
+**2. Split write from dispatch.** Split `openSessionEventStream().emit` into named operations:
 
-## Open questions
+- delivery: activity-state update, `forwardSessionInput` or the adapter handler, and channel context
+- write: stamp, then write
+- observation: activity projection and `dispatchStreamEventHooks`
 
-- Should `ctx.report()` updates (`action.partial` from runs) also be written
-  during the model step? They qualify under the no-state-change criterion, and
-  progress would become visible sooner. That would change client-visible timing.
-- Should the dispatch-only step before a wait be kept? Without it, pending
-  dispatches wait for the next state-owning step. That costs zero steps but can
-  delay hooks until the next user message.
-- Should finalization run pending dispatches in their own step, or inside the
-  terminal event step? The terminal event step runs no hooks today, and #3401
-  tracks that separately.
+Dispatch is delivery plus observation. In-step publication composes the operations as deliver,
+write, observe. `withSessionEventEmitter`, `createTurnEventHandler`, and
+`publishTerminalSessionEvent` all use these operations, and the repeated envelope becomes one
+helper. Terminal events keep today's behavior: delivery without
+session scope, no hooks, and the degraded write. No behavior changes.
+
+**3. Pending dispatch and early write.** The cursor carries pending dispatches (stamped event and
+origin) into the next step that receives the full session state. That step runs them through the
+shared `withSessionStateDelta` wrapper before its own work. The cursor clears them on adoption. A
+dispatch-only step runs before the body waits for input, hands off, or finalizes. Mid-step writes
+return through one general writer, driven by a total map over `WorkflowToolRunMessage["kind"]` that
+says which kinds may be written before dispatch. A kind qualifies only when producing its event
+needs no session state change. Today only `agent-started` qualifies. `task.settled`, for example,
+is produced by the task-table update it reports. A message already written this way is admitted
+without being written again. Add the ordering caveat to `docs/guides/hooks.md`.
+
+**4. Tests and release readiness.** The test pass in §6, the "Execution order" section of
+`docs/guides/hooks.md` rewritten around write and dispatch, then release.
+
+## 6. Tests after the stack
+
+Tests are written once the stack has landed and the build is green, starting with e2e suites under
+the fixtures they exercise.
+
+**E2E (mock model), in `agent-workflow-tools`,** extending its `subagent-hook-audit` state and
+sandbox audit to `agent.started`:
+
+- Alice starts a background research task whose run opens a helper agent while the parent keeps
+  answering her. Typed and `*` `agent.started` hooks record the helper in `defineState` and the
+  sandbox, and a tool in Alice's next turn reads both back.
+- Bob's blocking workflow tool opens two agents during its wait. The hooks record both, and the
+  existing ordering assertion in `agent-fanout.wait` still holds.
+- A throwing typed `agent.started` hook keeps its recorded state, and the `*` hook still runs.
+- The existing `agent-subagents` stream suites, including the remote stream proxy, keep following
+  children from `agent.started`.
+
+**Candidates beyond e2e,** decided in this pass because e2e can't hit them deterministically:
+
+- an arrival during a model step, written mid-step and dispatched first in the next step
+- a step retry that dispatches again with the same `meta.id` and commits one state write
+- pending dispatches drained before a park, a held-turn wait, completion, and failure, and empty at
+  handoff
+- a `*` hook that sees `turn.completed` before an `agent.started` written during the final step
+- a write-step retry that writes twice and dispatches once
+
+No real-model evals are needed. Nothing model-facing changes.
+
+## 7. Alternatives considered
+
+- **Special-case `agent.started` (#3982, closed).** This PR wrote the event mid-step with no
+  dispatch, then dispatched it in a new `publishWrittenEventsStep` after the model step's result
+  was applied. It made `sessionWritable` optional on the emitter to mean "already written," and
+  review called that a smell. It cost one sequential durable step for each model step that wrote a
+  subscribed `agent.started`. Its first revision also skipped the deferred hooks when the model
+  step failed. It was closed in favor of a structural fix, because one event needed its own dispatch
+  path.
+- **Merge concurrent state deltas.** Merging would give up single-writer state and need conflict
+  rules for arbitrary `defineState` values. The cursor rejects that on purpose.
+- **Stop at PR 1.** It is correct, but clients and the remote stream proxy wait for the model step
+  to end before they can follow a child.
+- **Pre-assign the child session id in `task.started`.** This does not remove the need for a
+  mid-step write:
+  - A local child's session id is its workflow run id. `createSession` returns `run.runId`, and
+    `startLocalSession` returns `owner.runId`. That id exists only after the task's run calls
+    `openAgentSessionStep`.
+  - A remote child's id comes from the remote deployment.
+  - `ctx.agent` in `execute` and `serve` bodies opens sessions at any point, possibly several per
+    call.
+
+  Pre-assigning ids would also change session identity and stream routing. It is out of scope.
+
+## 8. Open questions
+
+- **Terminal events (#3401).** Should out-of-turn `session.completed` and `session.failed` be
+  dispatched to hooks with session scope? PR 3 gives finalization a dispatch-only step that restores
+  context, so a PR 3a could publish the terminal event there and close #3401. That is a
+  behavior change for authored hooks and channel handlers, so the stack leaves it out unless it is
+  chosen.
+- **`ctx.report()` updates.** They qualify for the early write. Writing them mid-step would make
+  task progress visible sooner and change client-visible timing.
+- **Dispatch-only step before a wait.** Without it, pending dispatches wait for the next
+  state-owning step. That costs no step but can delay hooks until the next user message.
+- **Release hold.** Is holding the release from PR 1 through PR 3 acceptable? The alternative is
+  releasing PR 1 alone, which delays `agent.started` to the boundary.
