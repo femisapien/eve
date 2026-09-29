@@ -65,14 +65,13 @@ export function effectiveLimit(limit: number | undefined): number {
   return Math.min(Math.max(1, limit ?? DEFAULT_GREP_LIMIT), MAX_GREP_LIMIT);
 }
 
-export function assertWorkspacePath(resolved: string, requested?: string): string {
-  if (requested !== undefined && requested.split(/[\\/]/u).includes("..")) {
-    throw new Error("grep path must not contain '..'");
-  }
-  if (resolved !== "/workspace" && !resolved.startsWith("/workspace/")) {
-    throw new Error(`grep path must stay under /workspace: ${resolved}`);
-  }
-  if (resolved.split("/").includes("..")) {
+// Containment is enforced on real paths in executeGrepSearch; the workspace
+// root differs by provider (/workspace, /app, ...), so no literal prefix here.
+export function assertNoParentSegments(resolved: string, requested?: string): string {
+  if (
+    (requested !== undefined && requested.split(/[\\/]/u).includes("..")) ||
+    resolved.split("/").includes("..")
+  ) {
     throw new Error("grep path must not contain '..'");
   }
   return resolved;
@@ -83,7 +82,7 @@ export async function executeGrepSearch(
   sandbox: GrepSandbox,
   abortSignal?: AbortSignal,
 ): Promise<GrepSearchResult> {
-  const path = assertWorkspacePath(sandbox.resolvePath(input.path ?? "/workspace"), input.path);
+  const path = assertNoParentSegments(sandbox.resolvePath(input.path ?? ""), input.path);
   const workspaceRealPath = await sandboxRealPath(
     sandbox,
     sandbox.resolvePath(""),
@@ -151,7 +150,7 @@ async function sandboxRealPath(
 
 function assertRealPathWithinWorkspace(realPath: string, workspaceRealPath: string): void {
   if (realPath !== workspaceRealPath && !realPath.startsWith(`${workspaceRealPath}/`)) {
-    throw new Error(`grep path resolves outside /workspace: ${realPath}`);
+    throw new Error(`grep path resolves outside the workspace ${workspaceRealPath}: ${realPath}`);
   }
 }
 

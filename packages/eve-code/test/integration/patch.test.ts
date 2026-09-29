@@ -96,6 +96,43 @@ test("accepts Codex environment metadata without treating it as an operation", (
   );
 });
 
+test("treats unified-diff range headers as bare chunk markers", () => {
+  const [hunk] = parsePatch(`*** Begin Patch
+*** Update File: process.py
+@@ -2,3 +2,3 @@ def main():
+     key = os.environ["KEY"]
+-    token = "hf_secret"
++    token = "<your-huggingface-token>"
+@@ -9,1 +9,1 @@
+-debug = True
++debug = False
+*** End Patch`);
+  assert.equal(hunk?.type, "update");
+  const chunks = hunk?.type === "update" ? hunk.chunks : [];
+  assert.deepEqual(
+    chunks.map((chunk) => chunk.changeContext),
+    [undefined, undefined],
+  );
+  assert.equal(
+    deriveUpdatedContent(
+      "process.py",
+      chunks,
+      'def main():\n    key = os.environ["KEY"]\n    token = "hf_secret"\n\ndebug = True\n',
+    ),
+    'def main():\n    key = os.environ["KEY"]\n    token = "<your-huggingface-token>"\n\ndebug = False\n',
+  );
+});
+
+test("keeps a textual @@ anchor that only looks numeric", () => {
+  const [hunk] = parsePatch(`*** Begin Patch
+*** Update File: notes.txt
+@@ -1 is the sentinel
+-a
++b
+*** End Patch`);
+  assert.equal(hunk?.type === "update" && hunk.chunks[0]?.changeContext, "-1 is the sentinel");
+});
+
 test("preserves BOM and CRLF while applying an update", () => {
   const updated = deriveUpdatedContent(
     "file.ts",

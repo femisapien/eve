@@ -210,6 +210,17 @@ function parseAdd(lines: readonly string[], start: number, end: number) {
   return { content: content.join("\n"), next: index };
 }
 
+// Models often write unified-diff range headers (`@@ -118,8 +118,8 @@ fn`).
+// The numbers are not searchable text, and git truncates the trailing function
+// context, so treat them as a bare `@@` and let the chunk's lines locate it.
+const UNIFIED_RANGE_HEADER = /^-\d+(?:,\d+)? \+\d+(?:,\d+)? @@/u;
+
+function chunkAnchor(headerLine: string): string | undefined {
+  const anchor = headerLine.slice(2).trim();
+  if (anchor.length === 0 || UNIFIED_RANGE_HEADER.test(anchor)) return undefined;
+  return anchor;
+}
+
 function parseUpdate(lines: readonly string[], start: number, end: number) {
   const chunks: UpdateChunk[] = [];
   let index = start;
@@ -219,7 +230,7 @@ function parseUpdate(lines: readonly string[], start: number, end: number) {
     if (!hasHeader && chunks.length > 0) {
       throw new Error(`invalid update file line: ${lines[index]}`);
     }
-    const changeContext = hasHeader ? headerLine.slice(2).trim() || undefined : undefined;
+    const changeContext = hasHeader ? chunkAnchor(headerLine) : undefined;
     const oldLines: string[] = [];
     const newLines: string[] = [];
     let endOfFile = false;

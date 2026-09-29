@@ -3,7 +3,43 @@ import test from "node:test";
 
 import type { SandboxSession } from "eve/sandbox";
 
-import { validateRepositoryRoot } from "../../extension/lib/repository-root.ts";
+import {
+  resolveWorkspaceRoot,
+  validateRepositoryRoot,
+} from "../../extension/lib/repository-root.ts";
+
+test("patch roots default to the workspace and need no git checkout", async () => {
+  const runs: string[] = [];
+  const sandbox = workspaceSandbox("/app", runs);
+  assert.equal(await resolveWorkspaceRoot(sandbox), "/app");
+  assert.equal(await resolveWorkspaceRoot(sandbox, "/app/src"), "/app/src");
+  assert.equal(
+    runs.some((command) => command.startsWith("git ")),
+    false,
+  );
+});
+
+test("patch roots must stay inside the workspace", async () => {
+  await assert.rejects(
+    resolveWorkspaceRoot(workspaceSandbox("/app"), "/etc"),
+    /root must be inside the sandbox workspace \/app: \/etc/u,
+  );
+  await assert.rejects(resolveWorkspaceRoot(workspaceSandbox("/app"), "src"), /absolute/u);
+});
+
+function workspaceSandbox(
+  workspace: string,
+  runs: string[] = [],
+): Pick<SandboxSession, "resolvePath" | "run"> {
+  return {
+    resolvePath: () => workspace,
+    async run({ command }) {
+      runs.push(command);
+      const [, path = ""] = /realpath -e -- '([^']*)'/u.exec(command) ?? [];
+      return { exitCode: 0, stdout: `${path}\n`, stderr: "" };
+    },
+  };
+}
 
 test("accepts a git root inside the sandbox workspace", async () => {
   const sandbox = rootSandbox("/workspace/repo");

@@ -30,8 +30,10 @@ export async function runPostEditDiagnostics(input: {
   const diagnostics: PostEditDiagnostic[] = [];
   if (allPaths.length > 0) {
     try {
+      const root = shellQuote(input.repoRoot);
+      // Patch roots need not be git checkouts; whitespace checks below still run.
       const result = await input.sandbox.run({
-        command: `git -C ${shellQuote(input.repoRoot)} diff --check -- ${allPaths.map(shellQuote).join(" ")}`,
+        command: `git -C ${root} rev-parse --is-inside-work-tree >/dev/null 2>&1 || exit 0; git -C ${root} diff --check -- ${allPaths.map(shellQuote).join(" ")}`,
       });
       if (result.exitCode !== 0) {
         diagnostics.push({
