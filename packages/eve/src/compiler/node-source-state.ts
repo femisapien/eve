@@ -117,7 +117,8 @@ function finalizeCandidateExternalDependencies<TCandidate extends AgentSourceCan
   candidate: TCandidate,
   externalDependencies: readonly string[],
 ): TCandidate {
-  if (candidate.backing.kind !== "filesystem") return candidate;
+  if (candidate.backing.kind !== "filesystem" && candidate.backing.kind !== "entry")
+    return candidate;
   return {
     ...candidate,
     backing: finalizeBackingExternalDependencies(candidate.backing, externalDependencies),
@@ -128,17 +129,17 @@ function finalizeDescriptorExternalDependencies(
   descriptor: AgentSourceDescriptor,
   externalDependencies: readonly string[],
 ): AgentSourceDescriptor {
-  if (descriptor.backing.kind !== "filesystem") return descriptor;
+  if (descriptor.backing.kind !== "filesystem" && descriptor.backing.kind !== "entry")
+    return descriptor;
   return {
     ...descriptor,
     backing: finalizeBackingExternalDependencies(descriptor.backing, externalDependencies),
   };
 }
 
-function finalizeBackingExternalDependencies(
-  backing: Extract<AgentSourceBacking, { readonly kind: "filesystem" }>,
-  externalDependencies: readonly string[],
-): Extract<AgentSourceBacking, { readonly kind: "filesystem" }> {
+function finalizeBackingExternalDependencies<
+  TBacking extends Extract<AgentSourceBacking, { readonly kind: "filesystem" | "entry" }>,
+>(backing: TBacking, externalDependencies: readonly string[]): TBacking {
   return {
     ...backing,
     externalDependencies: mergeExternalDependencies(

@@ -369,7 +369,15 @@ async function startNitroDevelopmentServer(
   process.env[EVE_DEV_ENV_FLAG] ??= "1";
 
   const developmentExtensions = options.developmentExtensions ?? defaultDevelopmentExtensions();
-  const project = await resolveDiscoveryProject(rootDir);
+  const entrySelection = options.entrySelection;
+  const project =
+    entrySelection === undefined
+      ? await resolveDiscoveryProject(rootDir)
+      : {
+          agentRoot: entrySelection.appRoot,
+          appRoot: entrySelection.appRoot,
+          layout: "flat" as const,
+        };
   await loadDevelopmentEnvironmentFiles(project.appRoot);
 
   const environmentPort = readEnvironmentPort();
@@ -414,7 +422,11 @@ async function startNitroDevelopmentServer(
   try {
     const preparedHost = await devBootPhase(
       "compiling agent",
-      () => prepareDevelopmentApplicationHost(project.appRoot, { developmentExtensions }),
+      () =>
+        prepareDevelopmentApplicationHost(project.appRoot, {
+          developmentExtensions,
+          entrySelection,
+        }),
       options.onBootProgress,
     );
     preparedDevelopmentHost = preparedHost;
@@ -510,6 +522,7 @@ async function startNitroDevelopmentServer(
     const rebuildCoordinator = await createDevelopmentAuthoredRebuildCoordinator({
       developmentExtensions,
       devServer: activeDevServer,
+      entrySelection,
       initialHost: preparedHost,
       onRuntimePruned,
     });

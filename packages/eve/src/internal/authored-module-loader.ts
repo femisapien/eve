@@ -269,7 +269,7 @@ export async function bundleAuthoredModuleMapForGeneration(input: {
 }): Promise<AuthoredModuleMapBundle> {
   // The package root owns dependency resolution, while the selected app root
   // owns authored workflow IDs and must match the workflow driver.
-  const packageRoot = resolveAuthoredPackageRoot(input.manifest.agentRoot);
+  const packageRoot = resolveAuthoredPackageRoot(join(input.manifest.agentRoot, "agent.ts"));
   const programmaticLoaderImportSpecifier = resolvePackageSourceFilePath(
     usesDevelopmentExtensionModules(input.manifest)
       ? "src/internal/development-programmatic-source-loader.ts"

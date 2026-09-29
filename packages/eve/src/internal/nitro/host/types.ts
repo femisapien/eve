@@ -1,4 +1,5 @@
 import type { CompileAgentResult } from "#compiler/compile-agent.js";
+import type { AgentEntrySelection } from "#compiler/entry-sources.js";
 import type { ScheduleRegistration } from "#runtime/schedules/register.js";
 import type { ResolvedScheduleDefinition } from "#runtime/types.js";
 import type { GeneratedCompiledArtifactsFiles } from "#internal/application/compiled-artifacts.js";
@@ -10,6 +11,8 @@ import type { WorkspaceExtension } from "#internal/nitro/host/workspace-extensio
 
 /** Options for one production application build. */
 export interface ApplicationBuildOptions {
+  /** Compiles one `createAgent` entry module instead of discovering an agent directory. */
+  readonly entrySelection?: AgentEntrySelection;
   /** Absolute path for an optional machine-readable profile of a successful build. */
   readonly profileOutputPath?: string;
   /**
@@ -67,6 +70,8 @@ export interface DevelopmentServerOptions {
   readonly resume?: boolean;
   /** Development-only source extensions. Defaults to the framework catalog. */
   readonly developmentExtensions?: DevelopmentExtensionSelection;
+  /** Compiles one `createAgent` entry module instead of discovering an agent directory. */
+  readonly entrySelection?: AgentEntrySelection;
   readonly existing?: "attach-if-unconfigured" | "reject";
   readonly host?: string;
   readonly onBootProgress?: DevBootProgressReporter;

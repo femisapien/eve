@@ -1,4 +1,5 @@
 import { z } from "#compiled/zod/index.js";
+import { entryModuleBackingSchema } from "#shared/entry-backing-schema.js";
 
 const owner = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("application") }).strict(),
@@ -9,6 +10,7 @@ const owner = z.discriminatedUnion("kind", [
 ]);
 
 const moduleBacking = z.discriminatedUnion("kind", [
+  entryModuleBackingSchema,
   z
     .object({
       externalDependencies: z.array(z.string()),

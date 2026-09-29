@@ -67,6 +67,7 @@ describe("development generation staging", () => {
     const result = stageDevelopmentGeneration(compileResult);
     expect(mocks.prepare).toHaveBeenCalledWith({
       appRoot: "/tmp/app",
+      entryMode: false,
       manifest: compileResult.manifest,
       moduleMapPath: "/tmp/app/modules.mjs",
     });

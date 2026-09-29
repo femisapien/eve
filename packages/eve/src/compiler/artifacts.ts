@@ -14,6 +14,7 @@ import {
   type CompilerDiagnostic,
 } from "#compiler/diagnostics.js";
 import { createCompiledModuleMapSource } from "#compiler/module-map.js";
+import type { AgentModuleCandidate, ProgrammaticModuleNamespace } from "#compiler/source-graph.js";
 import { compileAgentManifest } from "#compiler/normalize-manifest.js";
 import type { DevelopmentExtensionSelection } from "#compiler/development-extensions.js";
 import { materializeWorkspaceResources } from "#compiler/workspace-resources.js";
@@ -104,6 +105,8 @@ export interface CompilerArtifactLocations {
  * Input for writing compiler-owned source and diagnostic artifacts.
  */
 interface WriteCompilerArtifactsInput {
+  entryCandidates?: readonly AgentModuleCandidate[];
+  entryNamespaces?: ReadonlyMap<string, ProgrammaticModuleNamespace>;
   appRoot: string;
   developmentExtensions?: DevelopmentExtensionSelection;
   artifactLocations: CompilerArtifactLocations;
@@ -232,6 +235,8 @@ export async function writeCompilerArtifacts(
   const compiledManifest = await materializeWorkspaceResources({
     compileDirectoryPath: paths.compileDirectoryPath,
     manifest: await compileAgentManifest(input.manifest, {
+      entryCandidates: input.entryCandidates,
+      entryNamespaces: input.entryNamespaces,
       developmentExtensions: input.developmentExtensions,
       diagnostics,
     }),

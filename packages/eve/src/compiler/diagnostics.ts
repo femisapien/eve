@@ -86,7 +86,9 @@ function toDiagnosticSource(
     logicalPath: source.logicalPath,
     nodeId,
     sourceId: source.sourceId,
-    ...(source.backing.kind === "filesystem" || source.backing.kind === "resource"
+    ...(source.backing.kind === "filesystem" ||
+    source.backing.kind === "entry" ||
+    source.backing.kind === "resource"
       ? { sourcePath: source.backing.sourcePath }
       : {}),
   };

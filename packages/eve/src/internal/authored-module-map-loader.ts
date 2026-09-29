@@ -7,6 +7,7 @@ import type {
   CompiledAgentResources,
 } from "#compiler/manifest.js";
 import { ROOT_COMPILED_AGENT_NODE_ID } from "#compiler/manifest.js";
+import { projectEntryNamespace } from "#internal/entry-source.js";
 import { memoizeModuleNamespaceFactories } from "#compiler/source-graph.js";
 import {
   collectRuntimeModuleBindingsForManifest,
@@ -81,10 +82,25 @@ async function hydrateCompiledNodeScope(
   );
   const container = globalThis as Record<symbol, unknown>;
   const modules: CompiledModuleMap["nodes"][string]["modules"] = {};
+  const entries = new Map<string, Promise<Record<string, unknown>>>();
   for (const { binding, sourceId } of collectRuntimeModuleBindingsForManifest(manifest)) {
     const mountConfigScope = mountScopes.get(sourceId);
     if (mountConfigScope !== undefined) container[EXT_CONFIG_SCOPE] = mountConfigScope;
     try {
+      if (binding.backing.kind === "entry") {
+        const backing = binding.backing;
+        let namespace = entries.get(backing.sourcePath);
+        if (namespace === undefined) {
+          namespace = loadAuthoredModuleNamespace(resolveSourcePath(backing.sourcePath), {
+            externalDependencies: backing.externalDependencies,
+          });
+          entries.set(backing.sourcePath, namespace);
+        }
+        modules[sourceId] = memoizeModuleNamespaceFactories(
+          projectEntryNamespace(await namespace, backing.projection, backing),
+        );
+        continue;
+      }
       modules[sourceId] =
         binding.backing.kind === "programmatic"
           ? await loadFrameworkProgrammaticModule(

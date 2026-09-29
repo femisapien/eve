@@ -23,6 +23,8 @@ export interface PreparedAuthoredRuntimeModules {
 /** Builds the authored runtime graph before a development or production host packages it. */
 export async function prepareAuthoredRuntimeModules(input: {
   readonly appRoot: string;
+  /** Entry-mode agents have no authored directory, so instrumentation is not discovered. */
+  readonly entryMode: boolean;
   readonly manifest: CompiledAgentManifest;
   readonly moduleMapPath: string;
 }): Promise<PreparedAuthoredRuntimeModules> {
@@ -31,7 +33,9 @@ export async function prepareAuthoredRuntimeModules(input: {
     code: moduleMapCode,
     workflowSourceFingerprint,
   } = await bundleAuthoredModuleMapForGeneration(input);
-  const layout = resolveInstrumentationLayout({ agentRoot: input.manifest.agentRoot });
+  const layout = input.entryMode
+    ? { modulePathsBySlot: {} }
+    : resolveInstrumentationLayout({ agentRoot: input.manifest.agentRoot });
   const externalDependencies = input.manifest.config.build?.externalDependencies ?? [];
   const bundleInstrumentationModule = async (sourcePath: string): Promise<string> =>
     await bundleAuthoredModuleForGeneration(sourcePath, { externalDependencies });

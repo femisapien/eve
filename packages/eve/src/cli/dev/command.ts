@@ -275,6 +275,9 @@ export function registerDevelopmentCommand(input: {
           ...(options.defaultExtensions === false
             ? { developmentExtensions: noDevelopmentExtensions() }
             : {}),
+          ...(applicationContext.entrySelection === undefined
+            ? {}
+            : { entrySelection: applicationContext.entrySelection }),
           resume: options.resume,
           existing: mode === "tui" ? "attach-if-unconfigured" : "reject",
           host: options.host,
@@ -332,6 +335,10 @@ export function registerDevelopmentCommand(input: {
               onOnboardingStep: telemetry.trackSetupStep,
               onOnboardingTerminal: telemetry.trackSetupTerminal,
               options,
+              // Entry mode has no agent directory for the TUI to rediscover.
+              ...(applicationContext.entrySelection === undefined
+                ? {}
+                : { projectContext: await applicationContext.resolveAgent() }),
               report: onBootProgress,
               runDevelopmentTui: runtime.runDevelopmentTui,
               server: { appRoot: handle.appRoot, serverUrl: handle.url },

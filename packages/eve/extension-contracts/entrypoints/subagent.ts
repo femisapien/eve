@@ -10,6 +10,7 @@ export {
   type RemoteAgentDefinitionInput,
   type WorkspaceAgentDefinition,
   type WorkspaceAgentTransport,
+  createAgent,
   defineAgent,
   defineDynamic,
   defineRemoteAgent,

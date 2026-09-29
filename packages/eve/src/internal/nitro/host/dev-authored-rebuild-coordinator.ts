@@ -5,6 +5,7 @@ import { computeDevelopmentHostFingerprint } from "#internal/nitro/host/dev-host
 import { removeDevelopmentHostWorkspace } from "#internal/nitro/host/dev-host-workspace.js";
 import { prepareDevelopmentApplicationHost } from "#internal/nitro/host/prepare-application-host.js";
 import type { DevelopmentExtensionSelection } from "#compiler/development-extensions.js";
+import type { AgentEntrySelection } from "#compiler/entry-sources.js";
 import { DrainedNitroDevServer } from "#internal/nitro/host/drained-nitro-dev-server.js";
 import { usesParentDevelopmentWorkflowWorld } from "#internal/workflow/development-world-protocol.js";
 import type { PreparedDevelopmentApplicationHost } from "#internal/nitro/host/types.js";
@@ -56,6 +57,7 @@ export interface DevelopmentAuthoredRebuildCoordinator {
 export async function createDevelopmentAuthoredRebuildCoordinator(input: {
   readonly developmentExtensions?: DevelopmentExtensionSelection;
   readonly devServer: DrainedNitroDevServer;
+  readonly entrySelection?: AgentEntrySelection;
   readonly initialHost: PreparedDevelopmentApplicationHost;
   readonly onRuntimePruned?: () => Promise<void>;
 }): Promise<DevelopmentAuthoredRebuildCoordinator> {
@@ -64,6 +66,7 @@ export async function createDevelopmentAuthoredRebuildCoordinator(input: {
     developmentExtensions: input.developmentExtensions,
     currentRuntimeFingerprint: input.initialHost.generation.fingerprint,
     devServer: input.devServer,
+    entrySelection: input.entrySelection,
     initialHost: input.initialHost,
     onRuntimePruned: input.onRuntimePruned,
   });
@@ -85,6 +88,7 @@ class TransactionalDevelopmentAuthoredRebuildCoordinator implements DevelopmentA
   #currentRuntimeFingerprint: string;
   readonly #developmentExtensions: DevelopmentExtensionSelection | undefined;
   readonly #devServer: DrainedNitroDevServer;
+  readonly #entrySelection: AgentEntrySelection | undefined;
   readonly #usesParentWorkflowWorld: boolean;
   readonly #onRuntimePruned: (() => Promise<void>) | undefined;
 
@@ -93,6 +97,7 @@ class TransactionalDevelopmentAuthoredRebuildCoordinator implements DevelopmentA
     readonly currentRuntimeFingerprint: string;
     readonly developmentExtensions: DevelopmentExtensionSelection | undefined;
     readonly devServer: DrainedNitroDevServer;
+    readonly entrySelection: AgentEntrySelection | undefined;
     readonly initialHost: PreparedDevelopmentApplicationHost;
     readonly onRuntimePruned?: () => Promise<void>;
   }) {
@@ -102,6 +107,7 @@ class TransactionalDevelopmentAuthoredRebuildCoordinator implements DevelopmentA
     this.#developmentExtensions = input.developmentExtensions;
     this.#currentRuntimeFingerprint = input.currentRuntimeFingerprint;
     this.#devServer = input.devServer;
+    this.#entrySelection = input.entrySelection;
     this.#usesParentWorkflowWorld = usesParentDevelopmentWorkflowWorld(
       input.initialHost.compileResult.manifest.config.experimental?.workflow?.world,
     );
@@ -122,6 +128,7 @@ class TransactionalDevelopmentAuthoredRebuildCoordinator implements DevelopmentA
       nextHost = await prepareDevelopmentApplicationHost(previousHost.appRoot, {
         changedPaths: input.changedPaths,
         developmentExtensions: this.#developmentExtensions,
+        entrySelection: this.#entrySelection,
         previousExtensions: previousHost.workspaceExtensions,
       });
       if (

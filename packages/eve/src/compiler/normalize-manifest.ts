@@ -2,7 +2,6 @@ import type { AgentSourceManifest } from "#discover/manifest.js";
 import {
   type CompiledAgentDefinition,
   type CompiledAgentManifest,
-  type CompiledAgentNodeManifest,
   type CompiledAgentResources,
   type CompiledChannelDefinition,
   type CompiledConnectionDefinition,
@@ -103,14 +102,12 @@ import {
 } from "#compiler/development-extensions.js";
 import type {
   CompileAgentManifestOptions,
+  CompiledLocalNodeResult,
   NodeCompileInput,
 } from "#compiler/normalize-manifest-types.js";
 export type { CompileAgentManifestOptions } from "#compiler/normalize-manifest-types.js";
 
-interface CompiledLocalNodeResult {
-  readonly descendants: readonly CompiledSubagentNode[];
-  readonly manifest: CompiledAgentNodeManifest;
-}
+import { entrySourceLabel } from "#internal/entry-source.js";
 
 export async function compileAgentManifest(
   manifest: AgentSourceManifest,
@@ -131,6 +128,8 @@ export async function compileAgentManifest(
   });
   const compiler = new AgentGraphCompiler(context, registries, diagnostics);
   const root = await compiler.compileStaticNode({
+    entryCandidates: options.entryCandidates,
+    entryNamespaces: options.entryNamespaces,
     developmentExtensionCandidates: developmentExtensions.candidates,
     inheritedExternalDependencies: [],
     isRoot: true,
@@ -363,7 +362,7 @@ class AgentGraphCompiler {
       owner: input.owner,
     });
     const frameworkCandidates: AgentModuleCandidate[] = [];
-    const applicationCandidates: AgentModuleCandidate[] = [];
+    const applicationCandidates: AgentModuleCandidate[] = [...(input.entryCandidates ?? [])];
     for (const registry of this.registries) {
       const framework = registry === frameworkAgentSourceRegistry;
       for (const registration of registry.registrations) {
@@ -434,7 +433,7 @@ class AgentGraphCompiler {
     externalDependencies: readonly string[],
   ): Promise<PhaseOneNodeSourceState> {
     const graph = this.composeNodeSources(input, externalDependencies);
-    const evaluation = new NodeModuleEvaluationContext(this.registries);
+    const evaluation = new NodeModuleEvaluationContext(this.registries, input.entryNamespaces);
     evaluation.setBindings(
       Object.fromEntries(
         [...graph.composed.selected.values()]
@@ -506,123 +505,138 @@ class AgentGraphCompiler {
         loadNamespace,
         owner: candidate.owner,
       };
-      switch (entry.kind) {
-        case "config":
-        case "extension":
-          break;
-        case "channel": {
-          const result = await compileChannelDefinition(input.manifest.agentRoot, entry.source, {
-            binding: binding!,
-            loadNamespace,
-          });
-          if (result.kind === "disabled") {
-            state.composed = disableComposedCandidate({ candidate, composed: state.composed });
-            delete state.bindings[candidate.sourceId];
-            selectedSourceIds.delete(candidate.sourceId);
-          } else channels.push(...result.definitions);
-          break;
-        }
-        case "connection": {
-          const result = await compileConnectionDefinition(input.manifest.agentRoot, entry.source, {
-            binding: binding!,
-            loadNamespace,
-          });
-          if (result.kind === "connection") connections.push(result.definition);
-          else {
-            dynamicConnections.push(withExtensionNamespace(result.definition, candidate.owner));
-          }
-          state.evaluation.requireRuntimeEntry(candidate.sourceId);
-          break;
-        }
-        case "hook":
-          hooks.push(
-            await compileHookEntry(entry.source, {
+      try {
+        switch (entry.kind) {
+          case "config":
+          case "extension":
+            break;
+          case "channel": {
+            const result = await compileChannelDefinition(input.manifest.agentRoot, entry.source, {
               binding: binding!,
               loadNamespace,
-            }),
-          );
-          state.evaluation.requireRuntimeEntry(candidate.sourceId);
-          break;
-        case "instructions": {
-          const result = await compileInstructionsEntry(
-            input.manifest.agentRoot,
-            entry.source,
-            options,
-          );
-          if (result.kind === "instructions") instructions.push(result.definition);
-          else {
-            dynamicInstructions.push(result.definition);
-            state.evaluation.requireRuntimeEntry(candidate.sourceId);
-          }
-          break;
-        }
-        case "memory":
-          memories.push(
-            await compileMemoryDefinition(entry.source, {
-              binding: binding!,
-              loadNamespace,
-            }),
-          );
-          state.evaluation.requireRuntimeEntry(candidate.sourceId);
-          break;
-        case "sandbox":
-          sandbox = await compileSandboxDefinition(input.manifest.agentRoot, entry.source, {
-            binding: binding!,
-            loadNamespace,
-          });
-          if (!sandbox.inheritsParent) {
-            state.evaluation.requireRuntimeEntry(candidate.sourceId);
-          }
-          break;
-        case "schedule": {
-          const schedule = await compileScheduleDefinition(
-            input.manifest.agentRoot,
-            entry.source,
-            options,
-          );
-          schedules.push(schedule);
-          if (schedule.sourceKind === "module" && schedule.hasRun) {
-            state.evaluation.requireRuntimeEntry(candidate.sourceId);
-          }
-          break;
-        }
-        case "skill": {
-          const result = await compileSkillSource(input.manifest.agentRoot, entry.source, options);
-          if (result.kind === "skill") skills.push(result.definition);
-          else {
-            dynamicSkills.push(withExtensionNamespace(result.definition, candidate.owner));
-            state.evaluation.requireRuntimeEntry(candidate.sourceId);
-          }
-          break;
-        }
-        case "tool": {
-          const result = await compileToolEntry(input.manifest.agentRoot, entry.source, {
-            binding: binding!,
-            loadNamespace,
-          });
-          assertFrameworkToolPolicy(candidate, result);
-          if (result.kind === "disabled") {
-            state.composed = disableComposedCandidate({
-              allowUnmatched: canDisableToolWithoutSelectedSource(state, result.name),
-              candidate,
-              composed: state.composed,
             });
-            delete state.bindings[candidate.sourceId];
-            selectedSourceIds.delete(candidate.sourceId);
-          } else if (result.kind === "tool") {
-            tools.push(result.definition);
-            if (result.definition.hasExecute) {
+            if (result.kind === "disabled") {
+              state.composed = disableComposedCandidate({ candidate, composed: state.composed });
+              delete state.bindings[candidate.sourceId];
+              selectedSourceIds.delete(candidate.sourceId);
+            } else channels.push(...result.definitions);
+            break;
+          }
+          case "connection": {
+            const result = await compileConnectionDefinition(
+              input.manifest.agentRoot,
+              entry.source,
+              {
+                binding: binding!,
+                loadNamespace,
+              },
+            );
+            if (result.kind === "connection") connections.push(result.definition);
+            else {
+              dynamicConnections.push(withExtensionNamespace(result.definition, candidate.owner));
+            }
+            state.evaluation.requireRuntimeEntry(candidate.sourceId);
+            break;
+          }
+          case "hook":
+            hooks.push(
+              await compileHookEntry(entry.source, {
+                binding: binding!,
+                loadNamespace,
+              }),
+            );
+            state.evaluation.requireRuntimeEntry(candidate.sourceId);
+            break;
+          case "instructions": {
+            const result = await compileInstructionsEntry(
+              input.manifest.agentRoot,
+              entry.source,
+              options,
+            );
+            if (result.kind === "instructions") instructions.push(result.definition);
+            else {
+              dynamicInstructions.push(result.definition);
               state.evaluation.requireRuntimeEntry(candidate.sourceId);
             }
-          } else if (result.kind === "dynamic-tool") {
-            dynamicTools.push(withExtensionNamespace(result.definition, candidate.owner));
-            state.evaluation.requireRuntimeEntry(candidate.sourceId);
-          } else {
-            assertNonExtensionSpecialTool(candidate as AgentModuleCandidate, "Web search");
-            tools.push(result.definition);
+            break;
           }
-          break;
+          case "memory":
+            memories.push(
+              await compileMemoryDefinition(entry.source, {
+                binding: binding!,
+                loadNamespace,
+              }),
+            );
+            state.evaluation.requireRuntimeEntry(candidate.sourceId);
+            break;
+          case "sandbox":
+            sandbox = await compileSandboxDefinition(input.manifest.agentRoot, entry.source, {
+              binding: binding!,
+              loadNamespace,
+            });
+            if (!sandbox.inheritsParent) {
+              state.evaluation.requireRuntimeEntry(candidate.sourceId);
+            }
+            break;
+          case "schedule": {
+            const schedule = await compileScheduleDefinition(
+              input.manifest.agentRoot,
+              entry.source,
+              options,
+            );
+            schedules.push(schedule);
+            if (schedule.sourceKind === "module" && schedule.hasRun) {
+              state.evaluation.requireRuntimeEntry(candidate.sourceId);
+            }
+            break;
+          }
+          case "skill": {
+            const result = await compileSkillSource(
+              input.manifest.agentRoot,
+              entry.source,
+              options,
+            );
+            if (result.kind === "skill") skills.push(result.definition);
+            else {
+              dynamicSkills.push(withExtensionNamespace(result.definition, candidate.owner));
+              state.evaluation.requireRuntimeEntry(candidate.sourceId);
+            }
+            break;
+          }
+          case "tool": {
+            const result = await compileToolEntry(input.manifest.agentRoot, entry.source, {
+              binding: binding!,
+              loadNamespace,
+            });
+            assertFrameworkToolPolicy(candidate, result);
+            if (result.kind === "disabled") {
+              state.composed = disableComposedCandidate({
+                allowUnmatched: canDisableToolWithoutSelectedSource(state, result.name),
+                candidate,
+                composed: state.composed,
+              });
+              delete state.bindings[candidate.sourceId];
+              selectedSourceIds.delete(candidate.sourceId);
+            } else if (result.kind === "tool") {
+              tools.push(result.definition);
+              if (result.definition.hasExecute) {
+                state.evaluation.requireRuntimeEntry(candidate.sourceId);
+              }
+            } else if (result.kind === "dynamic-tool") {
+              dynamicTools.push(withExtensionNamespace(result.definition, candidate.owner));
+              state.evaluation.requireRuntimeEntry(candidate.sourceId);
+            } else {
+              assertNonExtensionSpecialTool(candidate as AgentModuleCandidate, "Web search");
+              tools.push(result.definition);
+            }
+            break;
+          }
         }
+      } catch (error) {
+        if (candidate.backing.kind !== "entry") throw error;
+        throw new Error(
+          `${entrySourceLabel(candidate.backing)} primitive ${JSON.stringify(candidate.logicalPath)} must match the existing ${entry.kind} definition and composition rules.`,
+        );
       }
     }
 

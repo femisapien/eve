@@ -21,4 +21,5 @@ export async function loadFrameworkProgrammaticModule(
   );
 }
 
+export { projectEntryNamespace } from "#internal/entry-source.js";
 export { memoizeModuleNamespaceFactories } from "#compiler/source-graph.js";

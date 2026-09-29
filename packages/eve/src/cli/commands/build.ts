@@ -73,6 +73,7 @@ export function registerBuildCommand(input: {
           ? undefined
           : resolve(input.applicationContext.root, options.profile);
       const buildOptions: {
+        entrySelection?: ApplicationBuildOptions["entrySelection"];
         profileOutputPath?: string;
         readonly publicRoutePrefix: ApplicationBuildOptions["publicRoutePrefix"];
         readonly skipSandboxPrewarm: boolean;
@@ -88,6 +89,9 @@ export function registerBuildCommand(input: {
       };
       if (profileOutputPath !== undefined) {
         buildOptions.profileOutputPath = profileOutputPath;
+      }
+      if (input.applicationContext.entrySelection !== undefined) {
+        buildOptions.entrySelection = input.applicationContext.entrySelection;
       }
       const outputDir = await buildHost(input.applicationContext.root, buildOptions);
       input.logger.log(

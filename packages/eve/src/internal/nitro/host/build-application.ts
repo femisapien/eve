@@ -248,9 +248,11 @@ export async function buildApplication(
     );
   }
 
-  const project = await measureBuildPhase(profiler, "project.resolve", () =>
-    resolveDiscoveryProject(rootDir),
-  );
+  const entrySelection = options.entrySelection;
+  const project =
+    entrySelection === undefined
+      ? await measureBuildPhase(profiler, "project.resolve", () => resolveDiscoveryProject(rootDir))
+      : { appRoot: entrySelection.appRoot };
   const workspace = await measureBuildPhase(profiler, "workspace.create", () =>
     createApplicationBuildWorkspace(
       project.appRoot,
@@ -293,7 +295,7 @@ async function buildApplicationInWorkspace(
   profiler: ApplicationBuildProfiler | undefined,
 ): Promise<string> {
   const preparedHost = await measureBuildPhase(profiler, "host.prepare", () =>
-    prepareProductionApplicationHost(workspace),
+    prepareProductionApplicationHost(workspace, { entrySelection: options.entrySelection }),
   );
   const isVercelBuild = Boolean(process.env.VERCEL);
 

@@ -82,6 +82,7 @@ export async function writeCompiledArtifactsFiles(input: {
   );
   const prepared = await prepareAuthoredRuntimeModules({
     appRoot: input.compileResult.project.appRoot,
+    entryMode: input.compileResult.entrySelection !== undefined,
     manifest: input.compileResult.manifest,
     moduleMapPath: input.compileResult.paths.moduleMapPath,
   });

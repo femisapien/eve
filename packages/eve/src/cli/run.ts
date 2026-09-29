@@ -1,6 +1,11 @@
 import { Command, CommanderError } from "#compiled/commander/index.js";
 import { registerBuildCommand, type BuildHost } from "#cli/commands/build.js";
 import { resolveApplicationRoot } from "#internal/application/paths.js";
+import {
+  EVE_INTERNAL_AGENT_SELECTION_ENV,
+  readAgentEntrySelectionEnvironment,
+} from "#internal/application/agent-selection-environment.js";
+import type { AgentEntrySelection } from "#compiler/entry-sources.js";
 import { resolveInstalledPackageInfo } from "#internal/application/package.js";
 import { isCodingAgentLaunch } from "#cli/agent-detection.js";
 import type { CliApplicationContext } from "#cli/application-command.js";
@@ -381,29 +386,56 @@ export function createCliProgram(
   return program;
 }
 
+const ENTRY_SELECTION_COMMANDS = new Set(["build", "dev", "help", "start", "version"]);
+
+/** Entry mode hosts the selected module at the cwd; it never discovers a project. */
+function createEntryApplicationContext(selection: AgentEntrySelection): CliApplicationContext {
+  const project = {
+    agentRoot: selection.appRoot,
+    appRoot: selection.appRoot,
+    layout: "flat" as const,
+  };
+  return {
+    entrySelection: selection,
+    project,
+    root: selection.appRoot,
+    async resolve() {},
+    async resolveAgent() {
+      return { appRoot: selection.appRoot, environmentRoot: selection.appRoot, kind: "standalone" };
+    },
+  };
+}
+
 /** Runs the eve CLI entrypoint. */
 export async function runCli(
   argv: string[] = process.argv.slice(2),
   logger: CliLogger = console,
   runtime: CliRuntimeOverrides = {},
 ): Promise<void> {
-  const applicationContext: CliApplicationContext = {
-    root: resolveApplicationRoot(),
-    async resolve() {
-      const project = await (runtime.resolveApplicationProject ?? resolveCliApplicationProject)(
-        applicationContext.root,
-      );
-      applicationContext.project = project;
-      applicationContext.root = project.appRoot;
-    },
-    async resolveAgent() {
-      return resolveEveProjectContext(applicationContext.root);
-    },
-  };
+  const root = resolveApplicationRoot();
+  const entrySelection = readAgentEntrySelectionEnvironment(process.env, root);
+  const applicationContext: CliApplicationContext =
+    entrySelection === undefined
+      ? {
+          root,
+          async resolve() {
+            const project = await (
+              runtime.resolveApplicationProject ?? resolveCliApplicationProject
+            )(applicationContext.root);
+            applicationContext.project = project;
+            applicationContext.root = project.appRoot;
+          },
+          async resolveAgent() {
+            return resolveEveProjectContext(applicationContext.root);
+          },
+        }
+      : createEntryApplicationContext(entrySelection);
   const telemetry = createEveCliTelemetry(resolveInstalledPackageInfo().version);
   const program = createCliProgram(logger, runtime, applicationContext, telemetry);
   let input = argv;
-  if (input.length === 0) {
+  if (input.length === 0 && entrySelection !== undefined) {
+    input = ["dev"];
+  } else if (input.length === 0) {
     const findApplicationRoot = runtime.findApplicationRoot ?? findCliApplicationRoot;
     const appRoot = await findApplicationRoot(applicationContext.root);
     if (appRoot === undefined) {
@@ -415,6 +447,11 @@ export async function runCli(
     }
   }
   const command = canonicalCommand(input);
+  if (entrySelection !== undefined && !ENTRY_SELECTION_COMMANDS.has(command)) {
+    throw new Error(
+      `${EVE_INTERNAL_AGENT_SELECTION_ENV} supports only \`eve dev\`, \`eve build\`, and \`eve start\`. Unset it to run other commands against a filesystem agent.`,
+    );
+  }
   telemetry.trackCommand(command);
   if (command !== "telemetry") await telemetry.notify(logger);
 

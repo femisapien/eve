@@ -348,6 +348,54 @@ it falls back to the World's default retention period.
 
 During `eve dev`, ordinary dependencies are bundled into each retained runtime generation. Packages listed in `externalDependencies` keep normal Node.js resolution instead, so replacing one of those packages requires restarting the dev server.
 
+## Programmatic definitions
+
+`createAgent` from `eve` collects configuration, instructions, tools, skills, and
+channels in one definition. Calling it does not compile an agent or start a session.
+
+```ts
+import { createAgent } from "eve";
+import { defineSkill } from "eve/skills";
+import { defineTool } from "eve/tools";
+
+export default createAgent({
+  model: "openai/gpt-5.4",
+  instructions: "Help Alice organize her work.",
+  tools: {
+    greeting: defineTool({
+      description: "Return a greeting.",
+      inputSchema: {},
+      execute: () => "Hello Alice",
+    }),
+  },
+  skills: {
+    "greet-alice": defineSkill({
+      description: "Greet Alice before helping her.",
+      markdown: "Call the `greeting` tool before answering Alice.",
+    }),
+  },
+});
+```
+
+This constructor currently has compiler support only. The CLI and Next.js
+`withEve` do not yet accept a programmatic entry; continue using `defineAgent`
+and filesystem authoring for hosted agents. Do not export a `createAgent` value
+from a filesystem agent's `agent.ts`.
+
+The input accepts the same configuration fields as `defineAgent`. Instructions
+can be a string (system role) or a keyed map of existing static or dynamic
+instruction definitions. Tools and channels are keyed maps of existing eve
+definitions, including disable sentinels. Skills are a keyed map of `defineSkill`
+or dynamic skill definitions; each key is the skill name. Tool, instruction, and
+skill keys must match `[A-Za-z][A-Za-z0-9_-]{0,63}`. Channel keys follow the channel-segment naming
+rules; none of these maps supports nested paths. Map keys supply identity, and
+object insertion order does not control compilation order.
+
+Entry modules may be imported during compilation and again on workers. Keep
+primitive membership reproducible, and do not start background work on import.
+Executable definitions are reconstructed from bundled code, not serialized
+closures; they cannot depend on transient request-local state.
+
 ## Where adjacent settings live
 
 | Concern                       | Lives in                                                                         |

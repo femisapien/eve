@@ -14,12 +14,13 @@
       Specified literal map-key validation and deterministic ordering, existing collision semantics, entry-backed namespace projection, and typed host selection with internal environment transport through generated commands. Keep proposal and progress repo-only; no GitHub issue is required.
       Evidence: `objective.md` “Implementation Proposal” defines three delivery slices and their behavioral evidence; `updates/20260929T000301Z-implementation-proposal.md` records source grounding and remaining runtime risks. This completes proposal work only, not implementation or runtime qualification.
 
-- [ ] Connect programmatic definitions to shared compilation.
+- [x] Connect programmatic definitions to shared compilation.
       Adapt `createAgent` values from the explicitly selected module into existing source composition, normalization, and executable-binding machinery. Preserve existing defaults and configuration controls; use map keys for primitive identity and the registration key for agent identity. Resolve filesystem-shaped assumptions without introducing a parallel compiler or implicit discovery in entry mode.
-      Evidence: targeted coverage demonstrates equivalent effective definitions, validation, and relevant defaults for the two authoring paths; relevant repository checks pass.
+      Evidence: `entry-sources.test.ts` covers filesystem-equivalent configuration/defaults/overrides, key validation, ordering, static/dynamic instructions, disable behavior, and missing selected members. `entry-sources.scenario.test.ts` compiles explicit entries without adjacent discovery, preserves identity across an entry move, and executes a bundled tool, dynamic model, and dynamic instructions in a fresh process after the authored tree is removed. Workspace build/typecheck/unit tests, focused scenarios, invariant guard, and docs checks pass. See `updates/20260929T125323Z-shared-entry-compilation.md`. This is executable-definition reconstruction, not durable-session recovery or host isolation.
 
 - [ ] Deliver HTTP mounting with normal eve protocol and durable-session recovery.
       Extend Next.js `withEve` and the separate eve service build/dev pipeline to accept explicit entries and named identities. Integrate bundled definitions with existing runtime bootstrap and Workflow infrastructure for local development and Vercel production. Preserve channel authentication and establish reconstruction on workers rather than relying on request-local callback registration.
+      Progress: the eve CLI hosts one entry under `eve dev`/`eve build`/`eve start` through internal `EVE_INTERNAL_AGENT_SELECTION`, without adjacent agent, extension, or instrumentation discovery (`updates/20260929T143000Z-cli-entry-selection-hosting.md`). Next.js `withEve`, generated service commands, registration-scoped resources, and recovery evidence remain.
       Evidence: an eve client interacts with a mounted programmatic agent and exercises instructions and an inline tool; restart or worker-recovery coverage demonstrates durable continuation. Required fixture-owned end-to-end coverage passes in CI.
 
 - [ ] Publish and document the supported interface.
@@ -28,6 +29,6 @@
 
 ## Parked
 
-Programmatic authoring of connections, skills/assets, hooks, schedules, extensions, and subagents remains deferred. Channels are included in the initial scope through existing definitions.
+Programmatic authoring of connections, skill packages with assets/scripts directories, hooks, schedules, extensions, and subagents remains deferred. Channels and `defineSkill` skills are included in the initial scope through existing definitions.
 
 In-process HTTP embedding, self-hosted production qualification, additional framework integrations, named-export entry selection, and full authoring parity remain deferred. Arbitrary request-local closure persistence and new revision-pinning guarantees are not part of the contract. Additional automatic forwarding for custom paths outside `/eve/v1/*`, including conventional Workflow webhook paths, is deferred.

@@ -1,4 +1,5 @@
 import { z } from "#compiled/zod/index.js";
+import { entryModuleBackingSchema } from "#shared/entry-backing-schema.js";
 
 import {
   type DiscoverDiagnosticsSummary,
@@ -393,6 +394,7 @@ const resourceSourceBackingSchema = z
 
 const agentModuleBackingSchema: z.ZodType<AgentModuleBacking> = z.discriminatedUnion("kind", [
   filesystemModuleBackingSchema,
+  entryModuleBackingSchema,
   programmaticModuleBackingSchema,
 ]);
 
@@ -414,6 +416,7 @@ const agentSourceDescriptorSchema: z.ZodType<AgentSourceDescriptor> = z
   .object({
     backing: z.discriminatedUnion("kind", [
       filesystemModuleBackingSchema,
+      entryModuleBackingSchema,
       programmaticModuleBackingSchema,
       resourceSourceBackingSchema,
     ]),

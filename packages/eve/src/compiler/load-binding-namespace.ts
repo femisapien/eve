@@ -5,6 +5,7 @@ import {
   memoizeModuleNamespaceFactories,
   type ProgrammaticModuleNamespace,
 } from "#compiler/source-graph.js";
+import { projectEntryNamespace } from "#internal/entry-source.js";
 import { packageStateNamespace } from "#discover/extensions.js";
 import { loadAuthoredModuleNamespace } from "#internal/authored-module-loader.js";
 
@@ -15,6 +16,7 @@ export type CompiledBindingNamespaceLoader = (
 /** Loads one node's selected bindings with dependency ordering and per-phase caching. */
 export function createCompiledBindingNamespaceLoader(input: {
   readonly bindings?: Readonly<Record<string, AgentModuleBinding>>;
+  readonly entryNamespaces?: ReadonlyMap<string, ProgrammaticModuleNamespace>;
   readonly onLoad?: (sourceId: string) => void;
   readonly registries: readonly AgentSourceRegistry[];
   readonly resolveBinding?: (sourceId: string) => AgentModuleBinding | undefined;
@@ -23,6 +25,12 @@ export function createCompiledBindingNamespaceLoader(input: {
     throw new Error("Compiled binding namespace loader requires a binding source.");
   }
   const cache = new Map<string, Promise<ProgrammaticModuleNamespace>>();
+  const entries = new Map<string, Promise<ProgrammaticModuleNamespace>>(
+    [...(input.entryNamespaces ?? [])].map(([path, namespace]) => [
+      path,
+      Promise.resolve(namespace),
+    ]),
+  );
 
   const load = (
     sourceId: string,
@@ -41,6 +49,7 @@ export function createCompiledBindingNamespaceLoader(input: {
     const nextLineage = new Set(lineage).add(sourceId);
     const loading = loadCompiledBindingNamespace({
       binding,
+      entries,
       loadDependency: (dependencySourceId) => load(dependencySourceId, nextLineage),
       registries: input.registries,
     }).then(memoizeModuleNamespaceFactories);
@@ -53,9 +62,21 @@ export function createCompiledBindingNamespaceLoader(input: {
 
 async function loadCompiledBindingNamespace(input: {
   readonly binding: AgentModuleBinding;
+  readonly entries: Map<string, Promise<ProgrammaticModuleNamespace>>;
   readonly loadDependency: CompiledBindingNamespaceLoader;
   readonly registries: readonly AgentSourceRegistry[];
 }): Promise<ProgrammaticModuleNamespace> {
+  if (input.binding.backing.kind === "entry") {
+    const backing = input.binding.backing;
+    let entry = input.entries.get(backing.sourcePath);
+    if (entry === undefined) {
+      entry = loadAuthoredModuleNamespace(backing.sourcePath, {
+        externalDependencies: backing.externalDependencies,
+      });
+      input.entries.set(backing.sourcePath, entry);
+    }
+    return projectEntryNamespace(await entry, backing.projection, backing);
+  }
   if (input.binding.backing.kind === "filesystem") {
     return await loadAuthoredModuleNamespace(input.binding.backing.sourcePath, {
       externalDependencies: input.binding.backing.externalDependencies,

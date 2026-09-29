@@ -1,0 +1,15 @@
+{
+  "name": "embedded-weather-agent",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "EVE_INTERNAL_AGENT_SELECTION='{\"entry\":\"weather-agent.ts\",\"registration\":\"weather\"}' eve dev",
+    "build": "EVE_INTERNAL_AGENT_SELECTION='{\"entry\":\"weather-agent.ts\",\"registration\":\"weather\"}' eve build",
+    "start": "EVE_INTERNAL_AGENT_SELECTION='{\"entry\":\"weather-agent.ts\",\"registration\":\"weather\"}' eve start",
+    "typecheck": "tsc --noEmit -p tsconfig.json"
+  },
+  "dependencies": {
+    "eve": "workspace:*",
+    "zod": "catalog:"
+  }
+}

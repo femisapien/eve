@@ -35,6 +35,7 @@ export async function stageDevelopmentGeneration(
   const [preparation, staging] = await Promise.allSettled([
     prepareAuthoredRuntimeModules({
       appRoot: compileResult.project.appRoot,
+      entryMode: compileResult.entrySelection !== undefined,
       manifest: compileResult.manifest,
       moduleMapPath: compileResult.paths.moduleMapPath,
     }),

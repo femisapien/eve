@@ -1,5 +1,6 @@
 import { compileAgentInWorkspace, type CompileAgentResult } from "#compiler/compile-agent.js";
 import type { DevelopmentExtensionSelection } from "#compiler/development-extensions.js";
+import type { AgentEntrySelection } from "#compiler/entry-sources.js";
 import { createScheduleRegistrations } from "#runtime/schedules/register.js";
 import { resolveSchedules } from "#runtime/schedules/resolve-schedule.js";
 import type { ResolvedScheduleDefinition } from "#runtime/types.js";
@@ -37,6 +38,7 @@ export async function prepareDevelopmentApplicationHost(
   options: {
     readonly changedPaths?: readonly string[];
     readonly developmentExtensions?: DevelopmentExtensionSelection;
+    readonly entrySelection?: AgentEntrySelection;
     readonly previousExtensions?: readonly WorkspaceExtension[];
   } = {},
 ): Promise<PreparedDevelopmentApplicationHost> {
@@ -51,7 +53,11 @@ export async function prepareDevelopmentApplicationHost(
   if (options.previousExtensions !== undefined) {
     extensionPreparation.previousExtensions = options.previousExtensions;
   }
-  const workspaceExtensions = await prepareDevelopmentWorkspaceExtensions(extensionPreparation);
+  // Entry mode must not load extensions discovered beside the selected module.
+  const workspaceExtensions =
+    options.entrySelection === undefined
+      ? await prepareDevelopmentWorkspaceExtensions(extensionPreparation)
+      : [];
   const workspace = await createDevelopmentHostWorkspace(appRoot);
   let generation: Awaited<ReturnType<typeof stageDevelopmentGeneration>> | undefined;
 
@@ -62,6 +68,7 @@ export async function prepareDevelopmentApplicationHost(
         writeRoot: workspace.compilerArtifactsDir,
       },
       developmentExtensions: options.developmentExtensions,
+      entrySelection: options.entrySelection,
       startPath: appRoot,
     });
     const schedules = await resolveSchedules({ manifest: compileResult.manifest });
@@ -113,13 +120,15 @@ export async function prepareDevelopmentApplicationHost(
  */
 export async function prepareProductionApplicationHost(
   workspace: ApplicationBuildWorkspace,
+  options: { readonly entrySelection?: AgentEntrySelection } = {},
 ): Promise<PreparedApplicationHost> {
-  await buildWorkspaceExtensions(workspace.appRoot);
+  if (options.entrySelection === undefined) await buildWorkspaceExtensions(workspace.appRoot);
   const compileResult = await compileAgentInWorkspace({
     artifactLocations: {
       publishedRoot: join(workspace.publication.output.finalDir, ".eve"),
       writeRoot: workspace.compiler.artifactsDir,
     },
+    entrySelection: options.entrySelection,
     startPath: workspace.appRoot,
   });
   const schedules = await resolveSchedules({ manifest: compileResult.manifest });

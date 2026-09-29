@@ -93,6 +93,7 @@ export function createDevelopmentServer(
       [
         JSON.stringify({
           developmentExtensions: options.developmentExtensions,
+          entrySelection: options.entrySelection,
           existing: options.existing,
           host: options.host,
           port: options.port,

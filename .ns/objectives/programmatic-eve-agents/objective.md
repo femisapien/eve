@@ -8,15 +8,15 @@ Developers can define a full eve agent through a public programmatic interface i
 
 Accept instructions and named tool definitions through ordinary function arguments. Connect those definitions to shared compilation and execution machinery, and provide a supported HTTP mounting path usable by an eve client. Build integration and generated artifacts are acceptable; authors must not need to arrange definitions in an `agent/` directory tree.
 
-Preserve filesystem authoring. Initial coverage includes instructions, tools, channels, and existing agent configuration. The supported hosting path is a separate eve service mounted through Next.js `withEve`, with local development and Vercel production demonstrated. Deliver public documentation and behavioral coverage alongside the interface.
+Preserve filesystem authoring. Initial coverage includes instructions, tools, skills, channels, and existing agent configuration. The supported hosting path is a separate eve service mounted through Next.js `withEve`, with local development and Vercel production demonstrated. Deliver public documentation and behavioral coverage alongside the interface.
 
 ## Confirmed Contract
 
-This is the agreed target interface, not an implemented API.
+This is the agreed target interface. The constructor and shared-compilation slice are implemented; Next.js mounting and durable-session recovery remain unimplemented.
 
 - Add `createAgent` from `eve`, accepting existing configuration fields at the top level alongside `instructions`, `tools`, and `channels`. It returns a definition; calling it does not compile, start a service, or begin a session. Keep `defineAgent` configuration-only.
 - Accept instructions as a string shorthand or a keyed map of existing static/dynamic instruction definitions. Preserve existing roles and lifecycle behavior.
-- Accept tools and channels as keyed maps of existing eve definitions, including `defineTool` values and `eveChannel` configuration. Keys supply primitive identity instead of filenames.
+- Accept tools and channels as keyed maps of existing eve definitions, including `defineTool` values and `eveChannel` configuration. Accept skills as a keyed map of `defineSkill` or dynamic skill definitions. Keys supply primitive identity instead of filenames.
 - Extend `withEve(nextConfig, { agents: { support: { entry: "./src/support.ts" } } })` to select a module's default-exported `createAgent` definition. The location is application-chosen, not a required authoring layout. Named export selection is deferred.
 - Use the registration key (`support`) as stable agent identity and the named public route prefix (`/eve/support/v1`). Moving the entry file preserves identity; renaming the registration key changes identity and does not imply automatic session migration. Do not require a redundant agent name in the definition.
 - Explicit entry selection is authoritative: do not discover or merge adjacent filesystem-authored primitives. Preserve existing framework defaults, configuration controls, composition rules, and validation. Filesystem authoring remains a separate supported entry mode.
@@ -78,7 +78,7 @@ Extend existing behavior-owning tests where possible; do not duplicate the same 
 
 - A separate lightweight or non-durable agent runtime.
 - Eliminating compilation, generated artifacts, or all filesystem access.
-- Full programmatic parity for channels, connections, skills/assets, hooks, schedules, extensions, and subagents as a prerequisite to completion.
+- Full programmatic parity for channels, connections, skill assets/packages, hooks, schedules, extensions, and subagents as a prerequisite to completion.
 - In-process embedding in Next.js or an arbitrary application HTTP server.
 - Supporting every HTTP server or deployment target in the initial release; self-hosted production and non-Next.js convenience integrations are deferred.
 - Request-local agent registration, serialization of arbitrary closures, or new revision-pinning guarantees.
@@ -96,7 +96,7 @@ Extend existing behavior-owning tests where possible; do not duplicate the same 
 
 ### Assumptions
 
-The existing programmatic source graph and module-map machinery can support application definitions without a parallel compiler. This is provisional: source inspection found internal in-memory sources in `packages/eve/src/compiler/source-graph.ts`, registry inputs to `compileAgentManifest` in `packages/eve/src/compiler/normalize-manifest.ts`, and in-memory module-map construction in `packages/eve/src/compiler/module-map.ts`. Those facilities are not yet a supported public constructor or mounting interface.
+The shared source graph and module-map machinery now compile `createAgent` entries without a parallel compiler. Entry candidates reuse composition, normalization, lifecycle classification, and artifact writing. Unit coverage compares effective definitions against filesystem inputs; a bundler-backed fresh-process scenario exercises executable reconstruction. Public mounting remains a separate delivery slice.
 
 Build integration and generated artifacts are acceptable. The desired simplification is removal of the prescribed authoring layout, not removal of durable execution infrastructure.
 
@@ -108,7 +108,7 @@ The earlier risk of needing an independently embeddable HTTP host is narrowed by
 
 The routing scope is settled: accepting channel definitions does not automatically expose paths outside `/eve/v1/*` through Next.js. Documentation must make this limit explicit, including conventional Workflow webhooks, and preserve service-side authentication.
 
-Source inspection confirmed that the current generated programmatic loader knows framework registries, not arbitrary application definitions. The approved import-and-selection design closes that design gap, but executable reconstruction remains unvalidated until implementation.
+The generated loader now projects application entry imports through the same helper used by compile-time and in-memory loaders. A fresh-process scenario invokes an inline tool, dynamic instructions, and a dynamic model from the bundled map after the authored source tree is removed. This de-risks executable reconstruction; it does not establish persisted-session recovery, deployment affinity, or host resource isolation.
 
 Source inspection also confirmed same-root collisions in development process keys, active-generation pointers, local Workflow storage, local output, and summaries. Existing named Vercel service outputs provide only partial isolation. The approved registration-scoped design must address all of these resources. Preserve existing deployment-upgrade semantics rather than promising new version-pinning or migration behavior.
 
@@ -121,5 +121,7 @@ A second authoring interface could drift in validation, defaults, composition, o
 The design questions, including map-key validation/collision diagnostics, the entry-binding representation, and generated-command propagation, are specified above. No additional public-contract decision blocks implementation. The remaining uncertainty is runtime feasibility: validate emitted entry bindings, same-root isolation, discovery exclusion, and durable recovery rather than treating this proposal as proof. If implementation requires changing the confirmed contract, return for a decision instead of silently narrowing it.
 
 Tracking is repo-only by explicit user decision. Keep the proposal, decisions, and progress in this Objective's files; do not create a GitHub issue or require one before proceeding. Do not fabricate issue frontmatter or move the proposal into `research/`, whose issue-backed document convention remains unchanged. This supersedes the earlier issue-provenance follow-up; see [the tracking decision](updates/20260928T235646Z-repo-only-tracking.md).
+
+Implementation evidence: [shared entry compilation](updates/20260929T125323Z-shared-entry-compilation.md) records the delivered compiler slice and remaining host boundaries. Internal `compileAgentInWorkspace` accepts `entrySelection: { appRoot, entry, registration }`; future host wiring must supply registration-scoped artifact locations and suppress extension/instrumentation discovery before and after compilation.
 
 Design context: `research/programmatic-agent-sources.md` describes the existing internal source model. Runtime artifact installation lives in `packages/eve/src/runtime/loaders/bundled-artifacts.ts`; durable bundle references live in `packages/eve/src/runtime/sessions/runtime-context-keys.ts`; Workflow-backed execution begins in `packages/eve/src/execution/workflow-runtime.ts`. Initial exploration was source inspection only, not a validated prototype.

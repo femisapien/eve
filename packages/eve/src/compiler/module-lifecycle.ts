@@ -2,6 +2,7 @@ import type {
   AgentModuleBinding,
   AgentSourceRegistry,
   CompiledModuleBinding,
+  ProgrammaticModuleNamespace,
 } from "#compiler/source-graph.js";
 import type { CompiledAgentDefinition } from "#compiler/manifest.js";
 import {
@@ -15,8 +16,12 @@ export class NodeModuleEvaluationContext {
   readonly #lifecycle = new NodeModuleLifecycle();
   readonly loadNamespace: CompiledBindingNamespaceLoader;
 
-  constructor(registries: readonly AgentSourceRegistry[]) {
+  constructor(
+    registries: readonly AgentSourceRegistry[],
+    entryNamespaces?: ReadonlyMap<string, ProgrammaticModuleNamespace>,
+  ) {
     this.loadNamespace = createCompiledBindingNamespaceLoader({
+      entryNamespaces,
       onLoad: (sourceId) => this.#lifecycle.recordCompileLoad(sourceId),
       registries,
       resolveBinding: (sourceId) => this.#bindings[sourceId],

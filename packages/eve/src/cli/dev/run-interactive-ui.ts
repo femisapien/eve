@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import { devBootPhase, type DevBootProgressReporter } from "#internal/dev-boot-progress.js";
-import { findEveProjectContext } from "#internal/project-context.js";
+import { findEveProjectContext, type EveProjectContext } from "#internal/project-context.js";
 import {
   resumeDevelopmentRuntimeArtifacts,
   suspendDevelopmentRuntimeArtifacts,
@@ -20,6 +20,8 @@ export async function runInteractiveDevelopmentUi(input: {
   readonly applicationRoot: string;
   readonly lifecycle?: CommandLifecycle;
   readonly options: DevelopmentCliOptions;
+  /** Pre-resolved context; entry-selected local dev has no agent directory to rediscover. */
+  readonly projectContext?: EveProjectContext;
   readonly remoteTarget?: DevelopmentUrlTarget;
   readonly report?: DevBootProgressReporter;
   readonly runDevelopmentTui?: (input: RunDevelopmentTuiInput) => Promise<void>;
@@ -33,7 +35,8 @@ export async function runInteractiveDevelopmentUi(input: {
     async () => input.runDevelopmentTui ?? (await import("#cli/dev/tui/tui.js")).runDevelopmentTui,
     input.report,
   );
-  const projectContext = await findEveProjectContext(input.applicationRoot);
+  const projectContext =
+    input.projectContext ?? (await findEveProjectContext(input.applicationRoot));
   const workspaceRoot =
     projectContext?.environmentRoot ?? input.server.appRoot ?? input.applicationRoot;
   const agentRoot =

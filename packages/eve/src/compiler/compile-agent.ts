@@ -1,4 +1,6 @@
 import { join } from "node:path";
+import { prepareEntrySources, type AgentEntrySelection } from "#compiler/entry-sources.js";
+import type { AgentModuleCandidate, ProgrammaticModuleNamespace } from "#compiler/source-graph.js";
 
 import type { DiscoverDiagnostic } from "#discover/diagnostics.js";
 import { discoverAgent } from "#discover/discover-agent.js";
@@ -21,6 +23,7 @@ import type { DevelopmentExtensionSelection } from "#compiler/development-extens
  * discovery artifacts.
  */
 interface CompileAgentInput {
+  entrySelection?: AgentEntrySelection;
   /** Development-only source extensions applied before source composition. */
   developmentExtensions?: DevelopmentExtensionSelection;
   /**
@@ -37,6 +40,8 @@ interface CompileAgentInput {
  */
 export interface CompileAgentResult {
   diagnostics: CompilerDiagnostic[];
+  /** Present when the agent was compiled from one `createAgent` entry module. */
+  entrySelection?: AgentEntrySelection;
   manifest: CompiledAgentManifest;
   metadata: CompileMetadata;
   paths: CompilerArtifactPaths;
@@ -94,10 +99,12 @@ export async function compileAgent(input: CompileAgentInput = {}): Promise<Compi
  */
 export async function compileAgentInWorkspace(input: {
   readonly artifactLocations: CompilerArtifactLocations;
+  readonly entrySelection?: AgentEntrySelection;
   readonly developmentExtensions?: DevelopmentExtensionSelection;
   readonly startPath: string;
 }): Promise<CompileAgentResult> {
   const discovered = await discoverAgentForCompilation({
+    entrySelection: input.entrySelection,
     developmentExtensions: input.developmentExtensions,
     startPath: input.startPath,
   });
@@ -107,6 +114,9 @@ export async function compileAgentInWorkspace(input: {
 }
 
 interface DiscoveredAgentCompilation {
+  readonly entryCandidates?: readonly AgentModuleCandidate[];
+  readonly entryNamespaces?: ReadonlyMap<string, ProgrammaticModuleNamespace>;
+  readonly entrySelection?: AgentEntrySelection;
   readonly developmentExtensions: DevelopmentExtensionSelection | undefined;
   readonly diagnostics: DiscoverDiagnostic[];
   readonly manifest: AgentSourceManifest;
@@ -116,6 +126,17 @@ interface DiscoveredAgentCompilation {
 async function discoverAgentForCompilation(
   input: CompileAgentInput,
 ): Promise<DiscoveredAgentCompilation> {
+  if (input.entrySelection !== undefined) {
+    const prepared = await prepareEntrySources(input.entrySelection);
+    return {
+      ...prepared,
+      entryCandidates: prepared.candidates,
+      entryNamespaces: prepared.namespaces,
+      entrySelection: input.entrySelection,
+      diagnostics: [],
+      developmentExtensions: undefined,
+    };
+  }
   const source = input.source ?? createDiskProjectSource();
   const project = await resolveDiscoveryProject(input.startPath, { source });
   const discoveryResult = await discoverAgent({ ...project, source });
@@ -134,19 +155,23 @@ async function writeAgentCompilation(
 ): Promise<CompileAgentResult> {
   const writtenArtifacts = await writeCompilerArtifacts({
     appRoot: discovered.project.appRoot,
+    entryCandidates: discovered.entryCandidates,
+    entryNamespaces: discovered.entryNamespaces,
     artifactLocations,
     diagnostics: discovered.diagnostics,
     developmentExtensions: discovered.developmentExtensions,
     manifest: discovered.manifest,
   });
 
-  return {
+  const result: CompileAgentResult = {
     diagnostics: writtenArtifacts.diagnosticsArtifact.diagnostics,
     manifest: writtenArtifacts.compiledManifest,
     metadata: writtenArtifacts.metadata,
     paths: writtenArtifacts.paths,
     project: discovered.project,
   };
+  if (discovered.entrySelection !== undefined) result.entrySelection = discovered.entrySelection;
+  return result;
 }
 
 function finishAgentCompilation(

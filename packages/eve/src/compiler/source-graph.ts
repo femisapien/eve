@@ -1,4 +1,5 @@
 import { posix } from "node:path";
+import type { EntryProjection } from "#internal/entry-source.js";
 
 import { normalizeLogicalPath, stripLogicalPathExtension } from "#discover/filesystem.js";
 import {
@@ -144,6 +145,13 @@ export type AgentSourceLayer =
 export type AgentSourceForm = "derived" | "direct";
 
 export type AgentModuleBacking =
+  | {
+      readonly kind: "entry";
+      readonly sourcePath: string;
+      readonly registration: string;
+      readonly projection: EntryProjection;
+      readonly externalDependencies: readonly string[];
+    }
   | {
       readonly externalDependencies: readonly string[];
       readonly extensionScope?: {

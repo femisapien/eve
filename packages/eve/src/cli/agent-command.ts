@@ -49,6 +49,11 @@ export function agentCommand(
       }
       return;
     }
+    if (applicationContext.entrySelection !== undefined && requestedName !== undefined) {
+      throw new Error(
+        "--agent selects an agents/ workspace member and cannot be combined with EVE_INTERNAL_AGENT_SELECTION.",
+      );
+    }
 
     const initialSelection = await applicationContext.resolveAgent();
     if (initialSelection.kind === "workspace") {

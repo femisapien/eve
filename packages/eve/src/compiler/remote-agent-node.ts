@@ -1,4 +1,5 @@
 import { z } from "#compiled/zod/index.js";
+import { entryModuleBackingSchema } from "#shared/entry-backing-schema.js";
 
 import type { Node } from "#shared/node.js";
 import type { ModuleSourceRef } from "#shared/source-ref.js";
@@ -43,6 +44,7 @@ export const compiledRemoteAgentNodeSchema: z.ZodType<CompiledRemoteAgentNode> =
     binding: z
       .object({
         backing: z.discriminatedUnion("kind", [
+          entryModuleBackingSchema,
           z
             .object({
               externalDependencies: z.array(z.string()).readonly(),
