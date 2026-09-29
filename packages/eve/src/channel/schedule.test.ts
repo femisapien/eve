@@ -10,7 +10,7 @@ import {
   ScheduleDispatcher,
 } from "#channel/schedule.js";
 import { contextStorage } from "#context/container.js";
-import { ExtensionConfigsKey, ScheduleIdKey, TaskDeliveryPolicyKey } from "#context/keys.js";
+import { ExtensionConfigsKey, ScheduleIdKey } from "#context/keys.js";
 import type { RunHandle, Runtime } from "#channel/types.js";
 import { slackChannel } from "#public/channels/slack/slackChannel.js";
 import type { ResolvedChannelDefinition } from "#runtime/types.js";
