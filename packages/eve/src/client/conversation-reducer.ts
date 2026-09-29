@@ -54,6 +54,19 @@ function updateTask(
   return next === task ? state : { ...state, tasks: { ...state.tasks, [taskId]: next } };
 }
 
+function resumeSettledInputs(
+  inputs: ConversationState["inputs"],
+  turnId: string,
+): ConversationState["inputs"] {
+  let next: Record<string, ConversationInput> | undefined;
+  for (const [requestId, input] of Object.entries(inputs)) {
+    if (input.status !== "settled" || input.resumeTurnId !== undefined) continue;
+    next ??= { ...inputs };
+    next[requestId] = { ...input, resumeTurnId: turnId };
+  }
+  return next ?? inputs;
+}
+
 function updateObservation(
   state: ConversationState,
   sessionId: string,
@@ -84,6 +97,7 @@ function reduceConversationLifecycle(
           ...state.turns,
           [event.data.turnId]: { turnId: event.data.turnId, status: "active" },
         },
+        inputs: resumeSettledInputs(state.inputs, event.data.turnId),
       };
     case "turn.waiting":
       return updateTurn(state, event.data.turnId, (turn) =>

@@ -180,6 +180,49 @@ Detailed child progress lives on the child session's stream, not in the root `da
 
 If you manage your own session rather than using the hook, pass an `agent.started` event from `events` to [`session.agent()`](../client/streaming#follow-a-subagent) and follow the child with `stream()`. It follows local and remote children through the parent, so the browser never calls a remote deployment directly. See [What the parent sees](../../subagents#what-the-parent-sees) for the complete contract.
 
+To render a followed session inside its call, `agentToolSession(conversation, task)` returns the session an agent tool's task sends its calls to, and `agentCallTurns(task, child)` maps each of the task's calls to the turns it produced in that session's `conversation`. eve also projects a followed session's tool calls into the parent, so skip the IDs in `followedAgentToolCallIds(conversation)` at the parent when you render them under the call instead.
+
+## Tool call status
+
+Call `toolCallState(conversation, part, { turnId, streaming })` to decide what a `dynamic-tool` part's row shows. Pass the `turnId` from the message that holds the part, and `streaming: false` once the hook's `status` is no longer `"submitted"`, `"streaming"`, or `"resuming"`:
+
+```tsx
+import { toolCallState, type ConversationState, type EveMessage } from "eve/react";
+
+function ToolRows({
+  conversation,
+  message,
+  streaming,
+}: {
+  conversation: ConversationState;
+  message: EveMessage;
+  streaming: boolean;
+}) {
+  return message.parts.map((part) => {
+    if (part.type !== "dynamic-tool") return null;
+    const state = toolCallState(conversation, part, {
+      turnId: message.metadata?.turnId,
+      streaming,
+    });
+    return (
+      <p key={part.toolCallId}>
+        {part.toolName}: {state.status}
+      </p>
+    );
+  });
+}
+```
+
+Render it from the component that calls `useEveAgent()`, passing `agent.conversation` and `streaming` derived from `agent.status`.
+
+`status` is one of `"running"`, `"awaiting-input"`, `"done"`, `"failed"`, `"denied"`, `"cancelled"`, or `"interrupted"`. `output` carries the result, or the latest partial result while the call runs, and `errorText` carries the failure or denial reason when the stream reported one. The state follows the lifecycle rules that the message parts alone don't show:
+
+- A call that started a task, such as a subagent call, stays `"running"` until its `task.settled`, even after its turn ends.
+- Asking for approval or an answer ends the turn. An approved or answered call runs in the next turn, so it stays `"running"` after the asking turn ends and becomes `"interrupted"` only if that next turn ends without its result. The next turn's ID is the input's `resumeTurnId` in `conversation.inputs`.
+- Any other call still running when its turn ends is `"interrupted"`, or `"cancelled"` when the turn was cancelled. A call is also `"interrupted"` when `streaming` is `false` and its turn never ended.
+
+For a followed session, pass that session's `conversation` and the turn IDs from its messages.
+
 ## Sending and streaming
 
 Pass the message first and optional per-turn settings second. Use `respond()` for HITL answers:
@@ -208,7 +251,7 @@ To steer an active turn with a follow-up, send the message with `turnPolicy: "st
 await agent.send(message, { turnPolicy: "steer" });
 ```
 
-Other message sends reject while the hook is processing a turn. Answers to open input requests are accepted at any time; see [Human-in-the-loop prompts](#human-in-the-loop-prompts). The default `data.inputs` ledger keeps each request's originating `turnId` and `stepIndex`, response and settlement status, including requests left open after their originating turn ends; `data.activeTurnId` tracks the current root turn when known. A request from a task's run also carries that task's `taskId`. Each followed session keeps its own ledger in `data.agents[sessionId].observation.conversation`. Call `cancel()` to stop the durable server-side turn without replacing it, and `reset()` to clear local state so the next send starts a fresh durable session.
+Other message sends reject while the hook is processing a turn. Answers to open input requests are accepted at any time; see [Human-in-the-loop prompts](#human-in-the-loop-prompts). The default `data.inputs` ledger keeps each request's originating `turnId` and `stepIndex`, response and settlement status, including requests left open after their originating turn ends; `data.activeTurnId` tracks the current root turn when known. A request from a task's run also carries that task's `taskId`. Once a request settles, `resumeTurnId` names the first turn that started after it, which runs an approved or answered call. Each followed session keeps its own ledger in `data.agents[sessionId].observation.conversation`. Call `cancel()` to stop the durable server-side turn without replacing it, and `reset()` to clear local state so the next send starts a fresh durable session.
 
 `cancel()` can be called as soon as `status` is `"submitted"`; the hook waits for the active response to identify its turn when necessary, sends one guarded cancellation request, and keeps the event stream attached. The promise resolves when eve accepts the request or reports that no turn is active, and rejects if the cancellation request fails. The turn then settles on the same stream as `turn.cancelled` followed by `session.waiting`, so the session is safe to continue.
 
@@ -290,7 +333,7 @@ function AuthorizationPrompt({ part }: { part: EveMessagePart }) {
 }
 ```
 
-With a custom reducer, authorization attempts remain available in `conversation.messages`; `authorization.required` and `authorization.completed` are also available on `events` and `onEvent`.
+`conversationAuthorizations(conversation)` returns every authorization part across the session's messages. With a custom reducer, authorization attempts remain available in `conversation.messages`; `authorization.required` and `authorization.completed` are also available on `events` and `onEvent`.
 
 ## Attach page context per turn
 

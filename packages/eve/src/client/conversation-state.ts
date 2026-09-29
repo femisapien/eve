@@ -18,6 +18,11 @@ export interface ConversationInput {
   readonly status: "open" | "responded" | "settled";
   readonly response?: InputResponse;
   readonly outcome?: string;
+  /**
+   * The first turn that started after the request settled. Asking for input ends the turn, and an
+   * approved or answered call finishes in this one.
+   */
+  readonly resumeTurnId?: string;
 }
 
 /** One call that started or reached a task, settled by its `task.settled`. */
@@ -192,4 +197,21 @@ export function isAgentCallContentPending(
   if (call.status !== "completed") return false;
   const received = conversation.messages.filter((message) => message.role === "user").length;
   return received <= Object.keys(task.calls).indexOf(call.callId);
+}
+
+/**
+ * Tool calls a followed agent session already shows. eve also projects them into the parent
+ * session, so a view that renders the agent's own conversation skips them at the parent.
+ */
+export function followedAgentToolCallIds(state: ConversationState): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const agent of Object.values(state.agents)) {
+    if (agent.observation.status === "not-followed") continue;
+    for (const message of agent.observation.conversation?.messages ?? []) {
+      for (const part of message.parts) {
+        if (part.type === "dynamic-tool") ids.add(part.toolCallId);
+      }
+    }
+  }
+  return ids;
 }
