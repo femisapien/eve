@@ -31,14 +31,9 @@ This plan covers the first phase of that work:
 3. **Client**: MCP connections that can consume it, including interrupts answered by a person.
 
 Once it lands, any MCP client can call an eve agent's tools with a plain `tools/call`, the MCP
-Inspector included. Two follow-up plans build on it, and phase 1 does not depend on either:
-
-- [Remote agents over MCP tasks](./remote-agents-over-mcp-tasks.md): agents advertised as
-  task-returning tools, a unified `mcpChannel`, and the removal of `defineRemoteAgent`.
-- [Client-side capability discovery](./mcp-client-discovery.md): how a calling model finds
-  and calls remote tools and skills. It starts in userland, as the prototype's did.
-
-Phase 1 does not change `mcpChannel`, `eveChannel`, or remote agents.
+Inspector included. Phase 1 does not change `mcpChannel`, `eveChannel`, or remote agents. Agents
+as MCP tasks are phase 2, and how a calling model finds remote tools and skills is left to
+userland; see [Out of scope](#out-of-scope).
 
 ## How `mcpChannel` works today
 
@@ -497,9 +492,9 @@ work above.
 
 How the calling model finds and calls those tools and skills is out of scope here. Plain
 connection tools keep working through `connection_search`. Remote skills, a combined catalog,
-and the choice between materialized connection tools and one dispatch tool belong to
-[Client-side capability discovery](./mcp-client-discovery.md). They can be built in userland on
-top of this phase, as the prototype's `discover`, `load_skill`, and `tool_call` tools were.
+and the choice between materialized connection tools and one dispatch tool are later work. They
+can be built in userland on top of this phase, as the prototype's `discover`, `load_skill`, and
+`tool_call` tools were.
 
 ## Security invariants
 
@@ -517,12 +512,12 @@ top of this phase, as the prototype's `discover`, `load_skill`, and `tool_call` 
    file 512 KiB, 100 resource URIs per subscription, and a bounded number of open subscriptions
    per caller.
 
-## Follow-up plans
+## Out of scope
 
-- [Remote agents over MCP tasks](./remote-agents-over-mcp-tasks.md): agents as task-returning
-  tools, one `mcpChannel` for tools, skills, and agents, and `defineRemoteAgent` removed.
-- [Client-side capability discovery](./mcp-client-discovery.md): search, visibility, remote
-  skills, and connection calls from authored tools.
+- Phase 2: agents as task-returning tools over the MCP tasks extension (SEP-2663), one
+  `mcpChannel` for tools, skills, and agents, and removing `defineRemoteAgent`.
+- Client-side discovery: search, visibility, remote skills, and connection calls from authored
+  tools.
 - Tabled: whether authors choose which tools the channel exposes, beyond the invocable filter.
 
 ## Validation
