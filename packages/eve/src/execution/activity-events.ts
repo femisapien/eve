@@ -69,6 +69,8 @@ export function projectActivityEvents(input: {
   }
   if (event.type === "action.result") {
     const result = event.data.result;
+    // Only a child a call started before agents ran as tasks reports its
+    // result on the caller's stream, under its unkeyed work id.
     if (result.kind === "subagent-result") {
       const workId = deriveChildActivityWorkId({
         callId: result.callId,
@@ -229,11 +231,12 @@ export function projectActivityEvents(input: {
       };
     });
   }
+  // Delegated work settles here too: an agent session's result reaches its
+  // caller's reply hook, not the caller's stream.
   if (
-    lineage.kind === "root-turn" &&
-    (event.type === "turn.completed" ||
-      event.type === "turn.failed" ||
-      event.type === "turn.cancelled")
+    event.type === "turn.completed" ||
+    event.type === "turn.failed" ||
+    event.type === "turn.cancelled"
   ) {
     const outcome =
       event.type === "turn.completed"

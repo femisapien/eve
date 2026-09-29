@@ -155,6 +155,20 @@ class RunAgentSession implements AgentSession {
             owner: this.#run.owner,
             replyTo: hook.token,
             request: reply,
+            remote:
+              this.#opened === undefined
+                ? undefined
+                : await this.#opened.then(({ address }) =>
+                    address.kind === "remote"
+                      ? {
+                          forwardPrincipal: address.forwardPrincipal,
+                          name: address.name,
+                          resolverId: address.resolverId,
+                          url: address.url,
+                          sessionId: address.sessionId,
+                        }
+                      : undefined,
+                  ),
           });
           continue;
         }
@@ -214,7 +228,7 @@ class RunAgentSession implements AgentSession {
         key: this.#key,
         name: this.#name,
       });
-      const opened = { address, context };
+      const opened = { address, context, key: this.#key };
       this.#sessions.push(opened);
       await this.#run.owner.send({ from, kind: "agent-started", session: address });
       return opened;

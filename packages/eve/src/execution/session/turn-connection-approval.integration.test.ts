@@ -6,6 +6,7 @@ import { AuthKey, InitiatorAuthKey, SessionIdKey } from "#context/keys.js";
 import { serializeContext } from "#context/serialize.js";
 import { createDurableSessionState, readDurableSession } from "#execution/durable-session-store.js";
 import { turnStep } from "#execution/session/turn-step.js";
+import { runSessionStateStep } from "#internal/testing/session-state-step.js";
 import type { DurableStepResult, TurnStepPayload } from "#execution/session/turn-step-types.js";
 import {
   getApprovalAuditState,
@@ -98,7 +99,7 @@ function setup(
   variation?: "destination" | "name" | "request-only",
 ) {
   const response = vi.fn((context: ApprovalResponseContext) => {
-    expect(context.responder.principalId).toBe("bob");
+    expect(context.response.principal.principalId).toBe("bob");
     expect(context.session.initiator?.principalId).toBe("alice");
     return reject
       ? { status: "rejected" as const, reason: "Only the notes owner can approve." }
@@ -262,7 +263,7 @@ function setup(
   };
   const events: Array<{ type: string; data: Record<string, unknown> }> = [];
   async function step(input?: TurnStepPayload): Promise<DurableStepResult> {
-    const result = await turnStep({
+    const stepInput = {
       ...snapshot,
       input,
       sessionWritable: new WritableStream<Uint8Array>({
@@ -273,8 +274,9 @@ function setup(
           }
         },
       }),
-    });
-    snapshot = result;
+    };
+    const result = await runSessionStateStep(stepInput, turnStep);
+    snapshot = { serializedContext: result.serializedContext, sessionState: result.sessionState };
     return result;
   }
   return {
