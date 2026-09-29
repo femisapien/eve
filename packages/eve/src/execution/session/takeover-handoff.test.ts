@@ -378,10 +378,12 @@ function createInbox(accepted: SessionInboxPayload[] = []): SessionInboxHandle {
     enqueue: vi.fn(),
     hasPending: vi.fn(() => false),
     next: vi.fn(),
+    onAgentStarted: vi.fn(() => () => {}),
     onDelivery: vi.fn(() => () => {}),
     onInterrupt: vi.fn(() => () => {}),
     release: vi.fn(async () => []),
     restore: vi.fn(),
     takenTokens: [],
+    whenPending: vi.fn(() => new Promise<void>(() => {})),
   };
 }
