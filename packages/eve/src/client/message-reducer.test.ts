@@ -7,6 +7,7 @@ import {
   createActionPartialEvent,
   createActionResultEvent,
   createActionsRequestedEvent,
+  createApprovalSettledEvent,
   createAuthorizationCompletedEvent,
   createAuthorizationRequiredEvent,
   createInputResolvedEvent,
@@ -1280,6 +1281,62 @@ describe("defaultMessageReducer", () => {
     expect(findToolPart(data, "call_1")).toMatchObject({
       state: "approval-responded",
       approval: { approved: true },
+    });
+  });
+
+  it("retains a completed workflow result when approval arrives afterward", () => {
+    const reducer = defaultMessageReducer();
+    const request = {
+      action: { callId: "call_1", input: {}, kind: "tool-call" as const, toolName: "color" },
+      display: "confirmation" as const,
+      kind: "tool-approval" as const,
+      options: [
+        { id: "approve", label: "Approve" },
+        { id: "cancel", label: "Cancel" },
+      ],
+      prompt: "Approve color?",
+      requestId: "approval_1",
+    };
+    const events = [
+      createInputRequestedEvent({
+        requests: [request],
+        sequence: 0,
+        stepIndex: 0,
+        turnId: "turn_0",
+      }),
+      createActionResultEvent({
+        result: { callId: "call_1", kind: "tool-result", output: "#123456", toolName: "color" },
+        sequence: 1,
+        stepIndex: 0,
+        turnId: "turn_0",
+      }),
+      createApprovalSettledEvent({
+        outcome: "approved",
+        requestId: "approval_1",
+        responderPrincipalId: "alice",
+        sequence: 2,
+        stepIndex: 0,
+        turnId: "turn_0",
+      }),
+      createInputResolvedEvent({
+        resolutions: [
+          {
+            kind: "tool-approval",
+            outcome: "approved",
+            requestId: "approval_1",
+            response: { optionId: "approve", requestId: "approval_1" },
+          },
+        ],
+        sequence: 3,
+        stepIndex: 0,
+        turnId: "turn_0",
+      }),
+    ];
+    const data = reduceServerEvents(reducer, reducer.initial(), events);
+    expect(findToolPart(data, "call_1")).toMatchObject({
+      approval: { approved: true },
+      output: "#123456",
+      state: "output-available",
     });
   });
 

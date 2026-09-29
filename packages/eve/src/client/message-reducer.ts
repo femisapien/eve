@@ -232,12 +232,16 @@ function reduceMessageData(data: EveMessageData, event: EveAgentReducerEvent): E
       const existing = findToolPartByApprovalId(data, event.data.requestId);
       if (existing === undefined) return data;
       if (event.data.outcome === "approved") {
-        return updateToolPart(data, existing.toolCallId, {
-          ...toolPartIdentity(existing),
-          approval: { approved: true, id: event.data.requestId, reason: undefined },
-          state: "approval-responded",
-        });
+        const approval = { approved: true as const, id: event.data.requestId, reason: undefined };
+        return updateToolPart(
+          data,
+          existing.toolCallId,
+          existing.state === "output-available"
+            ? { ...existing, approval }
+            : { ...toolPartIdentity(existing), approval, state: "approval-responded" },
+        );
       }
+      if (existing.state === "output-available") return data;
       return updateToolPart(data, existing.toolCallId, {
         ...toolPartIdentity(existing),
         approval: {
@@ -431,18 +435,20 @@ function respondToInputRequest(data: EveMessageData, response: InputResponse): E
     approval.reason = response.text;
   }
 
-  return updateToolPart(data, existing.toolCallId, {
-    ...toolPartIdentity(existing),
-    approval,
-    state: "approval-responded",
-    toolMetadata: mergeToolMetadata(existing.toolMetadata, {
-      eve: {
-        inputResponse: response,
-        kind: existing.toolMetadata?.eve?.kind ?? "unknown",
-        name: existing.toolMetadata?.eve?.name ?? existing.toolName,
-      },
-    }),
+  const toolMetadata = mergeToolMetadata(existing.toolMetadata, {
+    eve: {
+      inputResponse: response,
+      kind: existing.toolMetadata?.eve?.kind ?? "unknown",
+      name: existing.toolMetadata?.eve?.name ?? existing.toolName,
+    },
   });
+  return updateToolPart(
+    data,
+    existing.toolCallId,
+    existing.state === "output-available"
+      ? { ...existing, approval: { ...approval, approved: true }, toolMetadata }
+      : { ...toolPartIdentity(existing), approval, state: "approval-responded", toolMetadata },
+  );
 }
 
 function resolveInputRequest(data: EveMessageData, resolution: InputResolution): EveMessageData {
