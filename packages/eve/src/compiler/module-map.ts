@@ -6,6 +6,7 @@ import type {
 } from "#compiler/manifest.js";
 import { ROOT_COMPILED_AGENT_NODE_ID } from "#compiler/manifest.js";
 import {
+  bindingMountId,
   type AgentSourceRegistry,
   type CompiledModuleBinding,
   type ProgrammaticModuleNamespace,
@@ -69,32 +70,22 @@ export function createCompiledModuleMapSource(input: CreateCompiledModuleMapSour
     const bindingNames = new Map(
       scope.modules.map((module) => [module.sourceId, `module_${index++}`] as const),
     );
-    const ordered = orderBoundModules(scope.modules, (binding) =>
-      mountSourceIds.get(
-        binding.backing.kind === "filesystem" && binding.backing.mountId !== undefined
-          ? binding.backing.mountId
-          : binding.owner.kind === "extension"
-            ? binding.owner.mountId
-            : "",
-      ),
-    );
+    const ordered = orderBoundModules(scope.modules, (binding) => {
+      const mountId = bindingMountId(binding);
+      return mountId === undefined ? undefined : mountSourceIds.get(mountId);
+    });
     return {
       modules: ordered.map(({ binding, sourceId }) => {
         const bindingName = bindingNames.get(sourceId)!;
         if (binding.backing.kind === "filesystem") {
+          const mountId = bindingMountId(binding) ?? mountIds.get(sourceId);
           const specifier =
             createImportSpecifier({
               fromDirectory: moduleMapDirectory,
               importSpecifierStyle,
               targetPath: binding.backing.sourcePath,
-            }) +
-            (binding.owner.kind === "extension" ||
-            mountIds.has(sourceId) ||
-            binding.backing.mountId !== undefined
-              ? `?eve-mount=${encodeURIComponent(binding.backing.mountId ?? (binding.owner.kind === "extension" ? binding.owner.mountId : mountIds.get(sourceId)!))}`
-              : "");
-          const contribution =
-            binding.owner.kind === "extension" || binding.backing.mountId !== undefined;
+            }) + (mountId === undefined ? "" : `?eve-mount=${encodeURIComponent(mountId)}`);
+          const contribution = bindingMountId(binding) !== undefined;
           return {
             bindingName,
             importSpecifier: contribution ? undefined : specifier,
@@ -102,14 +93,15 @@ export function createCompiledModuleMapSource(input: CreateCompiledModuleMapSour
             sourceId,
           };
         }
-        if (
-          mountIds.get(sourceId) === "extensions/self-modification" &&
-          binding.backing.registryId === "eve:development-extension:self-modification"
-        ) {
-          const specifier = `eve/self-modification?eve-mount=${encodeURIComponent(mountIds.get(sourceId)!)}`;
+        const mountId = mountIds.get(sourceId);
+        const programmaticImport = scope.mounts.find(
+          (mount) => mount.mountId === mountId,
+        )?.programmaticImport;
+        if (programmaticImport !== undefined && mountId !== undefined) {
+          const specifier = `${programmaticImport.specifier}?eve-mount=${encodeURIComponent(mountId)}`;
           return {
             bindingName,
-            initializer: `memoizeModuleNamespaceFactories({ default: (await import(${JSON.stringify(specifier)})).default({ local: { enabled: true } }) })`,
+            initializer: `memoizeModuleNamespaceFactories({ default: (await import(${JSON.stringify(specifier)})).default(${JSON.stringify(programmaticImport.config)}) })`,
             sourceId,
           };
         }
@@ -172,14 +164,10 @@ export async function createProgrammaticCompiledModuleMap(
     const loadNamespace = createCompiledBindingNamespaceLoader({
       bindings,
       registries,
-      mountSourceId: (binding) =>
-        mountSourceIds.get(
-          binding.backing.kind === "filesystem" && binding.backing.mountId !== undefined
-            ? binding.backing.mountId
-            : binding.owner.kind === "extension"
-              ? binding.owner.mountId
-              : "",
-        ),
+      mountSourceId: (binding) => {
+        const mountId = bindingMountId(binding);
+        return mountId === undefined ? undefined : mountSourceIds.get(mountId);
+      },
     });
     for (const { sourceId } of scope.modules) {
       modules[sourceId] = await loadNamespace(sourceId);

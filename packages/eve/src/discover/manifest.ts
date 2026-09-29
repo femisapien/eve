@@ -151,6 +151,9 @@ export interface ResolvedExtensionMount {
   readonly programmaticDeclaration?: {
     readonly logicalPath: string;
     readonly sourceId: string;
+    readonly importSpecifier: string;
+    readonly entryPath: string;
+    readonly config: Record<string, unknown>;
   };
   /** Mount namespace derived from the mount filename (e.g. `crm`). */
   readonly namespace: string;

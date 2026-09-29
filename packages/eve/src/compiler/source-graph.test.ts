@@ -50,6 +50,9 @@ describe("bundled extension declarations", () => {
     const loadMount = vi.fn(async () => ({ config: { enabled: true }, mounted: true }));
     const mount = createBundledExtensionMount({
       loadMount,
+      importSpecifier: "eve/example",
+      entryPath: "/packages/example/extension/extension.ts",
+      config: { enabled: true },
       namespace: "example",
       sourceDirectory: "/packages/example/extension",
     });

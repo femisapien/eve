@@ -8,6 +8,9 @@ describe("discoverBundledExtension", () => {
   it("discovers the complete extension tree without declared file entries", async () => {
     const mount = createBundledExtensionMount({
       loadMount: async () => ({}),
+      importSpecifier: "eve/example",
+      entryPath: "/package/extension/extension.ts",
+      config: { enabled: true },
       namespace: "example",
       sourceDirectory: "/package/extension",
     });
@@ -33,6 +36,9 @@ describe("discoverBundledExtension", () => {
     expect(result.mount.programmaticDeclaration).toEqual({
       logicalPath: "extensions/example.ts",
       sourceId: `${mount.declaration.id}:extensions/example.ts`,
+      importSpecifier: "eve/example",
+      entryPath: "/package/extension/extension.ts",
+      config: { enabled: true },
     });
   });
 });

@@ -111,6 +111,28 @@ describe("state layout admission", () => {
     }
   });
 
+  it("drops an unknown application key in a current-layout checkpoint", async () => {
+    const bundle = { compiledArtifactsSource: { kind: "bundled" } } as CompiledBundle;
+    const deserialize = vi.spyOn(BundleKey.codec!, "deserialize").mockResolvedValue(bundle);
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const restored = await deserializeContext({
+        "eve.bundle": {},
+        "eve.stateLayout": 1,
+        "test.renamed.app-owned": 4,
+      });
+      expect(restored.get(BundleKey)).toBe(bundle);
+      expect([...restored.entries()]).toHaveLength(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining("dropping unknown context key"),
+        expect.objectContaining({ key: "test.renamed.app-owned" }),
+      );
+    } finally {
+      deserialize.mockRestore();
+      warn.mockRestore();
+    }
+  });
+
   it("rejects unmarked reserved state even when the declaration has been removed", async () => {
     const savedName = "eve:mount.v1:extensions%2Fremoved:requests";
     new ContextKey(savedName);

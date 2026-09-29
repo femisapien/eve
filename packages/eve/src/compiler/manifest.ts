@@ -946,6 +946,14 @@ const compiledExtensionMountSchema: z.ZodType<CompiledExtensionMount> = z
     mountSourceId: z.string(),
     mountSourcePath: z.string(),
     mountLogicalPath: z.string(),
+    programmaticImport: z
+      .object({
+        specifier: z.string(),
+        entryPath: z.string(),
+        config: z.record(z.string(), z.unknown()),
+      })
+      .strict()
+      .optional(),
   })
   .strict();
 
@@ -1046,6 +1054,11 @@ export interface CompiledExtensionMount {
   readonly mountSourceId: string;
   readonly mountSourcePath: string;
   readonly mountLogicalPath: string;
+  readonly programmaticImport?: {
+    readonly specifier: string;
+    readonly entryPath: string;
+    readonly config: Record<string, unknown>;
+  };
 }
 
 /**

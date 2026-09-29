@@ -72,6 +72,7 @@ export async function deserializeContext(data: Record<string, unknown>): Promise
       }
     }
     if (
+      data[STATE_LAYOUT_KEY] === undefined &&
       Object.keys(data).some(
         (name) =>
           name !== BundleKey.name &&

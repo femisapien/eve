@@ -180,6 +180,15 @@ export function compileExtensionMounts(
         externalDependencies: [...mount.externalDependencies],
         mountLogicalPath: mountRef.logicalPath,
         mountSourceId: mountRef.sourceId,
+        ...(mount.programmaticDeclaration === undefined
+          ? {}
+          : {
+              programmaticImport: {
+                specifier: mount.programmaticDeclaration.importSpecifier,
+                entryPath: mount.programmaticDeclaration.entryPath,
+                config: mount.programmaticDeclaration.config,
+              },
+            }),
         mountSourcePath: posix.join(manifest.agentRoot, mountRef.logicalPath),
         namespace: mount.namespace,
         packageName: mount.packageName,

@@ -83,6 +83,43 @@ describe("extension-scope plugin (bundled)", () => {
     };
     expect(result.distinct).toBe(true);
   });
+  it.each(["dual", "import-only"])(
+    "uses the ESM export for a mounted %s package",
+    async (shape) => {
+      const { sourceRoot } = scratchModule("export const value = 1;");
+      const dir = join(sourceRoot, "..");
+      const packageRoot = join(dir, "node_modules", "test-extension");
+      mkdirSync(packageRoot, { recursive: true });
+      writeFileSync(
+        join(packageRoot, "package.json"),
+        JSON.stringify({
+          name: "test-extension",
+          exports: {
+            ".":
+              shape === "dual"
+                ? { import: "./entry.mjs", require: "./entry.cjs" }
+                : { import: "./entry.mjs" },
+          },
+        }),
+      );
+      writeFileSync(join(packageRoot, "entry.mjs"), 'export const format = "esm";');
+      writeFileSync(join(packageRoot, "entry.cjs"), 'exports.format = "cjs";');
+      const entry = join(dir, "consumer.ts");
+      writeFileSync(entry, 'export { format } from "test-extension?eve-mount=extensions%2Ftest";');
+      const code = await bundle(entry, [
+        createExtensionMountPlugin([
+          {
+            mountId: "extensions/test",
+            sourceRoot: packageRoot,
+            packageName: "test-extension",
+            specifier: "test-extension",
+          },
+        ]),
+      ]);
+      expect((await import(`data:text/javascript,${encodeURIComponent(code)}`)).format).toBe("esm");
+    },
+  );
+
   it("rejects an application import with two possible mount owners", async () => {
     const { sourceRoot } = scratchModule("export const value = 1;");
     const entry = join(sourceRoot, "..", "consumer.ts");
