@@ -2,4 +2,4 @@
 "eve": patch
 ---
 
-The Web Chat template shows each answer first, with one folded activity row for the work behind it: tools, tasks, and subagents at every depth use the same rows and statuses, a working task stays working until it settles, and failures stay visible. Approvals, questions, session limits, and sign-ins from anywhere in the agent tree collect in a dock above the composer, labelled with who asked. A held turn names what it is waiting on, a message sent into a running turn appears where it arrived, and cancelled or failed turns say so.
+The Web Chat template folds the tool calls, reasoning, and subagent work between each stretch of an answer into one expandable activity line, with each call's status from `toolCallState` and a followed subagent's work nested under its call. Approvals, questions, session limits, and sign-ins from anywhere in the agent tree now collect in one list above the composer.

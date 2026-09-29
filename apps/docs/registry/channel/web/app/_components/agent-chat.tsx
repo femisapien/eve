@@ -3,7 +3,7 @@
 import type { UserContent } from "ai";
 import { useEveAgent } from "eve/react";
 import { CircleAlertIcon, PlusIcon, SquareIcon } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Conversation,
   ConversationContent,
@@ -22,9 +22,8 @@ import { Shimmer } from "@/components/ai-elements/shimmer";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { WEB_CHAT_AGENT } from "@/app/eve-agent";
-import { FocusInputContext } from "./activity";
-import { AssistantTurn, UserMessage } from "./agent-message";
-import { dockItems, streamFacts, viewContext } from "./conversation-view";
+import { AssistantMessage, UserMessage } from "./agent-message";
+import { dockItems, viewContext } from "./conversation-view";
 import { InputDock } from "./input-dock";
 
 const DEFAULT_AGENT_NAME = "eve-agent";
@@ -39,7 +38,6 @@ export function AgentChat({
 }) {
   const [cancellationError, setCancellationError] = useState<string>();
   const [hasInputText, setHasInputText] = useState(false);
-  const [dockFocus, setDockFocus] = useState<string>();
   const agent = useEveAgent({
     agent: WEB_CHAT_AGENT,
     followSubagents: true,
@@ -68,53 +66,23 @@ export function AgentChat({
   const isResuming = agent.status === "resuming";
   const conversation = agent.data;
   const isEmpty = conversation.messages.length === 0;
-  const facts = useMemo(() => streamFacts(agent.events), [agent.events]);
   const context = useMemo(
-    () => viewContext(conversation, facts, isBusy || isResuming),
-    [conversation, facts, isBusy, isResuming],
+    () => viewContext(conversation, isBusy || isResuming),
+    [conversation, isBusy, isResuming],
   );
-  const dock = useMemo(() => dockItems(context), [context]);
+  const dock = useMemo(() => dockItems(conversation), [conversation]);
   const lastMessage = conversation.messages.at(-1);
-  const lastAssistantId = conversation.messages.findLast(
-    (message) => message.role === "assistant",
-  )?.id;
-  // Before the turn's first event, nothing else says the agent is working.
-  const showPendingThinking = isBusy && lastMessage?.role !== "assistant";
-  const errorMessage =
-    cancellationError ??
-    agent.error?.message ??
-    (isBusy ? undefined : facts.sessionFailure?.message);
+  const isPendingAssistantShell =
+    lastMessage?.role === "assistant" &&
+    lastMessage.parts.every((part) => part.type === "step-start");
+  const showPendingThinking =
+    isBusy &&
+    (agent.status === "submitted" || lastMessage?.role !== "assistant" || isPendingAssistantShell);
+  const turnFailure = isBusy || isResuming ? undefined : getLatestTurnFailure(agent.events);
+  const errorMessage = cancellationError ?? agent.error?.message ?? turnFailure;
   const hasConversationContent = sessionless || !isEmpty || errorMessage !== undefined;
   const showConversationLayout = isResuming || hasConversationContent;
   const activeSessionId = sessionId ?? agent.session?.sessionId;
-
-  // Messages sent into a running turn render at the point they arrived, inside that turn.
-  const steered = useMemo(() => {
-    const assistantTurns = new Set(
-      conversation.messages.flatMap((message) =>
-        message.role === "assistant" && message.metadata?.turnId !== undefined
-          ? [message.metadata.turnId]
-          : [],
-      ),
-    );
-    const byId = new Map<string, (typeof conversation.messages)[number]>();
-    for (const message of conversation.messages) {
-      const turnId = message.metadata?.turnId;
-      if (
-        message.role === "user" &&
-        turnId !== undefined &&
-        assistantTurns.has(turnId) &&
-        facts.steeredMessageIds.has(message.id)
-      ) {
-        byId.set(message.id, message);
-      }
-    }
-    return byId;
-  }, [conversation, facts]);
-
-  const focusInput = useCallback((requestId: string) => {
-    setDockFocus(`input:${requestId}`);
-  }, []);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const [bottomHeight, setBottomHeight] = useState(0);
@@ -180,79 +148,72 @@ export function AgentChat({
   );
 
   return (
-    <FocusInputContext.Provider value={focusInput}>
-      <main className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
-        {showConversationLayout ? (
-          <ChatHeader canStartNewChat={activeSessionId !== undefined} />
-        ) : null}
+    <main className="flex h-dvh flex-col overflow-hidden bg-background text-foreground">
+      {showConversationLayout ? (
+        <ChatHeader canStartNewChat={activeSessionId !== undefined} />
+      ) : null}
 
-        {showConversationLayout ? (
-          <Conversation
-            className="min-h-0 flex-1"
-            initial={sessionId === undefined ? undefined : false}
-            resize={activeSessionId === undefined ? "smooth" : "instant"}
-            scrollRestorationKey={
-              isEmpty || activeSessionId === undefined
-                ? undefined
-                : `eve:web-chat-scroll:${activeSessionId}`
-            }
-          >
-            <ConversationTopFade className="top-14" />
-            <ConversationContent
-              className="mx-auto w-full max-w-3xl gap-6 px-4 pt-20 sm:px-6"
-              style={{ paddingBottom: Math.max(144, bottomHeight + 32) }}
-            >
-              {conversation.messages.map((message) =>
-                message.role === "user" ? (
-                  steered.has(message.id) ? null : (
-                    <UserMessage key={message.id} message={message} />
-                  )
-                ) : (
-                  <AssistantTurn
-                    context={context}
-                    isLastTurn={message.id === lastAssistantId}
-                    key={message.id}
-                    message={message}
-                    steered={steered}
-                  />
-                ),
-              )}
-              {showPendingThinking ? <PendingThinking /> : null}
-              {errorMessage ? <ErrorMessage message={errorMessage} /> : null}
-            </ConversationContent>
-            <ConversationScrollButton />
-          </Conversation>
-        ) : null}
-
-        <div
-          className={cn(
-            "mx-auto w-full px-4 sm:px-6",
-            showConversationLayout
-              ? "fixed bottom-0 left-1/2 z-20 max-w-3xl -translate-x-1/2 bg-gradient-to-t from-background via-background to-transparent pt-4 pb-6"
-              : "flex max-w-xl flex-1 flex-col items-center justify-center gap-8 pb-[10vh]",
-          )}
+      {showConversationLayout ? (
+        <Conversation
+          className="min-h-0 flex-1"
+          initial={sessionId === undefined ? undefined : false}
+          resize={activeSessionId === undefined ? "smooth" : "instant"}
+          scrollRestorationKey={
+            isEmpty || activeSessionId === undefined
+              ? undefined
+              : `eve:web-chat-scroll:${activeSessionId}`
+          }
         >
-          {showConversationLayout ? null : (
-            <div className="flex flex-col items-center gap-3 text-center">
-              <h1 className="font-medium text-5xl tracking-tighter">{AGENT_NAME}</h1>
-            </div>
-          )}
-          <div className="w-full" ref={bottomRef}>
-            <InputDock
-              canRespond={!isResuming}
-              focusKey={dockFocus}
-              items={dock}
-              onFocusKeyChange={setDockFocus}
-              onRespond={async (response) => {
-                setCancellationError(undefined);
-                await agent.respond([response]);
-              }}
-            />
-            {composer}
+          <ConversationTopFade className="top-14" />
+          <ConversationContent
+            className="mx-auto w-full max-w-3xl gap-6 px-4 pt-20 sm:px-6"
+            style={{ paddingBottom: Math.max(144, bottomHeight + 32) }}
+          >
+            {conversation.messages.map((message) =>
+              message.role === "user" ? (
+                <UserMessage key={message.id} message={message} />
+              ) : (
+                <AssistantMessage
+                  context={context}
+                  isStreaming={isBusy && message === lastMessage}
+                  key={message.id}
+                  message={message}
+                />
+              ),
+            )}
+            {showPendingThinking ? <PendingThinking /> : null}
+            {errorMessage ? <ErrorMessage message={errorMessage} /> : null}
+          </ConversationContent>
+          <ConversationScrollButton />
+        </Conversation>
+      ) : null}
+
+      <div
+        className={cn(
+          "mx-auto w-full px-4 sm:px-6",
+          showConversationLayout
+            ? "fixed bottom-0 left-1/2 z-20 max-w-3xl -translate-x-1/2 bg-gradient-to-t from-background via-background to-transparent pt-4 pb-6"
+            : "flex max-w-xl flex-1 flex-col items-center justify-center gap-8 pb-[10vh]",
+        )}
+      >
+        {showConversationLayout ? null : (
+          <div className="flex flex-col items-center gap-3 text-center">
+            <h1 className="font-medium text-5xl tracking-tighter">{AGENT_NAME}</h1>
           </div>
+        )}
+        <div className="w-full" ref={bottomRef}>
+          <InputDock
+            canRespond={!isResuming}
+            items={dock}
+            onRespond={async (response) => {
+              setCancellationError(undefined);
+              await agent.respond([response]);
+            }}
+          />
+          {composer}
         </div>
-      </main>
-    </FocusInputContext.Provider>
+      </div>
+    </main>
   );
 }
 
@@ -326,6 +287,27 @@ function PendingThinking() {
       </Shimmer>
     </div>
   );
+}
+
+function getLatestTurnFailure(
+  events: ReturnType<typeof useEveAgent>["events"],
+): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index];
+    if (event.type === "turn.failed") {
+      return event.data.code === "MODEL_CALL_FAILED"
+        ? "The model is temporarily unavailable. Please try again."
+        : event.data.message;
+    }
+    if (
+      event.type === "turn.completed" ||
+      event.type === "turn.cancelled" ||
+      event.type === "message.received"
+    ) {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
 function toErrorMessage(error: unknown): string {
