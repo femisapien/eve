@@ -1,7 +1,7 @@
 ---
 issue: TBD
 status: draft
-last_updated: "2026-09-28"
+last_updated: "2026-09-29"
 ---
 
 # MCP capabilities channel
@@ -18,16 +18,24 @@ halved median latency (15 s against 28 s), and used about a quarter of the token
 
 This plan covers the first phase of that work:
 
-1. **Core**: two public primitives. `introspect` lists an agent's tools and skills. `invokeTool`
-   runs one tool outside a model turn, with the same context the tool gets inside one. Pending
-   sign-ins also become durable.
-2. **Server**: `mcpCapabilitiesChannel`, a stateless MCP `2026-07-28` server built only on those
-   primitives.
+1. **Core**: additions to surfaces eve already has, on `eve/client` and in route handlers.
+   `info()` returns the agent's tools and skills, split from deployment inspection.
+   `sessions.create({ capabilities: true })` creates a session that runs tools instead of turns.
+   `session.invokeTool` runs one tool with the context it gets in a turn, inside the request and
+   without parking. `session.readSkill` reads one skill file.
+2. **Server**: `mcpCapabilitiesChannel`, a stateless MCP `2026-07-28` server that only adapts MCP
+   onto those operations.
 3. **Client**: MCP connections that can consume it, including interrupts answered by a person.
 
-Agent calls come later, in a second phase with its own plan: agents advertised as task-returning
-tools, a unified `mcpChannel`, and the removal of `defineRemoteAgent`. Phase 1 does not change
-`mcpChannel`, `eveChannel`, or remote agents.
+Once it lands, any MCP client can call an eve agent's tools with a plain `tools/call`, the MCP
+Inspector included. Two follow-up plans build on it, and phase 1 does not depend on either:
+
+- [Remote agents over MCP tasks](./remote-agents-over-mcp-tasks.md): agents advertised as
+  task-returning tools, a unified `mcpChannel`, and the removal of `defineRemoteAgent`.
+- [Client-side capability discovery](./mcp-client-discovery.md): how a calling model finds
+  and calls remote tools and skills. It starts in userland, as the prototype's did.
+
+Phase 1 does not change `mcpChannel`, `eveChannel`, or remote agents.
 
 ## How `mcpChannel` works today
 
@@ -68,10 +76,9 @@ Agent invocation therefore already exists. What is missing is running one tool.
 ### Why core has to change
 
 A tool's `execute` expects a context that only the harness builds today: the caller in
-`ctx.session.auth`, the session's sandbox through `ctx.getSandbox()`, credentials through
-`ctx.getToken()`, and skills through `ctx.getSkill()`. Before `execute`, the harness evaluates the
-tool's approval policy. When `getToken` needs a sign-in, the harness parks the call and resumes it
-later.
+`ctx.session.auth`, the session's sandbox through `ctx.getSandbox()`, and credentials through
+`ctx.getToken()`. Before `execute`, the harness evaluates the
+tool's approval policy.
 
 A channel route has none of this. `RouteHandlerArgs` offers session handles (`from`,
 `attachSession`, `to`), `waitUntil`, and path params. A route cannot list the agent's tools, run
@@ -88,60 +95,95 @@ Two alternatives were considered and rejected:
   runtime, and the compiled tool registry. That couples a channel to core internals, and no other
   channel or extension could reuse it.
 
-The primitives below give every channel and extension the same path into tool execution. The
-harness loop does not change. The work adds an execution scope that comes from a request instead
-of a workflow run.
+Almost everything the channel needs exists already, on the client (`eve/client`) or inside the
+framework. The changes extend those surfaces instead of adding a separate one:
 
-### 1. Introspection
+| Need                     | Remote, `eve/client`                           | In a route handler                                   |
+| ------------------------ | ---------------------------------------------- | ---------------------------------------------------- |
+| An agent's tools, skills | `client.info()`, mixed with deployment details | internal only (`readAgentInfoRouteResponse`)         |
+| Create an idle session   | `client.sessions.create()`                     | internal only; `attachSession(id)` for existing ones |
+| Session operations       | `ClientSession`: `send`, `stream`, `cancel`, … | `Session`: `send`, `respond`, `cancel`, …            |
+| Run one tool             | missing                                        | missing                                              |
+| Read one skill file      | missing                                        | missing                                              |
 
-Route handlers receive the agent they serve as `AgentInfo`. `introspect()` returns data only;
-reading a skill, running a tool, and prewarming are operations on the agent:
+The harness loop does not change. The work adds a tool execution scope that comes from a request
+instead of a turn.
+
+### 1. Agent metadata, split from deployment inspection
+
+`GET /eve/v1/info` mixes two things. One is metadata about the agent: its name, description,
+tools, and skills. The other is deployment inspection: `appRoot` and `agentRoot`, source paths,
+config, composition and discovery diagnostics, hooks, kernel effects, sandbox, mode, channels,
+memories, schedules, and connections. Their consumers differ too:
+
+| Consumer                                      | Reads                                          |
+| --------------------------------------------- | ---------------------------------------------- |
+| `mcpChannel`                                  | the agent's name and description               |
+| eval targets                                  | the agent's name; `mode` and dev-route support |
+| dev TUI, dev-client probe, remote-agent setup | the whole inspection payload                   |
+
+Inspection details must never reach an MCP caller. So the payload splits:
+
+- **`info()` returns `AgentInfo`**, the agent's metadata, on `Client` and on route args. This is
+  what the channel publishes.
+- **Deployment inspection moves to its own surface**, for example `client.inspect()` at
+  `/eve/v1/inspect`. It keeps the route's current auth, which is Vercel OIDC outside
+  development. The dev TUI, setup, and eval targets move to it. This is a breaking change,
+  which pre-1.0 eve prefers to a compatibility shim.
 
 ```ts
 interface AgentInfo {
   readonly name: string;
-  readonly description: string;
-  introspect(): AgentIntrospection;
-  invokeTool(name: string, input: unknown, options: InvokeToolOptions): Promise<InvokeToolResult>;
-  prewarm(options: InvokeSessionOptions): Promise<{ sessionId: string }>; // as client.sessions.create()
-  readSkill(
-    skill: string,
-    path: string | undefined,
-    options: InvokeSessionOptions,
-  ): Promise<string | Uint8Array>;
-}
-
-interface AgentIntrospection {
+  readonly description?: string;
   readonly tools: readonly {
     name: string;
     description: string;
     inputSchema: JsonObject;
     outputSchema?: JsonObject;
     approval: boolean; // the tool declares an approval policy
+    invocable: boolean; // invokeTool can run it outside a turn
   }[];
   readonly skills: readonly { name: string; description: string; files: readonly string[] }[];
 }
 ```
 
-- Listed tools are the agent's authored and extension tools. Framework tools (`bash`,
-  `load_skill`), workflow tools, background tools, and tools with special handling are excluded,
-  because they depend on a turn: they suspend, run past the request, or change the harness itself.
+- Tools are not invocable when they depend on a turn: framework tools (`bash`, `load_skill`),
+  workflow tools, background tools, and tools with special handling. They suspend, run past the
+  request, or change the harness itself. The channel lists only invocable tools.
 - The order is deterministic, so callers can cache the list.
 - Subagents are not listed in phase 1.
 
-### 2. `invokeTool`
+### 2. Capability sessions: `sessions.create({ capabilities: true })`
+
+Route args gain `sessions.create()`, the same operation clients already have as
+`client.sessions.create()`. With `capabilities: true`, it creates a capability session:
+
+- **A real eve session, created without a message** through the existing prewarm path. It is
+  owned by the principal that created it (`auth.current`, `auth.initiator`, and the forwarder, if
+  any). The sandbox idle timeout bounds one that is never used.
+- **Its sandbox starts on create.** A conversation prewarm parks before sandbox setup, and its
+  first turn does the rest. A capability session never runs a turn, so create does the setup the
+  first tool call would otherwise wait for.
+- **It runs tools, not turns.** `send` and `respond` are rejected on it.
+- **The id is server-issued**, as SEP-2567 recommends, instead of derived from a key the client
+  chooses.
+
+`capabilities: true` is a placeholder name.
+
+### 3. Session operations: `invokeTool` and `readSkill`
+
+Both are added to the route `Session` and to `ClientSession`. The client form uses a new eve
+HTTP route, so an eve caller can run another eve agent's tools without MCP.
 
 ```ts
-interface InvokeSessionOptions {
-  auth: {
-    current: SessionAuthContext | null;
-    initiator?: SessionAuthContext | null;
-    forwarder?: SessionAuthContext;
-  };
-  key?: string; // the caller's conversation key
+interface Session {
+  // ...existing operations
+  invokeTool(name: string, input: unknown, options?: InvokeToolOptions): Promise<InvokeToolResult>;
+  readSkill(skill: string, path?: string): Promise<string | Uint8Array>; // default: SKILL.md
 }
 
-interface InvokeToolOptions extends InvokeSessionOptions {
+interface InvokeToolOptions {
+  auth?: SessionAuthContext; // route handlers: the caller this request authenticated
   callId?: string; // correlates the retries of one call
   approval?: { approved: boolean }; // the person's answer, when the caller has one
   signal?: AbortSignal;
@@ -160,56 +202,49 @@ type InvokeToolResult =
     };
 ```
 
-The tool sees the same `ctx` it sees in a turn:
+Every call checks that the caller owns the session, which is the rule `mcpChannel` already
+applies to invocations. The tool then sees the same `ctx` it sees in a turn:
 
-- `ctx.session.auth.current` and `.initiator` come from `auth`.
-- `ctx.session.id` is derived by core from the caller identities and the key:
-  `sha256(forwarder, current, key)`. Two callers, or two users behind one forwarder, never share a
-  session by choosing the same key. Without a key, the session is one-off, and its sandbox is
-  deleted after the call.
-- `ctx.getSandbox()` opens the sandbox named after the session, so any instance reaches the same
-  sandbox without stored state.
+- `ctx.session.id` is the capability session. `ctx.session.auth.current` is the caller, and
+  `.initiator` is the session's creator.
+- `ctx.getSandbox()` opens the session's sandbox.
 - `ctx.getToken()` resolves the user's grant, and returns `authorization-required` when a sign-in
   is needed.
+- `ctx.session.turn` and `ctx.session.parent` are absent, because there is no turn. `turn`
+  becomes optional in `SessionContext`, and its absence is how a tool knows it was called
+  directly. Every other field is available.
 
-**Prewarm** is the same concept eve already gives clients with `client.sessions.create()` and
-`useEveAgent({ prewarm: true })`:
-
-- It prepares the session a caller is about to use, without running anything.
-- It resolves once the session is accepted, not when it is ready, and concurrent prewarms of one
-  session share the work.
-- It returns the session id, the same one later `invokeTool` calls with those identities and key
-  run in.
-
-What gets prepared differs. A conversation prewarm starts a workflow and parks before sandbox
-setup. A capability session has no workflow, so prewarm starts its sandbox, which is the setup a
-first tool call would otherwise wait for. A session without a key has nothing to prewarm. The
-provider's sandbox idle timeout bounds a prewarmed session that is never used.
+**Tools run inside the request and never park.** Parking exists so that a turn can wait for a
+person. MCP's multi round-trip requests already move that wait to the client: the call ends with
+`input_required`, and the client retries with the answer. A stateless function can serve each
+retry. So no call state outlives a request, and no workflow step wraps a call. A tool that needs
+longer than one request is an agent task, which belongs to phase 2.
 
 **Approval is evaluated on every call, and nothing carries over between calls.**
 
 1. The request policy runs.
 2. If it requires approval and `approval` is absent, the result is `approval-required`.
-3. If `approval` is present, the response policy runs with `auth.current` as the responder.
+3. If `approval` is present, the response policy runs with the caller as the responder.
 4. Only then does the tool run.
 
-A retry after sign-in passes `approval` again. There is no "already approved" input.
-`callId` only correlates retries, for example for approval policies that pin the requester by call id. A
+A retry after sign-in passes `approval` again. There is no "already approved" input. `callId`
+only correlates retries, for example for approval policies that pin the requester by call id. A
 forged `callId` can make a response policy refuse, but it cannot grant anything. The prototype
 carried an "approved" flag in client-held state, and a client could set it to skip approval.
 This contract removes that possibility at the primitive, instead of relying on each channel.
 
-### 3. Durable pending authorization
+**Sign-in stores the grant, not the call.** When `getToken` needs a sign-in, the result is
+`authorization-required` with its challenges. The provider's callback lands on eve's existing
+connection callback route. The route has no parked run to resume, so it completes the exchange
+itself, and the retry runs the tool from the start.
 
-When `getToken` needs a sign-in, core records the attempt, bound to the session and to
-`auth.current`, and returns its challenges. The provider's callback lands on eve's existing
-authorization callback route rather than a route each channel defines. A later `invokeTool` with
-the same `callId` completes the exchange and runs the tool.
-
-The prototype kept pending attempts in process memory, so a callback that reached another
-instance was lost. The prototype also did not check that the person completing the sign-in was
-the one who started it, which MCP requires for URL-mode elicitation. Both belong in core, because
-they are properties of eve's authorization machinery, not of any one protocol.
+- **The grant must outlive the request.** Today the callback resumes a parked run, and eve keeps
+  the minted token only in a per-step cache. A strategy that stores grants, such as Vercel
+  Connect, works unchanged. Other interactive strategies need a place for the grant.
+- **So must the attempt's start state**, such as a PKCE verifier. Today the parked run holds it.
+- **The person completing a sign-in must be the one who started it.** MCP requires this for
+  URL-mode elicitation. The prototype did not check it.
+- **Retries rerun the tool from the start.** Tools should resolve credentials before side effects.
 
 ## Server: `mcpCapabilitiesChannel`
 
@@ -236,32 +271,68 @@ export default mcpCapabilitiesChannel({
 | `route`             | Defaults to `/eve/v1/mcp-capabilities`.                                                                         |
 | `trustedForwarders` | The same predicate and `ForwardedAssertion` contract as `eveChannel`. Absent: forwarded principals are refused. |
 
-The channel only maps MCP onto the primitives:
+The channel is an adapter. Each MCP method maps onto one of the operations above:
 
-| MCP                                                                                     | Primitive                                          |
-| --------------------------------------------------------------------------------------- | -------------------------------------------------- |
-| `server/discover` (with a session key)                                                  | `prewarm`                                          |
-| `tools/list`                                                                            | `introspect().tools`                               |
-| `resources/list`, `resources/read` for `skill://<agent>/<skill>/SKILL.md` and its files | `introspect().skills`, `readSkill`                 |
-| `tools/call`                                                                            | `invokeTool`                                       |
-| `approval-required`                                                                     | MRTR `input_required` with a boolean approval form |
-| `authorization-required`                                                                | MRTR `input_required` with URL elicitations        |
+| MCP                                                                          | eve                                                |
+| ---------------------------------------------------------------------------- | -------------------------------------------------- |
+| `server/discover`                                                            | `info()`                                           |
+| a new capability session, requested by the client                            | `sessions.create({ capabilities: true })`          |
+| `tools/list`                                                                 | `info().tools`, invocable only                     |
+| `skills/list`, `skills/get` (SEP-2640)                                       | `info().skills`                                    |
+| `resources/read` for `skill://<skill>/SKILL.md` and `skill://<skill>/<file>` | `session.readSkill`                                |
+| `resources/directory/read` for `skill://<skill>`                             | `info().skills[].files`                            |
+| `tools/call`                                                                 | `session.invokeTool`                               |
+| `approval-required`                                                          | MRTR `input_required` with a boolean approval form |
+| `authorization-required`                                                     | MRTR `input_required` with URL elicitations        |
 
 The MCP rules the channel must follow:
 
 - Every request authenticates again. Principals come from route auth plus
-  `eve-forwarded-principal`, checked by `trustedForwarders`. The session key is
-  `eve-capability-session`.
+  `eve-forwarded-principal`, checked by `trustedForwarders`. Calls name their session with the
+  server-issued id, and the session operations check ownership.
 - **`requestState` carries only `callId` and a binding** to the session, tool, and argument hash.
-  It is never evidence that a check passed; the primitive re-evaluates everything. A retry whose
+  It is never evidence that a check passed; the operation re-evaluates everything. A retry whose
   binding does not match is rejected. The state has an expiry.
 - A retry that is missing a requested answer gets `input_required` again, not a decline.
-- `_meta` keys use the reverse-DNS prefix `dev.eve/`: `dev.eve/owner`, `dev.eve/approval`, and
-  `dev.eve/sandbox` on discover.
+- `_meta` keys use the reverse-DNS prefix `dev.eve/`, such as `dev.eve/owner` and
+  `dev.eve/approval`.
 - Elicitations are only sent in the modes the client declared. List results carry `ttlMs` and
   `cacheScope`, and responses are JSON only. The official SDK already enforces these.
+- Skills follow SEP-2640. The channel declares `io.modelcontextprotocol/skills`, and the last
+  segment of a skill path is the skill's `name`. The server already scopes the URI, so it carries
+  no agent prefix.
 
-## Client: consuming the channel
+### Calling it from any MCP client
+
+The channel is a plain MCP `2026-07-28` server, so nothing on the calling side has to be eve. Under
+`eve dev` with `auth: localDev()`, the MCP Inspector CLI can list and call an agent's tools and
+read its skills:
+
+```sh
+URL="http://localhost:2000/eve/v1/mcp-capabilities" # the URL `eve dev` prints
+mcp() { npx @modelcontextprotocol/inspector --cli --transport http --server-url "$URL" "$@"; }
+
+mcp --method tools/list
+mcp --method tools/call --tool-name query_usage \
+  --tool-args-json '{"account":"acme","window":"30d"}'
+mcp --method skills/list
+mcp --method resources/read --uri skill://usage-triage/SKILL.md
+```
+
+- `tools/list` returns the invocable tools with their input and output schemas.
+- `tools/call` runs the tool as the authenticated caller and returns `structuredContent`. A
+  failing tool returns `isError: true`, and the Inspector exits `5`.
+- A call that names no capability session runs in a one-off session. Its sandbox does not outlive
+  the call (see open question 2).
+- Tools that need approval or a sign-in answer with `input_required`. They run only for a client
+  that answers it; a client that cannot gets the request and nothing executes.
+- A deployed agent needs a channel `auth` the client can satisfy: a bearer token through
+  `--header "Authorization: Bearer ..."`, or `oauthResource(...)` for clients that run the MCP
+  sign-in flow, such as the Inspector's web UI.
+
+This is also the channel's interop test.
+
+## Client: eve connections
 
 ### Today
 
@@ -280,18 +351,18 @@ tools in the orchestrator that call MCP directly.
 1. **Multi round-trip support in the client**, wrapped behind the existing connection API: return
    `input_required` with its `inputRequests` and `requestState` instead of failing, and retry with
    `inputResponses`. This lands upstream in `@ai-sdk/mcp` or in an eve-owned wrapper.
-2. **Interrupts park in the harness (core).** A connection tool call that returns `input_required`
-   parks the way connection authorization already does. The harness emits `input.requested`,
+2. **The caller's harness waits for its person (core).** The provider never parks, but the
+   caller has to wait for its own user's answer. A connection tool call that returns
+   `input_required` parks the way connection authorization already does. The harness emits `input.requested`,
    which the channel renders as it renders its own approvals, and on the answer retries the call
    with `inputResponses`. `requestState` stays in the tool call's durable state, never in model
    history. A person answers, not the model. This must be core: only the harness can park an
    ordinary tool call and resume it. The userland alternative, a workflow tool that calls
    `ctx.ask()`, works for one bespoke tool but not for connection tools in general.
 3. **Forwarding and session scope.** `defineMcpClientConnection({ forwardPrincipal: true })` sends
-   `eve-forwarded-principal`, with the same semantics as remote agents. The connection sends a
-   session key derived from the caller's session, so one conversation keeps one provider sandbox.
-4. **Skills.** A connection's `skill://` resources join the model's skill index, and `load_skill`
-   reads them through the connection.
+   `eve-forwarded-principal`, with the same semantics as remote agents. The connection requests
+   one capability session per caller session and keeps its id with the caller session, so one
+   conversation keeps one provider sandbox.
 
 ```ts title="agent/connections/analytics.ts"
 import { getVercelOidcToken } from "@vercel/oidc";
@@ -309,50 +380,64 @@ A provider behind Vercel Deployment Protection also needs the calling project al
 Trusted Source; the header that carries the OIDC token for that check is part of the forwarding
 work above.
 
-Tools are found through `connection_search`, as now. Always-loaded tools are #3745's concern and
-compose with this.
+How the calling model finds and calls those tools and skills is out of scope here. Plain
+connection tools keep working through `connection_search`. Remote skills, a combined catalog,
+and the choice between materialized connection tools and one dispatch tool belong to
+[Client-side capability discovery](./mcp-client-discovery.md). They can be built in userland on
+top of this phase, as the prototype's `discover`, `load_skill`, and `tool_call` tools were.
 
 ## Security invariants
 
 1. Every request authenticates, and forwarded identity is accepted only through
    `trustedForwarders`.
 2. Client-held state never grants authority. Approval is re-evaluated on every call.
-3. The person who starts a sign-in completes it, and pending sign-ins survive instance changes.
+3. No call state outlives a request. The person who starts a sign-in completes it, and the grant
+   is stored rather than the call.
 4. The client answers interrupts with a person's input, and keeps `requestState` out of the model.
-5. Sessions and sandboxes are scoped to the forwarder, the user, and the key.
-6. Work is bounded: request body 1 MiB, forwarded header 16 KiB, session key 512 characters, skill
+5. Capability sessions and their sandboxes belong to the principals that created them, and every
+   call checks ownership.
+6. Deployment inspection never leaves `/eve/v1/inspect`. MCP callers see only `AgentInfo`.
+7. Work is bounded: request body 1 MiB, forwarded header 16 KiB, session id 512 characters, skill
    file 512 KiB.
 
-## Phase 2, for a separate plan
+## Follow-up plans
 
-- Agents as task-returning tools (MCP tasks extension), with follow-ups through an `agentId` handle.
-- One `mcpChannel` for tools, skills, and agents; its `agent_*` tools map onto tasks.
-- Agents called through MCP connections, and `defineRemoteAgent` removed.
-- Exposure controlled on both ends: the server advertises, the client chooses visibility.
+- [Remote agents over MCP tasks](./remote-agents-over-mcp-tasks.md): agents as task-returning
+  tools, one `mcpChannel` for tools, skills, and agents, and `defineRemoteAgent` removed.
+- [Client-side capability discovery](./mcp-client-discovery.md): search, visibility, remote
+  skills, and connection calls from authored tools.
+- Tabled: whether authors choose which tools the channel exposes, beyond the invocable filter.
 
 ## Validation
 
-- Unit: introspection filters and order, session derivation, approval re-evaluation (a forged
-  `callId` or missing answer never executes), request-state binding and expiry, forwarder refusal.
-- Scenario: a real HTTP server covering discover and prewarm, a plain call, approval, and sign-in
-  with the callback on a different instance from the retry.
+- Unit: the `info()` projection (no inspection fields, invocable filter, order), approval
+  re-evaluation (a forged `callId` or missing answer never executes), request-state binding and
+  expiry, session ownership, forwarder refusal.
+- Scenario: a real HTTP server covering discover, capability session creation with a warm
+  sandbox, a plain call, approval, and sign-in with the callback on a different instance from the
+  retry.
+- Migration: the dev TUI, setup, and eval targets read `inspect()`.
 - E2E: two fixture agents. One calls the other's tools through an MCP connection, including an
   approval answered through `input.requested` and a skill read.
-- Interop: an official-SDK MCP client drives the channel.
+- Interop: the MCP Inspector CLI lists, calls, and reads skills against a fixture, as in
+  [Calling it from any MCP client](#calling-it-from-any-mcp-client).
 
 ## Open questions
 
-1. Is `AgentInfo` on route args the right place, or should the primitives be importable where
-   extensions can use them too?
-2. Does `invokeTool` run inside a workflow when a tool needs to park, or stay request-scoped with
-   durable attempts only?
-3. Server-issued session handles, as SEP-2567 recommends, or the `eve-capability-session` header?
-   `prewarm` already returns the session id, so it could become the handle MCP callers send back.
-4. Should prewarm stay a side effect of `server/discover`? MCP treats discover as a cacheable
-   capability probe, so a client that caches or skips it never prewarms.
-5. Which fields of `ctx` stay unavailable outside a turn, such as `messages`, and how does a tool
-   learn it is invoked directly?
-6. Should the channel let authors choose which tools it exposes, beyond excluding them by kind?
+1. Where do grants and sign-in start state live for interactive strategies that do not store
+   their own, now that no parked run holds them? Is Vercel Connect the only supported strategy
+   in phase 1?
+2. How does an MCP client request a capability session and learn its id? MCP defines no session
+   API. SEP-2567 makes handles a tool pattern: a `create_*` tool returns an opaque id that later
+   calls pass, and the server checks `(handle, auth_context)` on every call. It also forbids list
+   results that vary per connection, so session creation cannot ride on `server/discover`. One
+   option is an `open_session` tool, with eve connections sending the id in
+   `_meta["dev.eve/session"]` so it stays out of the model.
+3. What should `capabilities: true` be called?
+4. Every call reads the session's owner. Is one world read per `tools/call` acceptable, or is the
+   owner cached for the session's lifetime?
+5. What are the inspection surface's name and route, and does `/eve/v1/info` keep its path for
+   `AgentInfo`?
 
 ## References
 
@@ -361,6 +446,8 @@ compose with this.
   [multi round-trip requests](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr),
   [elicitation](https://modelcontextprotocol.io/specification/2026-07-28/client/elicitation).
 - [SEP-2567, sessionless MCP](https://modelcontextprotocol.io/seps/2567-sessionless-mcp);
-  [SEP-2640, skills over MCP](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/seps/2640-skills-extension.md).
+  [SEP-2640, skills over MCP](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/seps/2640-skills-extension.md);
+  [SEP-2663, tasks](https://modelcontextprotocol.io/seps/2663-tasks-extension).
+- [MCP Inspector CLI](https://github.com/modelcontextprotocol/inspector/blob/main/clients/cli/README.md).
 - eve: `docs/tools/human-in-the-loop.md`, `docs/tools/workflows.mdx` (`ctx.ask`),
   `docs/connections/mcp.mdx`; issues #2727, #2432, #3745.
