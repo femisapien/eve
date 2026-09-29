@@ -1,6 +1,4 @@
 import {
-  agentCallTurns,
-  agentToolSession,
   type ConversationAgentSession,
   type ConversationInput,
   type ConversationState,
@@ -9,7 +7,6 @@ import {
   type EveAuthorizationPart,
   type EveMessage,
   type EveMessagePart,
-  followedAgentToolCallIds,
   type ToolCallState,
   type ToolCallStatus,
   toolCallState,
@@ -236,6 +233,61 @@ export function inputAnswer(input: ConversationInput): string | undefined {
   if (response === undefined) return input.outcome;
   const option = input.request.options?.find((candidate) => candidate.id === response.optionId);
   return option?.label ?? response.text ?? response.optionId;
+}
+
+// ---------------------------------------------------------------------------
+// Subagent sessions
+// ---------------------------------------------------------------------------
+
+/** The session an agent tool's task sends its calls to. */
+function agentToolSession(
+  conversation: ConversationState,
+  task: ConversationTask,
+): ConversationAgentSession | undefined {
+  if (task.kind !== "agent") return undefined;
+  return Object.values(conversation.agents).find((agent) => agent.taskId === task.taskId);
+}
+
+/**
+ * Each call to an agent tool sends its session one message, in call order, so a call's turns run
+ * from its message's turn up to the next call's.
+ */
+function agentCallTurns(
+  task: ConversationTask,
+  child: ConversationState,
+): ReadonlyMap<string, readonly string[]> {
+  const callIds = Object.keys(task.calls);
+  const owners = new Map<string, string>();
+  let index = 0;
+  for (const message of child.messages) {
+    if (message.role !== "user") continue;
+    const callId = callIds[index++];
+    const turnId = message.metadata?.turnId;
+    if (callId !== undefined && turnId !== undefined && !owners.has(turnId)) {
+      owners.set(turnId, callId);
+    }
+  }
+  const turns = new Map<string, string[]>(callIds.map((callId) => [callId, []]));
+  let owner: string | undefined;
+  for (const turnId of Object.keys(child.turns)) {
+    owner = owners.get(turnId) ?? owner;
+    if (owner !== undefined) turns.get(owner)?.push(turnId);
+  }
+  return turns;
+}
+
+/** eve also projects a followed session's tool calls into its parent, which shows them nested. */
+function followedAgentToolCallIds(conversation: ConversationState): ReadonlySet<string> {
+  const ids = new Set<string>();
+  for (const agent of Object.values(conversation.agents)) {
+    if (agent.observation.status === "not-followed") continue;
+    for (const message of agent.observation.conversation?.messages ?? []) {
+      for (const part of message.parts) {
+        if (part.type === "dynamic-tool") ids.add(part.toolCallId);
+      }
+    }
+  }
+  return ids;
 }
 
 // ---------------------------------------------------------------------------
