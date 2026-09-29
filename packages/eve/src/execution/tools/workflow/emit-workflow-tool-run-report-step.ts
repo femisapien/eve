@@ -69,7 +69,9 @@ export async function writeAgentStartedStep(
 
 /** Runs channel handlers and hooks for events written while a turn step ran. */
 export async function publishWrittenEventsStep(
-  input: SessionStepState & { readonly events: readonly MessageStreamEvent[] },
+  input: Omit<SessionStepState, "sessionWritable"> & {
+    readonly events: readonly MessageStreamEvent[];
+  },
 ): Promise<PublishedSessionEvents> {
   "use step";
 

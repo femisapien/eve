@@ -1,7 +1,7 @@
 import { buildAdapterContext } from "#channel/adapter-context.js";
 import { callAdapterEventHandler, type ChannelAdapterContext } from "#channel/adapter.js";
 import { type ContextContainer, contextStorage } from "#context/container.js";
-import { dispatchStreamEventHooks } from "#context/hook-lifecycle.js";
+import { dispatchStreamEventHooks, hasStreamEventHooks } from "#context/hook-lifecycle.js";
 import { ParentSessionKey, TurnDeliveryIdsKey } from "#context/keys.js";
 import { withContextScope } from "#context/run-step.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
@@ -95,7 +95,10 @@ export async function writeSessionEventAhead(
   event: UnstampedMessageStreamEvent,
 ): Promise<MessageStreamEvent | undefined> {
   const ctx = await deserializeContext(target.serializedContext);
-  if (!hasSubscribers(ctx, event.type)) {
+  const subscribed =
+    ctx.require(ChannelKey)[event.type] !== undefined ||
+    hasStreamEventHooks(ctx.require(BundleKey).hookRegistry, event.type);
+  if (!subscribed) {
     await publishInContext(ctx, target, "own", [event]);
     return undefined;
   }
@@ -115,20 +118,11 @@ export async function writeSessionEventAhead(
  * result.
  */
 export async function publishWrittenSessionEvents(
-  target: SessionStepState,
+  target: Omit<SessionStepState, "sessionWritable">,
   events: readonly MessageStreamEvent[],
 ): Promise<PublishedSessionEvents> {
   const ctx = await deserializeContext(target.serializedContext);
   return await publishInContext(ctx, { ...target, sessionWritable: undefined }, "own", events);
-}
-
-function hasSubscribers(ctx: ContextContainer, type: MessageStreamEvent["type"]): boolean {
-  const { hookRegistry } = ctx.require(BundleKey);
-  return (
-    ctx.require(ChannelKey)[type] !== undefined ||
-    (hookRegistry.streamEventsByType.get(type)?.length ?? 0) > 0 ||
-    hookRegistry.streamEventsWildcard.length > 0
-  );
 }
 
 async function publishFromStep(

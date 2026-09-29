@@ -72,7 +72,7 @@ it("keeps the state an agent.started hook writes while a model step runs", async
   expect(publishWrittenEventsStep).toHaveBeenCalledTimes(1);
 });
 
-it("publishes agent.started completely during the step when nothing subscribes to it", async () => {
+it("adds no boundary step for an agent.started nothing subscribes to", async () => {
   const session = await createSession();
 
   await session.runTurn(async (inbox) => {
@@ -83,6 +83,33 @@ it("publishes agent.started completely during the step when nothing subscribes t
   expect(session.agentStartedIds()).toEqual(["child-1"]);
   expect(publishWrittenEventsStep).not.toHaveBeenCalled();
 });
+
+it("runs agent.started hooks against the prior state when the model step fails", async () => {
+  const sawStep: string[] = [];
+  const session = await createSession(
+    defineHook({ events: { "agent.started": () => void sawStep.push(stepMarker.get()) } }),
+  );
+
+  await expect(session.runTurn(writeThenFail(session))).rejects.toThrow("model step failed");
+
+  expect(sawStep).toEqual(["before the step"]);
+});
+
+it("fails the turn with the model step's error when its agent.started hooks fail too", async () => {
+  const session = await createSession(defineHook({ events: { "agent.started": () => {} } }));
+  vi.mocked(publishWrittenEventsStep).mockRejectedValueOnce(new Error("publication failed"));
+
+  await expect(session.runTurn(writeThenFail(session))).rejects.toThrow("model step failed");
+});
+
+/** A model step that fails after a child opens during it. */
+function writeThenFail(session: Awaited<ReturnType<typeof createSession>>) {
+  return async (inbox: ReturnType<typeof createInbox>): Promise<never> => {
+    inbox.arrive(agentStarted("child-1"));
+    await vi.waitFor(() => expect(session.agentStartedIds()).toEqual(["child-1"]));
+    throw new Error("model step failed");
+  };
+}
 
 function agentStarted(sessionId: string): WorkflowToolRunAgentStarted {
   return {
