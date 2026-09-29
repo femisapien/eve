@@ -96,6 +96,72 @@ test("accepts Codex environment metadata without treating it as an operation", (
   );
 });
 
+const DUPLICATE_BLOCKS =
+  "def first():\n    enabled = false\n\ndef second():\n    enabled = false\n";
+
+function rangeHeaderPatch(header: string): ReturnType<typeof parsePatch> {
+  return parsePatch(`*** Begin Patch
+*** Update File: flags.py
+${header}
+-    enabled = false
++    enabled = true
+*** End Patch`);
+}
+
+function rangeHeaderChunks(header: string) {
+  const [hunk] = rangeHeaderPatch(header);
+  return hunk?.type === "update" ? hunk.chunks : [];
+}
+
+test("range-header function context picks the block among identical ones", () => {
+  assert.equal(
+    deriveUpdatedContent(
+      "flags.py",
+      rangeHeaderChunks("@@ -5 +5 @@ def second():"),
+      DUPLICATE_BLOCKS,
+    ),
+    "def first():\n    enabled = false\n\ndef second():\n    enabled = true\n",
+  );
+});
+
+test("range-header function context matches git's truncated form as a prefix", () => {
+  const content = DUPLICATE_BLOCKS.replace(
+    "def second():",
+    "def second(argument_with_a_long_name, other):",
+  );
+  assert.equal(
+    deriveUpdatedContent(
+      "flags.py",
+      rangeHeaderChunks("@@ -5 +5 @@ def second(argument_with"),
+      content,
+    ),
+    content.replace(/(other\):\n {4}enabled = )false/u, "$1true"),
+  );
+});
+
+test("a stale range-header hint still applies when the hunk is unambiguous", () => {
+  assert.equal(
+    deriveUpdatedContent(
+      "flags.py",
+      rangeHeaderChunks("@@ -2 +2 @@ def renamed():"),
+      "def first():\n    enabled = false\n",
+    ),
+    "def first():\n    enabled = true\n",
+  );
+});
+
+test("a stale range-header hint fails loudly when the hunk is ambiguous", () => {
+  assert.throws(
+    () =>
+      deriveUpdatedContent(
+        "flags.py",
+        rangeHeaderChunks("@@ -5 +5 @@ def renamed():"),
+        DUPLICATE_BLOCKS,
+      ),
+    /failed to find context 'def renamed\(\):' in flags\.py/u,
+  );
+});
+
 test("treats unified-diff range headers as bare chunk markers", () => {
   const [hunk] = parsePatch(`*** Begin Patch
 *** Update File: process.py
@@ -110,8 +176,11 @@ test("treats unified-diff range headers as bare chunk markers", () => {
   assert.equal(hunk?.type, "update");
   const chunks = hunk?.type === "update" ? hunk.chunks : [];
   assert.deepEqual(
-    chunks.map((chunk) => chunk.changeContext),
-    [undefined, undefined],
+    chunks.map((chunk) => [chunk.changeContext, chunk.contextHint]),
+    [
+      [undefined, "def main():"],
+      [undefined, undefined],
+    ],
   );
   assert.equal(
     deriveUpdatedContent(
@@ -187,7 +256,7 @@ test("reports every planning failure before writing", async () => {
   await assert.rejects(
     applyPatchToSandbox({
       sessionId: "session-1",
-      repoRoot: "/workspace/eve",
+      patchRoot: "/workspace/eve",
       sandbox,
       patchText: `*** Begin Patch
 *** Update File: stale.ts
@@ -221,7 +290,7 @@ test("validates every operation before changing the sandbox", async () => {
   await assert.rejects(
     applyPatchToSandbox({
       sessionId: "session-1",
-      repoRoot: "/workspace/eve",
+      patchRoot: "/workspace/eve",
       sandbox,
       patchText: `*** Begin Patch
 *** Update File: existing.txt
@@ -247,7 +316,7 @@ test("applies add, update, move, and delete after prevalidation", async () => {
   });
   const files = await applyPatchToSandbox({
     sessionId: "session-1",
-    repoRoot: "/workspace/eve",
+    patchRoot: "/workspace/eve",
     sandbox,
     patchText: `*** Begin Patch
 *** Add File: nested/new.txt
@@ -283,7 +352,7 @@ test("serializes patches from distinct sandbox handles in one session", async ()
   const patch = (from: string, to: string) =>
     applyPatchToSandbox({
       sessionId: "session-serialized",
-      repoRoot: "/workspace/eve",
+      patchRoot: "/workspace/eve",
       // Each ctx.getSandbox() call returns a new handle for the same sandbox.
       sandbox: { ...sandbox },
       patchText: `*** Begin Patch\n*** Update File: file.txt\n@@\n-${from}\n+${to}\n*** End Patch`,
@@ -301,9 +370,11 @@ test("collects pre-commit evidence inside the patch lock before writing", async 
     sessionId: "session-1",
     async beforeCommit(files) {
       observed = (await sandbox.readTextFile({ path: "/workspace/eve/file.txt" })) ?? "";
-      assert.deepEqual(files, [{ operation: "update", path: "file.txt" }]);
+      assert.deepEqual(files, [
+        { operation: "update", path: "file.txt", previousContent: "before\n" },
+      ]);
     },
-    repoRoot: "/workspace/eve",
+    patchRoot: "/workspace/eve",
     sandbox,
     patchText: `*** Begin Patch
 *** Update File: file.txt
@@ -321,7 +392,7 @@ test("rejects paths outside the selected repository", async () => {
   await assert.rejects(
     applyPatchToSandbox({
       sessionId: "session-1",
-      repoRoot: "/workspace/eve",
+      patchRoot: "/workspace/eve",
       sandbox: memorySandbox({}),
       patchText: `*** Begin Patch
 *** Add File: ../outside.txt
@@ -336,7 +407,7 @@ test("rejects paths that cross a repository symlink", async () => {
   await assert.rejects(
     applyPatchToSandbox({
       sessionId: "session-1",
-      repoRoot: "/workspace/eve",
+      patchRoot: "/workspace/eve",
       sandbox: memorySandbox({}, { "/workspace/eve/escape/file.txt": "/workspace/other/file.txt" }),
       patchText: `*** Begin Patch
 *** Add File: escape/file.txt
@@ -363,7 +434,7 @@ test("a partial temporary write leaves the target unchanged", async () => {
   await assert.rejects(
     applyPatchToSandbox({
       sessionId: "session-1",
-      repoRoot: "/workspace/eve",
+      patchRoot: "/workspace/eve",
       sandbox,
       patchText: `*** Begin Patch
 *** Update File: file.txt

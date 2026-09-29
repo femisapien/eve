@@ -10,7 +10,7 @@ import {
 } from "../lib/diagnostics.ts";
 import { findGeneratedPatchTargets, generatedPatchTargetsError } from "../lib/generated-paths.ts";
 import { applyPatchToSandbox } from "../lib/patch.ts";
-import { resolveWorkspaceRoot } from "../lib/repository-root.ts";
+import { resolveWorkspaceDirectory } from "../lib/workspace-root.ts";
 
 const DiagnosticSchema = z.object({
   check: z.enum(["git-diff", "syntax", "typescript", "whitespace"]),
@@ -69,19 +69,21 @@ export default defineTool({
       throw new Error(generatedPatchTargetsError(generatedTargets));
     }
     const sandbox = await ctx.getSandbox();
-    const repoRoot = await resolveWorkspaceRoot(sandbox, root);
+    const patchRoot = await resolveWorkspaceDirectory(sandbox, root);
 
     let baseline: readonly PostEditDiagnostic[] = [];
+    const previousContents = new Map<string, string | null>();
     const files = await applyPatchToSandbox({
       async beforeCommit(planned) {
+        for (const file of planned) previousContents.set(file.path, file.previousContent);
         baseline = await runTypeScriptDiagnostics({
           paths: planned.filter((file) => file.operation === "update").map((file) => file.path),
-          repoRoot,
+          patchRoot,
           sandbox,
         });
       },
       patchText,
-      repoRoot,
+      patchRoot,
       sandbox,
       sessionId: ctx.session.id,
     });
@@ -97,7 +99,14 @@ export default defineTool({
       ),
     ];
     const diagnostics = onlyNewTypeDiagnostics(
-      await runPostEditDiagnostics({ addedPaths, changedPaths, deletedPaths, repoRoot, sandbox }),
+      await runPostEditDiagnostics({
+        addedPaths,
+        changedPaths,
+        deletedPaths,
+        patchRoot,
+        previousContents,
+        sandbox,
+      }),
       baseline,
     );
     return { diagnostics, files };
