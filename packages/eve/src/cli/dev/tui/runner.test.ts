@@ -1350,6 +1350,7 @@ describe("EveTUIRunner registry handoffs", () => {
       createTurnStartedEvent({ sequence: 0, turnId }),
       createTaskStartedEvent({
         callId: "selfmod-call",
+        kind: "agent",
         name: "self-modification__agent",
         taskId: "task_1",
         turnId,
