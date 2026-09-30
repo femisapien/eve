@@ -92,25 +92,21 @@ From 2026-08-20 to 2026-09-30:
 
 ### The issues, by cause
 
-Some of these were already fixed on `main` with a local patch. The table keeps them because they show
-how often each cause produced a bug. The last column says what this design does for the issues that
-are still open.
+The question for each issue is whether this design prevents it by construction, with no guard or
+special case added for it, whether or not it has since been patched on `main`. Of the 46 issues,
+28 are prevented and 18 are not.
 
-| Cause                                                                                                                     | Still open                        | Fixed locally on `main`              | What this design does for the open ones                                                                                                                                                                                                                       |
-| ------------------------------------------------------------------------------------------------------------------------- | --------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **A message lands after the approval response**, so the approval is dropped or the provider rejects a call with no result | #2699, #3594, #3771, #3899        | #2594, #2826, #2874, #3943           | Fixes all four. History is append-only and a call always has its result                                                                                                                                                                                       |
-| **Resume loses turn context**: the turn id, the answering principal, turn-scoped connections, or a user message           | #3705, #3771                      | #3751, #3760, #3906                  | Fixes #3771: the sign-in continues the same turn. #3705 is `ask_question`, which stopped ending the turn in #3850; check whether it still reproduces                                                                                                          |
-| **Several approvals wait on each other**: one batch resolves per step                                                     | #3711, #4024                      | #3494                                | Fixes both. Each gated call has its own task and runs when its own request is answered                                                                                                                                                                        |
-| **A message is misread** as an answer, a dismissal, deferred input, or a new turn                                         | #2699, #3421, #3680, #3711, #4035 | #2466, #2469, #3494                  | Fixes #2699, #3421, #3711: one classifier decides for every request (see One route). Not #3680: text still doesn't answer policy-guarded requests (open question 3). Not #4035: a free-text question still takes the next message                             |
-| **Pending state is split**, and cancel, steer, or settle clears only part of it                                           | #3414, #3458, #3887               | #2442, #2874                         | Fixes #3414 and #3458: the harness store they go stale in is deleted, and approvals no longer park the child. #3887 is the MCP projection of a task's sign-in; the held turn keeps the parent from starting its next turn, but the projection is not verified |
-| **Child and task relays drift** from the root path on hooks, settle events, and steering                                  | #2520, #3458, #3680               | #3589, #3784, #3990                  | Fixes #2520 only if the root emits the settle events for answers it routes (see Stream events). #3458 as above. Not #3680, as above. Relays still exist, so a relay-only bug can still happen                                                                 |
-| **Events are missing or not reduced**, so clients and channels get stuck                                                  | #2421, #2520, #3911               | #3757, #3784, #3990                  | #2520 as above. Not #2421: concurrent sign-ins superseding each other is in the authorization layer. Not #3911: the client reducer still has to derive approval state from `input.resolved` (open question 5)                                                 |
-| **Policy gaps**: the response policy is skipped, or a gated tool runs before approval                                     | #3198, #3891                      | #3822, #3906 (#3891's case by #3954) | Fixes both by construction: a gated call runs only after its request is answered, and the policy runs in one place. #3983 may already fix #3198; the issue is still open                                                                                      |
-
-Not addressed here: channel rendering (#2471, #2476, #2779, #3615, #3712), configuration
-(#2845, #3895), durability (#3103, #3546), budget arithmetic for delegated sessions (#2806),
-scoped approval keys (#2319), packaging (#3497), and permissive answer defaults (#3238, closed as
-by design).
+| Cause                                                                                                                     | Prevented by design                                    | Not prevented                                                                      | Why                                                                                                                                                                                                                                                                                              |
+| ------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **A message lands after the approval response**, so the approval is dropped or the provider rejects a call with no result | #2594, #2699, #2826, #2874, #3594, #3771, #3899, #3943 |                                                                                    | History is append-only, and a call is written together with its result or receipt. No message has a position it must keep                                                                                                                                                                        |
+| **Resume loses turn context**: the turn id, the answering principal, turn-scoped connections, or a user message           | #3705, #3760 (and #3771 above)                         |                                                                                    | The answer continues the same turn, so nothing is rebuilt                                                                                                                                                                                                                                        |
+| **Several approvals wait on each other**: one batch resolves per step                                                     | #3494, #3711, #4024                                    |                                                                                    | There are no batches. Each gated call has its own task and runs when its own request is answered                                                                                                                                                                                                 |
+| **A message is misread** as an answer, a dismissal, deferred input, or a new turn                                         | #2466, #2469, #3421 (and #2699, #3494, #3711 above)    | #3680, #4035                                                                       | One classifier handles every delivery in one order, and an open approval no longer changes how the model is called (#2466 and #2469 came from restricting tools while one was open). #3680 needs text to answer policy-guarded requests (open question 3). #4035 is how free-text questions work |
+| **Pending state is split**, and cancel, steer, or settle clears only part of it                                           | #2442, #3414, #3458, #3887 (and #2874 above)           |                                                                                    | One route table holds every open request, and cancel withdraws all of it. The harness store where #2442 and #3414 went stale is gone. A task's sign-in keeps the parent's turn open, so the next turn that dropped it in #3887 never starts                                                      |
+| **Child and task relays drift** from the root path                                                                        | #2520, #3589, #3784, #3990 (and #3458 above)           | (#3680 above)                                                                      | Relayed requests use the same route table, settle events, publication path, and "nobody can answer" rule as local ones (see Stream events)                                                                                                                                                       |
+| **Events are missing or not reduced**, so clients and channels get stuck                                                  | #3757, #3911 (and #2520, #3705, #3784, #3990 above)    | #2421                                                                              | Every park emits `turn.waiting`, and approval state has one source, the `input.*` events. #2421 is how concurrent sign-in attempts supersede each other                                                                                                                                          |
+| **Policy and identity gaps**                                                                                              | #3198, #3891                                           | #3238, #3822, #3906                                                                | A gated call runs only after its request is answered, and the response policy runs in one place. #3238 is a choice of default, and #3822 and #3906 ask for identity the policy can't see yet                                                                                                     |
+| **Outside this design**                                                                                                   |                                                        | #2319, #2471, #2476, #2779, #2806, #2845, #3103, #3497, #3546, #3615, #3712, #3895 | Channel rendering, configuration, durability, budget arithmetic for delegated sessions, scoped approval keys, and packaging                                                                                                                                                                      |
 
 ### Two root causes
 
@@ -389,9 +385,15 @@ would be approving, and tool output claiming "the user approved" must never beco
 | The gated call's outcome                                     | `action.result` in a new turn                                      | `task.started` at the call, `task.settled` at the outcome |
 | The answering delivery                                       | `turn.started` with a new `turnId`                                 | `step.started` with the same `turnId`                     |
 
-The session that accepts an answer emits its `input.resolved` and, for an approval,
-`approval.settled`. For a relayed child request that is the root, the session whose channel showed
-the prompt, so the channel that posted a card is the one told to settle it (#2520).
+Three rules keep events uniform across local and relayed requests:
+
+- **One publisher.** A request's events are published once, by the session whose route table holds
+  it, on the same path as every other event, so hooks and channels see them. For a relayed child
+  request that is the root, whose channel showed the prompt (#2520, #3784, #3990).
+- **Every park says so.** Each time a held turn parks, including after a rejected answer, it emits
+  `turn.waiting` (#3757).
+- **One source of approval state.** History has no approval parts, so clients read an approval's
+  state only from `input.requested` and `input.resolved` (#3911).
 
 Response readers (`send().result()`, MCP) already stop at `turn.waiting` while requests are pending
 (`client/session-utils.ts` `isTurnSegmentBoundary`), and return `status: "waiting"`.
@@ -490,10 +492,8 @@ upgrade are dropped the same way; the next call or model step raises a new one.
    through the response policy like a structured answer. Decide whether to allow it.
 4. **Credential lifetime.** Whether turn-scoped tokens fetched before a long wait are refreshed when
    the gate task runs the call.
-5. **Client approval state.** Clients show an approval's state from the tool part's `eve` metadata,
-   which `approval.settled` doesn't always update (#3911). With the call's result now a receipt,
-   `useEveAgent` and `EveAgentStore` must derive approval state from `input.requested`,
-   `input.resolved`, and `task.settled` instead.
+5. **Client migration.** `useEveAgent` and `EveAgentStore` show approval state from the tool part's
+   `eve` metadata today. They move to `input.requested`, `input.resolved`, and `task.settled`.
 
 Follow-ups, not needed for the first version: one `input.requested` per step for several gated calls,
 and default request deadlines in shared threads (reusing `expireApprovalCandidates`).
