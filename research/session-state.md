@@ -10,11 +10,11 @@ last_updated: "2026-09-30"
 
 eve computes the state of a session in many places. On the server, pending work lives in ten
 durable records. wherever we add code that changes a record, we need to be sure that we emit
-a matching stream event so that consumers can know that that transition happened. this is 
+a matching stream event so that consumers can know that that transition happened. this is
 impossible in practice and we have a huge number of subtle issues linking back to this.
 
-even if we do emit events as needed, web chat, `eve dev`, `respond()`, Slack task cards, 
-evals, and ACP each read those events with their own rules, and they disagree. A subagent 
+even if we do emit events as needed, web chat, `eve dev`, `respond()`, Slack task cards,
+evals, and ACP each read those events with their own rules, and they disagree. A subagent
 that fails shows as failed in the chat but completed in ACP, and an eval that checks for
 a completed call passes.
 
@@ -153,12 +153,27 @@ land now, and the plan keeps its tests:
 
 Every durable piece of session state is exactly one of these:
 
-| Kind           | What                                                                                                                                              | Written by                                 |
-| -------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------ |
-| Machine state  | `TurnState`: the open turn and its deliveries, parked steps and their calls, the prompt, queued input, task results the model hasn't read, grants | The session machine only                   |
-| Projection     | `SessionProjection`: turns, inputs, tasks, calls, sign-ins                                                                                        | Folding the events the machine publishes   |
-| Private record | What readers never see, keyed by an ID the projection tracks: relay routes, sign-in attempts, task runs, approval candidates                      | The machine; dropped when its owner closes |
-| Cache          | A derived value for a reader that can't load the session, such as `hasProxyInputRequests`                                                         | The save function                          |
+| Kind           | What                                                                                                                                                | Written by                                     |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------- |
+| Machine state  | `TurnState`: suspended model steps and call execution payloads, queued input, deliveries awaiting a boundary, unread task results, execution grants | The session machine only                       |
+| Projection     | `SessionProjection`: the active turn, announced delivery attribution, requests and decisions, calls, tasks and outcomes, sign-ins                   | Folding every published event, own and relayed |
+| Private record | What readers never see, keyed by an ID the projection tracks: relay routes, sign-in attempts, task runs, approval candidates                        | The machine; dropped when its owner closes     |
+| Cache          | A derived value for a reader that can't load the session, such as `hasProxyInputRequests`                                                           | The save function                              |
+
+Both `TurnState` and `SessionProjection` are stored in durable session state, alongside private
+records. Their boundary is execution information versus lifecycle facts, not private versus
+public visibility: **if a fact can be derived from published events, read it from the projection.**
+
+For an approval, the projection says that call C awaits request R and records R's decision.
+`TurnState` retains C's execution arguments and the suspended model-step transcript needed to
+resume. Those payloads reference C and R; they do not carry another approval or call status.
+Likewise, the projection records a task's outcome, while `TurnState` records that the model has
+yet to consume its result. Consumption is not another copy of task status.
+
+Queued input and accepted deliveries awaiting a boundary remain execution bookkeeping until
+events announce their turn attribution or completion. Announced turn delivery IDs live in the
+projection. A session-limit prompt is a projected input request; any private resume data belongs
+to a record keyed by its request ID, not a second pending-prompt flag in `TurnState`.
 
 ### Single unified fold
 
@@ -201,8 +216,10 @@ status onto their own vocabulary, so the three rows in
    ones. It is saved with the step that published them.
 3. A private record exists only while the projection shows its owner open. Closing the owner
    means emitting its event, and the record is dropped with it.
-4. Every lifecycle question is answered by the projection. `TurnState` answers only what the
-   stream doesn't carry, such as which calls wait to dispatch.
+4. Every lifecycle fact derivable from published events is owned by the projection. `TurnState`
+   holds only execution payload and bookkeeping those events do not express. Dispatch eligibility
+   combines projected decisions and call outcomes with execution payload; it is not a separately
+   stored call status.
 5. Caches are computed in the save function.
 
 `pnpm guard:invariants` enforces invariants 1 and 2. The check fails if code outside the machine
@@ -256,8 +273,18 @@ export const transitions = {
 ```
 
 ```ts
+// Execution state only; no activeTurnId, approval decisions, or call/task statuses.
+interface TurnState {
+  readonly queued?: QueuedInput;
+  readonly suspendedSteps: Readonly<Record<string, SuspendedModelStep>>;
+  readonly callExecutions: Readonly<Record<string, CallExecutionPayload>>; // by projected callId
+  readonly unreadTaskResults: readonly TaskResultReference[]; // payload in projection or private run
+  readonly pendingBoundaryDeliveryIds: readonly string[];
+  readonly grants: readonly ExecutionGrant[];
+}
+
 interface SessionView {
-  readonly turn: TurnState;
+  readonly turn: TurnState; // execution state, despite the historical name
   readonly projection: SessionProjection;
   readonly records: PrivateRecords;
 }
@@ -287,7 +314,7 @@ export async function step(
 
 async function commit(view: SessionView, t: Transition, publish: Publish) {
   for (const event of t.events) await publish(event); // stream, channel, hooks, instrumentation
-  const projection = prune(t.events.reduce(foldSession, view.projection));
+  const projection = prune(t.events.reduce(foldSession, view.projection), t.turn);
   return {
     turn: t.turn,
     projection,
@@ -350,7 +377,9 @@ the coordination batch if one is parked, else the emission state. (#4083, open, 
 
 With the state machine, there is one callback, and it only needs to think about what events it
 returns, and even that is done with structured helpers rather than hand-rolled conditionals.
-Translating those events into stored state is the job of the shared `foldSession`:
+Translating those events into stored lifecycle state is the job of the shared `foldSession`.
+Execution payload is retained or dropped separately; it doesn't decide which requests or calls
+are open:
 
 ```ts
 // execution/settle-cancelled-turn-step.ts
@@ -361,9 +390,9 @@ export async function settleCancelledTurnStep(input: SessionStepInput) {
 
 // harness/session-machine/transitions.ts
 function cancel(view: SessionView): Transition {
-  const { turnId } = view.turn.open;
+  const { turnId } = requireOpenTurn(view.projection);
   return {
-    turn: { ...view.turn, open: undefined, prompt: undefined },
+    turn: discardTurnExecution(view.turn, view.projection),
     events: [
       ...openInputs(view.projection).map(inputWithdrawn), // input.resolved "cancelled"
       ...openSignIns(view.projection).map(signInWithdrawn), // authorization.completed "failed"
@@ -376,9 +405,10 @@ function cancel(view: SessionView): Transition {
 ```
 
 `commit` then drops the relay routes and run records whose requests and calls those events
-closed. Nothing is cleared by hand. Cancelling a task takes the same shape: `finishRun` is the
-one transition for a cancelled task and for a run that ends on its own. Today the second path
-clears the run's relayed requests without an event.
+closed. The transition discards the cancelled turn's execution payload, but no helper separately
+clears a request, call status, or active-turn flag. Cancelling a task takes the same shape:
+`finishRun` is the one transition for a cancelled task and for a run that ends on its own. Today
+the second path clears the run's relayed requests without an event.
 
 ### What happens to `tool-loop.ts`
 
@@ -465,8 +495,9 @@ stateDiagram-v2
   Open --> BetweenTurns: turn.completed, turn.failed, or turn.cancelled, then session.waiting
 ```
 
-A call. The machine tracks each parked call through these states, and the projection reports
-the status readers see:
+A call. These are the lifecycle and scheduling stages, not a second status enum stored in
+`TurnState`. The projection records requests, decisions, run starts, and outcomes. The machine
+derives which effect to run next from those facts and the saved execution payload:
 
 ```mermaid
 stateDiagram-v2
@@ -486,29 +517,31 @@ stateDiagram-v2
   Settled --> [*]
 ```
 
-| Machine state                 | Projection status                                                      |
-| ----------------------------- | ---------------------------------------------------------------------- |
-| awaiting approval             | `awaiting-input`                                                       |
-| approved, ready, running      | `running`                                                              |
-| settled                       | the result's status: `completed`, `failed`, `rejected`, or `cancelled` |
-| no result when its turn ended | `interrupted`                                                          |
+| Facts and execution payload                                                                         | Derived stage / reader status                                           |
+| --------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------- |
+| Open approval request for a call                                                                    | Awaiting approval / `awaiting-input`                                    |
+| Approved resolution, or a call requiring no approval, with execution payload but no start or result | Eligible to execute / `running`                                         |
+| Call or run started, without its final outcome                                                      | Running / `running`                                                     |
+| Final call or task outcome                                                                          | Settled / `completed`, `failed`, `rejected`, or `cancelled`             |
+| No outcome when its turn ended                                                                      | `interrupted` for an older writer lacking explicit stopped-call results |
 
-The turn's phase is derived, never stored. If a ready or running workflow or task call exists,
-the turn waits on the runtime. If only approvals or the prompt remain, the turn closes. Otherwise
-the model runs.
+`Approved` and `Ready` in the diagram are derived scheduling conditions, not durable statuses.
+The turn's execution phase is also derived, while its announced open/closed lifecycle lives in
+the projection. If a ready or running workflow or task call exists, the turn waits on the runtime.
+If only approvals or the prompt remain, the turn closes. Otherwise the model runs.
 
 ### What the records become
 
-| Record                                                 | Public part, read from the projection                 | Private part that remains                                                                                |
-| ------------------------------------------------------ | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------- |
-| The six pending-work records                           | pending approvals, calls, and turns                   | `TurnState`                                                                                              |
-| Approval candidates (`eve.runtime.hitl.approvalState`) | settlements                                           | responder progress (candidate, expiry, sign-in challenges), owned by its request                         |
-| `TurnDeliveryIdsKey`                                   | none                                                  | `TurnState.turn.deliveryIds`                                                                             |
-| `eve.harness.pendingWorkflowInterrupt`                 | none                                                  | none; deleted                                                                                            |
-| Pending sign-ins (`eve.runtime.pendingAuthorization`)  | open or closed, name, `callIds`, coordinates          | attempt by `attemptId`: callback URL, resume value, principal, connection instance                       |
-| Relayed requests (`eve.runtime.proxyInputRequests`)    | open or closed, kind, coordinates, question, `callId` | route by `requestId`: continuation token, inbox, remote binding, workflow-ask route                      |
-| Task table (`eve.taskTable`)                           | name, kind, calls and outcomes                        | run by `taskId`: hook token, run ID, held commands, usage, `resumable`; unread results go to `TurnState` |
-| Slack task cards (`channel.state`)                     | calls, statuses, blockers                             | presentation: titles, bounded inputs, summaries, times                                                   |
+| Record                                                 | Lifecycle facts owned by the projection                     | Execution or presentation data that remains                                                                                    |
+| ------------------------------------------------------ | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| The six pending-work records                           | open turn, calls, approval requests and decisions           | `TurnState`: suspended model steps, call execution payloads, queued input, grants; no duplicate lifecycle statuses             |
+| Approval candidates (`eve.runtime.hitl.approvalState`) | approval settlements and sign-in lifecycle                  | responder progress (candidate, expiry, challenge execution data), owned by its request; no copied settlements or emitted flags |
+| `TurnDeliveryIdsKey`                                   | announced turn delivery attribution and boundary completion | queued delivery payloads and IDs still awaiting a boundary in `TurnState`; no second turn-to-delivery map                      |
+| `eve.harness.pendingWorkflowInterrupt`                 | none                                                        | none; deleted                                                                                                                  |
+| Pending sign-ins (`eve.runtime.pendingAuthorization`)  | open or closed, name, `callIds`, coordinates                | attempt by `attemptId`: callback URL, resume value, principal, connection instance                                             |
+| Relayed requests (`eve.runtime.proxyInputRequests`)    | open or closed, kind, coordinates, question, `callId`       | route by `requestId`: continuation token, inbox, remote binding, workflow-ask route                                            |
+| Task table (`eve.taskTable`)                           | name, kind, calls and outcomes                              | run by `taskId`: hook token, run ID, held commands, usage, `resumable`; unread results go to `TurnState`                       |
+| Slack task cards (`channel.state`)                     | calls, statuses, blockers                                   | presentation: titles, bounded inputs, summaries, times                                                                         |
 
 Derived questions become one-liners. Today, whether a session is idle enough to hand off probes
 each record by its raw key. Every new record has to be added to this list by hand, and nothing
@@ -548,7 +581,9 @@ export const isIdle = (v: SessionView) => v.turn.queued === undefined && !hasOpe
 The projection is folded on every event, not only for a particular reader, and includes relayed
 events. Before it's stored in every session, its pruning must be bounded. A fold that keeps every
 turn that continues another would grow without limit in a long-lived session. It keeps one link
-from each open turn to its root instead.
+from each open turn to its root instead. It also retains decisions and outcomes referenced by
+suspended execution until that execution consumes them; pruning must not force `TurnState` to
+keep a second copy of those lifecycle facts.
 
 ### What the stream states
 
@@ -861,9 +896,9 @@ The plan stores essentially the same state as we do today, just in a different s
 
 - **Stored projection size.** Every session step copies and diffs the whole durable state
   (`withSessionStateDelta`), so the server's projection must stay proportional to open work.
-  Pruning keeps open work, one link from each open turn to its root, and what task cards need
-  until their final update. PR 2 adds a test that folds a long generated session and asserts the
-  stored projection stays under a fixed size.
+  Pruning keeps open work, decisions and outcomes still referenced by execution, one link from
+  each open turn to its root, and what task cards need until their final update. PR 2 adds a test
+  that folds a long generated session and asserts the stored projection stays under a fixed size.
 - **Step count.** `commit` runs inside the steps that already exist, so no durable steps are
   added. PR 1 compares step counts for a fixed scenario before and after.
 - **Client folds and selectors.** The client keeps the full history, but only lifecycle events
@@ -888,16 +923,16 @@ The plan stores essentially the same state as we do today, just in a different s
   set.
 - **Rules the checker enforces:**
 
-  | Rule                | A reader may rely on                                                        |
-  | ------------------- | --------------------------------------------------------------------------- |
-  | `turn-order`        | one turn at a time, content inside its turn, nothing after the session ends |
-  | `resolved-twice`    | a request resolves once                                                     |
-  | `open-after-owner`  | no request or sign-in outlives its task, turn, a clear, or the session      |
-  | `state-agreement`   | the projection shows exactly what the session awaits                        |
-  | `unasked-sign-in`   | a call settled for a sign-in is named by an `authorization.required`        |
-  | `own-coordinates`   | events name only turns and calls this stream announced                      |
-  | `unsettled-call`    | a completed turn leaves no call without an outcome                          |
-  | `delivery-boundary` | every accepted delivery is listed by a boundary's `processedDeliveryIds`    |
+  | Rule                | A reader may rely on                                                                                           |
+  | ------------------- | -------------------------------------------------------------------------------------------------------------- |
+  | `turn-order`        | one turn at a time, content inside its turn, nothing after the session ends                                    |
+  | `resolved-twice`    | a request resolves once                                                                                        |
+  | `open-after-owner`  | no request or sign-in outlives its task, turn, a clear, or the session                                         |
+  | `state-agreement`   | execution references agree with projected requests, decisions, and outcomes; no independent lifecycle statuses |
+  | `unasked-sign-in`   | a call settled for a sign-in is named by an `authorization.required`                                           |
+  | `own-coordinates`   | events name only turns and calls this stream announced                                                         |
+  | `unsettled-call`    | a completed turn leaves no call without an outcome                                                             |
+  | `delivery-boundary` | every accepted delivery is listed by a boundary's `processedDeliveryIds`                                       |
 
 - **Older writers:** each fallback has a unit test over an older writer's events, such as a
   `respond()` over boundaries without `processedDeliveryIds`.
@@ -941,10 +976,12 @@ should shrink by about 3,000, mostly suites written against the replaced records
 
 ### 1. Session machine
 
-- `TurnState` replaces the six pending-work records. The machine is the only writer of turn state
-  and the only builder of lifecycle events, and `commit` is the only way state changes.
-- `TurnDeliveryIdsKey` moves into `TurnState.turn`. Approval candidates' transitions move into the
-  machine, and their emitted flags go.
+- Consolidates the six pending-work records behind the machine. The machine is the only writer
+  of execution state and the only builder of lifecycle events, and `commit` is the only way state
+  changes. Any lifecycle fields retained for this extraction are temporary, removed in PR 2.
+- Moves delivery bookkeeping and approval candidates' transitions behind the machine, and their
+  emitted flags go. Only unannounced input and pending-boundary bookkeeping remain in `TurnState`
+  after PR 2; announced attribution belongs to the projection.
 - Adds `isIdle` and the guards, and deletes the interrupt key.
 - Cancel, clear, and a run ending report every withdrawal with events the stream already has.
 - eve runs approved calls itself, before the model reads their results, and `ctx.messages` is the
@@ -964,7 +1001,13 @@ old paths.
 - Moves the conversation reducer's turn, input, and task fold into
   `protocol/session-projection.ts`, and adds calls and sign-ins. `ConversationState` carries it.
 - The server folds every published event, own and relayed, into the stored projection, with
-  bounded pruning.
+  bounded pruning. The final durable shape stores `TurnState`, the projection, and private records
+  separately.
+- Replaces the machine's lifecycle reads with projection selectors and deletes duplicate open-turn,
+  pending-prompt, approval-decision, call-status, and announced delivery-attribution fields.
+  `TurnState` keeps only execution payload, queued input, unread results, pending-boundary delivery
+  IDs, and grants. Dispatch readiness is derived, not stored. PRs 3 and 4 apply the same split to
+  the remaining sign-in, relay, and task records.
 - The handoff idle check and Slack task cards read it, and the task-card fold goes. Task cards
   keep their presentation details, such as titles and summaries, in channel state.
 - Adds the `state-agreement` rule.
@@ -985,8 +1028,10 @@ old paths.
 
 ### 4. Tasks and turn outcomes
 
-- The task table splits three ways: lifecycle comes from the projection, unread results move into
-  `TurnState`, and runs become private records.
+- The task table splits three ways: lifecycle comes from the projection, references to results the
+  model hasn't consumed move into `TurnState`, and runs become private records. The unread queue
+  doesn't copy task status or outcome; it points to the projected outcome and any private result
+  payload.
 - `turn.started.continuesTurnId` on every turn, and `resumeTurnId` on every approved resolution.
 - `cancelled` with `TURN_CANCELLED` or `CONTEXT_CLEARED` for calls eve stops, `rejected` for a
   policy's denials, and a new field on approval policy events for the step that asked.
