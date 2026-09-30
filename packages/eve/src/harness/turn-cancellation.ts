@@ -1,3 +1,5 @@
+import type { HarnessSession } from "#harness/types.js";
+
 const TURN_CANCELLED_ERROR_NAME = "TurnCancelledError";
 
 /** Terminal outcome of a cancelled turn. */
@@ -14,9 +16,29 @@ export class TurnCancelledError extends Error {
  * settles it through the standard turn-cancellation path.
  */
 export class SessionLimitDeclinedError extends TurnCancelledError {
-  constructor() {
+  /**
+   * The session once the decline is recorded: the prompt resolved and the
+   * turn it cancels opened. The stream already reports both, so the
+   * cancellation settles from here rather than withdrawing the prompt again.
+   */
+  readonly session: HarnessSession | undefined;
+
+  constructor(session?: HarnessSession) {
     super("The user declined a fresh session token budget.");
+    this.session = session;
   }
+}
+
+/** The {@link SessionLimitDeclinedError} in `error` or its causes, if any. */
+export function findSessionLimitDecline(error: unknown): SessionLimitDeclinedError | undefined {
+  let current: unknown = error;
+  const seen = new Set<unknown>();
+  while (typeof current === "object" && current !== null && !seen.has(current)) {
+    if (current instanceof SessionLimitDeclinedError) return current;
+    seen.add(current);
+    current = (current as { cause?: unknown }).cause;
+  }
+  return undefined;
 }
 
 /** True when the error, or one of its causes, is a {@link TurnCancelledError}. */

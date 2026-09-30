@@ -41,7 +41,11 @@ import { bindSessionInstrumentation } from "#instrumentation/runtime.js";
 import { RuntimeActionSettlementTimesKey } from "#harness/runtime-action-settlement-state.js";
 import * as agentTraceState from "#tracing/agent-trace-context-store.js";
 import { matchAuthorizationCallbacks } from "#execution/authorization-callback-match.js";
-import { isTurnCancellation, throwIfTurnAborted } from "#harness/turn-cancellation.js";
+import {
+  findSessionLimitDecline,
+  isTurnCancellation,
+  throwIfTurnAborted,
+} from "#harness/turn-cancellation.js";
 import { setChannelContext } from "#execution/channel-context.js";
 import {
   coalesceTurnInputs,
@@ -533,9 +537,17 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
         await failChannelDeliveries(error);
         throw error;
       }
+      // A declined session-limit prompt already resolved on the stream; settle from there.
+      const declined = findSessionLimitDecline(error)?.session;
       return createCancelledModelCallBatchResult({
         beforeBatchContext: input.serializedContext,
-        checkpoint: completedModelCall,
+        checkpoint:
+          declined === undefined
+            ? completedModelCall
+            : {
+                result: { next: null, session: declined },
+                serializedContext: serializeContext(ctx),
+              },
         ctx,
         initialSession,
         stepInput: resolved,

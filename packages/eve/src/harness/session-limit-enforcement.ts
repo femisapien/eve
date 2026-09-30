@@ -65,7 +65,7 @@ export async function applySessionLimitContinuation(
     return { result: null, session: bumpSessionRuntimeUsageLimits(input.session) };
   }
 
-  throw new SessionLimitDeclinedError();
+  throw new SessionLimitDeclinedError(writeTurnState(input.session, input.turnState));
 }
 
 /**

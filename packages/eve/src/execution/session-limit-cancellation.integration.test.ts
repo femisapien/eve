@@ -129,6 +129,10 @@ describe("session-limit continuation decline integration", () => {
           ]),
         ).toBe(true);
         expect(filterEventsByType(declinedTurn, "turn.cancelled")).toHaveLength(1);
+        // The decline resolves the prompt; the cancellation it causes doesn't withdraw it again.
+        expect(filterEventsByType(declinedTurn, "input.resolved")).toMatchObject([
+          { data: { resolutions: [{ outcome: "answered", requestId }] } },
+        ]);
         expect(filterEventsByType(declinedTurn, "session.completed")).toHaveLength(0);
         expectNoFailureEvents(declinedTurn);
 
