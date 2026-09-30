@@ -76,7 +76,9 @@ on its current owner. Legacy-driver imports carry over only the turn
 coordinates.
 
 Relayed requests (questions and approvals a task's run passes up) and pending
-sign-ins keep their own keys beside the turn state.
+sign-ins keep their own keys beside the turn state. Each relayed request
+records the run that passed it up, and a pending sign-in records the
+coordinates it was asked at.
 
 ## Call lifecycle
 
@@ -102,7 +104,9 @@ before the model reads their results, instead of replaying the approval
 through the AI SDK. A call eve runs this way sees the history the model
 reads in `ctx.messages`. Because no approval message has to sit at the tail
 of history, input no longer waits behind an approval batch, and every batch
-answered in one delivery resumes together.
+answered in one delivery resumes together. An approval's first decision
+stands: once `approval.settled` reports it, a second answer while sibling
+approvals are open changes nothing.
 
 ## Turn phase
 
@@ -116,26 +120,37 @@ The phase is derived, never stored:
 
 ## Scope closes
 
-| Operation | Effect on the turn state                                                                                                                                 |
-| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| cancel    | settles the turn's unsettled calls, and every approved, ready, or running call, as cancelled; commits their steps; drops the prompt and relayed requests |
-| clear     | drops every parked step, the prompt, queued input, grants, and pending sign-ins, and empties history. Requests relayed from live tasks stay routable     |
-| reset     | ends the session, as before                                                                                                                              |
+Every close that drops pending work reports it before the event that ends
+the owner, at the coordinates that asked for it.
 
-These closes change state without reporting what they dropped. The stream
-contract change adds those reports.
+| Operation | Effect on the turn state                                                                                                                                 | Reported as                                                                                                                                   |
+| --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| cancel    | settles the turn's unsettled calls, and every approved, ready, or running call, as cancelled; commits their steps; drops the prompt and relayed requests | `action.result` `cancelled` (`TURN_CANCELLED`), `input.resolved` `cancelled`, then `turn.cancelled`                                           |
+| clear     | drops every parked step, the prompt, queued input, grants, and pending sign-ins, and empties history. Requests relayed from live tasks stay routable     | `action.result` `cancelled` (`CONTEXT_CLEARED`), `input.resolved` `cancelled`, and `authorization.completed` `failed`, then `context.cleared` |
+| run ends  | a task's or workflow call's run finishes or is stopped; drops the requests it relayed                                                                    | `input.resolved` `cancelled`, then `task.settled` or `action.result`                                                                          |
+| reset     | ends the session, as before                                                                                                                              |                                                                                                                                               |
+
+Withdrawals go through three functions: `emitStoppedCalls(before, after)` and
+`withdrawnRequests(before, after)` for the turn state, and
+`withdrawProxyInputRequests(session, select)` for relayed requests. Each
+reports what the close dropped. The silent removals they replace,
+`clearAllProxyInputRequests` and `clearProxyInputRequestsWhere`, are gone.
 
 ## Event projection
 
-| Transition                 | Event                                                        |
-| -------------------------- | ------------------------------------------------------------ |
-| turn opened                | `session.started` (once), `turn.started`, `message.received` |
-| step started               | `step.started`                                               |
-| step parked with approvals | `input.requested`                                            |
-| approvals decided          | `input.resolved`, and `action.result` for a rejection        |
-| call settled               | `action.result`                                              |
-| turn closed                | `turn.completed`, `turn.failed`, or `turn.cancelled`         |
-| session idle               | `session.waiting`                                            |
+| Transition                 | Event                                                                                                      |
+| -------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| turn opened                | `session.started` (once), `turn.started` (with `continuesTurnId` when it resumes work), `message.received` |
+| step started               | `step.started`                                                                                             |
+| step parked with approvals | `input.requested`                                                                                          |
+| approvals decided          | `input.resolved` (with each approved call's `resumeTurnId`), and `action.result` for a rejection           |
+| call stopped for a sign-in | `action.result` (`cancelled`, `AUTHORIZATION_REQUIRED`), then `authorization.required` (`callIds`)         |
+| call stopped by a close    | `action.result` (`cancelled`)                                                                              |
+| request withdrawn          | `input.resolved` (`cancelled`)                                                                             |
+| sign-in withdrawn          | `authorization.completed` (`failed`)                                                                       |
+| call settled               | `action.result`                                                                                            |
+| turn closed                | `turn.completed`, `turn.failed`, or `turn.cancelled`                                                       |
+| session idle               | `session.waiting`                                                                                          |
 
 ## Observable changes
 
@@ -161,7 +176,9 @@ contract change adds those reports.
 `hitl/approval-input-requests`, `hitl/session-limit-input-requests`,
 `emission-state`, `active-turn-id`, `cancelled-turn-emission`, and
 `execution/session/pending-turn-state`. The new modules are `turn-state`,
-`parked-calls`, `runtime-calls`, `session-lifecycle`, and `step-input`.
+`parked-calls`, `runtime-calls`, `session-lifecycle`, and `step-input`. The
+stream contract change also replaces `activity-cohort` with the shared session
+projection.
 
 Production code in `packages/eve/src` shrinks by about 850 lines (+2,468,
 −3,318). Tests shrink by about 6,700 lines: suites written against the
@@ -172,8 +189,6 @@ the rest of #3983's suite, the approval-resume suite, and the
 
 ## Known gaps
 
-- Closes don't report what they drop; see the stream contract change.
-- Four approval suites return only with the stream contract change, and that
-  change also fixes a regression they catch here: a response-policy pass that
-  settles no approval opens a turn and calls the model. The two changes
-  should land together.
+The stream contract change reports every close and restores the approval
+suites this change drops; see [Session stream contract](./session-stream-contract.md)
+for what remains.
