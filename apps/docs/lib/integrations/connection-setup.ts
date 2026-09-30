@@ -148,10 +148,6 @@ const buildConfigureVariant = (integration: Integration, auth: AuthMode): string
         "vercel link",
         `vercel connect create ${connectorService}${
           connectorSpec?.name ? ` --name ${connectorSpec.name}` : ""
-        }${
-          connectorSpec?.connectionMethod
-            ? ` --connection-method ${connectorSpec.connectionMethod}`
-            : ""
         }`,
         "vercel env pull",
         "```",

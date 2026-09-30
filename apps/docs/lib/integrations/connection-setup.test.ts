@@ -6,6 +6,7 @@ import {
   renderConnectionVariants,
 } from "./connection-setup";
 import { getIntegration } from "./data";
+import { integrationMarkdown } from "./discovery";
 
 describe("Browser Use connection setup", () => {
   it("generates server-side header authentication without Connect", () => {
@@ -71,14 +72,14 @@ describe("Neon connection setup", () => {
 });
 
 describe("Sanity connection setup", () => {
-  it("selects MCP registration for Sanity's hosted server with user OAuth", () => {
+  it("documents automatic MCP registration and user OAuth for Sanity", () => {
     const integration = getIntegration("sanity")!;
     const setup = buildConnectionSetup(integration);
 
     expect(buildConnectionInstall(integration)).toContain("eve add connection/sanity");
     expect(setup.variants["mcp:user"]).toContain('url: "https://mcp.sanity.io"');
     expect(setup.variants["mcp:user"]).toContain('auth: connect("sanity/sanity")');
-    expect(setup.configureVariants["mcp:user"]).toContain(
+    expect(integrationMarkdown(integration)).toContain(
       "vercel connect create sanity --name sanity --connection-method mcp",
     );
   });

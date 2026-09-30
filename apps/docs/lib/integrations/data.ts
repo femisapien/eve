@@ -45,8 +45,6 @@ interface ConnectorSpec {
   service?: string;
   /** Optional `--name` value passed to `vercel connect create`. */
   name?: string;
-  /** Optional `--connection-method` value passed to `vercel connect create`. */
-  connectionMethod?: string;
 }
 
 interface ConnectionSetupSpec {
@@ -2209,16 +2207,18 @@ const connectionPresentations: Record<string, ConnectionPresentation> = {
     docsHref: "https://www.sanity.io/docs/ai/mcp-server",
     keywords: ["mcp", "cms", "content", "groq", "schemas", "releases", "oauth", "connect"],
     authModes: ["user"],
-    connectors: {
-      user: {
-        uid: "sanity/sanity",
-        service: "sanity",
-        name: "sanity",
-        connectionMethod: "mcp",
-      },
-    },
-    configureNote:
-      "Sign in with a Sanity account that has access to the projects and datasets your agent needs. For manual setup, copy the returned connector UID into `connect()`. The MCP server can edit and publish content; use [tool filters and approval gates](/docs/connections/mcp#tool-filters) to control these actions.",
+    connectors: { user: { uid: "sanity/sanity", service: "sanity", name: "sanity" } },
+    configure: `Link your project, register the MCP connector, and pull OIDC locally:
+
+\`\`\`bash
+vercel link
+vercel connect create sanity --name sanity --connection-method mcp
+vercel env pull
+\`\`\`
+
+The MCP method registers the OAuth client automatically. Sign in with a Sanity account that has access to the projects and datasets your agent needs, and copy the returned connector UID into \`connect()\`.
+
+The MCP server can edit and publish content; use [tool filters and approval gates](/docs/connections/mcp#tool-filters) to control these actions.`,
   },
   sentry: {
     logo: "sentry",
