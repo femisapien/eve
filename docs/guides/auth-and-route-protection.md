@@ -300,7 +300,7 @@ Route auth does not enforce session ownership. If multiple users or tenants can 
 
 ## Tool and connection auth
 
-Tool and connection auth is how your agent reaches an external service that wants an interactive sign-in, like an OAuth MCP server. Connections declare `auth` on the connection definition. Tools should resolve providers inline with `ctx.getToken(provider)` and call `ctx.requireAuth(provider)` only when a downstream service rejects a token; eve drives the sign-in, caches the token per step, and re-runs the call once the caller authorizes.
+Tool and connection auth is how your agent reaches an external service that wants an interactive sign-in, like an OAuth MCP server. Connections declare `auth` on the connection definition. Tools should resolve providers inline with `ctx.getToken(provider)` and call `ctx.requireAuth(provider)` only when a downstream service rejects a token; eve drives the sign-in and caches the token per step. The call that asked for the sign-in stops, and after the caller authorizes, a new turn starts where the model can call the tool again with the token in place.
 
 The principal for user-scoped tool and connection auth comes from route auth. `connect("...")` from `@vercel/connect/eve` defaults to `principalType: "user"`, so the active session must have `ctx.session.auth.current.principalType === "user"` before the first token lookup can start OAuth. If the session is anonymous, local-dev-only, runtime-scoped, or service-scoped, eve fails fast with `reason: "principal_required"` because there is no end-user identity to bind the OAuth grant to.
 
