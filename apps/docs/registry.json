@@ -1307,7 +1307,7 @@
               "mcp"
             ]
           },
-          "requires": ">=0.29.0"
+          "requires": ">=0.55.0"
         }
       },
       "dependencies": [
