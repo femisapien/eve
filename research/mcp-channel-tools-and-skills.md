@@ -216,9 +216,11 @@ The tool sees the same `ctx` it sees in a turn:
 - `ctx.getSandbox()` opens the session's sandbox.
 - `ctx.getToken()` resolves the user's grant, and returns `authorization-required` when a sign-in
   is needed.
-- `ctx.session.turn` and `ctx.session.parent` are absent, because there is no turn. `turn`
-  becomes optional in `SessionContext`, and its absence is how a tool knows it was called
-  directly.
+- `ctx.session.turn` is a stand-in for the call, `{ id: callId, sequence: 0 }`, because there is
+  no turn. `turn` stays required in `SessionContext`, so existing tools that read
+  `ctx.session.turn.id` keep compiling and get one id per call. eve already uses a stand-in turn
+  when it sets up a sandbox outside a turn. `ctx.session.parent` is absent; it is already
+  optional.
 
 **A tool session reuses one sandbox across calls.** Conversations store the provider's sandbox
 state after their first step and resume it. A tool session stores nothing, so every call
@@ -249,8 +251,8 @@ call 2  same id → same N → get(N): found → reuse; the tool reads the path 
 
 **A tool session has none of these**, and the channel documentation must say so:
 
-- **No turns and no steps.** No call is wrapped in a turn or a step. Dynamic resolvers do not run
-  (section 1).
+- **No turns and no steps.** No call is wrapped in a turn or a step; the stand-in turn only
+  names the call. Dynamic resolvers do not run (section 1).
 - **No authored session state.** `defineState` belongs to conversations, where step boundaries
   give its updates a commit point. A tool session has no such point: `get()` returns the declared
   initial value, and `update()` throws an error that names the tool. State that must outlive a
@@ -334,13 +336,13 @@ export default mcpChannel({
 });
 ```
 
-| Option              | Meaning                                                                                                                              |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `auth`              | Required, unchanged. The same policies as other channels, including `oauthResource(...)`.                                            |
-| `route`             | Unchanged. Defaults to `/eve/v1/mcp`.                                                                                                |
-| `tools`             | New. `true` publishes the agent's invocable tools, with tool sessions and change notifications. Defaults to `false`: only `agent_*`. |
-| `skills`            | New. `true` publishes the agent's skills (SEP-2640). Defaults to `false`.                                                            |
-| `trustedForwarders` | New. The same predicate and `ForwardedAssertion` contract as `eveChannel`, for every request, `agent_*` included. Absent: refused.   |
+| Option              | Meaning                                                                                                                                                              |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `auth`              | Required, unchanged. The same policies as other channels, including `oauthResource(...)`.                                                                            |
+| `route`             | Unchanged. Defaults to `/eve/v1/mcp`.                                                                                                                                |
+| `tools`             | New. `true` publishes the agent's invocable tools, with tool sessions and change notifications. Defaults to `false`: only `agent_*`.                                 |
+| `skills`            | New. `true` publishes the agent's skills (SEP-2640). Defaults to `false`.                                                                                            |
+| `trustedForwarders` | New. The same predicate and `ForwardedAssertion` contract as `eveChannel`, for every request, `agent_*` included. Absent: the forwarded header is ignored, as today. |
 
 A channel with neither option serves exactly what it serves today. The channel is an adapter.
 With the options on, each MCP method maps onto one of the operations above:
@@ -545,6 +547,38 @@ and the choice between materialized connection tools and one dispatch tool are l
 can be built in userland on top of this phase, as the prototype's `discover`, `load_skill`, and
 `tool_call` tools were.
 
+## Upgrade path
+
+Phase 1 is backward compatible. An existing `mcpChannel` that does not opt in serves exactly what
+it serves today:
+
+- `tools/list` returns only the four `agent_*` tools, which behave as they do now. `server/discover`,
+  the route, auth, and the transport are unchanged, and `2025-11-25` clients still connect through
+  `initialize`.
+- Without `trustedForwarders`, an `eve-forwarded-principal` header is ignored, as it is today, and
+  work runs as the authenticated caller.
+- No public type changes. `SessionContext.turn` stays required, so authored tools compile as
+  before.
+
+An agent opts in by adding `tools: true`, `skills: true`, or both:
+
+1. Rename any authored tool called `agent_start`, `agent_get`, `agent_update`, or `agent_cancel`.
+   The build fails otherwise, naming the tool.
+2. Review what becomes callable. `tools/list` then adds every invocable tool, and every caller
+   the channel's `auth` admits can call them directly, as themselves, with approval policies
+   enforced.
+3. Expect a sandbox per caller and key for tools that use one, retained as described in
+   section 2.
+4. Add `trustedForwarders` only if another deployment forwards its users.
+
+**The `agent_*` tools stay.** They are how an agent publishes itself to MCP clients today. d0
+serves its whole agent through them to fx, Codex, Claude, and ChatGPT, and deliberately exposes
+none of its tools directly. Phase 1 tools cannot replace that: dynamic tools, which are 14 of d0's
+41 tool files, are not listed, and workflow tools and subagents are not invocable. The planned
+replacement, MCP tasks, requires clients that declare the extension, and Claude Code does not
+support tasks today. So removing `agent_*` waits until something serves the clients that use
+them. #4000 tracks the removal.
+
 ## Security invariants
 
 1. Every request authenticates, and forwarded identity is accepted only through
@@ -566,8 +600,9 @@ can be built in userland on top of this phase, as the prototype's `discover`, `l
 
 ## Out of scope
 
-- Phase 2: the `agent_*` tools replaced by a task-returning agent tool over the MCP tasks
-  extension (SEP-2663), and `defineRemoteAgent` removed. Its requirements are tracked in #4000.
+- Phase 2: a task-returning agent tool over the MCP tasks extension (SEP-2663), and
+  `defineRemoteAgent` removed. The `agent_*` tools are removed only once their clients have a
+  replacement; see [Upgrade path](#upgrade-path). Its requirements are tracked in #4000.
 - Client-side discovery: search, visibility, remote skills, and connection calls from authored
   tools.
 - Sandbox prewarm. Warming every dependency's sandbox at the start of each calling session
@@ -586,6 +621,9 @@ can be built in userland on top of this phase, as the prototype's `discover`, `l
   is `denied`), request-state binding and expiry, session ownership, forwarder refusal.
 - Unit: an `mcpChannel` without `tools` or `skills` lists and serves only the `agent_*` tools, as
   today, and a reserved tool name fails the build.
+- Unit: backward compatibility. Without `trustedForwarders`, a forwarded header is ignored and
+  work runs as the caller. A tool that reads `ctx.session.turn.id` gets the call's stand-in turn
+  under `invokeTool`.
 - Unit: tool session semantics. The same key from another user or forwarder reaches a different
   session, dynamic resolvers never run, state reads return initial values and writes throw, two
   calls run in parallel, and a strategy that returns `resume` fails with an error naming the
