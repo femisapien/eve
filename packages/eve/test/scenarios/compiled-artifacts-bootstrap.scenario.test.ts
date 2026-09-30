@@ -82,11 +82,15 @@ describe("writeCompiledArtifactsFiles", () => {
     await writeFile(join(agentRoot, "agent.ts"), 'export default { model: "openai/gpt-5.4" };\n');
     await writeFile(join(agentRoot, "instructions.md"), "You are a precise assistant.\n");
     await mkdir(join(skillRoot, "references"), { recursive: true });
+    // A case-variant entry file and names that collide with Object.prototype
+    // members must all survive generate -> import.
     await writeFile(
-      join(skillRoot, "SKILL.md"),
+      join(skillRoot, "skill.MD"),
       "---\nname: research\ndescription: Research carefully.\n---\n\n# Research\n",
     );
     await writeFile(join(skillRoot, "references", "api.md"), "nested\n");
+    await writeFile(join(skillRoot, "__proto__"), "proto\n");
+    await writeFile(join(skillRoot, "constructor"), "ctor\n");
 
     const compileResult = await compileAgent({ startPath: appRoot });
     const generatedArtifacts = await writeCompiledArtifactsFiles({
@@ -96,6 +100,11 @@ describe("writeCompiledArtifactsFiles", () => {
     });
     const bootstrapSource = await readFile(generatedArtifacts.bootstrapPath, "utf8");
     expect(bootstrapSource).not.toContain("nested");
+    const skillFilesSource = await readFile(
+      join(outDir, "compiled-artifacts-skill-files.mjs"),
+      "utf8",
+    );
+    expect(skillFilesSource).toContain("export default JSON.parse(");
 
     await withRuntimeSession(createRuntimeSession("compiled-artifacts-skills"), async () => {
       await import(pathToFileURL(generatedArtifacts.bootstrapPath).href);
@@ -107,12 +116,18 @@ describe("writeCompiledArtifactsFiles", () => {
       expect(description.skills).toEqual([
         {
           description: "Research carefully.",
-          files: ["SKILL.md", "references/api.md"],
+          files: ["__proto__", "constructor", "references/api.md", "skill.MD"],
           name: "research",
         },
       ]);
       await expect(args.readSkill("research")).resolves.toContain("# Research");
+      await expect(args.readSkill("research", "SKILL.md")).resolves.toContain("# Research");
       await expect(args.readSkill("research", "references/api.md")).resolves.toBe("nested\n");
+      await expect(args.readSkill("research", "__proto__")).resolves.toBe("proto\n");
+      await expect(args.readSkill("research", "constructor")).resolves.toBe("ctor\n");
+      await expect(args.readSkill("research", "toString")).rejects.toMatchObject({
+        code: "unknown-file",
+      });
     });
   });
 

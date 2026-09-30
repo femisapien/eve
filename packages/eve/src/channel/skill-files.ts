@@ -1,13 +1,12 @@
 import { Buffer } from "node:buffer";
-import { lstat, readdir, readFile } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, readdir, realpath } from "node:fs/promises";
 
 import type { CompiledWorkspaceResourceRoot } from "#compiler/manifest.js";
 import type { RuntimeCompiledArtifactsSource } from "#runtime/compiled-artifacts-source.js";
 import { resolveRuntimeCompilerArtifactPaths } from "#runtime/loaders/artifact-paths.js";
 import { readBundledCompiledArtifacts } from "#runtime/loaders/bundled-artifacts.js";
-
-/** File `readSkill` returns when the caller names no path. */
-export const DEFAULT_SKILL_FILE = "SKILL.md";
+import { isSkillEntryFileName, SKILL_ENTRY_FILE_NAME } from "#shared/skill-entry-file.js";
 
 /** Largest skill file `readSkill` returns. */
 export const MAX_SKILL_FILE_BYTES = 512 * 1024;
@@ -26,10 +25,17 @@ export interface BundledSkillFile {
   readonly size: number;
 }
 
-/** Skill files of the root agent keyed by skill name, then by skill-relative path. */
-export type BundledSkillFiles = Readonly<
-  Record<string, Readonly<Record<string, BundledSkillFile>>>
->;
+/**
+ * Skill files of the root agent as `[skill, [[path, file], …]]` entries.
+ *
+ * Entries rather than objects keyed by name, so a skill or file named
+ * `__proto__` or `constructor` round-trips through the generated module and
+ * never collides with `Object.prototype`.
+ */
+export type BundledSkillFiles = readonly (readonly [
+  skill: string,
+  files: readonly (readonly [path: string, file: BundledSkillFile])[],
+])[];
 
 export type SkillReadErrorCode =
   | "invalid-path"
@@ -88,15 +94,15 @@ export function createCompiledSkillFileSource(input: {
 export function createBundledSkillFileSource(
   load: () => Promise<BundledSkillFiles>,
 ): SkillFileSource {
-  let loaded: Promise<BundledSkillFiles> | undefined;
+  let loaded: Promise<ReadonlyMap<string, ReadonlyMap<string, BundledSkillFile>>> | undefined;
   const skillFiles = async (skill: string) => {
-    loaded ??= load();
-    const files = await loaded;
-    return Object.hasOwn(files, skill) ? files[skill] : undefined;
+    loaded ??= load().then(
+      (entries) => new Map(entries.map(([name, files]) => [name, new Map(files)])),
+    );
+    return (await loaded).get(skill);
   };
   const file = async (skill: string, path: string) => {
-    const files = await skillFiles(skill);
-    const entry = files !== undefined && Object.hasOwn(files, path) ? files[path] : undefined;
+    const entry = (await skillFiles(skill))?.get(path);
     if (entry === undefined) {
       throw new SkillReadError("unknown-file", `Skill "${skill}" has no file "${path}".`);
     }
@@ -104,7 +110,7 @@ export function createBundledSkillFileSource(
   };
   return {
     async listFiles(skill) {
-      return Object.keys((await skillFiles(skill)) ?? {}).sort(comparePaths);
+      return [...((await skillFiles(skill))?.keys() ?? [])].sort(comparePaths);
     },
     async fileSize(skill, path) {
       return (await file(skill, path)).size;
@@ -124,21 +130,106 @@ export function createBundledSkillFileSource(
   };
 }
 
-/** Reads skill files from a materialized `skills/<name>/` tree. */
+/**
+ * Reads skill files from a materialized `skills/<name>/` tree.
+ *
+ * Only regular files reached through real directories are served:
+ *
+ * - A skill root (`skills/<name>`) that is a symlink lists no files and
+ *   cannot be read.
+ * - Listing skips symlinks and does not descend into symlinked directories.
+ * - Before opening, every path component under the skill root is checked with
+ *   `lstat`: directories must be real directories and the leaf a regular file.
+ * - The leaf is opened with `O_NOFOLLOW` where the platform defines it, the
+ *   open handle must be a regular file, and the `realpath` of the target must
+ *   stay under the `realpath` of the skill root.
+ *
+ * Boundary: these checks cover every symlink present in the tree when a read
+ * starts. They are not atomic. A process that can write to the compile
+ * directory and swaps a checked directory for a symlink between the checks
+ * and the open could redirect one read; the containment check narrows that
+ * to the instant between `realpath` and `open`. The compile directory is
+ * build output owned by the app, so such a writer can already change what
+ * is served.
+ */
 export function createDiskSkillFileSource(skillsRoot: string): SkillFileSource {
-  const filePath = (skill: string, path: string) => `${skillsRoot}/${skill}/${path}`;
+  const openFile = async (skill: string, path: string) => {
+    const skillRoot = `${skillsRoot}/${skill}`;
+    if (!(await isRealDirectory(skillRoot))) {
+      throw unknownFile(skill, path);
+    }
+    const segments = path.split("/");
+    let current = skillRoot;
+    for (const [index, segment] of segments.entries()) {
+      current = `${current}/${segment}`;
+      const stats = await lstatOrUndefined(current);
+      const isLeaf = index === segments.length - 1;
+      if (stats === undefined || (isLeaf ? !stats.isFile() : !stats.isDirectory())) {
+        throw unknownFile(skill, path);
+      }
+    }
+    const [realRoot, realTarget] = await Promise.all([realpath(skillRoot), realpath(current)]);
+    if (!realTarget.startsWith(`${realRoot}/`)) {
+      throw unknownFile(skill, path);
+    }
+    const handle = await open(current, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    try {
+      const stats = await handle.stat();
+      if (!stats.isFile()) {
+        throw unknownFile(skill, path);
+      }
+      return { handle, size: stats.size };
+    } catch (error) {
+      await handle.close();
+      throw error;
+    }
+  };
   return {
     async listFiles(skill) {
-      const files = await listRegularFiles(`${skillsRoot}/${skill}`, "");
+      const skillRoot = `${skillsRoot}/${skill}`;
+      if (!(await isRealDirectory(skillRoot))) return [];
+      const files = await listRegularFiles(skillRoot, "");
       return files.sort(comparePaths);
     },
     async fileSize(skill, path) {
-      return (await lstat(filePath(skill, path))).size;
+      const { handle, size } = await openFile(skill, path);
+      await handle.close();
+      return size;
     },
     async readFile(skill, path) {
-      return new Uint8Array(await readFile(filePath(skill, path)));
+      const { handle } = await openFile(skill, path);
+      try {
+        return new Uint8Array(await handle.readFile());
+      } finally {
+        await handle.close();
+      }
     },
   };
+}
+
+async function lstatOrUndefined(path: string) {
+  try {
+    return await lstat(path);
+  } catch (error) {
+    if (isMissingPathError(error)) return undefined;
+    throw error;
+  }
+}
+
+async function isRealDirectory(path: string): Promise<boolean> {
+  return (await lstatOrUndefined(path))?.isDirectory() === true;
+}
+
+function isMissingPathError(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    "code" in error &&
+    (error.code === "ENOENT" || error.code === "ENOTDIR")
+  );
+}
+
+function unknownFile(skill: string, path: string): SkillReadError {
+  return new SkillReadError("unknown-file", `Skill "${skill}" has no file "${path}".`);
 }
 
 const unavailableSkillFileSource: SkillFileSource = {
@@ -157,10 +248,14 @@ async function rejectUnavailable(): Promise<never> {
 /**
  * Reads one file of one compiled skill.
  *
- * Only files the source lists are readable, so traversal and symlinks cannot
- * reach outside the skill even when a path passes validation. Text is
- * returned as a string; anything that is not valid UTF-8 or contains NUL
- * bytes is returned as raw bytes.
+ * With no `path`, reads the skill's entry markdown under whatever case variant
+ * of `SKILL.md` it was authored with. An explicit top-level `SKILL.md` matches
+ * the entry file case-insensitively too; every other path must match a listed
+ * file exactly.
+ *
+ * Only files the source lists are readable. Text is returned as a string;
+ * anything that is not valid UTF-8 or contains NUL bytes is returned as raw
+ * bytes.
  */
 export async function readSkillFile(input: {
   readonly path?: string;
@@ -168,14 +263,18 @@ export async function readSkillFile(input: {
   readonly skills: readonly string[];
   readonly source: SkillFileSource;
 }): Promise<string | Uint8Array> {
-  const path = input.path ?? DEFAULT_SKILL_FILE;
-  assertRelativeSkillPath(path);
+  const requested = input.path ?? SKILL_ENTRY_FILE_NAME;
+  assertRelativeSkillPath(requested);
   if (!input.skills.includes(input.skill)) {
     throw new SkillReadError("unknown-skill", `Unknown skill "${input.skill}".`);
   }
   const files = await input.source.listFiles(input.skill);
+  const path =
+    isSkillEntryFileName(requested) && !files.includes(requested)
+      ? (files.find(isSkillEntryFileName) ?? requested)
+      : requested;
   if (!files.includes(path)) {
-    throw new SkillReadError("unknown-file", `Skill "${input.skill}" has no file "${path}".`);
+    throw unknownFile(input.skill, path);
   }
   const size = await input.source.fileSize(input.skill, path);
   if (size > MAX_SKILL_FILE_BYTES) {
@@ -235,7 +334,7 @@ async function listRegularFiles(directory: string, prefix: string): Promise<stri
   try {
     entries = await readdir(directory, { withFileTypes: true });
   } catch (error) {
-    if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+    if (isMissingPathError(error)) return [];
     throw error;
   }
   const files: string[] = [];

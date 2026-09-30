@@ -46,6 +46,66 @@ describe("createDiskSkillFileSource", () => {
     await expect(read("linked.txt")).rejects.toMatchObject({ code: "unknown-file" });
   });
 
+  it("reads a case-variant entry file by default and by its canonical name", async () => {
+    await mkdir(join(root, "skills", "lower"), { recursive: true });
+    await writeFile(join(root, "skills", "lower", "skill.MD"), "# Lower\n");
+    const source = createDiskSkillFileSource(join(root, "skills"));
+    const read = (path?: string) =>
+      readSkillFile({ path, skill: "lower", skills: ["lower"], source });
+
+    await expect(source.listFiles("lower")).resolves.toEqual(["skill.MD"]);
+    await expect(read()).resolves.toBe("# Lower\n");
+    await expect(read("SKILL.md")).resolves.toBe("# Lower\n");
+    await expect(read("skill.MD")).resolves.toBe("# Lower\n");
+  });
+
+  it("rejects a symlinked skill root", async () => {
+    await symlink(join(root, "skills", "research"), join(root, "skills", "linked"));
+    const source = createDiskSkillFileSource(join(root, "skills"));
+
+    await expect(source.listFiles("linked")).resolves.toEqual([]);
+    await expect(source.readFile("linked", "SKILL.md")).rejects.toMatchObject({
+      code: "unknown-file",
+    });
+    await expect(source.fileSize("linked", "SKILL.md")).rejects.toMatchObject({
+      code: "unknown-file",
+    });
+    await expect(
+      readSkillFile({ skill: "linked", skills: ["linked"], source }),
+    ).rejects.toMatchObject({ code: "unknown-file" });
+  });
+
+  it("rejects symlinked directories anywhere under the skill root", async () => {
+    await mkdir(join(root, "outside"), { recursive: true });
+    await writeFile(join(root, "outside", "leak.md"), "leak\n");
+    await symlink(join(root, "outside"), join(root, "skills", "research", "references", "linked"));
+    const source = createDiskSkillFileSource(join(root, "skills"));
+
+    await expect(source.listFiles("research")).resolves.toEqual([
+      "SKILL.md",
+      "references/deep/api.md",
+    ]);
+    // The source itself refuses, even when a caller skips the listing gate.
+    await expect(source.readFile("research", "references/linked/leak.md")).rejects.toMatchObject({
+      code: "unknown-file",
+    });
+    await expect(source.fileSize("research", "references/linked/leak.md")).rejects.toMatchObject({
+      code: "unknown-file",
+    });
+    await expect(source.readFile("research", "linked.txt")).rejects.toMatchObject({
+      code: "unknown-file",
+    });
+  });
+
+  it("serves files when the skills root itself sits behind a symlinked ancestor", async () => {
+    await symlink(join(root, "skills"), join(root, "skills-alias"));
+    const source = createDiskSkillFileSource(join(root, "skills-alias"));
+
+    await expect(source.readFile("research", "SKILL.md")).resolves.toEqual(
+      new TextEncoder().encode("# Research\n"),
+    );
+  });
+
   it("resolves the compiled resource tree under the app's compile directory", async () => {
     const appRoot = join(root, "app");
     const skillRoot = join(appRoot, ".eve", "compile", "workspace-resources", "__root__", "skills");

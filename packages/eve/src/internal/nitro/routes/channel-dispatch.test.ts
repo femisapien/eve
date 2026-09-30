@@ -222,12 +222,15 @@ describe("dispatchChannelRequest", () => {
       {
         manifest,
         moduleMap,
-        skillFiles: async () => ({
-          research: {
-            "SKILL.md": { content: "# Research\n", encoding: "utf8", size: 11 },
-            "references/api.md": { content: "nested\n", encoding: "utf8", size: 7 },
-          },
-        }),
+        skillFiles: async () => [
+          [
+            "research",
+            [
+              ["SKILL.md", { content: "# Research\n", encoding: "utf8", size: 11 }],
+              ["references/api.md", { content: "nested\n", encoding: "utf8", size: 7 }],
+            ],
+          ],
+        ],
       },
       () =>
         dispatchChannelRequest(createEvent({ url: "https://eve.test/mcp" }), "GET /mcp", {

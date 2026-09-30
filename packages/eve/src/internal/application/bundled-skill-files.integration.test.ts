@@ -1,16 +1,21 @@
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import {
+  type BundledSkillFiles,
   createBundledSkillFileSource,
   MAX_SKILL_FILE_BYTES,
   readSkillFile,
 } from "#channel/skill-files.js";
 import type { CompiledAgentManifest } from "#compiler/manifest.js";
-import { collectBundledSkillFiles } from "#internal/application/bundled-skill-files.js";
+import {
+  collectBundledSkillFiles,
+  serializeBundledSkillFilesModule,
+} from "#internal/application/bundled-skill-files.js";
 
 function manifestWith(skills: readonly string[]): CompiledAgentManifest {
   const manifest: Pick<CompiledAgentManifest, "skills" | "workspaceResourceRoot"> = {
@@ -18,6 +23,10 @@ function manifestWith(skills: readonly string[]): CompiledAgentManifest {
     workspaceResourceRoot: { logicalPath: "workspace-resources/__root__", rootEntries: ["skills"] },
   };
   return manifest as CompiledAgentManifest;
+}
+
+function fileOf(files: BundledSkillFiles, skill: string, path: string) {
+  return files.find(([name]) => name === skill)?.[1].find(([name]) => name === path)?.[1];
 }
 
 describe("collectBundledSkillFiles", () => {
@@ -46,7 +55,7 @@ describe("collectBundledSkillFiles", () => {
       manifest: manifestWith(["research", "zeta"]),
     });
     expect(omitted).toEqual([]);
-    expect(files.research?.["huge.txt"]).toEqual({ size: MAX_SKILL_FILE_BYTES + 1 });
+    expect(fileOf(files, "research", "huge.txt")).toEqual({ size: MAX_SKILL_FILE_BYTES + 1 });
 
     const source = createBundledSkillFileSource(async () => JSON.parse(JSON.stringify(files)));
     const read = (path?: string) =>
@@ -66,7 +75,43 @@ describe("collectBundledSkillFiles", () => {
     });
 
     expect(omitted).toEqual(["research/references/api.md", "zeta/SKILL.md"]);
-    expect(files.zeta).toEqual({ "SKILL.md": { size: 7 } });
-    expect(files.research?.["SKILL.md"]?.content).toBe("\uFEFF# Research\n");
+    expect(files.find(([skill]) => skill === "zeta")?.[1]).toEqual([["SKILL.md", { size: 7 }]]);
+    expect(fileOf(files, "research", "SKILL.md")?.content).toBe("\uFEFF# Research\n");
+  });
+
+  it("round-trips prototype-colliding names through the generated module", async () => {
+    await mkdir(join(skillRoot("constructor"), "__proto__"), { recursive: true });
+    await writeFile(join(skillRoot("constructor"), "skill.MD"), "# Ctor\n");
+    await writeFile(join(skillRoot("constructor"), "__proto__", "polluted.md"), "nested\n");
+    await writeFile(join(skillRoot("constructor"), "__proto__.md"), "file\n");
+    await writeFile(join(skillRoot("research"), "__proto__"), "proto\n");
+    const { files } = await collectBundledSkillFiles({
+      compileDirectoryPath,
+      manifest: manifestWith(["constructor", "research"]),
+    });
+    const modulePath = join(compileDirectoryPath, "skill-files.mjs");
+    await writeFile(modulePath, serializeBundledSkillFilesModule(files));
+
+    const imported = (await import(`${pathToFileURL(modulePath).href}?t=${Date.now()}`)) as {
+      default: BundledSkillFiles;
+    };
+    expect(imported.default).toEqual(files);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+
+    const source = createBundledSkillFileSource(async () => imported.default);
+    const read = (path?: string) =>
+      readSkillFile({ path, skill: "constructor", skills: ["constructor", "research"], source });
+    await expect(source.listFiles("constructor")).resolves.toEqual([
+      "__proto__.md",
+      "__proto__/polluted.md",
+      "skill.MD",
+    ]);
+    await expect(read()).resolves.toBe("# Ctor\n");
+    await expect(read("SKILL.md")).resolves.toBe("# Ctor\n");
+    await expect(read("__proto__/polluted.md")).resolves.toBe("nested\n");
+    await expect(read("__proto__.md")).resolves.toBe("file\n");
+    await expect(
+      readSkillFile({ path: "__proto__", skill: "research", skills: ["research"], source }),
+    ).resolves.toBe("proto\n");
   });
 });
