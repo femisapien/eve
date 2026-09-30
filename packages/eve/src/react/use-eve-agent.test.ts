@@ -4,7 +4,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 
 import { useEveAgent, type UseEveAgentHelpers } from "#react/use-eve-agent.js";
 import type { EveMessageData } from "#client/message-reducer.js";
-import type { ConversationState } from "#client/conversation-state.js";
+import type { ConversationProjection } from "#client/conversation-state.js";
 import {
   EVE_MESSAGE_STREAM_VERSION,
   EVE_SESSION_ID_HEADER,
@@ -79,6 +79,8 @@ function optimisticUserData(message: string, status: "failed" | "submitted") {
   return {
     tasks: {},
     agents: {},
+    authorizations: {},
+    calls: {},
     inputs: {},
     turns: {},
     messages: [
@@ -99,10 +101,12 @@ function completedTurnData(input: {
   readonly assistantMessage?: string;
   readonly turnId: string;
   readonly userMessage: string;
-}): ConversationState {
+}): ConversationProjection {
   return {
     tasks: {},
     agents: {},
+    authorizations: {},
+    calls: {},
     inputs: {},
     turns: {},
     messages: [
