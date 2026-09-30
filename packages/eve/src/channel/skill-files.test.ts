@@ -1,7 +1,10 @@
+import nodePath from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import {
   createBundledSkillFileSource,
+  isStrictlyContainedPath,
   MAX_SKILL_FILE_BYTES,
   readSkillFile,
   SkillReadError,
@@ -203,5 +206,40 @@ describe("createBundledSkillFileSource", () => {
     expect((await readError(read("data/huge.csv"))).code).toBe("too-large");
     expect((await readError(read("references/omitted.md"))).code).toBe("unavailable");
     expect((await readError(read("nope.md"))).code).toBe("unknown-file");
+  });
+});
+
+describe("isStrictlyContainedPath", () => {
+  it("accepts descendants and rejects the root, parents, siblings, and escapes on POSIX", () => {
+    const { posix } = nodePath;
+    const root = "/app/.eve/compile/skills/triage";
+    expect(isStrictlyContainedPath(root, `${root}/SKILL.md`, posix)).toBe(true);
+    expect(isStrictlyContainedPath(root, `${root}/refs/..notes.md`, posix)).toBe(true);
+    expect(isStrictlyContainedPath(root, root, posix)).toBe(false);
+    expect(
+      isStrictlyContainedPath(root, "/app/.eve/compile/skills/triage-evil/SKILL.md", posix),
+    ).toBe(false);
+    expect(isStrictlyContainedPath(root, "/app/.eve/compile/skills/other/SKILL.md", posix)).toBe(
+      false,
+    );
+    expect(isStrictlyContainedPath(root, "/etc/passwd", posix)).toBe(false);
+  });
+
+  it("accepts backslash descendants and rejects escapes and other drives on Windows", () => {
+    const { win32 } = nodePath;
+    const root = "C:\\app\\.eve\\compile\\skills\\triage";
+    expect(isStrictlyContainedPath(root, `${root}\\SKILL.md`, win32)).toBe(true);
+    expect(isStrictlyContainedPath(root, `${root}\\refs\\notes.md`, win32)).toBe(true);
+    expect(
+      isStrictlyContainedPath(root, "c:\\APP\\.eve\\compile\\skills\\triage\\x.md", win32),
+    ).toBe(true);
+    expect(isStrictlyContainedPath(root, root, win32)).toBe(false);
+    expect(
+      isStrictlyContainedPath(root, "C:\\app\\.eve\\compile\\skills\\triage-evil\\SKILL.md", win32),
+    ).toBe(false);
+    expect(isStrictlyContainedPath(root, "C:\\Windows\\win.ini", win32)).toBe(false);
+    expect(
+      isStrictlyContainedPath(root, "D:\\app\\.eve\\compile\\skills\\triage\\x.md", win32),
+    ).toBe(false);
   });
 });

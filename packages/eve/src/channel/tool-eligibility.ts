@@ -17,12 +17,17 @@ export interface CompiledToolBindings {
  * 2. No `behavior.handling`. Handled tools (`dispatch`, `workflow-tool`,
  *    `provider-tool`, and any handling kind added later) are run by the
  *    harness or a provider, not by calling `execute`.
- * 3. The owner of its source binding is not `"framework"`. Framework tools
- *    (`bash`, `read_file`, `write_file`, `web_fetch`, `web_search`,
- *    `load_skill`, `agent`, connection tools, …) depend on the turn's sandbox,
- *    harness, or session state. An application or extension tool that
- *    overrides a framework tool name is owned by the application or extension
- *    and stays invocable.
+ * 3. The owner of its source binding is not `"framework"`. This is a
+ *    conservative phase-1 policy, stricter than the mechanical predicate in
+ *    the research plan (`hasExecute` minus handled tools and framework
+ *    actions). It is not a claim that every framework tool needs a turn: some,
+ *    such as `load_skill` and `agent`, depend on the turn's harness or
+ *    session, while others, such as `web_fetch`, could run without one. They
+ *    are all withheld so that phase 1 publishes only tools the application or
+ *    an extension authored; exposing individual framework tools is a later,
+ *    explicit decision. An application or extension tool that overrides a
+ *    framework tool name is owned by the application or extension and stays
+ *    invocable.
  *
  * There is no background-tool marker in the compiled registry. A background
  * tool is excluded only when one of these rules already covers it.
