@@ -15,7 +15,7 @@ export {
   type ClientMessageSubmittedEvent,
 } from "#client/reducer.js";
 export { conversationReducer } from "#client/conversation-reducer.js";
-export { openConversationInputs } from "#client/conversation-state.js";
+export { openConversationInputs, signInState } from "#client/conversation-state.js";
 export {
   toolCallState,
   type ToolCallContext,
@@ -26,6 +26,7 @@ export type {
   AgentObservation,
   ConversationAgentSession,
   ConversationInput,
+  ConversationSignIn,
   ConversationState,
   ConversationTask,
   ConversationTaskCall,
