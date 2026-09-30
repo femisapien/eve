@@ -7,6 +7,7 @@ import type { WorkflowBodyInput } from "#execution/tools/workflow/body.js";
 import type { WorkflowToolRunMessage } from "#execution/tools/workflow/messages.js";
 import { startServeBody } from "#execution/tools/workflow/serve.js";
 import type { AgentTurnResult } from "#shared/agent-turn-outcome.js";
+import type { TokenUsage } from "#shared/token-usage.js";
 
 /** The agent's side of the task: the messages it read and the turns it owes a reply. */
 const agent = vi.hoisted(() => ({
@@ -83,8 +84,14 @@ const input: WorkflowBodyInput = {
   workflowId: "workflow//eve//agentToolServeWorkflow",
 };
 
-function turnEnded(result: AgentTurnResult): RuntimeActionResultHookPayload {
-  const usageDelta = { cacheReadTokens: 0, cacheWriteTokens: 0, inputTokens: 0, outputTokens: 0 };
+function usage(inputTokens: number, outputTokens: number, costUsd?: number): TokenUsage {
+  return { cacheReadTokens: 0, cacheWriteTokens: 0, costUsd, inputTokens, outputTokens };
+}
+
+function turnEnded(
+  result: AgentTurnResult,
+  usageDelta: TokenUsage = usage(0, 0),
+): RuntimeActionResultHookPayload {
   return {
     kind: "runtime-action-result",
     results: [
@@ -123,6 +130,28 @@ async function startReview(): Promise<ReturnType<typeof startServeBody>> {
   return started;
 }
 
+/** Alice's next message: check the plan against the Friday freeze. */
+const fridayCheck = {
+  call: {
+    agentContext,
+    auth: alice,
+    callId: "call-2",
+    input: { message: "Check it against the Friday freeze." },
+    sequence: 1,
+    stepIndex: 1,
+    turnId: "turn",
+  },
+  kind: "call",
+} as const;
+
+/** The messages that carried the task's usage to its session, in order. */
+function usageMessages(): unknown[] {
+  return agent.delivered.flatMap((message): unknown[] => {
+    if (message.kind === "reply") return [{ reply: message.callIds, usage: message.usage }];
+    return message.kind === "usage" ? [{ usage: message.usage }] : [];
+  });
+}
+
 /**
  * Alice asks the reviewer for a review, and her next message reaches the task
  * `offset` microtasks after the reviewer's first turn ends. If `cancelled`,
@@ -138,18 +167,7 @@ async function sendAsTheTurnEnds(offset: number, { cancelled }: { readonly cance
   );
   for (let tick = 0; tick < offset; tick += 1) await Promise.resolve();
   const repliedFirst = replies().length > 0;
-  started.control.apply({
-    call: {
-      agentContext,
-      auth: alice,
-      callId: "call-2",
-      input: { message: "Check it against the Friday freeze." },
-      sequence: 1,
-      stepIndex: 1,
-      turnId: "turn",
-    },
-    kind: "call",
-  });
+  started.control.apply(fridayCheck);
   await settle();
   agent.turns[1]?.(turnEnded({ kind: "succeeded", output: "The plan misses the Friday freeze." }));
   await settle();
@@ -213,4 +231,92 @@ it("fails the task with the reason the agent's turn failed and how to retry", as
     },
     status: "failed",
   });
+});
+
+it("carries the task's running usage on each reply", async () => {
+  const started = await startReview();
+  agent.turns[0]?.(
+    turnEnded({ kind: "succeeded", output: "The plan looks ready." }, usage(1_000, 100, 0.25)),
+  );
+  await settle();
+  started.control.apply(fridayCheck);
+  await settle();
+  agent.turns[1]?.(
+    turnEnded(
+      { kind: "succeeded", output: "The plan misses the Friday freeze." },
+      usage(500, 50, 0.5),
+    ),
+  );
+  await settle();
+  started.control.apply({ kind: "end", reason: "The session ended." });
+  await started.outcome;
+
+  expect(usageMessages()).toEqual([
+    { reply: ["call-1"], usage: usage(1_000, 100, 0.25) },
+    { reply: ["call-2"], usage: usage(1_500, 150, 0.75) },
+  ]);
+});
+
+it("counts a turn that messages joined once, on the reply that settles them all", async () => {
+  const started = await startReview();
+  started.control.apply(fridayCheck);
+  await settle();
+  // The turn reports to the latest message it read, which settles both calls.
+  agent.turns[1]?.(
+    turnEnded({ kind: "succeeded", output: "Ready, and clear of the freeze." }, usage(800, 80)),
+  );
+  await settle();
+  started.control.apply({ kind: "end", reason: "The session ended." });
+  await started.outcome;
+
+  expect(usageMessages()).toEqual([{ reply: ["call-1", "call-2"], usage: usage(800, 80) }]);
+});
+
+it("sends a cancelled turn's usage on its own, since no reply carries it", async () => {
+  const started = await startReview();
+  started.control.apply({ kind: "cancel", reason: "Alice cancelled the review." });
+  agent.turns[0]?.(turnEnded({ kind: "cancelled" }, usage(400, 40)));
+  await settle();
+  started.control.apply(fridayCheck);
+  await settle();
+  agent.turns[1]?.(
+    turnEnded({ kind: "succeeded", output: "The plan misses the Friday freeze." }, usage(100, 10)),
+  );
+  await settle();
+  started.control.apply({ kind: "end", reason: "The session ended." });
+  await started.outcome;
+
+  expect(usageMessages()).toEqual([
+    { usage: usage(400, 40) },
+    { reply: ["call-2"], usage: usage(500, 50) },
+  ]);
+});
+
+it("sends nothing for a cancelled turn that spent nothing since the last reply", async () => {
+  const started = await startReview();
+  agent.turns[0]?.(
+    turnEnded({ kind: "succeeded", output: "The plan looks ready." }, usage(300, 30)),
+  );
+  await settle();
+  started.control.apply(fridayCheck);
+  await settle();
+  // Alice cancels the check before the reviewer's model spends anything on it.
+  started.control.apply({ kind: "cancel", reason: "Alice cancelled the check." });
+  agent.turns[1]?.(turnEnded({ kind: "cancelled" }, usage(0, 0)));
+  await settle();
+  started.control.apply({ kind: "end", reason: "The session ended." });
+  await started.outcome;
+
+  expect(usageMessages()).toEqual([{ reply: ["call-1"], usage: usage(300, 30) }]);
+});
+
+it("sends no usage once the session ended, since no one would count it", async () => {
+  const started = await startReview();
+  started.control.apply({ kind: "cancel", reason: "Alice cancelled the review." });
+  started.control.apply({ kind: "end", reason: "The session ended." });
+  agent.turns[0]?.(turnEnded({ kind: "cancelled" }, usage(400, 40)));
+  await settle();
+  await started.outcome;
+
+  expect(usageMessages()).toEqual([]);
 });

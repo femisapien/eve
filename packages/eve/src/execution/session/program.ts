@@ -235,12 +235,9 @@ async function runSessionLoop(
   const runTurn = async (payload: TurnStepPayload | undefined): Promise<TurnOutcome> => {
     const caller = progress.caller;
     if (caller !== undefined) {
-      await cursor.apply({
-        serializedContext: await bindTurnCallerContextStep({
-          caller,
-          serializedContext: cursor.serializedContext,
-        }),
-      });
+      await cursor.advance((state) =>
+        bindTurnCallerContextStep({ caller, serializedContext: state.serializedContext }),
+      );
     }
     progress.turnId = `turn_${String(turnIndex++)}`;
     const outcome = await execution.runTurn(payload, { caller });
@@ -258,11 +255,10 @@ async function runSessionLoop(
     if (next.delivery.caller !== undefined) progress.caller = next.delivery.caller;
     return { action: await runTurn({ delivery: next.delivery }), kind: "action" };
   };
-  const settleCancelledTurn = async () => {
-    const settled = await settleCancelledTurnStep({
-      ...cursor.stepState(),
-    });
-    await cursor.apply(settled);
+  const settleCancelledTurn = async (reportUsage: boolean) => {
+    const settled = await cursor.advance((state) =>
+      settleCancelledTurnStep({ ...state, reportUsage }),
+    );
     progress.caller = undefined;
     return settled;
   };
@@ -311,7 +307,7 @@ async function runSessionLoop(
 
       if (action.cancelled === true) {
         const cancelledCaller = { caller: progress.caller, sessionId: boot.sessionId };
-        const settled = await settleCancelledTurn();
+        const settled = await settleCancelledTurn(progress.caller !== undefined);
         await notifyCancelledTaskCallerStep(
           settled.usage === undefined
             ? cancelledCaller
@@ -353,7 +349,7 @@ async function runSessionLoop(
             sessionState: cursor.sessionState,
           });
           await cancelWorkingTasks(cursor);
-          await settleCancelledTurn();
+          await settleCancelledTurn(false);
           // Cancellation consumes any outstanding caller; do not report the prior turn.
           action = { ...action, settled: undefined };
           continue;

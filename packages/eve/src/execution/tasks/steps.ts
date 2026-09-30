@@ -10,22 +10,29 @@ import {
   finishTaskRun,
   markTaskRunStarted,
   readTaskTable,
+  recordTaskRunUsage,
   settleRemainingTaskCalls,
   settleTaskCalls,
   writeTaskTable,
   type TaskCall,
   type TaskOutcome,
+  type TaskRecord,
   type TaskRunCommand,
   type TaskRunCommands,
   type TaskTable,
 } from "#execution/tasks/table.js";
 import { ignoreGoneTarget } from "#execution/tasks/workflow-target.js";
+import { countRunUsage } from "#execution/agent-sessions/usage.js";
 import {
   publishSessionEvents,
   relaySessionEvents,
   type PublishedSessionEvents,
   type SessionStepState,
 } from "#execution/publish-session-events.js";
+import {
+  withSessionStateDelta,
+  type SessionStateTransition,
+} from "#execution/session/state-delta.js";
 import type {
   WorkflowToolRunControlMessage,
   WorkflowToolRunMessage,
@@ -40,17 +47,22 @@ import { createTaskSettledEvent, type TaskSettledStreamEvent } from "#protocol/m
 /** The messages a task's run sends that change its record. */
 export type TaskRunMessage = Extract<
   WorkflowToolRunMessage,
-  { readonly kind: "outcome" | "reply" | "started" }
+  { readonly kind: "outcome" | "reply" | "started" | "usage" }
 >;
 
 const TASK_CANCEL_REASON = "The task was cancelled.";
 
-/** Applies one message from a task's run: started, a reply, or the run's outcome. */
+/** Applies one message from a task's run: started, a reply, usage no reply carried, or the run's outcome. */
 export async function applyTaskRunMessageStep(
   input: SessionStepState & { readonly message: TaskRunMessage },
-): Promise<PublishedSessionEvents> {
+): Promise<SessionStateTransition> {
   "use step";
+  return await withSessionStateDelta(input, applyTaskRunMessage);
+}
 
+async function applyTaskRunMessage(
+  input: SessionStepState & { readonly message: TaskRunMessage },
+): Promise<PublishedSessionEvents> {
   const { message } = input;
   const taskId = message.from.taskId;
   let session = readDurableSession(input.sessionState);
@@ -67,16 +79,23 @@ export async function applyTaskRunMessageStep(
       break;
     }
     case "reply": {
+      ({ session, table } = countTaskRunUsage(session, table, taskId, message));
       const outcome: TaskOutcome = { output: message.output, status: "completed" };
+      const record = findTask(table, taskId);
       const settled = settleTaskCalls(table, { callIds: message.callIds, outcome, taskId });
       table = settled.table;
-      events.push(...settled.settled.map((call) => taskSettledEvent(taskId, call, outcome)));
+      events.push(...taskSettledEvents(record, settled.settled, outcome));
       break;
     }
+    case "usage":
+      ({ session, table } = countTaskRunUsage(session, table, taskId, message));
+      break;
     case "outcome": {
+      ({ session, table } = countTaskRunUsage(session, table, taskId, message));
       const outcome = toOutcome(message);
+      const record = findTask(table, taskId);
       const settled = settleRemainingTaskCalls(table, taskId, outcome);
-      events.push(...settled.settled.map((call) => taskSettledEvent(taskId, call, outcome)));
+      events.push(...taskSettledEvents(record, settled.settled, outcome));
       table = finishTaskRun(settled.table, taskId, message.from.runId);
       session = forgetRunQuestions(session, message.from.runId);
       break;
@@ -97,20 +116,25 @@ export async function applyTaskRunMessageStep(
  */
 export async function cancelTasksStep(
   input: SessionStepState & { readonly taskIds: readonly string[] },
-): Promise<PublishedSessionEvents> {
+): Promise<SessionStateTransition> {
   "use step";
+  return await withSessionStateDelta(input, cancelTasks);
+}
 
+async function cancelTasks(
+  input: SessionStepState & { readonly taskIds: readonly string[] },
+): Promise<PublishedSessionEvents> {
   const session = readDurableSession(input.sessionState);
   let table = readTaskTable(session.state);
   const events: TaskSettledStreamEvent[] = [];
   const stoppedRunIds = new Set<string>();
   for (const taskId of input.taskIds) {
-    const resumable = findTask(table, taskId)?.resumable;
+    const record = findTask(table, taskId);
     const cancelled = cancelTask(table, taskId);
     table = cancelled.table;
-    events.push(...cancelled.settled.map((call) => taskSettledEvent(taskId, call, CANCELLED)));
+    events.push(...taskSettledEvents(record, cancelled.settled, CANCELLED));
     if (cancelled.send === undefined) continue;
-    if (resumable === false) stoppedRunIds.add(cancelled.send.run.runId);
+    if (record?.resumable === false) stoppedRunIds.add(cancelled.send.run.runId);
     await sendTaskRunCommands(cancelled.send);
   }
   const withdrawn = withdrawWorkflowAsks(session, (_requestId, runId) => stoppedRunIds.has(runId));
@@ -123,13 +147,28 @@ export async function cancelTasksStep(
 
 const CANCELLED: TaskOutcome = { status: "cancelled" };
 
-/** The `task.settled` event for one settled call. */
+/** The `task.settled` events for a task's settled calls; calls only settle on a known task. */
+function taskSettledEvents(
+  record: TaskRecord | undefined,
+  settled: readonly TaskCall[],
+  outcome: TaskOutcome,
+): TaskSettledStreamEvent[] {
+  if (record === undefined) return [];
+  return settled.map((call) => taskSettledEvent(record, call, outcome));
+}
+
 function taskSettledEvent(
-  taskId: string,
+  record: TaskRecord,
   call: TaskCall,
   outcome: TaskOutcome,
 ): TaskSettledStreamEvent {
-  const base = { callId: call.callId, taskId, turnId: call.turnId };
+  const base = {
+    callId: call.callId,
+    kind: record.kind,
+    name: record.name,
+    taskId: record.id,
+    turnId: call.turnId,
+  };
   switch (outcome.status) {
     case "completed":
       return createTaskSettledEvent({ ...base, output: outcome.output, status: "completed" });
@@ -180,6 +219,26 @@ function failureMessage(message: WorkflowToolRunOutcomeMessage): string {
   const described =
     typeof output === "object" && output !== null ? Reflect.get(output, "message") : undefined;
   return typeof described === "string" ? described : JSON.stringify(output);
+}
+
+/**
+ * Counts what the delegated spend a reply, usage report, or outcome carries
+ * adds to what the session counted from its run. Only while that run is the
+ * task's run: a redelivered outcome arrives after the run finished, and adds
+ * nothing.
+ */
+function countTaskRunUsage(
+  session: DurableSession,
+  table: TaskTable,
+  taskId: string,
+  message: Extract<TaskRunMessage, { readonly kind: "outcome" | "reply" | "usage" }>,
+): { readonly session: DurableSession; readonly table: TaskTable } {
+  const run = findTask(table, taskId)?.run;
+  if (message.usage === undefined || run?.runId !== message.from.runId) return { session, table };
+  return {
+    session: countRunUsage(session, message.usage, run.usage),
+    table: recordTaskRunUsage(table, taskId, message.usage),
+  };
 }
 
 /** A finished run can no longer take answers, so its unanswered questions are dropped. */

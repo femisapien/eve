@@ -1,5 +1,6 @@
 import type { UserContent } from "ai";
 
+import type { LegacyRemoteAgentCaller } from "#execution/legacy-remote-agent/protocol.js";
 import type { SessionInboxAddress } from "#execution/session-inbox/address.js";
 import type { MessageStreamEvent, UnstampedMessageStreamEvent } from "#protocol/message.js";
 import type { CancelTurnResult as ProtocolCancelTurnResult } from "#protocol/cancel-turn.js";
@@ -135,7 +136,6 @@ export interface SessionAuthContext {
 
 /** Framework-internal caller waiting for one delegated conversation turn. */
 export interface TurnCaller {
-  readonly activityObserver?: ActivityObserverConfig;
   readonly callId: string;
   readonly subagentName: string;
   readonly replyTo:
@@ -305,6 +305,11 @@ export interface SubagentInputRequestEvent {
  * `input.requested` handler and the parent's runtime loop.
  */
 export interface SubagentInputRequestHookPayload {
+  readonly remote?: import("#eve-channel/support.js").RemoteAgentBinding & {
+    readonly sessionId: string;
+  };
+  /** Independent source when several requests share an answer destination. */
+  readonly inputSource?: string;
   readonly callId: string;
   readonly childContinuationToken: string;
   readonly childSessionId: string;
@@ -361,16 +366,6 @@ export type HookPayload =
  * this as its first turn's caller; each continuation supplies the caller for
  * that turn.
  */
-export interface ActivitySinkV1 {
-  readonly url: string;
-  readonly version: 1;
-}
-
-export interface ActivityObserverConfig {
-  readonly sink: ActivitySinkV1;
-  readonly workIdentity?: import("#protocol/activity.js").ActivityWorkIdentityV1;
-}
-
 export interface SessionCallback {
   readonly callId: string;
   readonly subagentName: string;
@@ -457,8 +452,8 @@ export interface RunInput {
    * caller for their own turn.
    */
   readonly callback?: SessionCallback;
-  /** Private collector capability and current work lineage. */
-  readonly activityObserver?: ActivityObserverConfig;
+  /** Set when {@link callback} belongs to a remote agent protocol 1 caller. */
+  readonly legacyRemoteAgentCaller?: LegacyRemoteAgentCaller;
   /**
    * Session continuation token for delivery and hook creation. Channels can
    * add a continuation address during the first turn via
@@ -489,6 +484,8 @@ export interface RunInput {
     readonly message?: string | UserContent;
     readonly context?: readonly string[];
     readonly outputSchema?: JsonObject;
+    /** Channel payload state for the first delivery, as later deliveries carry it. */
+    readonly state?: unknown;
   };
   /** Observability correlation only; never grants delegated-session privileges. */
   readonly conversationId?: string;

@@ -13,7 +13,7 @@ vi.mock("#execution/terminate-child-sessions-step.js", () => ({
   terminateChildSessionsStep: mocks.children,
 }));
 vi.mock("#execution/settle-cancelled-turn-step.js", () => ({
-  settleCancelledTurnStep: mocks.settle,
+  settleCancelledTurn: mocks.settle,
 }));
 beforeEach(() => vi.resetAllMocks());
 function fixture(turnId = ""): PreparedLegacySession {
@@ -85,6 +85,7 @@ describe("legacy pending work", () => {
     mocks.settle.mockResolvedValue({ sessionState: prepared.sessionState, serializedContext: {} });
     await interruptLegacySessionStep(prepared);
     expect(mocks.settle).toHaveBeenCalledExactlyOnceWith({
+      reportUsage: false,
       sessionWritable: prepared.input.sessionWritable,
       sessionState: prepared.sessionState,
       serializedContext: {},

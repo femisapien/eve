@@ -1,5 +1,6 @@
 import type { DeliverHookPayload, TurnCaller } from "#channel/types.js";
 import type { DurableSessionState } from "#execution/durable-session-store.js";
+import type { WithSessionStateDelta } from "#execution/session/state-delta.js";
 import type { TaskToolCall } from "#execution/tasks/calls.js";
 import type { SettledTurn } from "#harness/types.js";
 import type { RuntimeActionResult } from "#shared/action-types.js";
@@ -8,6 +9,8 @@ import type { TokenUsage } from "#shared/token-usage.js";
 /** Trusted runtime-action results collected by the session owner. */
 export interface RuntimeActionResultStepInput {
   readonly acceptedAtMsByCallId?: Readonly<Record<string, number>>;
+  /** What the `ctx.agent` sessions of the `execute` runs behind these results spent. */
+  readonly delegatedUsage?: readonly TokenUsage[];
   readonly results: readonly RuntimeActionResult[];
 }
 
@@ -37,7 +40,7 @@ interface DurableStepResultFields {
   readonly sessionState: DurableSessionState;
 }
 
-/** Result returned by a session-mutating turn step. */
+/** What one turn step's work produces, with the session state it leaves. */
 export type DurableStepResult = (
   | {
       readonly action: "continue" | "done";
@@ -60,6 +63,9 @@ export type DurableStepResult = (
     }
 ) &
   DurableStepResultFields;
+
+/** What `turnStep` returns: its result, with the session state as a delta. */
+export type TurnStepResult = WithSessionStateDelta<DurableStepResult>;
 
 /** The only two ways a locally executed conversational turn can settle. */
 export type TurnOutcome = {

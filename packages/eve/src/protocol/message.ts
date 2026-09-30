@@ -418,14 +418,24 @@ export interface TaskStartedStreamEvent {
 
 /**
  * Stream event emitted once when a task's call settles: by the run's return
- * or failure, or by a cancel. `turnId` is the call's turn, the same as on its
- * `task.started`.
+ * or failure, or by a cancel. `turnId`, `name`, and `kind` are the same as on
+ * the call's `task.started`.
  */
 export interface TaskSettledStreamEvent {
   data: {
     callId: string;
     /** Why the call failed; present only when `status` is `"failed"`. */
     error?: { message: string };
+    /**
+     * The task's kind, as on `task.started`. Absent on events recorded by eve
+     * versions before it was added.
+     */
+    kind?: TaskStartedStreamEvent["data"]["kind"];
+    /**
+     * The tool whose call started the task, as on `task.started`. Absent on
+     * events recorded by eve versions before it was added.
+     */
+    name?: string;
     /** The call's result; present only when `status` is `"completed"`. */
     output?: JsonValue;
     status: "completed" | "failed" | "cancelled";
@@ -684,6 +694,11 @@ export interface AuthorizationRequiredStreamEvent {
     candidateId?: string;
     description: string;
     name: string;
+    /**
+     * Session principal that started this sign-in, matching `responderPrincipalId`
+     * on approval events. Channels use it to deliver the challenge privately.
+     */
+    principalId?: string;
     sequence: number;
     stepIndex: number;
     /** The task that needs the sign-in, when it comes from a task's run. */
@@ -726,6 +741,8 @@ export interface AuthorizationCompletedStreamEvent {
     authorization?: ConnectionAuthorizationChallenge;
     name: string;
     outcome: AuthorizationOutcome;
+    /** Session principal that started the matching sign-in. */
+    principalId?: string;
     reason?: string;
     sequence: number;
     stepIndex: number;
@@ -1187,6 +1204,7 @@ export function createAuthorizationRequiredEvent(input: {
   readonly candidateId?: string;
   readonly description: string;
   readonly name: string;
+  readonly principalId?: string;
   readonly sequence: number;
   readonly stepIndex: number;
   readonly taskId?: string;
@@ -1208,6 +1226,9 @@ export function createAuthorizationRequiredEvent(input: {
   }
   if (input.candidateId !== undefined) {
     data.candidateId = input.candidateId;
+  }
+  if (input.principalId !== undefined) {
+    data.principalId = input.principalId;
   }
   if (input.webhookUrl !== undefined) {
     data.webhookUrl = input.webhookUrl;
@@ -1232,6 +1253,7 @@ export function createAuthorizationCompletedEvent(input: {
   readonly candidateId?: string;
   readonly name: string;
   readonly outcome: AuthorizationOutcome;
+  readonly principalId?: string;
   readonly reason?: string;
   readonly sequence: number;
   readonly stepIndex: number;
@@ -1253,6 +1275,9 @@ export function createAuthorizationCompletedEvent(input: {
   }
   if (input.candidateId !== undefined) {
     data.candidateId = input.candidateId;
+  }
+  if (input.principalId !== undefined) {
+    data.principalId = input.principalId;
   }
   if (input.reason !== undefined) {
     data.reason = input.reason;
@@ -1390,10 +1415,12 @@ export function createTaskStartedEvent(
 
 /** Creates the `task.settled` event for one settled task call. */
 export function createTaskSettledEvent(
-  input: TaskSettledStreamEvent["data"],
+  input: TaskSettledStreamEvent["data"] & Pick<TaskStartedStreamEvent["data"], "kind" | "name">,
 ): TaskSettledStreamEvent {
   const data: TaskSettledStreamEvent["data"] = {
     callId: input.callId,
+    kind: input.kind,
+    name: input.name,
     status: input.status,
     taskId: input.taskId,
     turnId: input.turnId,

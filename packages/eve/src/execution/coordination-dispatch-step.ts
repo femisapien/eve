@@ -7,9 +7,16 @@ import {
 } from "#execution/coordination-dispatch-shared.js";
 import { createDurableSessionState } from "#execution/durable-session-store.js";
 import { publishSessionEvents } from "#execution/publish-session-events.js";
+import {
+  withSessionStateDelta,
+  type WithSessionStateDelta,
+} from "#execution/session/state-delta.js";
 import { startWorkflowTask, type StartWorkflowTaskInput } from "#execution/tools/workflow/start.js";
 import { sendToTask, startTaskRun } from "#execution/tasks/start.js";
-import { captureAgentSessionContext } from "#execution/agent-sessions/context.js";
+import {
+  captureAgentSessionContext,
+  resolveStepAgentLimits,
+} from "#execution/agent-sessions/context.js";
 import type { TaskStartedStreamEvent } from "#protocol/message.js";
 import type { RuntimeActionResult } from "#shared/action-types.js";
 import type { HarnessSession } from "#harness/types.js";
@@ -20,9 +27,14 @@ type CoordinationDispatchStepInput = CoordinationDispatchInput & {
 
 export async function dispatchCoordinationStep(
   input: CoordinationDispatchStepInput,
-): Promise<CoordinationDispatchResult> {
+): Promise<WithSessionStateDelta<CoordinationDispatchResult>> {
   "use step";
+  return await withSessionStateDelta(input, dispatchCoordination);
+}
 
+async function dispatchCoordination(
+  input: CoordinationDispatchStepInput,
+): Promise<CoordinationDispatchResult> {
   const prepared = await prepareCoordinationDispatch({
     serializedContext: input.serializedContext,
     sessionState: input.sessionState,
@@ -39,10 +51,11 @@ export async function dispatchCoordinationStep(
   let nextSession = session;
   const results: RuntimeActionResult[] = [];
   const started: TaskStartedStreamEvent[] = [];
+  const agentLimits = resolveStepAgentLimits(prepared);
 
   for (const task of prepared.plan) {
     const start = {
-      agentContext: captureAgentSessionContext(prepared, task.callId),
+      agentContext: captureAgentSessionContext(prepared, task.callId, agentLimits),
       auth: { current: prepared.auth, initiator: prepared.initiatorAuth },
       batchEvent: batch.event,
       owner: input.workflowToolRunOwner,

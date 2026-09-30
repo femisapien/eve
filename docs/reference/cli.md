@@ -52,12 +52,12 @@ Existing packages do not need a target-selection prompt: run `eve init` from the
 
 After scaffolding in an interactive human terminal, eve opens the TUI directly. Pass `-n` or `--non-interactive` to return after scaffolding instead. It still installs dependencies and follows the normal Git setup behavior. Noninteractive and coding-agent invocations return without starting an interactive session. Fresh projects use the parent workspace's package manager when there is one; otherwise they use the manager that launched `eve init`.
 
-| Flag                    | Type   | Default                  | Description                                                                                                              |
-| ----------------------- | ------ | ------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| `--model <model>`       | string | `openai/gpt-6-luna-fast` | Set the root agent's AI Gateway model ID.                                                                                |
-| `--reasoning <effort>`  | enum   | provider default         | Set reasoning to `none`, `minimal`, `low`, `medium`, `high`, or `xhigh`. `provider-default` leaves the field unauthored. |
-| `--channel-web-nextjs`  | flag   | off                      | Add the Web Chat app (Next.js). Not for existing projects — run `eve add channel/web` there instead.                     |
-| `-n, --non-interactive` | flag   | off                      | Scaffold and install dependencies without starting development.                                                          |
+| Flag                    | Type   | Default                                              | Description                                                                                                              |
+| ----------------------- | ------ | ---------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `--model <model>`       | string | `openai/gpt-6-luna-fast`                             | Set the root agent's AI Gateway model ID.                                                                                |
+| `--reasoning <effort>`  | enum   | `high` without `--model`; otherwise provider default | Set reasoning to `none`, `minimal`, `low`, `medium`, `high`, or `xhigh`. `provider-default` leaves the field unauthored. |
+| `--channel-web-nextjs`  | flag   | off                                                  | Add the Web Chat app (Next.js). Not for existing projects — run `eve add channel/web` there instead.                     |
+| `-n, --non-interactive` | flag   | off                                                  | Scaffold and install dependencies without starting development.                                                          |
 
 ## `eve extension`
 
@@ -147,6 +147,49 @@ eve info [--json]
 | `--json` | flag | off     | Emit as JSON |
 
 Run this first when something behaves unexpectedly. It confirms a file was discovered, lists the active surface, and surfaces discovery diagnostics, all faster than booting the dev server. Static instructions appear in source order with their `system` or `user` role. Dynamic instruction results are runtime-only and do not appear here.
+
+### JSON output
+
+`eve info --json` prints one JSON object. Scripts and CI checks can read it instead of the files under `.eve/`:
+
+| Field              | Type             | Description                                                                               |
+| ------------------ | ---------------- | ----------------------------------------------------------------------------------------- |
+| `appRoot`          | string           | Application root                                                                          |
+| `agentRoot`        | string or `null` | Agent directory, or `null` when the project could not be compiled                         |
+| `layout`           | string or `null` | Project layout                                                                            |
+| `status`           | string           | Compile status, such as `ready` or `failed`; `unavailable` when nothing compiled          |
+| `diagnostics`      | object or `null` | Discovery diagnostic counts: `{ errors, warnings }`                                       |
+| `model`            | string or `null` | Root agent model id                                                                       |
+| `instructions`     | string or `null` | Static instruction files with their roles                                                 |
+| `skills`           | string[]         | Static skill names                                                                        |
+| `tools`            | string[]         | Root agent tool names                                                                     |
+| `toolInputSchemas` | object           | Each tool's input schema as eve sends it to the model (see below)                         |
+| `subagents`        | string[]         | Declared subagent names                                                                   |
+| `schedules`        | string[]         | Schedule names                                                                            |
+| `channels`         | object[]         | Effective channel routes: `{ name, kind, method, urlPath }`                               |
+| `messaging`        | object           | Session route patterns: `{ create, messages, stream }`                                    |
+| `artifacts`        | object or `null` | Paths to the compiled manifest, discovery manifest, diagnostics, module map, and metadata |
+
+`toolInputSchemas.root` maps each root agent tool name to its JSON Schema, including tools from mounted extensions under their namespaced names. `toolInputSchemas.subagents` maps each declared subagent name to the same kind of map for that subagent's tools. Each schema is the form eve sends to the model: schemas from a validation library such as Zod have `additionalProperties: false` on objects that allow no other keys, plain JSON Schema is kept as written, and tools whose calls run as `serve` tasks, including agent tools, include the optional `taskId` input eve adds.
+
+```json
+{
+  "tools": ["get_weather"],
+  "toolInputSchemas": {
+    "root": {
+      "get_weather": {
+        "type": "object",
+        "properties": { "city": { "type": "string" } },
+        "required": ["city"],
+        "additionalProperties": false
+      }
+    },
+    "subagents": {}
+  }
+}
+```
+
+`toolInputSchemas` covers only tools compiled from tool files. It does not include provider-managed tools such as `web_search`, dynamic tools, connection tools, the tools eve generates at runtime for each subagent and remote agent, or the `task_wait` and `task_cancel` tools. Model providers can also transform a schema before the model reads it; those changes are not reflected here. To compute the same form for an input schema in your own code, such as in a test, call `serializeModelInputSchema(schema)` from `eve/tools`; it returns JSON Schema data and does not add `taskId`.
 
 ## `eve build`
 
@@ -340,7 +383,7 @@ Span rows carry inline metrics when the span recorded them — `↑input`/`↓ou
 
 Every subagent activation starts its own trace. The first child's `invoke_agent` root links to the dispatching caller with `eve.link.type=agent.dispatch`; remote agents preserve that caller in W3C `tracestate` even when HTTP `traceparent` advances through platform ingress. Later turns also start fresh traces without repeating the initial caller link. All related sessions retain the same `gen_ai.conversation.id`, and `agent.subagent.name` labels the child invocation.
 
-Each `agent()` call inside an authored workflow has its own `agent.action` caller span, including sequential and parallel calls. A workflow tool that coordinates one of those calls has an enclosing `invoke_workflow <tool>` span; a workflow tool without agent calls remains `agent.action`. The tool also keeps its `execute_tool <tool>` span. Only agent execution uses `invoke_agent`.
+Each workflow tool call has one `agent.action` span and keeps its `execute_tool <tool>` span. Sessions the tool opens with `ctx.agent` link to that call's `agent.action` span as their dispatching caller; individual `ctx.agent` calls get no span of their own. Only agent execution uses `invoke_agent`.
 
 Outbound MCP `tools/call` requests add MCP semantic attributes to the matching `execute_tool` span. When eve has no tool span to enrich, it creates a `CLIENT` `tools/call <tool>` span. Each `tools/list` discovery also has a `CLIENT` span. Configured OpenTelemetry propagation fields are injected into MCP `params._meta` for JSON-RPC bodies up to 1 MiB and propagation metadata up to 8 KiB; larger requests are sent unchanged. eve removes its audience and session-lineage baggage before forwarding, and keeps the input/output content-capture policy local.
 

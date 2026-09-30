@@ -5,6 +5,7 @@ import {
 } from "#execution/tools/workflow/emit-workflow-tool-run-report-step.js";
 import type {
   WorkflowToolAskRequest,
+  WorkflowToolRunAgentStartedMessage,
   WorkflowToolRunMessage,
   WorkflowToolRunOutcomeMessage,
   WorkflowToolRunRef,
@@ -35,9 +36,10 @@ export async function handleWorkflowToolRunMessage(
 ): Promise<RuntimeActionResult | undefined> {
   const { message } = input;
   switch (message.kind) {
-    // Only task runs report started or reply, and the session applies those to the task table.
+    // Only task runs report started, reply, or usage, and the session applies those to the task table.
     case "started":
     case "reply":
+    case "usage":
       return undefined;
     case "outcome":
       return await handleWorkflowToolRunOutcome({ ...input, message });
@@ -48,20 +50,33 @@ export async function handleWorkflowToolRunMessage(
       await handleWorkflowToolRunWithdraw({ ...input, message });
       return undefined;
     case "report":
-      await input.cursor.apply(
-        await emitWorkflowToolRunReportStep({
-          ...input.cursor.stepState(),
-          from: message.from,
-          update: message.update,
-        }),
+      await input.cursor.advance((state) =>
+        emitWorkflowToolRunReportStep({ ...state, from: message.from, update: message.update }),
       );
       return undefined;
     case "agent-started":
-      await input.cursor.apply(
-        await emitAgentStartedStep({ ...input.cursor.stepState(), message }),
+      await input.cursor.advance((state) =>
+        emitAgentStartedStep({ ...state, messages: [message] }),
       );
       return undefined;
   }
+}
+
+/** Boundary messages in admission order, with consecutive `agent-started` messages grouped. */
+type BoundaryBatch =
+  | { readonly kind: "agent-started"; readonly messages: WorkflowToolRunAgentStartedMessage[] }
+  | { readonly kind: "message"; readonly message: WorkflowToolRunMessage };
+
+/** Groups consecutive `agent-started` messages so one `emitAgentStartedStep` publishes each group. */
+export function batchAgentStarts(messages: readonly WorkflowToolRunMessage[]): BoundaryBatch[] {
+  const batches: BoundaryBatch[] = [];
+  for (const message of messages) {
+    const last = batches.at(-1);
+    if (message.kind !== "agent-started") batches.push({ kind: "message", message });
+    else if (last?.kind === "agent-started") last.messages.push(message);
+    else batches.push({ kind: "agent-started", messages: [message] });
+  }
+  return batches;
 }
 
 /**
@@ -97,22 +112,19 @@ async function handleWorkflowToolRunRequest(
   if (message.request.kind === "authorization-request") {
     const request = message.request;
     await deliverWorkflowAuthorization({ ...message, request }, async () => {
-      await cursor.apply(
-        await runProxySubagentEventStep({
-          hookPayload: request.event,
-          ...cursor.stepState(),
-        }),
+      await cursor.advance((state) =>
+        runProxySubagentEventStep({ hookPayload: request.event, ...state }),
       );
     });
     return;
   }
-  await cursor.apply(
-    await runProxySubagentEventStep({
+  await cursor.advance((state) =>
+    runProxySubagentEventStep({
       ...(message.request.kind === "ask" && {
         workflowAsk: createWorkflowAskRoute(message.from, message.request),
       }),
       hookPayload: workflowToolRunRequestToInputRequestPayload(message),
-      ...cursor.stepState(),
+      ...state,
     }),
   );
 }
@@ -126,9 +138,9 @@ async function handleWorkflowToolRunWithdraw(
   input: HandlerInput<WorkflowToolRunWithdrawMessage>,
 ): Promise<void> {
   const { cursor, message } = input;
-  await cursor.apply(
-    await withdrawWorkflowToolRunQuestionStep({
-      ...cursor.stepState(),
+  await cursor.advance((state) =>
+    withdrawWorkflowToolRunQuestionStep({
+      ...state,
       control: message.control,
       requestId: message.replyTo,
       runId: message.from.runId,

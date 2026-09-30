@@ -214,7 +214,7 @@ describe("compileAgentManifest source graph", () => {
 
     expect(compiled.config.defaultTools).toBe(false);
     expect(compiled.tools.map((tool) => tool.name).sort()).toEqual(["bash", "weather"]);
-    expect(compiled.dynamicTools.map((tool) => tool.slug)).toEqual(["connection_search"]);
+    expect(compiled.dynamicTools.map((tool) => tool.slug)).toEqual(["connection_tools"]);
     expect(compiled.tools.find((tool) => tool.name === "bash")?.description).toBe(
       "Application-owned shell replacement.",
     );
@@ -229,19 +229,21 @@ describe("compileAgentManifest source graph", () => {
     ).toEqual(["tools/bash.ts"]);
   });
 
-  it("rejects disabling required connection search", async () => {
+  it.each([
+    ["tools/connection_search.ts", disableTool()],
+    [
+      "tools/connection_execute.ts",
+      defineTool({ description: "Replacement.", execute: () => null, inputSchema: {} }),
+    ],
+    ["tools/connection_tools.ts", disableTool()],
+  ])("rejects authored %s because the connection tools are closed", async (logicalPath, entry) => {
     const sourceRegistry = registry([
-      {
-        logicalPath: "tools/connection_search.ts",
-        loadNamespace: async () => ({ default: disableTool() }),
-      },
+      { logicalPath, loadNamespace: async () => ({ default: entry }) },
     ]);
 
     await expect(
       compileAgentManifest(manifest(), { sourceRegistries: [sourceRegistry] }),
-    ).rejects.toThrow(
-      'The required "connection_search" tool cannot be disabled. Remove "agent/tools/connection_search.ts" or export a replacement tool from it.',
-    );
+    ).rejects.toThrow(`"agent/${logicalPath}" is reserved.`);
   });
 
   it("allows disableTool for the root agent tool", async () => {
@@ -665,6 +667,14 @@ describe("compileAgentManifest source graph", () => {
       sourceRegistries: [sourceRegistry],
     });
     const mount = compiled.extensionMounts[0]!;
+    expect(mount.mountId).toBe("extensions/crm");
+    expect(compiledAgentManifestSchema.safeParse(compiled).success).toBe(true);
+    expect(
+      compiledAgentManifestSchema.safeParse({
+        ...compiled,
+        extensionMounts: [{ ...mount, mountId: "" }],
+      }).success,
+    ).toBe(false);
 
     expect(compiled.bindings[mount.mountSourceId]?.usage).toEqual({
       compile: false,

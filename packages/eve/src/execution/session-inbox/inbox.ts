@@ -48,11 +48,6 @@ export interface SessionInboxReader {
   onInterrupt(handler: (payload: SessionInboxPayload) => void): () => void;
   /** Observes deliveries without consuming them; replays unread deliveries on subscription. */
   onDelivery(handler: (payload: SessionInboxPayload) => void): () => void;
-  /**
-   * Observes runs' `agent-started` messages without consuming them; replays
-   * unread ones on subscription. Handlers must be synchronous.
-   */
-  onAgentStarted(handler: (message: WorkflowToolRunAgentStarted) => void): () => void;
   restore(payloads: readonly SessionInboxPayload[]): void;
 }
 
@@ -87,7 +82,6 @@ export function createSessionInbox(sessionId: string): SessionInboxHandle {
   const waiters = new Set<() => void>();
   const interruptHandlers = new Set<(payload: SessionInboxPayload) => void>();
   const deliveryHandlers = new Set<(payload: SessionInboxPayload) => void>();
-  const agentStartedHandlers = new Set<(message: WorkflowToolRunAgentStarted) => void>();
   let failure: { error: unknown } | undefined;
 
   const notify = (): void => {
@@ -110,8 +104,6 @@ export function createSessionInbox(sessionId: string): SessionInboxHandle {
           for (const handler of deliveryHandlers) handler(result.value);
         if (isInterrupt(result.value))
           for (const handler of interruptHandlers) handler(result.value);
-        if (isAgentStarted(result.value))
-          for (const handler of agentStartedHandlers) handler(result.value);
         notify();
       }
     } catch (error) {
@@ -197,11 +189,6 @@ export function createSessionInbox(sessionId: string): SessionInboxHandle {
         if (payload.kind === "send" || payload.kind === "deliver") handler(payload);
       return () => deliveryHandlers.delete(handler);
     },
-    onAgentStarted(handler) {
-      agentStartedHandlers.add(handler);
-      for (const payload of queue) if (isAgentStarted(payload)) handler(payload);
-      return () => agentStartedHandlers.delete(handler);
-    },
     restore(payloads) {
       if (sources.length === 0)
         throw new Error("Cannot restore session commands before reclaiming the session hooks.");
@@ -229,16 +216,6 @@ export function createSessionInbox(sessionId: string): SessionInboxHandle {
   };
 }
 
-/** A run's report that it opened a session, which the session publishes as `agent.started`. */
-export type WorkflowToolRunAgentStarted = Extract<
-  WorkflowToolRunMessage,
-  { readonly kind: "agent-started" }
->;
-
-function isAgentStarted(value: SessionInboxPayload): value is WorkflowToolRunAgentStarted {
-  return value.kind === "agent-started";
-}
-
 export function isWorkflowMessage(value: SessionInboxPayload): value is WorkflowToolRunMessage {
   return (
     value.kind === "agent-started" ||
@@ -247,6 +224,7 @@ export function isWorkflowMessage(value: SessionInboxPayload): value is Workflow
     value.kind === "reply" ||
     value.kind === "request" ||
     value.kind === "withdraw" ||
+    value.kind === "usage" ||
     value.kind === "outcome"
   );
 }

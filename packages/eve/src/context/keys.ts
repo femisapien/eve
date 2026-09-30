@@ -7,7 +7,6 @@
 import type { LanguageModel, ModelMessage, SystemModelMessage } from "ai";
 
 import type {
-  ActivityObserverConfig,
   ChannelDeliveryMetadata,
   ChannelInstrumentationProjection,
   SessionAuthContext,
@@ -23,6 +22,7 @@ import {
   type SessionInboxAddress,
 } from "#execution/session-inbox/address.js";
 import { SESSION_CALLBACK_CONTEXT_KEY_NAME } from "#context/key-names.js";
+import type { LegacyRemoteAgentCaller } from "#execution/legacy-remote-agent/protocol.js";
 import type { InstrumentationChannelDeliveryRef } from "#instrumentation/lifecycle.js";
 import type { UserModelMessage } from "#harness/messages.js";
 import type { HandleEventFn } from "#harness/types.js";
@@ -105,6 +105,8 @@ export const TurnDeliveryIdsKey = new ContextKey<readonly string[]>("eve.turnDel
 /** Last framework announcements recorded in the retained session history. */
 export interface HistoryState {
   readonly availableSkills?: string;
+  /** Last announced value per keyed announcement (see `#harness/announcements.js`). */
+  readonly announcements?: Readonly<Record<string, string>>;
 }
 export const HistoryStateKey = new ContextKey<HistoryState>("eve.historyState");
 export interface ActiveChannelDelivery {
@@ -137,26 +139,17 @@ export const OtelTraceEnabledKey = new ContextKey<boolean>("eve.otelTraceEnabled
  * dispatch so HITL readiness flows through a conversation chain.
  */
 export const CapabilitiesKey = new ContextKey<SessionCapabilities>("eve.capabilities");
-export const ActivityObserverKey = new ContextKey<ActivityObserverConfig>("eve.activityObserver");
-/** Originating root turn that owns the current user-visible activity artifact. */
-export const ActivityRootTurnIdKey = new ContextKey<string>("eve.activityRootTurnId");
-/** Pending HITL request identities that keep the current activity artifact open. */
-export const ActivityPendingBlockersKey = new ContextKey<readonly string[]>(
-  "eve.activityPendingBlockers",
-);
-/**
- * Call IDs that got `task.started` this turn, so their `action.result` is a
- * receipt that leaves the activity running. Not read from the task table: a
- * call leaves it once it settles, which can happen before its receipt is
- * published. Cleared at turn end.
- */
-export const ActivityTaskCallsKey = new ContextKey<readonly string[]>("eve.activityTaskCalls");
 
 /**
  * Optional framework-owned caller callback captured when the session is created.
  */
 export const SessionCallbackKey = new ContextKey<SessionCallback>(
   SESSION_CALLBACK_CONTEXT_KEY_NAME,
+);
+
+/** Present when a remote agent protocol 1 caller created the session. */
+export const LegacyRemoteAgentCallerKey = new ContextKey<LegacyRemoteAgentCaller>(
+  "eve.legacyRemoteAgentCaller",
 );
 
 // ---------------------------------------------------------------------------
