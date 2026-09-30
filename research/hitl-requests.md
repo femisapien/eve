@@ -53,7 +53,7 @@ keeps both behaviors.
 | owner           | What a request belongs to and what continues when it is answered: a gate task, an `execute` call, or the turn                                |
 | held turn       | A turn that stays open while it has a working task or an open request it owns (`turn.waiting`)                                               |
 | steering        | A message from the turn's principal arriving during the turn (`execution/session/input-queue.ts:223-234`)                                    |
-| gated call      | A tool call whose approval policy returns `"user-approval"`, or whose tool needs a sign-in eve cannot satisfy yet                            |
+| gated call      | A tool call whose approval policy returns `"user-approval"`, or that asked for a sign-in while it ran                                        |
 | gate task       | The task eve starts for a gated call. It owns the call's requests and runs the call once they are answered                                   |
 | receipt         | The gated call's tool result, written at once: "Task t1 is waiting for approval to run send_email. It has not run."                          |
 | task result     | The `task.result` message that later carries the call's real outcome to the model                                                            |
@@ -210,18 +210,18 @@ result right away, so the conversation can go on without editing history.
 
 ### Everything else
 
-| What happens                                                                     | Result                                                                                                      |
-| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| The approval policy returns `"approved"` or `"not-applicable"`                   | The call runs right away. No task, no receipt                                                               |
-| The approval policy returns `"denied"`                                           | The call does not run; its result says it was denied                                                        |
-| The person denies                                                                | `t1` settles `completed`; the task result says the call was denied and did not run                          |
-| The response policy rejects whoever answered (Approve or Cancel, as since #3954) | The request stays open for someone else                                                                     |
-| The tool needs a sign-in                                                         | Same path; `t1` waits for the sign-in instead of an approval                                                |
-| The sign-in fails or times out                                                   | The task result says the call did not run, and why                                                          |
-| The call needs an approval and a sign-in                                         | eve asks for the approval first and the sign-in after it, so nobody signs in for a call that is then denied |
-| One step makes several gated calls                                               | One gate task per call. Each call runs as soon as its own requests are answered                             |
-| The model calls `task_cancel(t1)`                                                | `t1`'s requests are withdrawn; the call never runs                                                          |
-| A late sign-in arrives after withdrawal                                          | The credential may be stored; the withdrawn call never runs                                                 |
+| What happens                                                                     | Result                                                                                                          |
+| -------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| The approval policy returns `"approved"` or `"not-applicable"`                   | The call runs right away. No task, no receipt                                                                   |
+| The approval policy returns `"denied"`                                           | The call does not run; its result says it was denied                                                            |
+| The person denies                                                                | `t1` settles `completed`; the task result says the call was denied and did not run                              |
+| The response policy rejects whoever answered (Approve or Cancel, as since #3954) | The request stays open for someone else                                                                         |
+| The tool asks for a sign-in while it runs                                        | The call becomes gate task `t1`, which runs the tool again once the person signs in (see How a gated call runs) |
+| The sign-in fails or times out                                                   | The task result says the call did not run, and why                                                              |
+| The call needs an approval and a sign-in                                         | The approval comes first; the sign-in only comes up once the approved call runs                                 |
+| One step makes several gated calls                                               | One gate task per call. Each call runs as soon as its own requests are answered                                 |
+| The model calls `task_cancel(t1)`                                                | `t1`'s requests are withdrawn; the call never runs                                                              |
+| A late sign-in arrives after withdrawal                                          | The credential may be stored; the withdrawn call never runs                                                     |
 
 Everything else a gate task does is the task model on `main`: it counts toward the task cap, the
 turn cannot end while it works, and `final_output` returns the error naming working tasks.
@@ -240,7 +240,46 @@ Alice asks the agent to email a report, then keeps talking while the approval is
 
 Every event carries `turn_1`. The turn ends at row 5 because nothing is working anymore.
 
-### How the gate task runs the call
+### How a gated call runs
+
+Two things can stop a tool call before it runs, and eve learns about them at different times:
+
+- **An approval** is known before the call runs: the tool's `approval` policy returns
+  `"user-approval"`.
+- **A sign-in** is known only while the call runs: the tool asks for a token with `getToken` or
+  `requireAuth`, and there is no credential yet.
+
+#### Approvals
+
+| Stage    | Today                                                                                                                                                                                                   | Under this design                                                                                                                                               |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Decide   | During `generate()`, the AI SDK calls eve's `toolApproval` callback (`buildToolApproval`, `harness/tools.ts`), which runs the tool's `approval` policy                                                  | eve runs the same policy itself when the model step returns the call. The policy gets the same context: `toolName`, `toolInput`, `callId`, and `approvedTools`  |
+| Ask      | The SDK adds an approval part to the call. eve holds the call back, records a pending batch, emits `input.requested`, and ends the turn                                                                 | eve starts `t1` and writes the receipt. `t1` asks with `ctx.ask`, which emits the same `input.requested`: kind `tool-approval`, options Approve and Deny        |
+| Answer   | The approval coordinator runs the response policy with the requester (`request.principal`) and the decision (`response.decision`). The policy can ask the responder to sign in (`ApprovalResponseAuth`) | The session runs the same response policy, with the same inputs, before it accepts the answer. A sign-in the policy asks for is raised before the answer counts |
+| Remember | An approved tool is recorded in `eve.runtime.hitl.approvedTools`, which `once()` reads                                                                                                                  | Same record, written when the session accepts an Approve                                                                                                        |
+| Run      | The SDK runs `execute` inside the next `generate()`, and only if the approval response is the last message                                                                                              | `t1` runs `execute` in a workflow step                                                                                                                          |
+
+The built-in policies keep their meaning: `always()` always asks, `never()` never asks, `once()` asks
+until the tool has been approved once in the session, and `auto()` asks its evaluation model at the
+Decide stage.
+
+#### Sign-ins
+
+| Stage  | Today, plain tool                                                                                                                                            | Today, workflow body                                                    | Under this design                                                                                                                                                      |
+| ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Detect | The tool asks for a token with no credential. Its result carries an authorization signal (`readAuthorizationSignal`, `harness/inline-tool-authorization.ts`) | The same, inside a workflow step (`withWorkflowStepAuthorization`)      | The same. A plain tool still runs in the model step and finds out there                                                                                                |
+| Ask    | eve emits `authorization.required` with the sign-in URL or code, removes the call from history, and ends the turn                                            | eve emits `authorization.required`; the run suspends and the turn waits | eve writes the receipt and makes the call gate task `t1`, which runs the tool again in a workflow step. The step raises the same `authorization.required` and suspends |
+| Answer | The provider's callback; `authorization-resume` starts a new turn                                                                                            | The callback; the step runs again (`completeWorkflowStepAuthorization`) | The callback; `t1`'s step runs again. This is the workflow-body path, unchanged                                                                                        |
+| Run    | The tool runs again from the start, in the new turn                                                                                                          | The step runs the tool again from the start                             | `t1`'s step runs the tool again from the start                                                                                                                         |
+
+After a sign-in the tool runs again from the start, as it does today, so code before its `getToken`
+call runs twice.
+
+A call that needs both an approval and a sign-in gets them in that order without a special case:
+`t1` asks for the approval first, and the sign-in only comes up once the approved call runs. Nobody
+signs in for a call that is then denied.
+
+#### Inside the gate task
 
 What happens inside `t1`, from the call in walkthrough row 2 to the result in row 5. Every piece
 except the gate task's body exists on `main`.
@@ -248,36 +287,39 @@ except the gate task's body exists on `main`.
 1. **Start.** The model step that made the call commits `t1`'s record alongside it and starts `t1`'s
    workflow run with the tool name, the call's input, and its `callId`, as it does for every task
    (`research/eve-tasks.md` §7, "Start once" and "First call is free").
-2. **Ask.** `t1`'s body calls `ctx.ask` with the approval request, and the run suspends. The session
-   emits `input.requested` with `t1`'s `taskId`.
+2. **Ask.** For an approval, `t1` calls `ctx.ask` and the run suspends. The session emits
+   `input.requested` with `t1`'s `taskId`.
 3. **Answer.** Alice's answer reaches the session inbox. The session runs the response policy,
-   accepts the answer, emits `input.resolved`, and sends it to `t1` on the run's control hook
-   (`execution/tools/workflow/messages.ts`). `ctx.ask` returns `approve`.
+   accepts the answer, records it for `once()`, emits `input.resolved`, and sends it to `t1` on the
+   run's control hook (`execution/tools/workflow/messages.ts`). `ctx.ask` returns `approve`.
 4. **Run.** `t1` calls the tool's own `execute` inside a workflow step, with the input from step 1.
-   The step restores the requesting turn's session, auth, and connections before the tool runs, the
-   way workflow tools already run code in steps (`withWorkflowStepAuthorization` and
-   `buildBaseToolContext`, `execution/tools/workflow/step-execution.ts`). A sign-in the tool needs
-   suspends the run here, through `requireAuth`, the same way.
-5. **Report.** The value `execute` returns is `t1`'s result. The run reports it to the session, which
-   emits `task.settled` (`research/eve-tasks.md` §7, "Settle once").
+   The step restores the requesting turn's session, auth, and connections first, as workflow tools
+   already do (`buildBaseToolContext`, `execution/tools/workflow/step-execution.ts`). If the tool
+   asks for a sign-in here, the step suspends until the callback and then runs again.
+5. **Report.** The value `execute` returns is `t1`'s result. The session emits `task.settled`
+   (`research/eve-tasks.md` §7, "Settle once").
 6. **Deliver.** At the next step boundary the session writes the task result into history
    (`appendTaskContext`) and calls the model.
 
-The gate task's body is small, and eve provides it for every gated tool:
+The gate task's body, which eve provides for every gated tool:
 
 ```ts
 async task(input, ctx) {
   "use workflow";
-  const answer = await ctx.ask(approvalRequest(tool, input)); // steps 2 and 3
-  if (answer.status !== "answered" || answer.optionId !== "approve") {
-    return notRun(answer); // denied, withdrawn, or nobody to ask
+  if (needsApproval) { // the policy returned "user-approval"
+    const answer = await ctx.ask(approvalRequest(tool, input)); // steps 2 and 3
+    if (answer.status !== "answered" || answer.optionId !== "approve") {
+      return notRun(answer); // denied, withdrawn, or nobody to ask
+    }
   }
-  return await runToolStep(tool, input); // step 4: the tool's own execute, in a step
+  return await runToolStep(tool, input); // step 4; a sign-in suspends this step, then it runs again
 }
 ```
 
 If Alice denies, `ctx.ask` returns `deny` at step 3, the body returns a "not run" result without
 calling the tool, and steps 5 and 6 deliver it the same way.
+
+### If Alice writes something else
 
 What the model should do if Alice writes something else in walkthrough row 3:
 
@@ -459,6 +501,9 @@ withdrawn: it writes the held-back call with a result saying the approval expire
 drops the `[Pending approvals]` note. Open plain-tool challenges and budget questions from before the
 upgrade are dropped the same way; the next call or model step raises a new one.
 
+Clients change too. `useEveAgent` and `EveAgentStore` show an approval's state from the tool part's
+`eve` metadata today; they move to `input.requested`, `input.resolved`, and `task.settled`.
+
 ## Alternatives considered
 
 - **Hold the call back and answer steering without it.** The model does not know its own call is
@@ -482,26 +527,38 @@ upgrade are dropped the same way; the next call or model step raises a new one.
 
 ## Open questions
 
-1. **Plain and MCP tools inside a gate task.** Step 4 above assumes a plain or MCP tool's `execute`
-   can run in a workflow step with its full `ToolContext` (`getToken`, `session`, connections).
-   Workflow tools already get this context in steps (`step-execution.ts`); plain tools run inside the
-   model step today and are not registered as workflow steps. The spike answers this first.
-2. **Response policy at acceptance.** #3929 (open) authorizes `ctx.ask` answers with policy steps. If
-   it lands, gated calls use it instead of a check of their own.
-3. **Text answers for policy-guarded requests.** A text answer could carry the message's principal
-   through the response policy like a structured answer. Decide whether to allow it.
-4. **Credential lifetime.** Whether turn-scoped tokens fetched before a long wait are refreshed when
-   the gate task runs the call.
-5. **Client migration.** `useEveAgent` and `EveAgentStore` show approval state from the tool part's
-   `eve` metadata today. They move to `input.requested`, `input.resolved`, and `task.settled`.
+Each question says what is known, what isn't, and what depends on the answer.
+
+1. **Can a gate task run any tool?**
+   - Known: a workflow tool's code already runs in workflow steps, with the turn's session, auth,
+     and connections restored (`execution/tools/workflow/step-execution.ts`).
+   - Not known: plain tools, MCP tools, and dynamic tools that a `turn.started` hook registers run
+     inside the model step today (`TurnDynamicToolMetadataKey`, "replaced each turn"). A workflow run
+     may not be able to call their `execute`, or may not have a dynamic tool's definition.
+   - Depends on it: step 4 of "Inside the gate task". If a workflow step can't run them, gated calls
+     need a runner inside the session instead.
+   - How to answer: the spike, with one plain, one MCP, and one dynamic tool behind an approval.
+2. **Where does the response policy run?**
+   - Known: today the approval coordinator runs it before an answer counts. The route table has no
+     policy step, so as it stands an answer from anyone would count. #3929 (open) adds policy checks
+     to `ctx.ask` answers.
+   - Not known: whether #3929 lands in a shape gate tasks can use.
+   - Options: use #3929, or have the session look up the tool's `approval.response` for gate requests
+     only.
+3. **Should text answer an approval that has a response policy?**
+   - Known: today only a structured answer can settle such an approval, never text. Linear always
+     sends replies as text, so those approvals can't be answered from Linear (#3680).
+   - Option: treat a text answer like a structured one, with the message's sender as the responder,
+     and run the policy on it.
+   - Not known: whether every text channel identifies the sender well enough to act as a responder.
 
 Follow-ups, not needed for the first version: one `input.requested` per step for several gated calls,
 and default request deadlines in shared threads (reusing `expireApprovalCandidates`).
 
 ## Validation
 
-A spike with one approval-gated plain tool, one sign-in-gated plain tool, and a budget question. It
-passes if:
+A spike with an approval-gated plain, MCP, and dynamic tool, a sign-in-gated plain tool, and a
+budget question. It passes if:
 
 1. The reproductions for #3899, #2826, and #3594 pass with `hasTailApprovalResponse` and
    `approval-delivery-coordinator.ts` deleted.
