@@ -147,6 +147,10 @@ contract change adds those reports.
   spends no model tokens.
 - Workflow calls dispatch only once they are `ready`. #3983's dispatch filter
   becomes the call lifecycle.
+- Answering some of a step's approvals emits `approval.settled` for each and
+  then `session.waiting`, so the delivery reaches a boundary. Before, a
+  partial answer emitted no boundary, and its `respond()` waited until the
+  last approval was answered.
 - Sessions from an earlier eve version can't resume on, or hand off to, this
   one.
 
