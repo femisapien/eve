@@ -1,5 +1,6 @@
 import type { UnstampedMessageStreamEvent, MessageStreamEvent } from "#protocol/message.js";
 import { TurnSegment } from "#client/session-utils.js";
+import { SessionContractCheck } from "#internal/testing/session-contract.js";
 
 /**
  * Minimal, duck-typed handle to one workflow `Run`'s readable stream.
@@ -41,7 +42,8 @@ export interface CapturedTurnStream {
 /**
  * Opens a reader on `run.readable` and returns a stateful
  * {@link CapturedTurnStream}. Subsequent `nextTurn()` calls observe the
- * same stream, so resume-driven multi-turn tests stay deterministic.
+ * same stream, so resume-driven multi-turn tests stay deterministic. Every
+ * event read is held to the session stream contract.
  *
  * Callers are responsible for calling `dispose()` and `run.cancel()` when
  * they are finished with the run.
@@ -53,6 +55,8 @@ export function captureTurnEvents(
   const reader = run.readable.getReader();
   const state: StreamState = { buffer: "" };
   const decoder = options.decoder ?? new TextDecoder();
+  const contract = new SessionContractCheck();
+  const read: MessageStreamEvent[] = [];
   let disposed = false;
 
   const readUntil = async (matches: (event: MessageStreamEvent) => boolean) => {
@@ -60,7 +64,10 @@ export function captureTurnEvents(
       throw new Error("CapturedTurnStream: stream already disposed.");
     }
 
-    return await readUntilMatch(reader, state, decoder, matches);
+    const events = await readUntilMatch(reader, state, decoder, matches);
+    read.push(...events);
+    contract.assert(read);
+    return events;
   };
 
   return {

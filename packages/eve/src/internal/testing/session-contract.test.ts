@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
-import { checkSessionStream, type SessionContractRule } from "#protocol/session-contract.js";
+import {
+  checkSessionStream,
+  type SessionContractRule,
+} from "#internal/testing/session-contract.js";
 import type { InputRequest } from "#shared/input.js";
 
 const at = (turnId: string, stepIndex = 0) => ({

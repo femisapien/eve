@@ -1,10 +1,19 @@
+import { getPendingAuthorization } from "#harness/authorization.js";
+import { getProxyInputRequests } from "#harness/proxy-input-requests.js";
+import { allCalls, findCall, readTurnState } from "#harness/turn-state.js";
+import type { SessionStateMap } from "#harness/types.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import {
   callStatus,
   initialSessionProjection,
   reduceSessionProjection,
+  type SessionAuthorization,
   type SessionProjection,
 } from "#protocol/session-projection.js";
+
+// The stream contract eve's tests hold every session to. It is a test oracle,
+// not runtime code: the generated-session suite, the tool-loop fixture, and the
+// workflow stream readers in `internal/testing` run it over what they observe.
 
 /**
  * A rule every session stream keeps, so that any reader folding it reaches the
@@ -25,8 +34,8 @@ import {
  * - `unasked-sign-in`: a call that settles as needing a sign-in is named by an
  *   `authorization.required` before its turn ends.
  * - `state-agreement`: where a step ends, the stream shows exactly the
- *   requests and sign-ins the session awaits. Only a check that can read the
- *   session's state applies it.
+ *   requests and sign-ins the session awaits. Only a check given the session's
+ *   state applies it; see {@link checkSessionAgreement}.
  */
 export type SessionContractRule =
   | "own-coordinates"
@@ -252,6 +261,109 @@ export function checkSessionStream(
     const checked = checkSessionEvent(state, event);
     state = checked.state;
     violations.push(...checked.violations);
+  }
+  return violations;
+}
+
+/**
+ * Checks one session's stream as a test observes it. Each call checks the
+ * events appended since the last one and, given the state a step left, whether
+ * the stream shows what that state awaits. A stream first seen after its
+ * `session.started` is never checked, since its turns started out of sight.
+ */
+export class SessionContractCheck {
+  #state = initialSessionContractState();
+  #checked = 0;
+  #skipped = false;
+
+  check(
+    events: readonly UnstampedMessageStreamEvent[],
+    sessionState?: SessionStateMap,
+  ): readonly SessionContractViolation[] {
+    if (this.#checked === 0 && events.length > 0 && events[0]!.type !== "session.started") {
+      this.#skipped = true;
+    }
+    if (this.#skipped) return [];
+    const violations: SessionContractViolation[] = [];
+    for (; this.#checked < events.length; this.#checked += 1) {
+      const checked = checkSessionEvent(this.#state, events[this.#checked]!);
+      this.#state = checked.state;
+      violations.push(...checked.violations);
+    }
+    if (sessionState !== undefined) {
+      violations.push(...checkSessionAgreement(this.#state.projection, sessionState));
+    }
+    return violations;
+  }
+
+  /** Like {@link check}, but throws when the stream broke a rule. */
+  assert(events: readonly UnstampedMessageStreamEvent[], sessionState?: SessionStateMap): void {
+    const violations = this.check(events, sessionState);
+    if (violations.length === 0) return;
+    throw new Error(
+      `The session stream broke its contract:\n${violations
+        .map((violation) => `  [${violation.rule}] ${violation.message}`)
+        .join("\n")}`,
+    );
+  }
+}
+
+/**
+ * Compares what a session's stream shows open with what its state awaits where
+ * a step ends: the requests it takes answers for and the sign-ins it waits on.
+ * A reader would otherwise offer a request nobody takes an answer for, or miss
+ * one the session waits on.
+ */
+export function checkSessionAgreement(
+  projection: SessionProjection,
+  state: SessionStateMap | undefined,
+): readonly SessionContractViolation[] {
+  const turnState = readTurnState(state);
+  const awaited = new Set([
+    // A decided approval waits on its siblings, not on an answer.
+    ...allCalls(turnState).flatMap((call) =>
+      call.status === "awaiting-approval" && call.approval?.decision === undefined
+        ? [call.approval!.request.requestId]
+        : [],
+    ),
+    ...(turnState.prompt === undefined ? [] : [turnState.prompt.request.requestId]),
+    ...getProxyInputRequests(state).keys(),
+  ]);
+  const shown = new Set(
+    Object.entries(projection.inputs).flatMap(([requestId, input]) =>
+      input.status === "open" ? [requestId] : [],
+    ),
+  );
+  const signIns = new Set(
+    (getPendingAuthorization(state)?.challenges ?? []).map((challenge) => challenge.attemptId),
+  );
+  // A task's or workflow run's sign-in is the run's to await; the session only relays it.
+  const relayed = (attempt: SessionAuthorization) =>
+    attempt.taskId !== undefined ||
+    (attempt.callIds !== undefined &&
+      attempt.callIds.length > 0 &&
+      attempt.callIds.every((callId) => findCall(turnState, callId)?.workflow !== undefined));
+  const shownSignIns = new Set(
+    Object.values(projection.authorizations).flatMap((attempt) =>
+      attempt.status === "required" && !relayed(attempt) ? [attempt.attemptId] : [],
+    ),
+  );
+  const violations: SessionContractViolation[] = [];
+  const disagree = (message: string) => violations.push({ message, rule: "state-agreement" });
+  for (const id of shown) {
+    if (!awaited.has(id)) disagree(`${id} is open on the stream, but the session takes no answer.`);
+  }
+  for (const id of awaited) {
+    if (!shown.has(id)) disagree(`The session awaits ${id}, which the stream never asked.`);
+  }
+  for (const id of shownSignIns) {
+    if (!signIns.has(id))
+      disagree(`Sign-in ${id} is open on the stream, but the session dropped it.`);
+  }
+  for (const id of signIns) {
+    if (!shownSignIns.has(id)) {
+      disagree(`The session awaits sign-in ${id}, which the stream never asked.`);
+    }
   }
   return violations;
 }

@@ -35,7 +35,7 @@ export default defineConfig({
     exclude: ["**/node_modules/**", "test/scenarios/**"],
     globalSetup: ["./test/setup/clear-workflow-cache.ts"],
     include: ["src/**/*.integration.test.ts", "test/**/*.integration.test.ts"],
-    setupFiles: ["./test/setup/mock-ai-gateway.ts", "./test/setup/session-contract.ts"],
+    setupFiles: ["./test/setup/mock-ai-gateway.ts"],
     testTimeout: 30_000,
   },
 });

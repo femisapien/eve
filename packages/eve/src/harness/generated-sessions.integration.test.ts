@@ -1,9 +1,6 @@
-import { jsonSchema, simulateReadableStream } from "ai";
-import { MockLanguageModelV4 } from "ai/test";
-import { describe, expect, it, vi } from "vitest";
-import { ContextContainer, contextStorage } from "#context/container.js";
-import { AuthKey, SessionIdKey, SessionKey } from "#context/keys.js";
-import { checkSessionAgreement } from "#execution/session-contract-monitor.js";
+import { jsonSchema } from "ai";
+import { describe, it, vi } from "vitest";
+import { type ContextContainer, contextStorage } from "#context/container.js";
 import { workflowToolRunRequestToInputRequestPayload } from "#execution/tools/workflow/owner-inbox.js";
 import { requestAuthorization } from "#harness/authorization.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
@@ -18,14 +15,8 @@ import {
   startWorkflowCall,
   writeTurnState,
 } from "#harness/turn-state.js";
-import { createToolLoopHarness } from "#harness/tool-loop.js";
-import type { HarnessSession, StepInput, ToolLoopHarnessConfig } from "#harness/types.js";
-import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
-import {
-  checkSessionEvent,
-  initialSessionContractState,
-  type SessionContractViolation,
-} from "#protocol/session-contract.js";
+import type { HandleEventFn, HarnessSession, StepInput } from "#harness/types.js";
+import { setup, text, toolCalls } from "#internal/testing/tool-loop-fixture.js";
 import { emitProxiedInputRequest } from "#subagents/hitl-proxy.js";
 import { always } from "#tools/approval/policies.js";
 
@@ -48,14 +39,6 @@ vi.mock("#runtime/attributes/emit.js", () => ({ setEveAttributes: vi.fn(async ()
 const SEEDS = Number(process.env.EVE_GENERATED_SESSIONS ?? 40);
 const ACTIONS_PER_SESSION = 14;
 
-type StreamResult = Awaited<ReturnType<MockLanguageModelV4["doStream"]>>;
-type StreamPart = StreamResult["stream"] extends ReadableStream<infer Part> ? Part : never;
-
-const usage = {
-  inputTokens: { cacheRead: undefined, cacheWrite: undefined, noCache: 1, total: 1 },
-  outputTokens: { reasoning: undefined, text: 1, total: 1 },
-};
-
 const signInContext: { ctx?: ContextContainer; attempts: number } = { attempts: 0 };
 
 const TOOLS: readonly HarnessToolDefinition[] = [
@@ -70,10 +53,7 @@ const TOOLS: readonly HarnessToolDefinition[] = [
 describe("generated sessions", () => {
   it.each(Array.from({ length: SEEDS }, (_, seed) => seed))(
     "keeps the stream contract through seed %i",
-    async (seed) => {
-      const run = await generateSession(seed);
-      expect(run.violations, run.describe()).toEqual([]);
-    },
+    generateSession,
   );
 });
 
@@ -90,163 +70,79 @@ type Action =
       readonly responses: StepInput["inputResponses"];
     };
 
-async function generateSession(seed: number) {
+async function generateSession(seed: number): Promise<void> {
   const random = mulberry32(seed);
   const pick = <T>(values: readonly T[]): T => values[Math.floor(random() * values.length)]!;
-  const events: UnstampedMessageStreamEvent[] = [];
+  const fixture = setup(TOOLS, []);
   let calls = 0;
   let modelSteps = 0;
-  const doStream = vi.fn<MockLanguageModelV4["doStream"]>(async () => {
+  fixture.doStream.mockImplementation(async () => {
     modelSteps += 1;
-    if (modelSteps > 3 || random() < 0.35) return reply(`Reply ${String(modelSteps)}.`);
+    if (modelSteps > 3 || random() < 0.35) return text(`Reply ${String(modelSteps)}.`);
     const count = 1 + Math.floor(random() * 3);
     return toolCalls(
       Array.from({ length: count }, () => ({
         callId: `call-${String(calls++)}`,
-        tool: pick(TOOLS),
+        toolName: pick(TOOLS).name,
       })),
     );
   });
-  const model = new MockLanguageModelV4({
-    doStream,
-    modelId: "generated-model",
-    provider: "eve-integration-mock",
-  });
-  const config: ToolLoopHarnessConfig = {
-    capabilities: { requestInput: true },
-    handleEvent: async (event) => {
-      events.push(event);
-    },
-    resolveModel: async () => model,
-    tools: new Map(TOOLS.map((tool) => [tool.name, tool])),
-  };
-  const ctx = sessionContext();
+  const { config, ctx, events } = fixture;
+  const emit = config.handleEvent!;
   signInContext.ctx = ctx;
   let relays = 0;
-  let session: HarnessSession = {
-    agent: { modelReference: { id: "generated-model" }, system: "Help Alice.", tools: [] },
-    compaction: { recentWindowSize: 10, threshold: 100_000 },
-    continuationToken: "http:generated",
-    history: [],
-    sessionId: "generated",
-  };
-
+  let session = fixture.session;
   const actions: Action[] = [];
-  const violations: (SessionContractViolation & { readonly after: number })[] = [];
-  let contract = initialSessionContractState();
-  let checked = 0;
 
   const drive = async (input: StepInput | undefined, stepConfig = config) => {
     modelSteps = 0;
-    let result = await contextStorage.run(ctx, () =>
-      createToolLoopHarness(stepConfig)(session, input),
-    );
-    while (typeof result.next === "function") {
-      const next = result.next;
-      const current = result.session;
-      result = await contextStorage.run(ctx, () => next(current));
-    }
+    const result = await fixture.drive(session, input, stepConfig);
     session = dispatchReadyWorkflows(result.session);
   };
 
-  for (let index = 0; index < ACTIONS_PER_SESSION; index += 1) {
-    const action = nextAction(session, index, random, pick);
-    actions.push(action);
-    switch (action.kind) {
-      case "message":
-        await drive({ message: action.message });
-        break;
-      case "answer":
-        await drive({ inputResponses: action.responses });
-        break;
-      case "steer":
-        await drive({ inputResponses: action.responses, message: action.message });
-        break;
-      case "result":
-        await drive({
-          runtimeActionResults: action.callIds.map((callId) => ({
-            callId,
-            kind: "tool-result" as const,
-            output: `${callId} finished`,
-            toolName: allCalls(readTurnState(session.state)).find((call) => call.callId === callId)!
-              .toolName,
-          })),
-        });
-        break;
-      case "relay": {
-        const turnState = readTurnState(session.state);
-        const call = allCalls(turnState).find((candidate) => candidate.callId === action.callId)!;
-        const origin = callOrigin(turnState, call.callId)!;
-        const relay = String(relays++);
-        const subagentCall = {
-          callId: `subagent-call-${relay}`,
-          input: {},
-          kind: "tool-call" as const,
-          toolName: "deploy",
-        };
-        const hookPayload = workflowToolRunRequestToInputRequestPayload({
-          from: {
-            callId: call.callId,
-            input: {},
-            runId: call.workflow!.run!.runId,
-            ...origin,
-            toolName: call.toolName,
-          },
-          replyTo: `reply-${relay}`,
-          request: {
-            kind: "input-batch",
-            requests: [
-              {
-                action: subagentCall,
-                kind: "tool-approval",
-                prompt: "Deploy Bob's build?",
-                requestId: `relayed-${relay}`,
-              },
-            ],
-          },
-        });
-        const emit = config.handleEvent!;
-        const entries = await emitProxiedInputRequest({
-          emit,
-          hookPayload,
-          runId: call.workflow!.run!.runId,
-          session,
-        });
-        session = upsertProxyInputRequests({
-          entries,
-          forChildContinuationToken: hookPayload.childContinuationToken,
-          session,
-        });
-        break;
+  try {
+    for (let index = 0; index < ACTIONS_PER_SESSION; index += 1) {
+      const action = nextAction(session, index, random, pick);
+      actions.push(action);
+      switch (action.kind) {
+        case "message":
+          await drive({ message: action.message });
+          break;
+        case "answer":
+          await drive({ inputResponses: action.responses });
+          break;
+        case "steer":
+          await drive({ inputResponses: action.responses, message: action.message });
+          break;
+        case "result":
+          await drive({
+            runtimeActionResults: action.callIds.map((callId) => ({
+              callId,
+              kind: "tool-result" as const,
+              output: `${callId} finished`,
+              toolName: allCalls(readTurnState(session.state)).find(
+                (call) => call.callId === callId,
+              )!.toolName,
+            })),
+          });
+          break;
+        case "relay":
+          session = await relayRequest(session, action.callId, String(relays++), emit);
+          break;
+        case "cancel":
+          session = await contextStorage.run(ctx, () => cancelTurn(emit, session));
+          break;
+        case "clear":
+          await drive(undefined, { ...config, clearOnly: true });
+          break;
       }
-      case "cancel": {
-        const emit = config.handleEvent!;
-        session = await contextStorage.run(ctx, () => cancelTurn(emit, session));
-        break;
-      }
-      case "clear":
-        await drive(undefined, { ...config, clearOnly: true });
-        break;
+      fixture.checkContract(session);
     }
-    for (; checked < events.length; checked += 1) {
-      const result = checkSessionEvent(contract, events[checked]!);
-      contract = result.state;
-      violations.push(...result.violations.map((violation) => ({ ...violation, after: index })));
-    }
-    violations.push(
-      ...checkSessionAgreement(contract.projection, session.state).map((violation) => ({
-        ...violation,
-        after: index,
-      })),
-    );
-    if (violations.length > 0) break;
-  }
-
-  return {
-    violations,
-    describe: () =>
+  } catch (error) {
+    throw new Error(
       [
-        `Seed ${String(seed)} broke the stream contract. Actions:`,
+        `Seed ${String(seed)} failed: ${error instanceof Error ? error.message : String(error)}`,
+        "Actions:",
         ...actions.map((action, index) => `  ${String(index)}. ${JSON.stringify(action)}`),
         "Events:",
         ...events.map(
@@ -254,7 +150,58 @@ async function generateSession(seed: number) {
             `  ${event.type} ${JSON.stringify("data" in event ? event.data : {}).slice(0, 160)}`,
         ),
       ].join("\n"),
-  };
+      { cause: error },
+    );
+  }
+}
+
+/** A workflow call's run passes up an approval its subagent asks for, as the relay code does. */
+async function relayRequest(
+  session: HarnessSession,
+  callId: string,
+  relay: string,
+  emit: HandleEventFn,
+): Promise<HarnessSession> {
+  const turnState = readTurnState(session.state);
+  const call = allCalls(turnState).find((candidate) => candidate.callId === callId)!;
+  const origin = callOrigin(turnState, call.callId)!;
+  const hookPayload = workflowToolRunRequestToInputRequestPayload({
+    from: {
+      callId: call.callId,
+      input: {},
+      runId: call.workflow!.run!.runId,
+      ...origin,
+      toolName: call.toolName,
+    },
+    replyTo: `reply-${relay}`,
+    request: {
+      kind: "input-batch",
+      requests: [
+        {
+          action: {
+            callId: `subagent-call-${relay}`,
+            input: {},
+            kind: "tool-call",
+            toolName: "deploy",
+          },
+          kind: "tool-approval",
+          prompt: "Deploy Bob's build?",
+          requestId: `relayed-${relay}`,
+        },
+      ],
+    },
+  });
+  const entries = await emitProxiedInputRequest({
+    emit,
+    hookPayload,
+    runId: call.workflow!.run!.runId,
+    session,
+  });
+  return upsertProxyInputRequests({
+    entries,
+    forChildContinuationToken: hookPayload.childContinuationToken,
+    session,
+  });
 }
 
 /** Picks something a person or the runtime could do next, given what the session awaits. */
@@ -354,62 +301,6 @@ function workflowTool(name: string, gated: boolean): HarnessToolDefinition {
     name,
     workflowId: `workflow//./agent/tools/${name}//execute`,
   };
-}
-
-function reply(text: string): StreamResult {
-  return streamOf(
-    [
-      { id: "answer", type: "text-start" },
-      { delta: text, id: "answer", type: "text-delta" },
-      { id: "answer", type: "text-end" },
-    ],
-    "stop",
-  );
-}
-
-function toolCalls(
-  calls: readonly { readonly callId: string; readonly tool: HarnessToolDefinition }[],
-): StreamResult {
-  return streamOf(
-    calls.map(({ callId, tool }) => ({
-      input: JSON.stringify({ target: callId }),
-      toolCallId: callId,
-      toolName: tool.name,
-      type: "tool-call" as const,
-    })),
-    "tool-calls",
-  );
-}
-
-function streamOf(chunks: StreamPart[], finish: "stop" | "tool-calls"): StreamResult {
-  return {
-    stream: simulateReadableStream({
-      chunks: [
-        { type: "stream-start", warnings: [] },
-        ...chunks,
-        { finishReason: { raw: undefined, unified: finish }, type: "finish", usage },
-      ],
-    }),
-  };
-}
-
-function sessionContext(): ContextContainer {
-  const ctx = new ContextContainer();
-  const alice = {
-    attributes: {},
-    authenticator: "test",
-    issuer: "test",
-    principalId: "alice",
-    principalType: "user" as const,
-  };
-  ctx.set(AuthKey, alice);
-  ctx.set(SessionIdKey, "generated");
-  ctx.set(SessionKey, {
-    auth: { current: alice, initiator: alice },
-    sessionId: "generated",
-    turn: { id: "turn_0", sequence: 0 },
-  });
-  return ctx;
 }
 
 /** A small seeded generator, so a failing seed replays exactly. */

@@ -149,8 +149,6 @@ A reader that folds a session's stream in order can rely on these rules:
 - A turn that completes leaves no call it ran without an `action.result` or `task.settled`. A call eve stops settles as `"cancelled"`; one that stopped for a sign-in is named by an `authorization.required` in the same turn.
 - A request resolves once.
 
-`eve dev` checks every session it runs against these rules, and that the stream shows exactly the requests and sign-ins the session waits on. It logs each violation as a `session stream contract` warning. Set `EVE_SESSION_CONTRACT=off` to skip the check.
-
 ## The event envelope
 
 Alongside `type` and `data`, every event carries a `meta` envelope:

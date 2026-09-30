@@ -1,12 +1,10 @@
 import { jsonSchema } from "ai";
 import { describe, expect, it, vi } from "vitest";
-import { contextStorage } from "#context/container.js";
 import { SessionIdKey, StepDynamicToolMetadataKey } from "#context/keys.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
-import { createToolLoopHarness } from "#harness/tool-loop.js";
 import { openApprovalRequests, readTurnState } from "#harness/turn-state.js";
 import { setTurnUsageState } from "#harness/turn-tag-state.js";
-import type { HarnessSession, StepInput, StepResult } from "#harness/types.js";
+import type { HarnessSession } from "#harness/types.js";
 import {
   answer,
   requestIds,
@@ -48,24 +46,10 @@ const run = (callId: string, command: string) => ({
   toolName: "bash",
 });
 
-/** Runs the harness step and every step it schedules. */
-async function drive(
-  fixture: ToolLoopFixture,
-  session: HarnessSession,
-  input?: StepInput,
-): Promise<StepResult> {
-  let result = await fixture.step(session, input);
-  while (typeof result.next === "function") {
-    const { next, session: current } = result;
-    result = await contextStorage.run(fixture.ctx, () => next(current));
-  }
-  return result;
-}
-
 /** Alice asks for one command, then another in a later turn, and both wait on approval. */
 async function twoParkedSteps(fixture: ToolLoopFixture): Promise<HarnessSession> {
-  const first = await drive(fixture, fixture.session, { message: "Run pwd." });
-  const second = await drive(fixture, first.session, { message: "Also run whoami." });
+  const first = await fixture.drive(fixture.session, { message: "Run pwd." });
+  const second = await fixture.drive(first.session, { message: "Also run whoami." });
   expect(requestIds(second.session)).toHaveLength(2);
   return second.session;
 }
@@ -79,7 +63,7 @@ describe("approval resume (real AI SDK)", () => {
     );
     const parked = await twoParkedSteps(fixture);
 
-    const resumed = await drive(fixture, parked, answer(parked, "approve"));
+    const resumed = await fixture.drive(parked, answer(parked, "approve"));
 
     expect(tool.execute).toHaveBeenCalledTimes(2);
     expect(tool.execute.mock.calls.map(([input]) => input)).toEqual([
@@ -102,7 +86,7 @@ describe("approval resume (real AI SDK)", () => {
     const parked = await twoParkedSteps(fixture);
     const [first] = openApprovalRequests(readTurnState(parked.state));
 
-    const resumed = await drive(fixture, parked, {
+    const resumed = await fixture.drive(parked, {
       inputResponses: [{ optionId: "approve", requestId: first!.requestId }],
     });
 
@@ -129,7 +113,7 @@ describe("approval resume (real AI SDK)", () => {
     const [first, second] = openApprovalRequests(readTurnState(parked.state));
     const start = fixture.events.length;
 
-    const resumed = await drive(fixture, parked, {
+    const resumed = await fixture.drive(parked, {
       inputResponses: [
         { optionId: "approve", requestId: first!.requestId },
         { optionId: "cancel", requestId: second!.requestId },
@@ -153,7 +137,7 @@ describe("approval resume (real AI SDK)", () => {
       [tool],
       [toolCalls([run("call-0", "pwd")]), text("The command completed.")],
     );
-    const parked = await drive(fixture, fixture.session, { message: "Run pwd." });
+    const parked = await fixture.drive(fixture.session, { message: "Run pwd." });
     const totals = {
       cacheReadTokens: 0,
       cacheWriteTokens: 0,
@@ -167,7 +151,7 @@ describe("approval resume (real AI SDK)", () => {
       { ...totals, session: totals, turnId: "turn_0" },
     );
 
-    const limited = await drive(fixture, exhausted, {
+    const limited = await fixture.drive(exhausted, {
       ...answer(exhausted, "approve"),
       message: "Then summarize it.",
     });
@@ -177,7 +161,7 @@ describe("approval resume (real AI SDK)", () => {
     expect(tool.execute).toHaveBeenCalledOnce();
     expect(fixture.doStream).toHaveBeenCalledOnce();
 
-    await drive(fixture, limited.session, {
+    await fixture.drive(limited.session, {
       inputResponses: [{ optionId: "continue", requestId: limit!.requestId }],
     });
     expect(tool.execute).toHaveBeenCalledOnce();
@@ -198,13 +182,12 @@ describe("approval resume (real AI SDK)", () => {
         text("It printed ran pwd."),
       ],
     );
-    const parked = await drive(fixture, fixture.session, { message: "Run pwd." });
-    const intervening = await drive(fixture, parked.session, {
+    const parked = await fixture.drive(fixture.session, { message: "Run pwd." });
+    const intervening = await fixture.drive(parked.session, {
       message: "Any update on that command?",
     });
 
-    const resumed = await drive(
-      fixture,
+    const resumed = await fixture.drive(
       intervening.session,
       answer(intervening.session, "approve"),
     );
@@ -235,18 +218,18 @@ describe("approval resume (real AI SDK)", () => {
         text("Your draft is ready."),
       ],
     );
-    const parked = await drive(fixture, fixture.session, {
+    const parked = await fixture.drive(fixture.session, {
       message: "Prepare the account change.",
     });
     const [approval] = openApprovalRequests(readTurnState(parked.session.state));
 
-    const answered = await drive(fixture, parked.session, { message: "What is the draft status?" });
+    const answered = await fixture.drive(parked.session, { message: "What is the draft status?" });
 
     expect(read.execute).toHaveBeenCalledOnce();
     expect(answered.settledTurn?.output).toBe("Your draft is ready.");
     expect(openApprovalRequests(readTurnState(answered.session.state))).toEqual([approval]);
 
-    await drive(fixture, answered.session, answer(answered.session, "approve"));
+    await fixture.drive(answered.session, answer(answered.session, "approve"));
     expect(gate.execute).toHaveBeenCalledOnce();
   });
 
@@ -286,10 +269,9 @@ describe("approval resume (real AI SDK)", () => {
           },
         },
       );
-      const parked = await drive(fixture, fixture.session, { message: "Run pwd." });
+      const parked = await fixture.drive(fixture.session, { message: "Run pwd." });
 
-      const resumed = await drive(
-        fixture,
+      const resumed = await fixture.drive(
         parked.session,
         response === "text" ? { message: "approve" } : answer(parked.session, "approve"),
       );
@@ -301,6 +283,3 @@ describe("approval resume (real AI SDK)", () => {
     },
   );
 });
-
-// `createToolLoopHarness` is imported so a failing step names the harness in its stack.
-void createToolLoopHarness;

@@ -6,7 +6,6 @@ import { ParentSessionKey, TurnDeliveryIdsKey } from "#context/keys.js";
 import { withContextScope } from "#context/run-step.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
 import { setChannelContext } from "#execution/channel-context.js";
-import { observeSessionContract } from "#execution/session-contract-monitor.js";
 import { forwardSessionInput } from "#execution/forward-session-input.js";
 import {
   createDurableSessionState,
@@ -240,7 +239,6 @@ function openSessionEventStream(input: {
         origin === "own" ? ctx.get(TurnDeliveryIdsKey) : undefined,
       );
       await writer.write(encodeMessageStreamEvent(stamped));
-      observeSessionContract(input.sessionId, stamped);
       if (origin === "own") {
         void observeSessionActivity({ ctx, event: stamped, sessionId: input.sessionId });
       }

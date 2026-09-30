@@ -7,8 +7,10 @@ import {
   type PublishedSessionEvents,
   type SessionStepState,
 } from "#execution/publish-session-events.js";
-import { type SessionStateTransition } from "#execution/session/state-delta.js";
-import { withSessionStateDelta } from "#execution/session/with-session-state-delta.js";
+import {
+  withSessionStateDelta,
+  type SessionStateTransition,
+} from "#execution/session/state-delta.js";
 import type { WorkflowToolRunControlMessage } from "#execution/tools/workflow/messages.js";
 import { ignoreGoneTarget } from "#execution/tasks/workflow-target.js";
 import { resumeHook } from "#internal/workflow/runtime.js";

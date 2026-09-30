@@ -64,7 +64,7 @@ import {
   derivePendingState,
   resolveSessionStepResult,
 } from "#execution/session/turn-step-result.js";
-import { withSessionStateDelta } from "#execution/session/with-session-state-delta.js";
+import { withSessionStateDelta } from "#execution/session/state-delta.js";
 import { createSessionEventSink } from "#execution/publish-session-events.js";
 import { createTurnEventHandler } from "#execution/session/turn-event-handler.js";
 import {

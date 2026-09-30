@@ -6,8 +6,10 @@ import {
 } from "#execution/durable-session-store.js";
 import { withSessionEventEmitter } from "#execution/publish-session-events.js";
 import { reconcileSessionContinuationToken } from "#execution/reconcile-session-continuation-token.js";
-import { type WithSessionStateDelta } from "#execution/session/state-delta.js";
-import { withSessionStateDelta } from "#execution/session/with-session-state-delta.js";
+import {
+  withSessionStateDelta,
+  type WithSessionStateDelta,
+} from "#execution/session/state-delta.js";
 import { cancelTurn } from "#harness/session-lifecycle.js";
 import { getTurnUsageState, takeSessionUsageDelta } from "#harness/turn-tag-state.js";
 import type { TokenUsage } from "#shared/token-usage.js";

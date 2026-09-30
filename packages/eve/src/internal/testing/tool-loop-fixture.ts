@@ -6,11 +6,18 @@ import { AuthKey, SessionIdKey, SessionKey } from "#context/keys.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import { createToolLoopHarness } from "#harness/tool-loop.js";
 import { openApprovalRequests, readTurnState } from "#harness/turn-state.js";
-import type { HarnessSession, StepInput, ToolLoopHarnessConfig } from "#harness/types.js";
+import type {
+  HarnessSession,
+  StepInput,
+  StepResult,
+  ToolLoopHarnessConfig,
+} from "#harness/types.js";
+import { SessionContractCheck } from "#internal/testing/session-contract.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import { always } from "#tools/approval/policies.js";
 
 // Drives the tool-loop harness over a mock AI SDK model, for integration tests.
+// Every step it runs is held to the session stream contract.
 
 export type StreamResult = Awaited<ReturnType<MockLanguageModelV4["doStream"]>>;
 type StreamPart = StreamResult["stream"] extends ReadableStream<infer Part> ? Part : never;
@@ -84,11 +91,23 @@ export interface ToolLoopFixture {
   readonly events: UnstampedMessageStreamEvent[];
   readonly eventsSince: (start: number) => string[];
   readonly session: HarnessSession;
+  /** Runs one harness step, then checks the stream against the state it leaves. */
   readonly step: (
     current: HarnessSession,
     input?: StepInput,
     stepConfig?: ToolLoopHarnessConfig,
-  ) => ReturnType<ReturnType<typeof createToolLoopHarness>>;
+  ) => Promise<StepResult>;
+  /** Runs the harness step and every step it schedules, checking the stream after each. */
+  readonly drive: (
+    current: HarnessSession,
+    input?: StepInput,
+    stepConfig?: ToolLoopHarnessConfig,
+  ) => Promise<StepResult>;
+  /**
+   * Checks the events since the last check, and what `current` awaits, for work a test drives
+   * outside {@link step}, such as a cancel or a request a run passes up.
+   */
+  readonly checkContract: (current: HarnessSession) => void;
 }
 
 /**
@@ -111,12 +130,13 @@ export function setup(
   });
   const config: ToolLoopHarnessConfig = {
     capabilities: { requestInput: true },
-    handleEvent: async (event) => {
-      events.push(event);
-    },
     resolveModel: async () => model,
     tools: new Map(tools.map((tool) => [tool.name, tool])),
     ...overrides,
+    handleEvent: async (event, messages) => {
+      events.push(event);
+      await overrides.handleEvent?.(event, messages);
+    },
   };
   const ctx = new ContextContainer();
   const alice = {
@@ -140,10 +160,25 @@ export function setup(
     history: [],
     sessionId: "turn-state",
   };
+  const contract = new SessionContractCheck();
+  const checkContract = (current: HarnessSession) => contract.assert(events, current.state);
+  const checked = async (run: () => Promise<StepResult>) => {
+    const result = await contextStorage.run(ctx, run);
+    checkContract(result.session);
+    return result;
+  };
   const step = (current: HarnessSession, input?: StepInput, stepConfig = config) =>
-    contextStorage.run(ctx, () => createToolLoopHarness(stepConfig)(current, input));
+    checked(() => createToolLoopHarness(stepConfig)(current, input));
+  const drive = async (current: HarnessSession, input?: StepInput, stepConfig = config) => {
+    let result = await step(current, input, stepConfig);
+    while (typeof result.next === "function") {
+      const { next, session: scheduled } = result;
+      result = await checked(() => next(scheduled));
+    }
+    return result;
+  };
   const eventsSince = (start: number) => events.slice(start).map((event) => event.type);
-  return { config, ctx, doStream, events, eventsSince, session, step };
+  return { checkContract, config, ctx, doStream, drive, events, eventsSince, session, step };
 }
 
 export function requestIds(session: HarnessSession): string[] {
