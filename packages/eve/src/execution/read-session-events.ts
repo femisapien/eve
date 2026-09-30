@@ -1,9 +1,11 @@
+import { parseTailIndexHeader } from "#client/open-stream.js";
 import { readMessageStreamVersion } from "#client/stream-version.js";
 import { loadContext } from "#context/container.js";
 import { resolveRemoteAgentStreamHeaders } from "#execution/agent-sessions/remote.js";
 import { parseNdjsonStream } from "#execution/ndjson-stream.js";
 import { getRun } from "#internal/workflow/runtime.js";
-import { EVE_STREAM_TAIL_INDEX_HEADER, type MessageStreamEvent } from "#protocol/message.js";
+import type { RemoteAgentBinding } from "#eve-channel/support.js";
+import type { MessageStreamEvent } from "#protocol/message.js";
 import {
   normalizeMessageStreamEvent,
   normalizePersistedMessageStreamEvent,
@@ -25,12 +27,7 @@ export interface SessionEventsPage {
 }
 
 /** Where a remote agent's session runs, as its `agent.started` recorded it. */
-export interface RemoteSessionBinding {
-  readonly name: string;
-  readonly url: string;
-  /** Keys the authored credential functions for the remote agent. */
-  readonly resolverId?: string;
-}
+export type RemoteSessionBinding = Pick<RemoteAgentBinding, "name" | "resolverId" | "url">;
 
 /**
  * Reads at most `limit` events of a session's stream from `startIndex`, never
@@ -85,6 +82,7 @@ async function readRemoteSessionEvents(input: {
   readonly sessionId: string;
   readonly startIndex: number;
 }): Promise<SessionEventsPage> {
+  // Without a resolver there are no credentials, and no bundle to look them up in.
   const headers =
     input.remote.resolverId === undefined
       ? {}
@@ -107,21 +105,26 @@ async function readRemoteSessionEvents(input: {
       redirect: "error",
       signal: controller.signal,
     });
-    if (!response.ok || response.body === null) {
-      await response.body?.cancel().catch(() => {});
-      throw new Error(
-        `Remote agent "${input.remote.name}" session stream read failed with HTTP ${response.status}.`,
-      );
-    }
-    const tailIndex = Number(response.headers.get(EVE_STREAM_TAIL_INDEX_HEADER));
-    if (!Number.isInteger(tailIndex)) {
-      await response.body.cancel().catch(() => {});
-      throw new Error(
-        `Remote agent "${input.remote.name}" session stream did not report its tail index.`,
-      );
-    }
-    const version = readMessageStreamVersion(response.headers);
     const body = response.body;
+    let tailIndex: number | undefined;
+    let version: MessageStreamVersion;
+    try {
+      if (!response.ok || body === null) {
+        throw new Error(
+          `Remote agent "${input.remote.name}" session stream read failed with HTTP ${response.status}.`,
+        );
+      }
+      tailIndex = parseTailIndexHeader(response.headers);
+      if (tailIndex === undefined) {
+        throw new Error(
+          `Remote agent "${input.remote.name}" session stream did not report its tail index.`,
+        );
+      }
+      version = readMessageStreamVersion(response.headers);
+    } catch (error) {
+      await body?.cancel().catch(() => {});
+      throw error;
+    }
     return await readPage(
       input,
       tailIndex,

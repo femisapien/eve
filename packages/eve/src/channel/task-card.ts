@@ -2,6 +2,7 @@ import { isTaskControlTool } from "#protocol/task-tools.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import { actionRequestName } from "#shared/action-request-name.js";
 import type { RuntimeActionRequest } from "#shared/action-types.js";
+import type { RemoteAgentBinding } from "#eve-channel/support.js";
 import type { ChannelAudience } from "#shared/channel-audience.js";
 import type { JsonObject, JsonValue } from "#shared/json.js";
 import { firstSentence, normalizePresentationText } from "#shared/presentation-text.js";
@@ -128,11 +129,7 @@ interface TrackedCall {
 }
 
 /** Where a remote agent task's session runs, as its `agent.started` recorded it. */
-interface TaskCardRemoteSession {
-  readonly name: string;
-  readonly url: string;
-  readonly resolverId?: string;
-}
+type TaskCardRemoteSession = Pick<RemoteAgentBinding, "name" | "resolverId" | "url">;
 
 /** One turn's calls as a channel tracks them from its session's own events. */
 export interface TaskCardTurn {

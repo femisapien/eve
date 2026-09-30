@@ -5,6 +5,7 @@ import { createSessionStreamResponse } from "#eve-channel/request.js";
 import { readSessionEvents } from "#execution/read-session-events.js";
 import { workflowEntry } from "#execution/session/entry.js";
 import { createWorkflowRuntime } from "#execution/workflow-runtime.js";
+import { EVE_STREAM_TAIL_INDEX_HEADER } from "#protocol/message.js";
 import { createBundledRuntimeCompiledArtifactsSource } from "#runtime/compiled-artifacts-source.js";
 import { createTestRuntime } from "#internal/testing/app-harness.js";
 import { captureTurnEvents } from "#internal/testing/events.js";
@@ -18,7 +19,7 @@ afterEach(() => {
 });
 
 /** Serves sessions from this runtime as a remote agent's deployment would. */
-function serveAsRemote(): string[] {
+function serveAsRemote(options: { readonly withoutTailIndex?: boolean } = {}): string[] {
   const attachSession = createAttachSessionFn(
     createWorkflowRuntime({
       compiledArtifactsSource: createBundledRuntimeCompiledArtifactsSource(),
@@ -32,10 +33,13 @@ function serveAsRemote(): string[] {
     if (url.origin !== "https://remote.example" || match?.[1] === undefined) {
       return Response.json({ error: "Session not found.", ok: false }, { status: 404 });
     }
-    return await createSessionStreamResponse(
+    const response = await createSessionStreamResponse(
       new Request(url),
       attachSession(decodeURIComponent(match[1])),
     );
+    // A receiver that predates `includeTailIndex`, or a proxy that drops the header.
+    if (options.withoutTailIndex) response.headers.delete(EVE_STREAM_TAIL_INDEX_HEADER);
+    return response;
   });
   return requested;
 }
@@ -141,6 +145,14 @@ describe("readSessionEvents", () => {
             startIndex: 0,
           }),
         ).rejects.toThrow('Remote agent "researcher" session stream read failed with HTTP 404.');
+
+        vi.restoreAllMocks();
+        serveAsRemote({ withoutTailIndex: true });
+        await expect(
+          readSessionEvents({ limit: 1_000, remote: REMOTE, sessionId: run.runId, startIndex: 0 }),
+        ).rejects.toThrow(
+          'Remote agent "researcher" session stream did not report its tail index.',
+        );
       } finally {
         stream.dispose();
         await run.cancel();
