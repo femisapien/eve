@@ -2202,6 +2202,15 @@ const connectionPresentations: Record<string, ConnectionPresentation> = {
     keywords: ["mcp", "payments", "settlements", "oauth", "connect"],
     authModes: ["user"],
   },
+  sanity: {
+    logo: "sanity",
+    docsHref: "https://www.sanity.io/docs/ai/mcp-server",
+    keywords: ["mcp", "cms", "content", "groq", "schemas", "releases", "oauth", "connect"],
+    authModes: ["user"],
+    connectors: { user: { uid: "sanity/sanity", service: "sanity", name: "sanity" } },
+    configureNote:
+      "Sign in with a Sanity account that has access to the projects and datasets your agent needs. For manual setup, copy the returned connector UID into `connect()`. The MCP server can edit and publish content; use [tool filters and approval gates](/docs/connections/mcp#tool-filters) to control these actions.",
+  },
   sentry: {
     logo: "sentry",
     docsHref: "/docs/connections/mcp",
