@@ -23,6 +23,7 @@ H "S2 wrapping and patching eve objects"
 G "^export (async )?function (with|guard|wrap|capture|intercept)[A-Z]" "$AGENT"
 G "channel\.routes\.map|\.routes\.map\(|new Proxy\(|AsyncLocalStorage" "$AGENT"
 G "\.(onEvent|onAppMention|onDirectMessage|onInteraction|onSlashCommand) = " "$AGENT"
+G "Object\.assign\(.*(channel|adapter|tool)|= with[A-Z][A-Za-z]+\(|guard[A-Z][A-Za-z]*\(|intercept|monkey" "$AGENT"
 
 H "S3 parallel liveness and delivery infrastructure"
 [ -d "$AGENT/schedules" ] && ls "$AGENT/schedules"
@@ -42,11 +43,15 @@ done
 H "S5 protocol in the prompt"
 wc -c "$AGENT/instructions.md" "$AGENT"/subagents/*/instructions.md 2>/dev/null
 grep -niE "wait for|do not end|never end|before ending|tool result|receipt|background|task state|confirmation id|acknowledg|delegat" "$AGENT/instructions.md" "$AGENT"/skills/*.md "$AGENT"/subagents/*/instructions.md 2>/dev/null | cut -c1-180
+echo "-- protocol encoded in tool/subagent descriptions:"
+G "description:.*\b(then|after|first|step [0-9]|call .* again|return .* id)" "$AGENT/subagents" "$AGENT/tools"
 
 H "S6 contract tests and verification against eve"
 grep -nE "postbuild|prebuild|verify|reconcile|check" package.json
 ls scripts 2>/dev/null
 grep -rliE "regression|upstream|compat|wire contract|eve [0-9]+\.[0-9]+" tests 2>/dev/null | sort
+echo "-- tests that import eve and inspect its package, dist, or changelog:"
+grep -rlE "from ['\"]eve" tests 2>/dev/null | xargs grep -lE "node_modules/eve|/dist/|CHANGELOG|\.version" 2>/dev/null
 
 H "S7 vendored, forked, or pinned-around packages"
 ls vendor 2>/dev/null

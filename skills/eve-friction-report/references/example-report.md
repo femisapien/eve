@@ -1,6 +1,6 @@
 # Example: what a finished report looks like
 
-Abridged from a real, anonymized run against `<org>/eve @ 29fe642` (eve 0.63.0). The full
+Abridged from a real, anonymized run against `<org>/eve @ <sha>` (eve 0.63.0). The full
 report had 17 blocks; two are reproduced here in full, followed by a weak block and why it
 fails. Match this shape exactly.
 
@@ -11,7 +11,7 @@ fails. Match this shape exactly.
 status: draft
 last_updated: "2026-09-29"
 subject:
-  repo: "<org>/eve @ 29fe642 (main, 2026-09-22)"
+  repo: "<org>/eve @ <sha> (main, 2026-09-22)"
   eve_pinned: "0.63.0"
   eve_compared_against: "eve@0.63.0 tag docs; CHANGELOG through 0.66.1"
 scope: "read-only; every claim cites path:line; [V] read, [I] inferred from the code path, [R] unverified"
@@ -135,9 +135,9 @@ Redis; a 1-minute schedule scans it; at 5 min it posts "Eve is still working on 
 at 10 min marks stalled, at 20 min cancels the turn over HTTP with a Vercel OIDC token and
 posts a partial report through the A1 outbox. Thread identity is recovered by parsing
 `context.channel.continuationToken` as `…:<channelId>:<threadTs>` (`task-supervision.ts:76-92`).
-Since `31ccb6c` 2026-08-20 (pin 0.37.0), hardened `ac74cb1` 2026-09-10: "make supervision
+Since 2026-08-20 (pin 0.37.0), hardened 2026-09-10: "make supervision
 distinguish progress, stalls, cancellation, and retryable observation failures." One week after
-the supervisor landed, every eve limit was disabled (`337c983` 2026-08-27, "disable Eve
+the supervisor landed, every eve limit was disabled (2026-08-27, "disable Eve
 session limits"). [V]
 
 **How it fails.** Silently. Every error in the hook is swallowed (`:580-588`); a renamed
@@ -232,7 +232,7 @@ turn posted." [V]
 **What the project built.** `captureSlackReply` re-wraps `adapter["message.completed"]`, wraps
 `context.thread.post` in a `Proxy` to capture `result.id`, stores it in channel state, then
 edits that message to append an admin context block (`slack-admin-delivery.ts:13-79`, ~50
-lines). Since `004da3b` 2026-09-22 (pin 0.63.0): "admin diagnostics were lost for Eve's
+lines). Since 2026-09-22 (pin 0.63.0): "admin diagnostics were lost for Eve's
 channel:slack events … capture the accepted Slack reply and append its metadata as a context
 block." Own words: "Keep Eve's stock reply renderer while retaining its accepted Slack message
 id." [V]

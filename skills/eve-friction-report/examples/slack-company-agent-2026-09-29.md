@@ -2,7 +2,7 @@
 status: draft
 last_updated: "2026-09-29"
 subject:
-  repo: "<org>/eve @ 29fe642 (main, 2026-09-22)"
+  repo: "<org>/eve @ <sha> (main, 2026-09-22)"
   eve_pinned: "0.63.0"
   eve_compared_against: "eve@0.63.0 tag docs; CHANGELOG through 0.66.1"
 scope: "read-only; every claim cites path:line; [V] read, [I] inferred from the code path, [R] unverified"
@@ -140,8 +140,8 @@ whitelists request fields; no caller-supplied idempotency key reaches Slack. [V]
 Retry-After, and locks; a long-task delivery runtime (981 lines) with chunking and resumable
 uploads; a raw-JSON Slack adapter because eve's form encoder drops `client_msg_id`; receipt
 state machines and stores; a 1-minute drain schedule that also serves five other project
-outboxes. Since `31ccb6c` 2026-08-20 (pin 0.37.0); coordinator `8102c65` 2026-09-08. The team
-already moved ordinary model replies back to eve in `bef771c` (2026-09-16): "Custom Slack
+outboxes. Since 2026-08-20 (pin 0.37.0); coordinator 2026-09-08. The team
+already moved ordinary model replies back to eve in 2026-09-16: "Custom Slack
 handlers were … duplicating long-response delivery that the current framework owns … retain
 the durable outbox only for <org>-owned proactive, factory, and recovery messages." [V]
 
@@ -212,9 +212,9 @@ Redis; a 1-minute schedule scans it; at 5 min it posts "Eve is still working on 
 at 10 min marks stalled, at 20 min cancels the turn over HTTP with a Vercel OIDC token and
 posts a partial report through the A1 outbox. Thread identity is recovered by parsing
 `context.channel.continuationToken` as `…:<channelId>:<threadTs>` (`task-supervision.ts:76-92`).
-Since `31ccb6c` 2026-08-20 (pin 0.37.0), hardened `ac74cb1` 2026-09-10: "make supervision
+Since 2026-08-20 (pin 0.37.0), hardened 2026-09-10: "make supervision
 distinguish progress, stalls, cancellation, and retryable observation failures." One week after
-the supervisor landed, every eve limit was disabled (`337c983` 2026-08-27, "disable Eve
+the supervisor landed, every eve limit was disabled (2026-08-27, "disable Eve
 session limits"). [V]
 
 **How it fails.** Silently. Every error in the hook is swallowed (`:580-588`); a renamed
@@ -314,7 +314,7 @@ evidence. [V]
 positional fallback and an `ambiguous` bucket; a Redis bridge (30-minute TTL) that carries the
 served model from an instrumentation span to the hook that renders the Slack footer; a
 `defineState` accumulator for the admin footer; and the cost hook copied into five subagents.
-Since `8102c65` 2026-09-08 (pin 0.52.2) and `57b6fb1` 2026-09-22. Own words: "Usage is a
+Since 2026-09-08 (pin 0.52.2) and 2026-09-22. Own words: "Usage is a
 reply-model subtotal. Eve does not expose <app-3>/tool/compaction billing here." and "Eve does not
 inherit root hooks into declared subagents." [V]
 
@@ -383,7 +383,7 @@ resumes the session by calling `attach(sessionId).respond([...], { auth })` with
 app synthesizes as `authenticator: 'slack-webhook'`. The same pattern is repeated for a
 `workflow/api` `resumeHook` in `factory/build-approval.ts:58-102`. ~450 lines across
 `private-slack.ts`, `private-approval.ts`, `private-approval-summary.ts`, `slack-dm.ts`,
-`slack-presentation.ts:136-150`. Since `8102c65` 2026-09-08 (pin 0.52.2). Own words: "Narrow,
+`slack-presentation.ts:136-150`. Since 2026-09-08 (pin 0.52.2). Own words: "Narrow,
 version-checked bridge: stock verification and question rendering remain intact." and
 "Write approvals are owned by the private Slack approval channel, including delivery retries"
 (`hooks/factory-approval-context.ts:3`). [V]
@@ -444,8 +444,8 @@ open since 2026-07-06. No changelog entry through 0.66.1. [V]
 **What the project built.** Every limit set to `false` (`agent/agent.ts:29-33`; also
 `lib/model.ts:142,297-302`), and a Redis Lua reserve/settle budget ("$1 per request, $10
 daily") enforced inside a `LanguageModelMiddleware` (`<app-2>-budget.ts`, `<app-2>-query-lease.ts`,
-`<app-2>-model.ts:574-719`, ~300 lines). Since `38ac05f` 2026-09-09 (pin 0.52.2); limits disabled
-since `8102c65` 2026-09-08, whose replaced comment read "Cost protection is handled by Vercel
+`<app-2>-model.ts:574-719`, ~300 lines). Since 2026-09-09 (pin 0.52.2); limits disabled
+since 2026-09-08, whose replaced comment read "Cost protection is handled by Vercel
 budget notifications. Explicitly disable eve's token and lifetime caps so its field-specific
 defaults do not interrupt interactive sessions." The project also runs a weekly schedule that
 polls vercel/eve#551 (`upstream-reliability-monitor.ts:19-24`). [V]
@@ -493,10 +493,9 @@ current eve compiler"; 0.62.0 `fcb3ba2`. No entry names the tool-contract change
 0.57.0. 0.66.1 `055f1d1` builds workspace-local source extensions only. [V]
 
 **What the project built.** `vendor/agent-browser-eve/**` — the upstream source plus a
-checked-in `dist`, rebuilt in `cd00491` (0.52.2 → 0.57.0) and again in `e5a09c4`
-(0.57.0 → 0.63.0); `build:extensions` script; two docs recording provenance. Since `8102c65`
-2026-09-08. Own words: "The browser remains vendored only because upstream issue #1841 leaves
-the published manifest incompatible" (`cd00491`); "It remains a private compatibility rebuild
+checked-in `dist`, rebuilt at the 0.52.2 → 0.57.0 bump and again at the 0.57.0 → 0.63.0
+bump; `build:extensions` script; two docs recording provenance. Since 2026-09-08. Own words: "The browser remains vendored only because upstream issue #1841 leaves
+the published manifest incompatible" (0.57.0 upgrade commit); "It remains a private compatibility rebuild
 only because the published extension's generated manifest does not mount on current Eve"
 (`docs/dependency-upgrade-notes.md:22`). [V]
 
@@ -542,8 +541,7 @@ is adjacent. [V]
 **What the project built.** Each factory phase is published from a durable step to one
 editable Slack status card keyed in Redis by `sessionId:turnId`, refreshed by the A1 outbox
 schedule, and also `yield`ed. `slack-progress.ts`, `factory/experience.ts:21-36,51-110`,
-`factory/steps.ts:51-55`, `software_factory.ts:17-21`, ~200 lines. Since `8102c65`
-2026-09-08. Own words: "One status card per durable turn. Final answers are separate
+`factory/steps.ts:51-55`, `software_factory.ts:17-21`, ~200 lines. Since 2026-09-08. Own words: "One status card per durable turn. Final answers are separate
 notifications." and "Authoritative workflow boundaries publish directly, independent of hook
 projection." [V]
 
@@ -585,11 +583,11 @@ per-user, per-tenant, or per-session authorization your application requires."
 "an invocation belongs to the principal that started it; knowing its ID is not sufficient."
 Same text at 0.63.0 and 0.66.1. [V]
 
-**What the project built.** `withWrbSessionOwnership` wraps every `eveChannel` route handler,
+**What the project built.** `with<org>SessionOwnership` wraps every `eveChannel` route handler,
 regex-matches `/eve/v1/session/:id`, clones and re-parses the create response body for
 `sessionId`, claims it in Redis, and returns 503 if the claim fails. Two hard-coded eve route
 allowlists (`<org>-eve-auth.ts:17-21`, `<app-2>-auth.ts:60-98`), the latter pinned to "the strict
-Eve 0.52.2 response wire contract". ~120 lines plus tests. Since `e5a09c4` 2026-09-22 (pin
+Eve 0.52.2 response wire contract". ~120 lines plus tests. Since 2026-09-22 (pin
 0.63.0). Own words: "Eve HTTP route auth alone does not enforce session ownership"
 (`docs/architecture/<org>-embedding.md:23`). [V]
 
@@ -602,7 +600,7 @@ body first.
 `agent/lib/<org>-session-ownership.ts:36-52`
 
 ```ts
-export function withWrbSessionOwnership<T extends ReturnType<typeof eveChannel>>(channel:T,getStore:()=>WrbSessionOwnerStore=redisStore):T {
+export function with<org>SessionOwnership<T extends ReturnType<typeof eveChannel>>(channel:T,getStore:()=><org>SessionOwnerStore=redisStore):T {
   return {...channel,routes:channel.routes.map(route=>{
     const handler=route.handler;
     return {...route,handler:(request,ctx)=>scope.run({store:getStore},async()=>{
@@ -624,7 +622,7 @@ export function withWrbSessionOwnership<T extends ReturnType<typeof eveChannel>>
 `agent/lib/<org>-eve-auth.ts:17-21`
 
 ```ts
-export function wrbEveRouteAllowed(method: string, path: string): boolean {
+export function <org>EveRouteAllowed(method: string, path: string): boolean {
   return method === "GET" && ["/eve/v1/info", "/eve/v1/health"].includes(path)
     || method === "POST" && (path === "/eve/v1/session" || /^\/eve\/v1\/session\/[^/]+(?:\/(?:cancel|clear|compact|reset))?$/.test(path))
     || method === "GET" && /^\/eve\/v1\/session\/[^/]+\/stream$/.test(path);
@@ -635,7 +633,7 @@ export function wrbEveRouteAllowed(method: string, path: string): boolean {
 
 ```
 Eve HTTP route auth alone does not enforce session ownership. The central
-`withWrbSessionOwnership` boundary stores only session-to-verified-app/user
+`with<org>SessionOwnership` boundary stores only session-to-verified-app/user
 ownership in Eve's existing Redis. It gates stream, continuation, response,
 cancellation, clear, compact and reset. Creation is not acknowledged as usable
 until ownership is saved; unavailable storage fails closed. …
@@ -656,9 +654,9 @@ configured project environment are `development`; "Tokens from other Vercel proj
 accepted only when their `sub` matches … `subjects`" (as service). The rule is not stated in
 `docs/guides/auth-and-route-protection.md` at pin or HEAD. Unchanged through 0.66.1. [V]
 
-**What the project built.** `nyxDevelopmentOidc` and `runVisualizerOidc` re-verify the token
+**What the project built.** `<app-1>DevelopmentOidc` and `runVisualizerOidc` re-verify the token
 with `@vercel/oidc` against two registered project ids and admit it as a user
-(`http-auth.ts:91-119, 147-204`, ~90 lines). Since `80e0e89` 2026-08-14 (pin 0.37.0). [V]
+(`http-auth.ts:91-119, 147-204`, ~90 lines). Since 2026-08-14 (pin 0.37.0). [V]
 
 **How it fails.** Loud (401) if eve's acceptance rule changes; the workaround is otherwise
 standalone. Whether it is still needed at 0.66.1 was not re-derived [R].
@@ -674,7 +672,7 @@ standalone. Whether it is still needed at 0.66.1 was not re-derived [R].
  * a user. This preserves the original <org> deployment while allowing the
  * current <person-1> preview project used by <app-1> Workspace development.
  */
-export function nyxDevelopmentOidc(
+export function <app-1>DevelopmentOidc(
 ```
 
 ---
@@ -697,7 +695,7 @@ ID." [V]
 **What the project built.** The Slack `onInputResponse` gate writes `requestId → actor` to
 Redis before eve resumes; the workflow reads it back and requires the same actor and answer on
 duplicate delivery (`factory/brief-response.ts:15-68`, `channels/slack.ts:332-339`,
-`private-slack.ts:31-33`). Since `8102c65` 2026-09-08 (pin 0.52.2). Own words: "Capture the
+`private-slack.ts:31-33`). Since 2026-09-08 (pin 0.52.2). Own words: "Capture the
 signed actor before native Eve resumes the answer (ctx.ask omits identity)." [V]
 
 **How it fails.** Silently. The binding is keyed by `requestId`, whose meaning changed in
@@ -740,7 +738,7 @@ inherit selected parent capabilities" open since 2026-07-08. 0.66.0 `d50a774` sh
 (`bash, glob, grep, read_file, write_file, todo, web_fetch, web_search, ask_question,
 load_skill`), 5 hook copies, 3 skill copies. Variants have already drifted:
 `analyst|implementer|reviewer/tools/glob.ts` import `eve/tools/glob` directly while
-`classifier|researcher/tools/glob.ts` re-export the root. Since `8102c65` 2026-09-08. [V]
+`classifier|researcher/tools/glob.ts` re-export the root. Since 2026-09-08. [V]
 
 **How it fails.** Loud at build when a re-exported eve tool disappears: 0.65.0 removes
 `eve/tools/todo` and says an `agent/tools/todo.ts` "now fails the build" — this project has
@@ -771,7 +769,7 @@ turn posted." [V]
 **What the project built.** `captureSlackReply` re-wraps `adapter["message.completed"]`, wraps
 `context.thread.post` in a `Proxy` to capture `result.id`, stores it in channel state, then
 edits that message to append an admin context block (`slack-admin-delivery.ts:13-79`, ~50
-lines). Since `004da3b` 2026-09-22 (pin 0.63.0): "admin diagnostics were lost for Eve's
+lines). Since 2026-09-22 (pin 0.63.0): "admin diagnostics were lost for Eve's
 channel:slack events … capture the accepted Slack reply and append its metadata as a context
 block." Own words: "Keep Eve's stock reply renderer while retaining its accepted Slack message
 id." [V]
@@ -819,10 +817,10 @@ OpenAI accepts.
 "Support max reasoning effort in agent definitions and dynamic model selections" open
 2026-09-23; #2022 "Clarify the step-scoped dynamic model lifecycle contract" open. [V]
 
-**What the project built.** `resolveLumiModel` calls `router.events["step.started"]!(event, ctx)`
+**What the project built.** `resolve<agent>Model` calls `router.events["step.started"]!(event, ctx)`
 by hand, then re-derives Gateway and OpenAI options from the result; `max` is encoded as a
 `"provider-default"` sentinel that the resolver translates (`model.ts:250-274`,
-`<app-3>-router.ts:7-18`, ~35 lines). Since `e5a09c4` 2026-09-22 (pin 0.63.0), which replaced a
+`<app-3>-router.ts:7-18`, ~35 lines). Since 2026-09-22 (pin 0.63.0), which replaced a
 178-line custom router with `auto()`. Own words: "Eve 0.63's generic reasoning enum stops at
 xhigh." and "Product-specific overrides surround Eve's native model router." [V]
 
@@ -838,12 +836,16 @@ no error. The sentinel drops `max` if any other consumer reads `reasoning` liter
   lunaMax: { model: "openai/gpt-6-luna", reasoning: "provider-default", … },
 ```
 
-`agent/lib/model.ts:252-268` (body between the signature and the router call elided)
+`agent/lib/model.ts:252-253`
 
 ```ts
 /** Product-specific overrides surround Eve's native model router. */
-export async function resolveLumiModel(event: unknown, ctx: DynamicResolveContext, router = lumiRouter) {
-  …
+export async function resolve<agent>Model(event: unknown, ctx: DynamicResolveContext, router = <agent>Router) {
+```
+
+`agent/lib/model.ts:263-268`
+
+```ts
   const selected = await router.events["step.started"]!(event, ctx);
   const model = typeof selected === "string" ? selected : "model" in selected ? selected.model : selected;
   if (typeof model !== "string") return selected;
@@ -864,7 +866,7 @@ UTC." Zero matches for `timezone` in `docs/schedules.mdx` at pin and HEAD; no ch
 
 **What the project built.** `cron: "0 16-19 * * 1-5"` fires four times a day; `isWeekdayPulseTime`
 lets exactly one through in `<tz>` (`weekday-pulse.ts:39-49, 77-83`, ~20 lines).
-Since `5cb6de3` 2026-08-04 (pin 0.30.6). [V]
+Since 2026-08-04 (pin 0.30.6). [V]
 
 **How it fails.** Silent double-fire or miss if DST rules change or the hour window is edited
 without the gate; three of four daily invocations are no-ops.
@@ -893,7 +895,7 @@ checks out the relevant ref into the sandbox." No opt-out documented; no stateme
 authored `turn.started` replaces the checkout. [V]
 
 **What the project built.** An empty `turn.started` override that suppresses the default
-handler. Since `8102c65` 2026-09-08 (pin 0.52.2). Own words: "The stock handler clones into
+handler. Since 2026-09-08 (pin 0.52.2). Own words: "The stock handler clones into
 the root sandbox. Stations own all authenticated Git instead." [V]
 
 **How it fails.** Silently: if eve moves the checkout to another event or a pre-turn step, the
@@ -916,10 +918,10 @@ clone returns and conflicts with the factory's brokered Git stations [I].
 `"channel:slack"`, not `"slack"`; a hook that guesses the literal never fires.
 
 **What eve says.** `docs/guides/hooks.md:53,63` (0.63.0): `readonly kind?: string`, with a
-recommendation to narrow with `isChannel`. The literal appears only in eve tests
+a pointer to narrow with `isChannel`. The literal appears only in eve tests
 (`src/execution/runtime-context.test.ts:337`, `channel-address.test.ts:100`). [V]
 
-**What the project built.** A guard that accepts both spellings. Since `004da3b` 2026-09-22
+**What the project built.** A guard that accepts both spellings. Since 2026-09-22
 (pin 0.63.0): "recognize the runtime Slack channel kind." [V]
 
 **How it fails.** Silently: a wrong literal means the usage footer hook never runs.
@@ -943,9 +945,8 @@ existing sandbox.
 source, workspace seed content, or `revalidationKey` replaces the sandbox." Imports are not
 mentioned. Actual fingerprint behavior was not tested [R]. [V for the doc]
 
-**What the project built.** A hand-bumped `SANDBOX_REVALIDATION_KEY` (`browser-host-policy-v3`)
-with a comment instructing future editors to bump it on every policy change. Since `5709ff7`
-2026-08-04 (pin 0.30.6). [V]
+**What the project built.** A hand-bumped `SANDBOX_REVALIDATION_KEY` (`<config-value>`)
+with a comment instructing future editors to bump it on every policy change. Since 2026-08-04 (pin 0.30.6). [V]
 
 **How it fails.** Silently: a policy edit without a key bump may leave durable sessions on a
 sandbox with the old egress policy.
@@ -956,5 +957,5 @@ sandbox with the old egress policy.
 // Imported network-policy changes are not guaranteed to alter Eve's sandbox
 // source fingerprint. Bump this key whenever the baseline policy changes so
 // durable sessions cannot reattach to a sandbox that retained the old policy.
-export const SANDBOX_REVALIDATION_KEY = "browser-host-policy-v3";
+export const SANDBOX_REVALIDATION_KEY = "<config-value>";
 ```

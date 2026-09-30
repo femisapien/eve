@@ -1,8 +1,10 @@
 # Friction signals
 
-`scripts/sweep.sh` runs every search below and groups the hits by class. This
-file explains what each class means and what to look for when you open a hit.
-A hit is a candidate, not a finding: open the file.
+`scripts/sweep.sh` is the source of truth for the searches: it runs every
+command listed below and groups the hits by class. The one exception is the
+S1 import inventory, which `scripts/subject.sh` prints. This file explains
+what each class means and what to look for when you open a hit. A hit is a
+candidate, not a finding: open the file.
 
 Commands assume the project root and an `agent/` directory; set
 `EVE_AGENT_DIR` when the layout differs. Quote `--include` patterns in zsh.

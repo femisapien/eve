@@ -16,7 +16,10 @@ it is not a gap; leave it out.
 Read all of these before starting, in this order:
 
 1. `references/example-report.md` — the target shape, and a weak block
-   with why it fails.
+   with why it fails. `examples/slack-company-agent-2026-09-29.md` is the
+   full anonymized report those blocks came from; open it only when you need
+   to see how a whole section (index, upgrade exposure, tool shape) reads at
+   17 gaps.
 2. `references/signals.md` — what each signal class means and what to look
    for when you open a hit.
 3. `references/report-template.md` — the skeleton you fill.
@@ -138,17 +141,17 @@ excerpt yourself before writing.
 
 Append one record per W to `.eve-friction/records.md`:
 
-| Field      | What goes here                                                                                                                      |
-| ---------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| Gap        | The eve capability that is missing, wrong, or undocumented, named by its eve primitive, option, or event.                           |
-| Where      | Files and line ranges; approximate lines.                                                                                           |
-| Since      | First commit (`git log --diff-filter=A --format='%h %ad' --date=short -- <path>`) and the eve pin at that date (from `subject.md`). |
-| Own words  | Comments, docs, commit messages, verbatim.                                                                                          |
-| eve at pin | Quote from `docs/**`, a type, or source at the pinned version, with `path:line`; or "silent" with the docs you searched.            |
-| eve now    | Newest `CHANGELOG.md` entry that touches it, with version and SHA; or "none".                                                       |
-| Tracked    | `gh issue list -R vercel/eve --state all --search "<terms>"`: number and state, or "none" with the terms.                           |
-| Fails      | Loud or silent, and the exact dependency: event name, token format, response field, adapter key, changelog entry.                   |
-| Excerpts   | `path:start-end` ranges you will paste, chosen to show the workaround or the stated reason.                                         |
+| Field      | What goes here                                                                                                                                                  |
+| ---------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Gap        | The eve capability that is missing, wrong, or undocumented, named by its eve primitive, option, or event.                                                       |
+| Where      | Files and line ranges; approximate lines.                                                                                                                       |
+| Since      | Date of the first commit (`git log --diff-filter=A --format='%ad' --date=short -- <path>`) and the eve pin at that date (from `subject.md`). Date only; no SHA. |
+| Own words  | Comments, docs, commit messages, verbatim.                                                                                                                      |
+| eve at pin | Quote from `docs/**`, a type, or source at the pinned version, with `path:line`; or "silent" with the docs you searched.                                        |
+| eve now    | Newest `CHANGELOG.md` entry that touches it, with version and SHA; or "none".                                                                                   |
+| Tracked    | `gh issue list -R vercel/eve --state all --search "<terms>"`: number and state, or "none" with the terms.                                                       |
+| Fails      | Loud or silent, and the exact dependency: event name, token format, response field, adapter key, changelog entry.                                               |
+| Excerpts   | `path:start-end` ranges you will paste, chosen to show the workaround or the stated reason.                                                                     |
 
 ### 5. Filter
 
@@ -206,8 +209,15 @@ labeled paragraphs — **Gap**, **What eve says**, **What the project built**,
 **How it fails** — then code excerpts, each headed by a line containing
 `` `path:start-end` `` and copied from the file, not retyped. Trim to the
 lines that show the workaround or the stated reason. Elide only inside a
-single long line, with `…`, and say so in the heading. Repeat a fact rather
-than cross-reference another block.
+single long line, with `…`, and say so in the heading; never use a
+standalone `…` line to skip source lines — cite two ranges instead
+(`` `path:12-14, 30-33` `` or two excerpts). The checker rejects a
+standalone `…`. Repeat a fact rather than cross-reference another block.
+
+Cite project commits by date and pin (`since 2026-08-20, pin 0.37.0`), not
+by SHA: a short SHA resolves straight back to the repository. eve's own
+changelog SHAs are public and fine. `redact.mjs --project` replaces any
+project SHA you leave in with `<sha>`, and the checker flags them.
 
 Inline `[I]` and `[R]` on the exact clause they qualify; `[V]` at paragraph
 end. No "should", no proposed shapes, no acceptance criteria, no priorities.
@@ -215,7 +225,7 @@ end. No "should", no proposed shapes, no acceptance criteria, no priorities.
 ### 7. Redact, then check
 
 ```sh
-node <skill-dir>/scripts/redact.mjs <report.md> --map .eve-friction
+node <skill-dir>/scripts/redact.mjs <report.md> --map .eve-friction --project <project-root>
 node <skill-dir>/scripts/check-report.mjs <report.md> <project-root> --map .eve-friction
 ```
 
@@ -224,12 +234,15 @@ residual leak. Paste excerpts from the real files; redaction handles them,
 and the checker compares each excerpt to the redacted source, so they stay
 verbatim modulo anonymization.
 
-`check-report.mjs` verifies: no mapped term or identifier class anywhere in
-the report; the opening gap count equals index rows equals blocks; every
-index anchor resolves to its heading; every block has the four paragraphs in
-order, at least one excerpt, and a `[V]`; no verdict language; and every
-excerpt matches the cited file lines verbatim modulo redaction (blank lines
-and marked `…` elisions allowed). Fix and rerun until it prints `OK`. Do not
+`check-report.mjs` verifies: no mapped term, identifier class, or project
+commit SHA anywhere in the report; the opening gap count equals index rows
+equals blocks; every index anchor resolves to its heading; every block has
+the four paragraphs in order, at least one excerpt, and a `[V]`; no
+"should", "propose", "recommend", "acceptance", or priority labels in prose;
+and every fenced excerpt anywhere in the report (gap blocks and tool shape)
+matches the cited file lines verbatim modulo redaction, with brace paths
+expanded and each alternative checked, blank lines skipped, and in-line `…`
+allowed. Fix and rerun until it prints `OK`. Do not
 deliver a report that fails the check.
 
 After it passes, read the report once more as a stranger would: a project

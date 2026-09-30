@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// Verifies a gap-register report: structure, counts, index anchors, and that every
-// code excerpt is verbatim against the project checkout.
-// Usage: node check-report.mjs <report.md> <project-root>
+// Verifies a gap-register report: anonymization, structure, counts, index anchors, and that
+// every code excerpt is verbatim (modulo redaction) against the project checkout.
+// Usage: check-report.mjs <report.md> <project-root> [--map <dir>]   (default map dir: .eve-friction)
 import { readFileSync, existsSync } from "node:fs";
 import { resolve, join } from "node:path";
 import { loadMap, redact, unredactPath, findLeaks } from "./redact.mjs";
@@ -10,22 +10,20 @@ const args = process.argv.slice(2);
 const positional = args.filter((a, i) => !a.startsWith("--") && args[i - 1] !== "--map");
 const [reportPath, root] = positional;
 if (!reportPath || !root) {
-  console.error(
-    "usage: check-report.mjs <report.md> <project-root> [--map <dir>]   (default map dir: .eve-friction)",
-  );
+  console.error("usage: check-report.mjs <report.md> <project-root> [--map <dir>]");
   process.exit(2);
 }
 const mapDir = args.includes("--map") ? args[args.indexOf("--map") + 1] : ".eve-friction";
-const map = loadMap(mapDir);
+const map = loadMap(mapDir, root);
 const text = readFileSync(reportPath, "utf8");
 const lines = text.split("\n");
 const problems = [];
 const fail = (msg) => problems.push(msg);
 
-// Anonymization: the report must contain no mapped term and no built-in identifier class.
+// Anonymization: no mapped term, identifier class, or project commit SHA anywhere.
 if (!map)
   fail(
-    `no anonymize.json found in ${mapDir}; create it (see SKILL.md step 1) so the leak check can run`,
+    `no anonymize.json found in ${mapDir}; create it (SKILL.md step 1) so the leak check can run`,
   );
 for (const leak of findLeaks(text, map)) fail(`leak at line ${leak.line}: ${leak.what}`);
 
@@ -39,26 +37,31 @@ lines.forEach((l, i) => {
 blocks.forEach((b, i) => (b.end = i + 1 < blocks.length ? blocks[i + 1].start : lines.length));
 if (blocks.length === 0) fail("no gap blocks (## A<n>. ...) found");
 
-// Opening count: "<n> gaps."
 const countMatch = text.match(/^(\d+) gaps?\./m);
 if (!countMatch) fail("opening lines do not state '<n> gaps.'");
 else if (Number(countMatch[1]) !== blocks.length)
   fail(`opening says ${countMatch[1]} gaps, found ${blocks.length} blocks`);
 
-// Index rows: "| [A<n>](#anchor) |"
+// Required sections; header regexes tolerate formatter padding.
+const header = (cells) =>
+  new RegExp(
+    "^\\|\\s*" + cells.map((c) => c.replace(/[()]/g, "\\$&")).join("\\s*\\|\\s*") + "\\s*\\|\\s*$",
+    "m",
+  );
+if (!/^## Index\s*$/m.test(text)) fail("missing '## Index' section");
+else if (!header(["ID", "Gap", "Workaround (lines)", "Tracked"]).test(text))
+  fail("index is missing its header row (ID | Gap | Workaround (lines) | Tracked)");
+if (!/^## Tool shape\s*$/m.test(text)) fail("missing '## Tool shape' section");
+else if (!header(["Family", "Members", "Lines", "With approval", ".*"]).test(text))
+  fail("Tool shape section is missing its family table");
+
+// Index rows and anchors
 const slug = (h) =>
   h
     .toLowerCase()
     .replace(/[^\w\- ]/g, "")
     .replace(/ /g, "-");
-if (!/^## Index\s*\n\s*\n?\| ID \| Gap \| Workaround \(lines\) \| Tracked \|\s*\n\|---/m.test(text))
-  fail(
-    "index is missing its header row (| ID | Gap | Workaround (lines) | Tracked |) and separator",
-  );
-if (!/^## Tool shape\s*$/m.test(text)) fail("missing '## Tool shape' section");
-else if (!/^\| Family \| Members \| Lines \| With approval \|/m.test(text))
-  fail("Tool shape section is missing its family table");
-const indexRows = [...text.matchAll(/^\| \[(A\d+)\]\(#([^)]+)\)/gm)].map((m) => ({
+const indexRows = [...text.matchAll(/^\|\s*\[(A\d+)\]\(#([^)]+)\)/gm)].map((m) => ({
   id: m[1],
   anchor: m[2],
 }));
@@ -75,13 +78,14 @@ for (const row of indexRows) {
     fail(`index anchor for ${row.id} is #${row.anchor}, heading slug is #${expected}`);
 }
 
-// Per-block structure
+// Per-block structure and language
 const labels = [
   "**Gap.**",
   "**What eve says.**",
   "**What the project built.**",
   "**How it fails.**",
 ];
+const stripFences = (s) => s.replace(/```[\s\S]*?```/g, "");
 for (const b of blocks) {
   const body = lines.slice(b.start, b.end);
   const joined = body.join("\n");
@@ -94,105 +98,102 @@ for (const b of blocks) {
     fail(`${b.id}: paragraphs out of order`);
   if (!/^```/m.test(joined)) fail(`${b.id}: no code excerpt`);
   if (!/\[V\]/.test(joined)) fail(`${b.id}: no [V] tag`);
-  const prose = joined.replace(/```[\s\S]*?```/g, "");
+  const prose = stripFences(joined);
   const verdict = prose.match(
-    /\b(eve should|we propose|proposed shape|accepts when|acceptance criteria|priority:|\bP[0-3]\b(?! [a-z]))/i,
+    /\b(should|propose[sd]?|proposed shape|accepts when|acceptance criteria|recommend(?:ed|s)?|priority:|P[0-3])\b/i,
   );
   if (verdict) fail(`${b.id}: contains proposal/verdict language: "${verdict[0]}"`);
 }
 
-// Excerpts: a heading line `path:a-b[, c-d]` (optionally followed by text) within 2 lines before a fence.
+// Excerpts, everywhere in the report: a heading line `path:a-b[, c-d]` within 3 lines above a fence.
 const headRe = /^`([^`]+?):(\d+(?:-\d+)?(?:, ?\d+(?:-\d+)?)*)`/;
+const norm = (s) => s.replace(/\s+/g, " ").trim();
 const expandBraces = (p) => {
   const m = p.match(/^(.*)\{([^}]+)\}(.*)$/);
-  return m ? m[1] + m[2].split(",")[0].trim() + m[3] : p;
+  return m ? m[2].split(",").map((alt) => m[1] + alt.trim() + m[3]) : [p];
 };
-const norm = (s) => s.replace(/\s+/g, " ").trim();
-function checkExcerpt(blockId, head, excerpt, fenceLine) {
-  const [, rawPath, ranges] = head;
-  const path = unredactPath(expandBraces(rawPath), map);
-  const abs = resolve(join(root, path));
-  if (!existsSync(abs)) {
-    fail(
-      `${blockId}: excerpt file not found: ${rawPath} → ${path} (fence at line ${fenceLine + 1})`,
-    );
-    return;
-  }
-  // Compare against the redacted source so excerpts are verbatim modulo anonymization.
-  const file = redact(readFileSync(abs, "utf8"), map).split("\n");
-  const wanted = [];
+function parseRanges(ranges) {
+  const out = [];
   for (const r of ranges.split(",").map((s) => s.trim())) {
     const [a, b] = r.split("-").map(Number);
     const end = b ?? a;
-    if (a < 1 || end > file.length) {
-      fail(`${blockId}: ${path}:${r} out of range (file has ${file.length} lines)`);
-      return;
-    }
+    if (!(a >= 1) || end < a) return null;
+    out.push([a, end]);
+  }
+  return out;
+}
+function checkOneFile(where, rawPath, path, ranges, excerpt) {
+  const abs = resolve(join(root, path));
+  if (!existsSync(abs)) return fail(`${where}: excerpt file not found: ${rawPath} → ${path}`);
+  const file = redact(readFileSync(abs, "utf8"), map).split("\n");
+  const wanted = [];
+  for (const [a, end] of ranges) {
+    if (end > file.length)
+      return fail(`${where}: ${rawPath}:${a}-${end} out of range (file has ${file.length} lines)`);
     for (let i = a; i <= end; i++) wanted.push({ n: i, t: norm(file[i - 1]) });
   }
   let cursor = 0;
-  let skipping = false;
+  let compared = 0;
   for (const raw of excerpt) {
     const t = norm(raw);
     if (t === "") continue;
-    if (t === "…") {
-      skipping = true;
-      continue;
-    }
+    if (t === "…")
+      return fail(
+        `${where}: standalone "…" line; elide only inside a single line and cite each range instead`,
+      );
     const parts = t
       .split("…")
       .map((p) => p.trim())
       .filter(Boolean);
-    const matches = (fl) =>
-      parts.length > 1 || t.includes("…") ? parts.every((p) => fl.includes(p)) : fl === t;
-    let found = -1;
-    if (skipping) {
-      for (let i = cursor; i < wanted.length; i++)
-        if (matches(wanted[i].t)) {
-          found = i;
-          break;
-        }
-    } else {
-      while (cursor < wanted.length && wanted[cursor].t === "") cursor++;
-      if (cursor < wanted.length && matches(wanted[cursor].t)) found = cursor;
-    }
-    if (found < 0) {
-      const at = wanted[cursor] ? `${path}:${wanted[cursor].n}` : `${path} (past range)`;
-      fail(
-        `${blockId}: excerpt line does not match ${at}\n    excerpt: ${raw.trim().slice(0, 120)}\n    file:    ${(wanted[cursor]?.t ?? "").slice(0, 120)}`,
+    const matches = (fl) => (t.includes("…") ? parts.every((p) => fl.includes(p)) : fl === t);
+    while (cursor < wanted.length && wanted[cursor].t === "") cursor++;
+    if (!(cursor < wanted.length && matches(wanted[cursor].t))) {
+      const at = wanted[cursor] ? `${rawPath}:${wanted[cursor].n}` : `${rawPath} (past range)`;
+      return fail(
+        `${where}: excerpt line does not match ${at}\n    excerpt: ${raw.trim().slice(0, 120)}\n    file:    ${(wanted[cursor]?.t ?? "").slice(0, 120)}`,
       );
-      return;
     }
-    cursor = found + 1;
-    skipping = false;
+    cursor++;
+    compared++;
   }
+  if (compared === 0) fail(`${where}: empty excerpt for ${rawPath}`);
 }
-for (const b of blocks) {
-  for (let i = b.start; i < b.end; i++) {
-    if (!lines[i].startsWith("```")) continue;
-    const close = lines.findIndex((l, j) => j > i && l.startsWith("```"));
-    if (close < 0) {
-      fail(`${b.id}: unclosed fence at line ${i + 1}`);
+function whereOf(lineNo) {
+  const b = blocks.find((x) => lineNo >= x.start && lineNo < x.end);
+  return b ? b.id : `line ${lineNo + 1}`;
+}
+for (let i = 0; i < lines.length; i++) {
+  if (!lines[i].startsWith("```")) continue;
+  const close = lines.findIndex((l, j) => j > i && l.startsWith("```"));
+  if (close < 0) {
+    fail(`unclosed fence at line ${i + 1}`);
+    break;
+  }
+  let head = null;
+  for (let k = i - 1; k >= Math.max(0, i - 3); k--) {
+    const m = lines[k].match(headRe);
+    if (m) {
+      head = m;
       break;
     }
-    let head = null;
-    for (let k = i - 1; k >= Math.max(b.start, i - 3); k--) {
-      const m = lines[k].match(headRe);
-      if (m) {
-        head = m;
-        break;
-      }
-    }
-    if (!head)
-      fail(
-        `${b.id}: fence at line ${i + 1} has no \`path:start-end\` heading within 3 lines above`,
-      );
-    else checkExcerpt(b.id, head, lines.slice(i + 1, close), i);
-    i = close;
   }
+  const where = whereOf(i);
+  const inBlock = blocks.some((x) => i >= x.start && i < x.end);
+  if (!head) {
+    if (inBlock || /^## Tool shape/m.test(lines.slice(0, i).join("\n")))
+      fail(
+        `${where}: fence at line ${i + 1} has no \`path:start-end\` heading within 3 lines above`,
+      );
+  } else {
+    const ranges = parseRanges(head[2]);
+    if (!ranges) fail(`${where}: bad range "${head[2]}" for ${head[1]}`);
+    else
+      for (const p of expandBraces(head[1]))
+        checkOneFile(where, head[1], unredactPath(p, map), ranges, lines.slice(i + 1, close));
+  }
+  i = close;
 }
 
-// Evidence tags outside blocks are fine; inside, [I]/[R] must exist only in prose.
 if (problems.length) {
   console.error(`check-report: ${problems.length} problem(s)\n`);
   for (const p of problems) console.error("- " + p);
