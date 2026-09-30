@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
+import nodePath from "node:path";
 
 import type { CompiledWorkspaceResourceRoot } from "#compiler/manifest.js";
 import type { RuntimeCompiledArtifactsSource } from "#runtime/compiled-artifacts-source.js";
@@ -152,6 +153,24 @@ export function createBundledSkillFileSource(
  * build output owned by the app, so such a writer can already change what
  * is served.
  */
+/**
+ * Whether `target` lies strictly inside `root`, using the platform's path
+ * rules: `realpath` returns backslash-separated, drive-lettered paths on
+ * Windows, so a `/`-prefix comparison would reject every legitimate read
+ * there. A relative path that is empty (the root itself), climbs out with
+ * `..`, or is absolute (another drive on Windows) is not contained.
+ */
+export function isStrictlyContainedPath(
+  root: string,
+  target: string,
+  path: Pick<typeof nodePath, "isAbsolute" | "relative" | "sep"> = nodePath,
+): boolean {
+  const relative = path.relative(root, target);
+  if (relative === "" || path.isAbsolute(relative)) return false;
+  const [first] = relative.split(path.sep);
+  return first !== "..";
+}
+
 export function createDiskSkillFileSource(skillsRoot: string): SkillFileSource {
   const openFile = async (skill: string, path: string) => {
     const skillRoot = `${skillsRoot}/${skill}`;
@@ -169,7 +188,7 @@ export function createDiskSkillFileSource(skillsRoot: string): SkillFileSource {
       }
     }
     const [realRoot, realTarget] = await Promise.all([realpath(skillRoot), realpath(current)]);
-    if (!realTarget.startsWith(`${realRoot}/`)) {
+    if (!isStrictlyContainedPath(realRoot, realTarget)) {
       throw unknownFile(skill, path);
     }
     const handle = await open(current, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
