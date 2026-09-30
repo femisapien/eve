@@ -231,7 +231,7 @@ stream emits `input.requested` or `authorization.required`, then `turn.waiting`,
 continues once the person answers or signs in.
 
 In every session, `turn.completed` comes only when the turn really ends. The TypeScript client's
-`send(...).result()` and the MCP channel's `agent_get` read past `turn.waiting` and report the
+`send(...).result()` reads past `turn.waiting` and reports the
 final reply rather than the text written before the wait. `result()` stops at `turn.waiting` only
 while a question is pending, and returns `status: "waiting"` with it; `respond()` then reads the
 same turn to its end. See [Aggregate a turn](/docs/guides/client/streaming#aggregate-a-turn).

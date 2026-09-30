@@ -614,27 +614,6 @@ describe("createWorkflowRuntime#createSession", () => {
     expect(getHookByTokenMock).not.toHaveBeenCalled();
   });
 
-  it("returns an MCP invocation without checking continuation ownership", async () => {
-    const compiledArtifactsSource = {} as RuntimeCompiledArtifactsSource;
-    mockBundleAndRun(compiledArtifactsSource);
-    startMock.mockResolvedValue({ runId: "owner-run" });
-
-    await expect(
-      buildRuntime(compiledArtifactsSource).createSession({
-        adapter,
-        auth: null,
-        continuationToken: "invocation:token",
-        externalInvocation: {
-          continuationToken: "invocation:token",
-          ownerKey: "owner",
-        },
-        input: { message: "hello" },
-      }),
-    ).resolves.toMatchObject({ sessionId: "owner-run" });
-
-    expect(getHookByTokenMock).not.toHaveBeenCalled();
-  });
-
   it("passes a channel's losing-candidate delivery to the workflow", async () => {
     const compiledArtifactsSource = {} as RuntimeCompiledArtifactsSource;
     mockBundleAndRun(compiledArtifactsSource);

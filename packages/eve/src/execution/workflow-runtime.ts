@@ -57,7 +57,6 @@ import {
 } from "#execution/session/entry-input.js";
 import type { SessionCheckpoint } from "#execution/session/handoff.js";
 import { walkCauseChain } from "#shared/errors.js";
-import { buildInvocationAttributes } from "#internal/invocation/metadata.js";
 import { isAgentTraceContext } from "#tracing/agent-trace-context.js";
 import {
   sessionCommandHookToken,
@@ -173,12 +172,7 @@ export function createWorkflowRuntime(config: {
               rootSessionId: parentLineage.rootSessionId ?? parentLineage.sessionId,
               serializedContext,
             });
-      const attributes = {
-        ...sessionAttributes,
-        ...(input.externalInvocation === undefined
-          ? {}
-          : buildInvocationAttributes(input.externalInvocation)),
-      };
+      const attributes = sessionAttributes;
 
       let run: Awaited<ReturnType<typeof startWorkflowOnCurrentDeployment>>;
       try {

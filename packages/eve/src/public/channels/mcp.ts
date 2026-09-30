@@ -1,5 +1,3 @@
-import { parseJsonObject } from "#shared/json.js";
-import { z } from "#compiled/zod/index.js";
 import {
   defineChannel,
   DELETE,
@@ -10,25 +8,14 @@ import {
   type Channel,
 } from "#public/definitions/channel.js";
 import type { RouteHandlerArgs } from "#channel/routes.js";
-import type {
-  AgentInvocation,
-  AgentInvocationMutationResult,
-} from "#internal/invocation/agent-invocation.js";
-import { WorkflowAgentInvocationExecution } from "#internal/invocation/workflow-execution.js";
+import type { SessionAuthContext } from "#channel/types.js";
 import { resolveInstalledPackageInfo } from "#internal/application/package.js";
 import { validateMcpHttpRequest, validateMcpMetadataRequest } from "#internal/mcp/http-security.js";
-import {
-  createMcpStreamableHttpServer,
-  defineMcpTool,
-  McpToolOperationError,
-  type McpCallToolResult,
-  type McpServerTool,
-} from "#internal/mcp/streamable-http-server.js";
+import { createMcpStreamableHttpServer } from "#internal/mcp/streamable-http-server.js";
 import {
   createMcpProtectedResourceMetadata,
   createMcpResourceChallenge,
 } from "#internal/mcp/protected-resource.js";
-import { inputRequestSchema, inputResponseSchema } from "#shared/input.js";
 import {
   escapeAuthChallengeParameter,
   readOAuthResourceOptions,
@@ -36,11 +23,7 @@ import {
   type AuthFn,
   type OAuthResourceOptions,
 } from "#public/channels/auth.js";
-import {
-  readAgentInfoRouteResponse,
-  readRouteChannelName,
-  readRouteSessionCreator,
-} from "#internal/nitro/routes/channel-route-context.js";
+import { readAgentInfoRouteResponse } from "#internal/nitro/routes/channel-route-context.js";
 export interface McpChannelInput {
   /** Existing eve route-auth policy. Use `none()` for explicit public access. */
   readonly auth: AuthFn<Request> | readonly AuthFn<Request>[];
@@ -48,15 +31,16 @@ export interface McpChannelInput {
   readonly route?: string;
 }
 
-/** Public MCP channel exposing durable agent invocation compatibility tools. */
+/** Public MCP channel publishing this agent as an MCP server. */
 export type McpChannel = Channel;
 
 /**
  * Publishes this agent as a stateless Streamable HTTP MCP server.
  *
- * This channel owns only MCP transport and durable eve invocation. It reuses
- * eve's inbound auth strategies and recognizes `oauthResource(...)` metadata
- * when OAuth discovery is needed.
+ * This channel owns MCP transport and authentication. It reuses eve's inbound
+ * auth strategies and recognizes `oauthResource(...)` metadata when OAuth
+ * discovery is needed. It publishes no tools yet: the `agent_*` invocation
+ * tools were removed, and the agent's own tools and skills come next.
  * The file containing this channel must be `agent/channels/mcp.ts`.
  */
 export function mcpChannel(input: McpChannelInput): McpChannel {
@@ -339,303 +323,24 @@ async function authenticateMcpRequest(
 async function handleMcpRequest(
   request: Request,
   args: RouteHandlerArgs,
-  auth: import("#channel/types.js").SessionAuthContext,
+  auth: SessionAuthContext | null,
 ): Promise<Response> {
-  const createSession = readRouteSessionCreator(args);
-  const channelName = readRouteChannelName(args);
   const respondWithAgentInfo = readAgentInfoRouteResponse(args);
-  if (
-    channelName === undefined ||
-    createSession === undefined ||
-    respondWithAgentInfo === undefined
-  ) {
+  if (respondWithAgentInfo === undefined) {
     return Response.json({ error: "MCP requires agent route context." }, { status: 500 });
   }
   const agentInfoResponse = await respondWithAgentInfo();
   if (!agentInfoResponse.ok) return agentInfoResponse;
   const agentInfo = (await agentInfoResponse.json()) as {
-    readonly agent?: { readonly description?: unknown; readonly name?: unknown };
+    readonly agent?: { readonly name?: unknown };
   };
   if (typeof agentInfo.agent?.name !== "string") {
     return Response.json({ error: "MCP requires compiled agent metadata." }, { status: 500 });
   }
-  const description =
-    typeof agentInfo.agent.description === "string" ? agentInfo.agent.description : undefined;
-  const execution = new WorkflowAgentInvocationExecution({
-    createSession,
-    from: args.from,
-  });
   return await createMcpStreamableHttpServer({
     authenticate: async () => auth,
-    instructions: MCP_SERVER_INSTRUCTIONS,
     name: agentInfo.agent.name,
-    tools: createInvocationTools(
-      execution,
-      description,
-      auth.authenticator === "none" && auth.principalType === "anonymous",
-    ),
+    tools: [],
     version: resolveInstalledPackageInfo().version,
   })(request);
 }
-
-/**
- * Hosted MCP clients receive this once per connection (legacy `initialize`)
- * or per discovery (`server/discover`). Keep it short: clients truncate or
- * drop long instructions, and the details live in each tool description.
- */
-const MCP_SERVER_INSTRUCTIONS = [
-  "Each invocation is one durable agent task.",
-  "Call agent_start once per task and keep the returned invocationId.",
-  "Poll agent_get, waiting at least pollAfterMs between calls, until status is completed, failed, or cancelled.",
-  "If status is input_required, answer every entry in inputRequests in one agent_update call; repeating accepted answers is safe.",
-  "If status is authorization_required, show the user the authorization url or instructions and keep polling.",
-  "isError on a tool result means your call was rejected; a failed status means the task failed.",
-  "agent_start is not idempotent and a lost response leaves no invocationId, so ask the user before starting again.",
-  "Work continues after your connection drops; agent_cancel stops it, then poll until any terminal status.",
-].join(" ");
-
-function createInvocationTools(
-  execution: WorkflowAgentInvocationExecution,
-  agentDescription: string | undefined,
-  publicAccess: boolean,
-): readonly McpServerTool[] {
-  const publicHandleDescription = publicAccess
-    ? " On this public channel, the invocation ID is a bearer capability until workflow retention expires."
-    : "";
-  const startDescription =
-    "Starts durable work and returns an invocation handle immediately. " +
-    "Call once per task; keep invocationId and poll agent_get. Not idempotent: if the response is lost, " +
-    `ask the user before starting again rather than retrying.${publicHandleDescription}`;
-  const tools: McpServerTool[] = [
-    defineMcpTool({
-      definition: {
-        annotations: {
-          destructiveHint: true,
-          idempotentHint: false,
-          openWorldHint: true,
-          readOnlyHint: false,
-        },
-        description:
-          agentDescription === undefined
-            ? startDescription
-            : `${agentDescription} ${startDescription}`,
-        inputSchema: z.strictObject({
-          message: utf8Bounded(MAX_MESSAGE_BYTES).min(1),
-        }),
-        name: "agent_start",
-        outputSchema: AGENT_INVOCATION_OUTPUT_SCHEMA,
-      },
-      async call(body, context) {
-        const invocation = await execution.create({
-          auth: context.auth,
-          message: body.message,
-        });
-        return invocationResult(invocation);
-      },
-    }),
-    defineMcpTool({
-      definition: {
-        annotations: {
-          destructiveHint: false,
-          idempotentHint: true,
-          openWorldHint: false,
-          readOnlyHint: true,
-        },
-        description:
-          "Reads complete durable invocation state. Wait at least pollAfterMs between calls. " +
-          "Terminal statuses are completed, failed, and cancelled. input_required needs agent_update; " +
-          `authorization_required needs the user to follow the returned authorization.${publicHandleDescription}`,
-        inputSchema: z.strictObject({ invocationId: z.string().min(1).max(MAX_ID_CHARS) }),
-        name: "agent_get",
-        outputSchema: AGENT_INVOCATION_OUTPUT_SCHEMA,
-      },
-      async call(body, context) {
-        return invocationResult(
-          requiredInvocation(
-            await execution.read({
-              auth: context.auth,
-              invocationId: body.invocationId,
-            }),
-          ),
-        );
-      },
-    }),
-    defineMcpTool({
-      definition: {
-        annotations: {
-          destructiveHint: true,
-          idempotentHint: false,
-          openWorldHint: true,
-          readOnlyHint: false,
-        },
-        description:
-          "Answers the pending input batch on an input_required invocation. Include one response per " +
-          "entry in inputRequests, each keyed by its requestId, in a single call; partial batches are rejected. " +
-          "Returns the current invocation state; repeating the same accepted answers is safe.",
-        inputSchema: z.strictObject({
-          invocationId: z.string().min(1).max(MAX_ID_CHARS),
-          responses: z.array(MCP_INPUT_RESPONSE_SCHEMA).min(1).max(MAX_RESPONSES_PER_UPDATE),
-        }),
-        name: "agent_update",
-        outputSchema: AGENT_INVOCATION_OUTPUT_SCHEMA,
-      },
-      async call(body, context) {
-        return invocationResult(
-          requiredMutation(
-            await execution.update({
-              auth: context.auth,
-              invocationId: body.invocationId,
-              responses: body.responses,
-            }),
-          ),
-        );
-      },
-    }),
-    defineMcpTool({
-      definition: {
-        annotations: {
-          destructiveHint: true,
-          idempotentHint: true,
-          openWorldHint: false,
-          readOnlyHint: false,
-        },
-        description:
-          "Requests cooperative cancellation of a non-terminal invocation. Cancellation is asynchronous and " +
-          "can race with completion: poll agent_get until status is terminal (cancelled, completed, or failed). " +
-          "Safe to call repeatedly.",
-        inputSchema: z.strictObject({ invocationId: z.string().min(1).max(MAX_ID_CHARS) }),
-        name: "agent_cancel",
-        outputSchema: AGENT_INVOCATION_OUTPUT_SCHEMA,
-      },
-      async call(body, context) {
-        return invocationResult(
-          requiredInvocation(
-            await execution.cancel({
-              auth: context.auth,
-              invocationId: body.invocationId,
-            }),
-          ),
-        );
-      },
-    }),
-  ];
-  return tools;
-}
-
-// Unknown, expired, and foreign-principal invocations all read as not found
-// so the response never confirms that another caller's invocation exists.
-const INVOCATION_NOT_FOUND =
-  "Invocation not found. It may have expired or belong to another caller.";
-
-function requiredInvocation(invocation: AgentInvocation | undefined): AgentInvocation {
-  if (invocation === undefined) {
-    throw new McpToolOperationError("not_found", INVOCATION_NOT_FOUND);
-  }
-  return invocation;
-}
-
-function requiredMutation(result: AgentInvocationMutationResult): AgentInvocation {
-  switch (result.type) {
-    case "success":
-      return result.invocation;
-    case "conflict":
-      throw new McpToolOperationError(
-        "conflict",
-        `${result.message} Call agent_get to read the current state before answering again.`,
-      );
-    case "not_found":
-      throw new McpToolOperationError("not_found", INVOCATION_NOT_FOUND);
-  }
-}
-
-function invocationResult(invocation: AgentInvocation): McpCallToolResult {
-  const structuredContent = parseJsonObject(invocation);
-  return {
-    content: [{ text: JSON.stringify(structuredContent), type: "text" }],
-    structuredContent,
-  };
-}
-
-const AUTHORIZATION_CHALLENGE_SCHEMA = z.strictObject({
-  displayName: z.string().optional(),
-  expiresAt: z.iso.datetime().optional(),
-  instructions: z.string().optional(),
-  url: z.url().optional(),
-  userCode: z.string().optional(),
-});
-
-const AUTHORIZATION_REQUEST_SCHEMA = z.strictObject({
-  authorization: AUTHORIZATION_CHALLENGE_SCHEMA.optional(),
-  description: z.string(),
-  name: z.string(),
-  webhookUrl: z.url().optional(),
-});
-
-// Bounds on caller-supplied text. The transport already caps the whole body
-// at MCP_REQUEST_BODY_MAX_BYTES; these keep individual durable fields sane.
-// Text bounds are UTF-8 bytes, matching the transport cap and the docs;
-// string.length undercounts multibyte input by up to 3x.
-const MAX_MESSAGE_BYTES = 64 * 1_024;
-const MAX_RESPONSE_TEXT_BYTES = 16 * 1_024;
-const MAX_ID_CHARS = 256;
-const MAX_RESPONSES_PER_UPDATE = 64;
-
-function utf8Bounded(maxBytes: number) {
-  const encoder = new TextEncoder();
-  return z.string().refine((value) => encoder.encode(value).byteLength <= maxBytes, {
-    message: `must be at most ${String(maxBytes)} bytes when UTF-8 encoded`,
-  });
-}
-
-const MCP_INPUT_RESPONSE_SCHEMA = inputResponseSchema.safeExtend({
-  optionId: z.string().max(MAX_ID_CHARS).optional(),
-  requestId: z.string().min(1).max(MAX_ID_CHARS),
-  text: utf8Bounded(MAX_RESPONSE_TEXT_BYTES).optional(),
-});
-
-const MCP_INPUT_REQUEST_SCHEMA = inputRequestSchema.safeExtend({
-  action: z.strictObject({
-    callId: z.string(),
-    input: z.record(z.string(), z.json()),
-    kind: z.literal("tool-call"),
-    toolName: z.string(),
-  }),
-});
-
-const AGENT_INVOCATION_BASE_SCHEMA = z.strictObject({
-  createdAt: z.iso.datetime(),
-  expiresAt: z.iso.datetime().optional(),
-  invocationId: z.string(),
-});
-
-const AGENT_INVOCATION_OUTPUT_SCHEMA = z.discriminatedUnion("status", [
-  AGENT_INVOCATION_BASE_SCHEMA.extend({
-    pollAfterMs: z.number().int().nonnegative(),
-    result: z.json().optional(),
-    status: z.literal("working"),
-  }),
-  AGENT_INVOCATION_BASE_SCHEMA.extend({
-    inputRequests: z.record(z.string(), MCP_INPUT_REQUEST_SCHEMA),
-    result: z.json().optional(),
-    status: z.literal("input_required"),
-  }),
-  AGENT_INVOCATION_BASE_SCHEMA.extend({
-    authorizations: z.array(AUTHORIZATION_REQUEST_SCHEMA).min(1),
-    pollAfterMs: z.number().int().nonnegative(),
-    result: z.json().optional(),
-    status: z.literal("authorization_required"),
-  }),
-  AGENT_INVOCATION_BASE_SCHEMA.extend({
-    result: z.json().optional(),
-    status: z.literal("completed"),
-  }),
-  AGENT_INVOCATION_BASE_SCHEMA.extend({
-    error: z.strictObject({
-      code: z.number().int(),
-      data: z.json().optional(),
-      message: z.string(),
-    }),
-    status: z.literal("failed"),
-  }),
-  AGENT_INVOCATION_BASE_SCHEMA.extend({ status: z.literal("cancelled") }),
-]);

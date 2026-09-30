@@ -27,7 +27,7 @@ describe("mcpChannel", () => {
     );
   });
 
-  it("publishes task-mode durable invocation compatibility tools", async () => {
+  it("publishes no tools and serves discovery", async () => {
     const channel = mcpChannel({ auth: none() });
     expect(channel.routes.map((route) => `${route.method} ${route.path}`)).toEqual([
       "GET /eve/v1/mcp",
@@ -50,12 +50,11 @@ describe("mcpChannel", () => {
       }),
       routeArgs(),
     );
-    await expect(jsonRpcResponse(initialize)).resolves.toMatchObject({
-      result: {
-        instructions: expect.stringContaining("pollAfterMs"),
-        serverInfo: { name: "compiled-agent" },
-      },
-    });
+    const initialized = (await jsonRpcResponse(initialize)) as {
+      result: { instructions?: string; serverInfo: { name: string } };
+    };
+    expect(initialized.result.serverInfo.name).toBe("compiled-agent");
+    expect(initialized.result.instructions).toBeUndefined();
 
     const discovered = await postRoute.handler(
       mcpRequest(
@@ -75,98 +74,41 @@ describe("mcpChannel", () => {
       ),
       routeArgs(),
     );
-    const discovery = (await jsonRpcResponse(discovered)) as {
-      result: { instructions: string };
-    };
-    expect(discovery.result.instructions).toContain("agent_start is not idempotent");
-    expect(discovery.result.instructions).toContain("ask the user before starting again");
-    expect(discovery.result.instructions).toContain("agent_cancel");
-    expect(discovery.result.instructions.length).toBeLessThan(800);
+    await expect(jsonRpcResponse(discovered)).resolves.toMatchObject({
+      result: {
+        _meta: { "io.modelcontextprotocol/serverInfo": { name: "compiled-agent" } },
+        capabilities: { tools: { listChanged: false } },
+      },
+    });
 
     const tools = await postRoute.handler(
       mcpRequest({ id: 2, jsonrpc: "2.0", method: "tools/list" }),
       routeArgs(),
     );
-    const body = (await jsonRpcResponse(tools)) as {
-      result: {
-        tools: Array<{
-          description?: string;
-          inputSchema: Record<string, unknown>;
-          name: string;
-          outputSchema?: Record<string, unknown>;
-        }>;
-      };
+    await expect(jsonRpcResponse(tools)).resolves.toMatchObject({ result: { tools: [] } });
+  });
+
+  it("no longer serves the agent_* invocation tools", async () => {
+    const createSession = vi.fn();
+    const channel = mcpChannel({ auth: none() });
+    const route = channel.routes[1]!;
+    if (route.transport === "websocket") throw new Error("expected HTTP route");
+
+    const called = await route.handler(
+      mcpRequest({
+        id: 1,
+        jsonrpc: "2.0",
+        method: "tools/call",
+        params: { arguments: { message: "hello" }, name: "agent_start" },
+      }),
+      routeArgs(createSession),
+    );
+    const body = (await jsonRpcResponse(called)) as {
+      error?: unknown;
+      result?: { isError?: boolean };
     };
-    expect(body.result.tools.map((tool) => tool.name)).toEqual([
-      "agent_start",
-      "agent_get",
-      "agent_update",
-      "agent_cancel",
-    ]);
-    expect(body.result.tools[0]).toMatchObject({
-      annotations: {
-        destructiveHint: true,
-        openWorldHint: true,
-      },
-      description: expect.stringContaining("Investigates tasks."),
-      outputSchema: { type: "object" },
-    });
-    expect(body.result.tools[0]?.description).toContain("Not idempotent");
-    expect(body.result.tools[1]).toMatchObject({
-      annotations: {
-        idempotentHint: true,
-        openWorldHint: false,
-        readOnlyHint: true,
-      },
-      description: expect.stringContaining("pollAfterMs"),
-    });
-    expect(body.result.tools[2]?.description).toContain("partial batches are rejected");
-    expect(body.result.tools[3]?.description).toContain("until status is terminal");
-    expect(body.result.tools[3]?.description).not.toContain("until status is cancelled");
-    expect(body.result.tools[2]).toMatchObject({
-      annotations: {
-        idempotentHint: false,
-      },
-      inputSchema: {
-        properties: {
-          responses: {
-            items: {
-              properties: {
-                optionId: { type: "string" },
-                requestId: { type: "string" },
-                text: { type: "string" },
-              },
-              required: ["requestId"],
-            },
-          },
-        },
-      },
-      outputSchema: {
-        oneOf: expect.arrayContaining([
-          expect.objectContaining({
-            properties: expect.objectContaining({
-              inputRequests: expect.any(Object),
-              status: { const: "input_required", type: "string" },
-            }),
-            required: expect.arrayContaining(["inputRequests"]),
-          }),
-          expect.objectContaining({
-            properties: expect.objectContaining({
-              authorizations: expect.objectContaining({ minItems: 1 }),
-              status: { const: "authorization_required", type: "string" },
-            }),
-            required: expect.arrayContaining(["authorizations"]),
-          }),
-          expect.objectContaining({
-            properties: expect.objectContaining({
-              error: expect.any(Object),
-              status: { const: "failed", type: "string" },
-            }),
-            required: expect.arrayContaining(["error"]),
-          }),
-        ]),
-      },
-    });
+    expect(body.error ?? body.result?.isError).toBeTruthy();
+    expect(createSession).not.toHaveBeenCalled();
   });
 
   it("uses existing eve auth strategies directly", async () => {
@@ -210,53 +152,6 @@ describe("mcpChannel", () => {
 
     expect(response.status).toBe(403);
     expect(authenticate).not.toHaveBeenCalled();
-  });
-
-  it("rejects oversized UTF-8 messages and input responses before starting work", async () => {
-    const createSession = vi.fn();
-    const channel = mcpChannel({ auth: none() });
-    const route = channel.routes[1]!;
-    if (route.transport === "websocket") throw new Error("expected HTTP route");
-
-    const oversizedStart = await route.handler(
-      mcpRequest({
-        id: 1,
-        jsonrpc: "2.0",
-        method: "tools/call",
-        params: {
-          // 3 bytes per char: well under 64 Ki characters, over 64 KiB.
-          arguments: { message: "日".repeat(24 * 1_024) },
-          name: "agent_start",
-        },
-      }),
-      routeArgs(createSession),
-    );
-    await expect(jsonRpcResponse(oversizedStart)).resolves.toMatchObject({
-      result: {
-        content: [{ text: expect.stringContaining("Input validation error"), type: "text" }],
-        isError: true,
-      },
-    });
-
-    const oversizedUpdate = await route.handler(
-      mcpRequest({
-        id: 2,
-        jsonrpc: "2.0",
-        method: "tools/call",
-        params: {
-          arguments: {
-            invocationId: "inv",
-            responses: [{ requestId: "r", text: "日".repeat(6 * 1_024) }],
-          },
-          name: "agent_update",
-        },
-      }),
-      routeArgs(createSession),
-    );
-    await expect(jsonRpcResponse(oversizedUpdate)).resolves.toMatchObject({
-      result: { isError: true },
-    });
-    expect(createSession).not.toHaveBeenCalled();
   });
 
   it("mounts OAuth resource metadata and augments auth failures", async () => {

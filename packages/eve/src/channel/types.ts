@@ -502,11 +502,6 @@ export interface RunInput {
    * for that axis.
    */
   readonly limits?: RunSessionLimits;
-  /** Framework-owned metadata for a protocol-neutral external invocation. */
-  readonly externalInvocation?: {
-    readonly continuationToken: string;
-    readonly ownerKey: string;
-  };
 }
 
 export interface DeliverInput {
