@@ -155,23 +155,62 @@ turn cannot end while it works, and `final_output` returns the error naming work
 
 Alice asks the agent to email a report, then keeps talking while the approval is open.
 
-| #   | What happens                          | The model reads                                | The model does                                   | Events                                                  |
-| --- | ------------------------------------- | ---------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------- |
-| 1   | Alice: "email the report to Bob"      | Her message                                    | Calls `send_email`                               | `turn.started turn_1`                                   |
-| 2   | eve gates the call and starts `t1`    | The receipt: waiting for approval, has not run | Replies "I've asked for approval."               | `task.started t1`, `input.requested t1`, `turn.waiting` |
-| 3   | Alice: "also, what's on my calendar?" | Her message                                    | Calls `calendar.list`, then replies with her day | `turn.waiting`                                          |
-| 4   | Alice clicks Approve                  | Nothing; the model is not called               |                                                  | `input.resolved t1 approved`                            |
-| 5   | `t1` sends the email                  | The task result: sent                          | Replies "Sent the report to Bob."                | `task.settled t1 completed`, `turn.completed turn_1`    |
+| #   | What happens                                                                                   | The model reads                                | The model does                                   | Events                                                  |
+| --- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------- |
+| 1   | Alice: "email the report to Bob"                                                               | Her message                                    | Calls `send_email`                               | `turn.started turn_1`                                   |
+| 2   | eve gates the call and starts `t1`                                                             | The receipt: waiting for approval, has not run | Replies "I've asked for approval."               | `task.started t1`, `input.requested t1`, `turn.waiting` |
+| 3   | Alice: "also, what's on my calendar?"                                                          | Her message                                    | Calls `calendar.list`, then replies with her day | `turn.waiting`                                          |
+| 4   | Alice clicks Approve. The session checks the response policy and passes the answer to `t1`     | Nothing; the model is not called               |                                                  | `input.resolved t1 approved`                            |
+| 5   | `t1` runs `send_email` with the model's original input, and its result becomes the task result | The task result: sent                          | Replies "Sent the report to Bob."                | `task.settled t1 completed`, `turn.completed turn_1`    |
 
-Every event carries `turn_1`. The turn ends at step 5 because nothing is working anymore.
+Every event carries `turn_1`. The turn ends at row 5 because nothing is working anymore.
 
-What the model should do if Alice writes something else at step 3:
+### How the gate task runs the call
 
-| Alice writes                 | The model                                                                            |
-| ---------------------------- | ------------------------------------------------------------------------------------ |
-| "approve"                    | Is not called. The text answers the one open request, and the flow goes on at step 5 |
-| "actually, send it to Carol" | Cancels `t1` with `task_cancel` and calls `send_email` again, which starts `t2`      |
-| "did it send?"               | Answers from the receipt in its history: not yet, it's waiting for approval          |
+What happens inside `t1`, from the call in walkthrough row 2 to the result in row 5. Every piece
+except the gate task's body exists on `main`.
+
+1. **Start.** The model step that made the call commits `t1`'s record alongside it and starts `t1`'s
+   workflow run with the tool name, the call's input, and its `callId`, as it does for every task
+   (`research/eve-tasks.md` §7, "Start once" and "First call is free").
+2. **Ask.** `t1`'s body calls `ctx.ask` with the approval request, and the run suspends. The session
+   emits `input.requested` with `t1`'s `taskId`.
+3. **Answer.** Alice's answer reaches the session inbox. The session runs the response policy,
+   accepts the answer, emits `input.resolved`, and sends it to `t1` on the run's control hook
+   (`execution/tools/workflow/messages.ts`). `ctx.ask` returns `approve`.
+4. **Run.** `t1` calls the tool's own `execute` inside a workflow step, with the input from step 1.
+   The step restores the requesting turn's session, auth, and connections before the tool runs, the
+   way workflow tools already run code in steps (`withWorkflowStepAuthorization` and
+   `buildBaseToolContext`, `execution/tools/workflow/step-execution.ts`). A sign-in the tool needs
+   suspends the run here, through `requireAuth`, the same way.
+5. **Report.** The value `execute` returns is `t1`'s result. The run reports it to the session, which
+   emits `task.settled` (`research/eve-tasks.md` §7, "Settle once").
+6. **Deliver.** At the next step boundary the session writes the task result into history
+   (`appendTaskContext`) and calls the model.
+
+The gate task's body is small, and eve provides it for every gated tool:
+
+```ts
+async task(input, ctx) {
+  "use workflow";
+  const answer = await ctx.ask(approvalRequest(tool, input)); // steps 2 and 3
+  if (answer.status !== "answered" || answer.optionId !== "approve") {
+    return notRun(answer); // denied, withdrawn, or nobody to ask
+  }
+  return await runToolStep(tool, input); // step 4: the tool's own execute, in a step
+}
+```
+
+If Alice denies, `ctx.ask` returns `deny` at step 3, the body returns a "not run" result without
+calling the tool, and steps 5 and 6 deliver it the same way.
+
+What the model should do if Alice writes something else in walkthrough row 3:
+
+| Alice writes                 | The model                                                                           |
+| ---------------------------- | ----------------------------------------------------------------------------------- |
+| "approve"                    | Is not called. The text answers the one open request, and the flow goes on at row 5 |
+| "actually, send it to Carol" | Cancels `t1` with `task_cancel` and calls `send_email` again, which starts `t2`     |
+| "did it send?"               | Answers from the receipt in its history: not yet, it's waiting for approval         |
 
 ### History is append-only
 
@@ -352,9 +391,10 @@ upgrade are dropped the same way; the next call or model step raises a new one.
 
 ## Open questions
 
-1. **Plain and MCP tools inside a gate task.** Can a tool's `execute` and its `ToolContext`
-   (`getToken`, `session`) run from a workflow step, or is an in-session runner needed? The spike
-   answers this first.
+1. **Plain and MCP tools inside a gate task.** Step 4 above assumes a plain or MCP tool's `execute`
+   can run in a workflow step with its full `ToolContext` (`getToken`, `session`, connections).
+   Workflow tools already get this context in steps (`step-execution.ts`); plain tools run inside the
+   model step today and are not registered as workflow steps. The spike answers this first.
 2. **Response policy at acceptance.** #3929 (open) authorizes `ctx.ask` answers with policy steps. If
    it lands, gated calls use it instead of a check of their own.
 3. **Text answers for policy-guarded requests.** A text answer could carry the message's principal
