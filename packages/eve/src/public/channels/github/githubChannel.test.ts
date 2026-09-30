@@ -15,6 +15,7 @@ import { type GitHubChannelState } from "#public/channels/github/state.js";
 import { signGitHubWebhookBody } from "#public/channels/github/verify.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
 import { mockAgentDescriptionRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
+import { unusedInvokeTool } from "#internal/testing/unused-invoke-tool.js";
 
 const SECRET = "github-secret";
 
@@ -176,6 +177,7 @@ async function firePost(
     params: {},
     to: vi.fn() as any,
     requestIp: null,
+    invokeTool: unusedInvokeTool,
     waitUntil,
   });
 

@@ -31,6 +31,7 @@ import type {
 } from "#compiled/chat/index.js";
 import { Message, parseMarkdown } from "#compiled/chat/index.js";
 import { mockAgentDescriptionRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
+import { unusedInvokeTool } from "#internal/testing/unused-invoke-tool.js";
 
 it("shares Chat SDK type identity with external adapters and handlers", () => {
   expectTypeOf<Message>().toEqualTypeOf<ExternalMessage>();
@@ -130,6 +131,7 @@ async function firePost(
       params: {},
       to: vi.fn() as any,
       requestIp: null,
+      invokeTool: unusedInvokeTool,
       waitUntil,
     } satisfies RouteHandlerArgs<ChatSdkChannelState>,
   );
@@ -218,6 +220,7 @@ describe("chatSdkChannel", () => {
         params: {},
         to: vi.fn() as any,
         requestIp: null,
+        invokeTool: unusedInvokeTool,
         waitUntil: vi.fn(),
       } satisfies RouteHandlerArgs<ChatSdkChannelState>,
     );

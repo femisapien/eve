@@ -2,6 +2,11 @@ export function isVercelSnapshotUnavailableError(error: unknown): boolean {
   return errorChainContainsStatus(error, 410);
 }
 
+/** A create that lost the race for a sandbox name (HTTP 409 Conflict). */
+export function isVercelSandboxNameConflictError(error: unknown): boolean {
+  return errorChainContainsStatus(error, 409);
+}
+
 export function isVercelSandboxMissingError(error: unknown): boolean {
   return errorChainContainsStatus(error, 404);
 }

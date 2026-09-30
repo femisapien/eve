@@ -17,6 +17,7 @@ import {
 import { defaultDiscordAuth, discordChannel } from "#public/channels/discord/index.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
 import { mockAgentDescriptionRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
+import { unusedInvokeTool } from "#internal/testing/unused-invoke-tool.js";
 
 function asCompiled<T = unknown>(channel: unknown): CompiledChannel<T> {
   if (!isCompiledChannel(channel)) {
@@ -151,6 +152,7 @@ async function firePost(
     to: vi.fn() as any,
     params: {},
     requestIp: null,
+    invokeTool: unusedInvokeTool,
     waitUntil,
   });
 

@@ -31,6 +31,7 @@ import { createMessageCompletedEvent } from "#protocol/message.js";
 import { writeForwardedParentSessionBaggage } from "#protocol/baggage.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
 import { mockAgentDescriptionRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
+import { unusedInvokeTool } from "#internal/testing/unused-invoke-tool.js";
 
 /**
  * Unit coverage for the inbound HTTP route's message-body parser and
@@ -101,6 +102,7 @@ function createRouteArgs(): RouteHandlerArgs {
     params: {},
     waitUntil: () => undefined,
     requestIp: "127.0.0.1",
+    invokeTool: unusedInvokeTool,
   };
 }
 

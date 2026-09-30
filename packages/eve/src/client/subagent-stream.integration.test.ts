@@ -20,6 +20,7 @@ import { EVE_SUBAGENT_STREAM_ROUTE_PATTERN } from "#protocol/routes.js";
 import { none } from "#public/channels/auth.js";
 import { eveChannel } from "#public/channels/eve.js";
 import { mockAgentDescriptionRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
+import { unusedInvokeTool } from "#internal/testing/unused-invoke-tool.js";
 
 const PARENT_ORIGIN = "https://parent.test";
 const REMOTE_URL = "https://remote.test/base";
@@ -167,6 +168,7 @@ function createParentRoute(
           parentSessionId: decodeURIComponent(segments[4]!),
         },
         requestIp: "127.0.0.1",
+        invokeTool: unusedInvokeTool,
         to: vi.fn() as never,
         waitUntil: () => undefined,
       },

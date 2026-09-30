@@ -1,6 +1,6 @@
 import { defineChannel, GET } from "#public/channels/index.js";
 
-// Epoch 39 route handlers had no `describe` or `readSkill` args; epoch 40 adds both.
+// Epoch 39 route handlers had no `describe`, `readSkill`, or `invokeTool` args; epoch 40 adds them.
 export default defineChannel({
   routes: [
     GET("/status/:sessionId", async (_request, { attachSession, params, requestIp }) => {

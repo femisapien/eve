@@ -22,6 +22,7 @@ import {
 import {
   isSandboxPreparedArtifact,
   type SandboxDeleteOptions,
+  type SandboxPreparedArtifact,
   type SandboxProviderHandle,
   type SandboxProviderRuntime,
   type SandboxProviderSessionContext,
@@ -36,7 +37,25 @@ interface EnsureSandboxAccessInput {
   readonly registry: RuntimeSandboxRegistry;
   readonly sessionId: string;
   readonly state: SandboxState | null;
+  /**
+   * Replaces the provider's `start` for sessions that keep no sandbox state and
+   * find their sandbox by name instead (tool sessions). Concurrent first use is
+   * left to the override, which must converge on one sandbox.
+   */
+  readonly startSandbox?: SandboxStartOverride;
 }
+
+/** Opens a sandbox in place of the provider's `start`; see {@link EnsureSandboxAccessInput}. */
+export type SandboxStartOverride = (input: {
+  readonly artifact: SandboxPreparedArtifact;
+  readonly context: SandboxProviderSessionContext;
+  readonly options: object | undefined;
+  readonly provider: SandboxProviderRuntime;
+}) => Promise<{
+  /** Whether this call created the sandbox, so a failed selector may delete it. */
+  readonly created: boolean;
+  readonly handle: SandboxProviderHandle;
+}>;
 
 interface OpenedSandbox {
   readonly handle: SandboxProviderHandle;
@@ -55,6 +74,8 @@ export async function ensureSandboxAccess(input: EnsureSandboxAccessInput): Prom
   let opened: OpenedSandbox | undefined;
   let opening: Promise<SandboxProviderHandle> | undefined;
   let requiring: Promise<SandboxProviderHandle> | undefined;
+  // False when the start override reused a sandbox another caller owns.
+  let createdByThisAccess = true;
   const appRoot =
     getRuntimeCompiledArtifactsSandboxAppRoot(input.compiledArtifactsSource) ?? process.cwd();
   const registered = input.registry.sandbox;
@@ -108,6 +129,11 @@ export async function ensureSandboxAccess(input: EnsureSandboxAccessInput): Prom
       storagePath: resolveSandboxCacheDirectory(appRoot),
     };
     const createHandle = async () => {
+      if (input.startSandbox !== undefined) {
+        const started = await input.startSandbox({ artifact, context, options, provider });
+        createdByThisAccess = started.created;
+        return started.handle;
+      }
       const result = await provider.implementation.start(context, options, artifact);
       if (!isSandboxPreparedArtifact(result.state)) {
         throw new Error(
@@ -221,6 +247,8 @@ export async function ensureSandboxAccess(input: EnsureSandboxAccessInput): Prom
       return await resumePersisted(definition, session);
     }
 
+    if (input.startSandbox !== undefined) return await startHandle(definition, session);
+
     const startKey = `${inherited?.nodeId ?? input.nodeId}\0${input.sessionId}`;
     // A failed start wakes every waiter at once; re-check so only one retries.
     let concurrentStart = pendingSandboxStarts.get(startKey);
@@ -274,7 +302,7 @@ export async function ensureSandboxAccess(input: EnsureSandboxAccessInput): Prom
         opened = undefined;
         opening = undefined;
         persisted = null;
-        if (failed !== undefined) {
+        if (failed !== undefined && createdByThisAccess) {
           try {
             await failed.onSessionDelete();
           } catch (cleanupError) {
