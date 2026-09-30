@@ -57,6 +57,11 @@ export type {
   ChannelSource,
 };
 export type { ChannelCors, ChannelCorsOptions } from "#channel/cors.js";
+export type {
+  AgentDescription,
+  AgentSkillDescription,
+  AgentToolDescription,
+} from "#channel/agent-description.js";
 export { DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT, WS } from "#channel/routes.js";
 export type {
   AttachSessionFn,

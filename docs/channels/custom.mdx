@@ -67,6 +67,8 @@ Each route receives these operation surfaces:
 - `attachSession(sessionId)` creates an I/O-free handle pinned to one durable session ID.
 - `to(channel, target).send(message, options)` hands work to another authored channel.
 - `params`, `waitUntil`, and `requestIp` provide request metadata and lifetime control.
+- `describe()` returns the agent's name, description, and compiled tools and skills, sorted by name. It carries no paths, config, or other inspection detail, so a channel can publish it to its callers.
+- `readSkill(skill, path?)` reads one file of a compiled skill, `SKILL.md` by default. Text files return a string and other files return bytes. It rejects unknown skills and files, paths that leave the skill, and files over 512 KiB.
 
 Event handlers receive `(eventData, channel, ctx)`. `ctx.session.id` identifies
 the exact session, while `channel.continuation` exposes the current address and
