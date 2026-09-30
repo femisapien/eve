@@ -224,6 +224,8 @@ Render it from the component that calls `useEveAgent()`, passing `agent.conversa
 
 For a followed session, pass that session's `conversation` and the turn IDs from its messages.
 
+To label a row with the tool's own activity copy, read `part.toolMetadata?.eve?.label`: `start` holds the tool's [`label.start`](/docs/tools#label-tool-activity) text from when the call was requested, and `complete` holds its `label.complete` text once the call succeeds. A failed call's error code is `part.toolMetadata?.eve?.errorCode`. `TOO_MANY_TASKS` and `UNKNOWN_TASK` mean the session refused a task call so the model could retry it; `eve dev` hides those calls and shows only the retry.
+
 ## Sending and streaming
 
 Pass the message first and optional per-turn settings second. Use `respond()` for HITL answers:

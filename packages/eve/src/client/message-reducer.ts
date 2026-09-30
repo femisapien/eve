@@ -41,6 +41,7 @@ export type {
   EveMessageMetadata,
   EveMessagePart,
   EveMessageToolMetadata,
+  EveToolLabel,
 } from "#client/message-reducer-types.js";
 
 type EveAssistantMessage = EveMessage & { readonly role: "assistant" };
@@ -182,13 +183,17 @@ function reduceMessageData(data: EveMessageData, event: EveAgentReducerEvent): E
         const existing = findToolPart(next, action.callId);
         if (existing !== undefined && existing.state !== "input-streaming") continue;
         const descriptor = normalizeActionRequest(action);
+        const start = event.data.presentation?.[action.callId]?.label;
         next = updateAssistantMessage(next, event.data.turnId, (message) =>
           upsertPart(ensureStepStartPart(message, event.data.stepIndex), {
             input: "input" in action ? action.input : undefined,
             state: "input-available",
             stepIndex: event.data.stepIndex,
             toolCallId: action.callId,
-            toolMetadata: createToolMetadata(descriptor),
+            toolMetadata: createToolMetadata(
+              descriptor,
+              start === undefined ? undefined : { label: { start } },
+            ),
             toolName: descriptor.toolName,
             type: "dynamic-tool",
           }),
@@ -219,6 +224,7 @@ function reduceMessageData(data: EveMessageData, event: EveAgentReducerEvent): E
             toolMetadata: createToolMetadata(descriptor, {
               inputRequest: toMessageInputRequest(request),
               taskId: existing?.toolMetadata?.eve?.taskId,
+              label: existing?.toolMetadata?.eve?.label,
             }),
             toolName: descriptor.toolName,
             type: "dynamic-tool",
@@ -267,9 +273,15 @@ function reduceMessageData(data: EveMessageData, event: EveAgentReducerEvent): E
       // A call eve stopped has no result either; its error says why.
       const failed = event.data.status === "failed" || event.data.status === "cancelled";
       const approvalId = existing?.approval?.id ?? event.data.result.callId;
+      const complete = failed
+        ? undefined
+        : event.data.presentation?.[event.data.result.callId]?.label;
       const toolMetadata = mergeToolMetadata(existing, {
         kind: descriptor.kind,
         name: descriptor.name,
+        label:
+          complete === undefined ? undefined : { ...existing?.toolMetadata?.eve?.label, complete },
+        errorCode: failed ? event.data.error?.code : undefined,
       });
       const resultPartBase = {
         input: existing?.input,

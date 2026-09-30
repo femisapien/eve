@@ -229,7 +229,9 @@ export type EveDynamicToolPart = {
  * and `eve.inputResponse` store the HITL prompt and submitted response when the
  * call required approval. `eve.taskId` names the task the call started or
  * reached; such a part keeps running after the call's start receipt and
- * settles when the task's `task.settled` arrives.
+ * settles when the task's `task.settled` arrives. `eve.label` carries the
+ * tool's authored `label.start` and `label.complete` copy, and `eve.errorCode`
+ * the failed result's error code, such as `TOO_MANY_TASKS`.
  */
 export interface EveMessageToolMetadata {
   readonly eve?: {
@@ -238,7 +240,18 @@ export interface EveMessageToolMetadata {
     readonly kind: "load-skill" | "subagent-call" | "tool-call" | "unknown";
     readonly name: string;
     readonly taskId?: string;
+    readonly label?: EveToolLabel;
+    readonly errorCode?: string;
   };
+}
+
+/**
+ * A tool's authored activity copy for one call: `start` from `label.start` when
+ * the call is requested, and `complete` from `label.complete` once it succeeds.
+ */
+export interface EveToolLabel {
+  readonly start?: string;
+  readonly complete?: string;
 }
 
 /**

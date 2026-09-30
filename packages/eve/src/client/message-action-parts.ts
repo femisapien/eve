@@ -4,6 +4,7 @@ import type {
   EveDynamicToolPart,
   EveMessageInputRequest,
   EveMessageToolMetadata,
+  EveToolLabel,
 } from "#client/message-reducer-types.js";
 
 /**
@@ -34,7 +35,11 @@ export function toMessageInputRequest(request: InputRequest): EveMessageInputReq
 /** Builds tool metadata for a freshly projected tool part. */
 export function createToolMetadata(
   descriptor: ActionDescriptor,
-  extra?: { readonly inputRequest?: EveMessageInputRequest; readonly taskId?: string },
+  extra?: {
+    readonly inputRequest?: EveMessageInputRequest;
+    readonly taskId?: string;
+    readonly label?: EveToolLabel;
+  },
 ): EveMessageToolMetadata {
   return {
     eve: {
@@ -42,6 +47,7 @@ export function createToolMetadata(
       kind: descriptor.kind,
       name: descriptor.name,
       ...(extra?.taskId !== undefined && { taskId: extra.taskId }),
+      ...(extra?.label !== undefined && { label: extra.label }),
     },
   };
 }

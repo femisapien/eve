@@ -107,6 +107,7 @@ export type {
   EveMessageMetadata,
   EveMessagePart,
   EveMessageToolMetadata,
+  EveToolLabel,
 } from "#client/message-reducer.js";
 
 // ---------------------------------------------------------------------------

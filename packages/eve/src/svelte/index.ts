@@ -43,4 +43,5 @@ export {
   type EveMessageMetadata,
   type EveMessagePart,
   type EveMessageToolMetadata,
+  type EveToolLabel,
 } from "#client/message-reducer.js";

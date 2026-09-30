@@ -447,6 +447,51 @@ describe("ConversationTranscript", () => {
     expect(hidden.tasks).toEqual([]);
   });
 
+  it("labels an agent's own tools and leaves out the calls its session refused", () => {
+    const childCall = (callId: string, toolName: string) =>
+      createActionsRequestedEvent({
+        actions: [{ callId, input: { city: "Paris" }, kind: "tool-call", toolName }],
+        presentation: { [callId]: { label: "Checking the weather in Paris" } },
+        sequence: 1,
+        stepIndex: 0,
+        turnId: "child_turn_1",
+      });
+    const state = conversation([
+      turn,
+      toolCall("call_1", "research"),
+      taskStarted("call_1", "research"),
+      agentStarted("call_1"),
+      { type: "client.agent.following", data: { sessionId: "child_1" } },
+      ...observe([
+        createTurnStartedEvent({ sequence: 0, turnId: "child_turn_1" }),
+        createMessageReceivedEvent({
+          message: "Check Paris.",
+          sequence: 0,
+          turnId: "child_turn_1",
+        }),
+        childCall("child_weather", "weather"),
+        childCall("child_nested", "helper"),
+        createActionResultEvent({
+          result: {
+            callId: "child_nested",
+            isError: true,
+            kind: "tool-result",
+            output: { code: "TOO_MANY_TASKS", message: "Wait for a task to finish." },
+            toolName: "helper",
+          },
+          sequence: 2,
+          stepIndex: 0,
+          turnId: "child_turn_1",
+        }),
+      ]),
+    ]);
+    const transcript = new ConversationTranscript();
+    transcript.project(view(state, true), options);
+    expect([...transcript.tasks[0]!.childTools.values()].map((tool) => tool.title)).toEqual([
+      "Checking the weather in Paris",
+    ]);
+  });
+
   it("hides refused calls, shows authored labels, and holds a placeholder while input streams", () => {
     const events = [
       turn,
@@ -488,10 +533,9 @@ describe("ConversationTranscript", () => {
       ),
     ];
     const state = conversation(events);
-    const data = events.reduce(tuiSessionReducer.reduce, tuiSessionReducer.initial());
     const project = (working: boolean) =>
       new ConversationTranscript()
-        .project({ conversation: state, working, data, failures: [] }, options)
+        .project(view(state, working), options)
         .map((block) => [block.id, block.title]);
     expect(project(true)).toEqual([
       ["tool:call_1", "Checking the weather"],

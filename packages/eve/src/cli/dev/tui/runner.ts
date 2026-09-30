@@ -12,7 +12,7 @@ import { isAbortError } from "#client/eve-agent-store-helpers.js";
 import { normalizeActionRequest, normalizeActionResult } from "#client/message-action-parts.js";
 import { isTerminalToolCallPart } from "./terminal-tool-part.js";
 import { userText } from "./transcript-parts.js";
-import { isTaskRetryRefusal } from "#protocol/task-tools.js";
+import { isTaskRetryErrorCode, isTaskRetryRefusal } from "#protocol/task-tools.js";
 import type { SendTurnPayload } from "#client/types.js";
 import type { ModelAccessChange } from "#shared/model-connection.js";
 import type {
@@ -1536,9 +1536,12 @@ export class EveTUIRunner {
           if (part.type !== "dynamic-tool" || part.state !== "output-error") continue;
           if (this.#recordedAgentToolFailures.has(part.toolCallId)) continue;
           this.#recordedAgentToolFailures.add(part.toolCallId);
+          const refused = isTaskRetryErrorCode(part.toolMetadata?.eve?.errorCode);
           diagnostics.append({
             source: "tool",
-            summary: `${part.toolName} failed (subagent ${agent.name})`,
+            summary: refused
+              ? `${part.toolName} was refused for the model to retry (subagent ${agent.name})`
+              : `${part.toolName} failed (subagent ${agent.name})`,
             detail: part.errorText,
           });
         }

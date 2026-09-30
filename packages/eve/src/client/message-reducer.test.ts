@@ -318,6 +318,71 @@ describe("defaultMessageReducer", () => {
     });
   });
 
+  it("keeps a tool's authored labels and a failed result's error code on its part", () => {
+    const reducer = defaultMessageReducer();
+    const request = (callId: string, toolName: string) => ({
+      callId,
+      input: { city: "Paris" },
+      kind: "tool-call" as const,
+      toolName,
+    });
+    const data = reduceServerEvents(reducer, reducer.initial(), [
+      createActionsRequestedEvent({
+        actions: [request("call_weather", "weather"), request("call_research", "research")],
+        presentation: { call_weather: { label: "Checking the weather in Paris" } },
+        sequence: 1,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
+      createInputRequestedEvent({
+        requests: [
+          {
+            action: request("call_weather", "weather"),
+            display: "confirmation",
+            kind: "tool-approval",
+            prompt: "Check the weather?",
+            requestId: "approval_weather",
+          },
+        ],
+        sequence: 2,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
+      createActionResultEvent({
+        presentation: { call_weather: { label: "Checked the weather in Paris" } },
+        result: {
+          callId: "call_weather",
+          kind: "tool-result",
+          output: "Sunny",
+          toolName: "weather",
+        },
+        sequence: 2,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
+      createActionResultEvent({
+        result: {
+          callId: "call_research",
+          isError: true,
+          kind: "tool-result",
+          output: { code: "TOO_MANY_TASKS", message: "Wait for a task to finish." },
+          toolName: "research",
+        },
+        sequence: 3,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
+    ]);
+
+    expect(findToolPart(data, "call_weather")?.toolMetadata?.eve?.label).toEqual({
+      start: "Checking the weather in Paris",
+      complete: "Checked the weather in Paris",
+    });
+    expect(findToolPart(data, "call_research")?.toolMetadata?.eve).toMatchObject({
+      errorCode: "TOO_MANY_TASKS",
+    });
+  });
+
   it("removes an unfinished streamed tool input when the turn is cancelled", () => {
     const reducer = defaultMessageReducer();
     const data = reduceServerEvents(reducer, reducer.initial(), [

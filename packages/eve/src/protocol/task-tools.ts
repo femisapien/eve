@@ -29,9 +29,19 @@ const TASK_RETRY_ERROR_CODES: readonly string[] = [TOO_MANY_TASKS_CODE, UNKNOWN_
  * return the same `code` as ordinary output.
  */
 export function isTaskRetryRefusal(event: ActionResultStreamEvent): boolean {
-  if (event.data.status !== "failed" || event.data.result.kind !== "tool-result") return false;
+  if (event.data.status !== "failed") return false;
+  return isTaskRetryErrorCode(readOutputCode(event));
+}
+
+/** Whether a failed result's error code is the session refusing a task call for the model to retry. */
+export function isTaskRetryErrorCode(code: string | undefined): boolean {
+  return code !== undefined && TASK_RETRY_ERROR_CODES.includes(code);
+}
+
+function readOutputCode(event: ActionResultStreamEvent): string | undefined {
+  if (event.data.result.kind !== "tool-result") return undefined;
   const output = event.data.result.output;
-  if (typeof output !== "object" || output === null) return false;
+  if (typeof output !== "object" || output === null) return undefined;
   const code: unknown = Reflect.get(output, "code");
-  return typeof code === "string" && TASK_RETRY_ERROR_CODES.includes(code);
+  return typeof code === "string" ? code : undefined;
 }

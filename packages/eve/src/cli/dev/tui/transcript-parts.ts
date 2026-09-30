@@ -13,6 +13,7 @@ import type {
 } from "#client/message-reducer-types.js";
 import { toolCallState, type ToolCallContext } from "#client/tool-call-state.js";
 import { stripTerminalControls } from "#cli/ui/terminal-text.js";
+import { isTaskRetryErrorCode } from "#protocol/task-tools.js";
 import type { Block, ToolStatus } from "./blocks.js";
 import { formatTurnDuration } from "./stream-format.js";
 import { isTerminalToolCallPart } from "./terminal-tool-part.js";
@@ -229,6 +230,11 @@ export function isToolCallRow(part: EveMessagePart): part is EveDynamicToolPart 
     part.type === "dynamic-tool" &&
     (part.state === "input-streaming" || isTerminalToolCallPart(part))
   );
+}
+
+/** A call the session refused for the model to retry; people only see the retry. */
+export function isRetryRefusal(part: EveDynamicToolPart): boolean {
+  return part.state === "output-error" && isTaskRetryErrorCode(part.toolMetadata?.eve?.errorCode);
 }
 
 /** Every call that started or reached a task, by call ID. */
