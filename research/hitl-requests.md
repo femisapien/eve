@@ -14,8 +14,8 @@ turn or starts one.
 A request has one owner, and the owner decides what continues when the request is answered:
 
 - **A tool call that needs a person** (an approval or a sign-in) runs as a task. The call gets a
-  receipt at once, the task waits for the person and then runs the call, and the outcome reaches the
-  model as a `task.result` message in the same turn. The conversation continues while it waits.
+  receipt as its result at once. The task waits for the person, runs the call, and delivers the
+  outcome to the model as a task result in the same turn. The conversation continues while it waits.
 - **A budget question** (the session is over its token budget) is owned by the turn. The turn pauses
   until the person answers, then makes the model call it was about to make.
 - **A question** (`ask_question`) is unchanged: it belongs to the `execute` call that asked.
@@ -32,7 +32,7 @@ The authoring API does not change. The observable changes are:
 
 - approvals, sign-ins, and budget questions no longer end the turn; every event of one request
   carries one `turnId`;
-- the model sees a receipt, then a `task.result`, instead of a withheld call;
+- the model sees a receipt and later a task result, instead of a call held back until it runs;
 - a person can keep talking while an approval or sign-in is open, and it stays open;
 - the model withdraws a request with `task_cancel`, not a message heuristic;
 - a text reply still answers a request when it matches an option of exactly one open request. Any
@@ -55,32 +55,20 @@ keeps both behaviors.
 | steering        | A message from the turn's principal arriving during the turn (`execution/session/input-queue.ts:223-234`)                                    |
 | gated call      | A tool call whose approval policy returns `"user-approval"`, or whose tool needs a sign-in eve cannot satisfy yet                            |
 | gate task       | The task eve starts for a gated call. It owns the call's requests and runs the call once they are answered                                   |
-| receipt         | The gated call's immediate tool result, naming its gate task (`R₀`)                                                                          |
-| task result     | The `task.result` message carrying a task's outcome at a step boundary (`T`)                                                                 |
+| receipt         | The gated call's tool result, written at once: "Task t1 is waiting for approval to run send_email. It has not run."                          |
+| task result     | The `task.result` message that later carries the call's real outcome to the model                                                            |
 | budget question | The session-limit continuation request (`createSessionLimitContinuationRequest`), raised before a model call when the session is over budget |
 | response policy | The tool's answer-time `approval.response`, deciding whether a responder may approve or cancel                                               |
 
-Messages in the examples:
-
-```text
-U   user("email the report to Bob")
-C   assistant(toolCall c1 send_email)
-R₀  tool(c1 → "Task t1 is waiting for approval to run send_email. It has not run.")
-U₂  user("also, what's on my calendar?")          // steering while t1 waits
-M₂  assistant("You have …")                       // reply to U₂, same turn
-T   user-role <task_result t1 …>                  // the call's real outcome
-M   assistant("Sent the report to Bob.")          // final reply
-```
-
 ## Motivation
 
-Today an approval ends the turn with the tool call withheld and no result. The answer starts a new
-turn, which rebuilds context and puts `C` back into history followed by the AI SDK's approval
-response. The SDK runs the call only if that response is the last message (`collectToolApprovals`,
-`ai@7.0.105` `dist/index.js:2936`). Plain-tool sign-in also ends the turn, removes the interrupted
-call from history (`harness/inline-tool-authorization.ts:62-89`), and resumes from the callback in a
-new turn with no user message (`execution/session/program.ts:332-343`). A budget question ends the
-turn too (`harness/session-limit-enforcement.ts:146`).
+Today an approval ends the turn while the tool call has no result. eve holds the call back. The answer
+starts a new turn, which rebuilds context and writes the call back into history, followed by the AI
+SDK's approval response. The SDK runs the call only if that response is the last message
+(`collectToolApprovals`, `ai@7.0.105` `dist/index.js:2936`). Plain-tool sign-in also ends the turn,
+removes the interrupted call from history (`harness/inline-tool-authorization.ts:62-89`), and resumes
+from the callback in a new turn with no user message (`execution/session/program.ts:332-343`). A
+budget question ends the turn too (`harness/session-limit-enforcement.ts:146`).
 
 This produces five failure classes:
 
@@ -110,11 +98,11 @@ All requests share one route. The session alone accepts or withdraws an answer, 
 for `ctx.ask` (`research/eve-tasks.md` §7, "One inbox per run"). An answer goes to the request's
 owner and never steers the turn.
 
-| Owner          | Requests                                                        | Continues on answer                           | Carries `taskId`                                |
-| -------------- | --------------------------------------------------------------- | --------------------------------------------- | ----------------------------------------------- |
-| Gate task      | Approval, sign-in for a tool call                               | The task runs the call; `T` reaches the model | Yes                                             |
-| `execute` call | `ask_question`, `ctx.ask`, `requireAuth` inside a workflow body | The call's body, as on `main`                 | Only when the body runs as a task, as on `main` |
-| Turn           | Budget question                                                 | The model call the turn was about to make     | No                                              |
+| Owner          | Requests                                                        | Continues on answer                                       | Carries `taskId`                                |
+| -------------- | --------------------------------------------------------------- | --------------------------------------------------------- | ----------------------------------------------- |
+| Gate task      | Approval, sign-in for a tool call                               | The task runs the call; the task result reaches the model | Yes                                             |
+| `execute` call | `ask_question`, `ctx.ask`, `requireAuth` inside a workflow body | The call's body, as on `main`                             | Only when the body runs as a task, as on `main` |
+| Turn           | Budget question                                                 | The model call the turn was about to make                 | No                                              |
 
 **The held turn.** A turn stays open while it has a working task or an open request it owns. eve
 calls the model only when there is something new to read and no budget question is open. Between
@@ -140,10 +128,10 @@ result right away, so the conversation can go on without editing history.
 ### The usual path
 
 1. The model calls `send_email`. The approval policy returns `"user-approval"`.
-2. eve starts gate task `t1` and returns a receipt as the call's result. The person sees the approval
-   prompt, and the turn keeps going.
+2. eve starts gate task `t1` and writes the receipt as the call's result. The person sees the
+   approval prompt, and the turn keeps going.
 3. The person approves. If the tool has a response policy, it checks who answered.
-4. `t1` runs `send_email`. The outcome reaches the model as `T`, in the same turn.
+4. `t1` runs `send_email`. Its task result reaches the model in the same turn.
 
 ### Everything else
 
@@ -151,10 +139,10 @@ result right away, so the conversation can go on without editing history.
 | -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
 | The approval policy returns `"approved"` or `"not-applicable"`                   | The call runs right away. No task, no receipt                                                               |
 | The approval policy returns `"denied"`                                           | The call does not run; its result says it was denied                                                        |
-| The person denies                                                                | `t1` settles `completed`; `T` says the call was denied and did not run                                      |
+| The person denies                                                                | `t1` settles `completed`; the task result says the call was denied and did not run                          |
 | The response policy rejects whoever answered (Approve or Cancel, as since #3954) | The request stays open for someone else                                                                     |
 | The tool needs a sign-in                                                         | Same path; `t1` waits for the sign-in instead of an approval                                                |
-| The sign-in fails or times out                                                   | `T` says the call did not run, and why                                                                      |
+| The sign-in fails or times out                                                   | The task result says the call did not run, and why                                                          |
 | The call needs an approval and a sign-in                                         | eve asks for the approval first and the sign-in after it, so nobody signs in for a call that is then denied |
 | One step makes several gated calls                                               | One gate task per call. Each call runs as soon as its own requests are answered                             |
 | The model calls `task_cancel(t1)`                                                | `t1`'s requests are withdrawn; the call never runs                                                          |
@@ -163,41 +151,41 @@ result right away, so the conversation can go on without editing history.
 Everything else a gate task does is the task model on `main`: it counts toward the task cap, the
 turn cannot end while it works, and `final_output` returns the error naming working tasks.
 
-### Example
+### Walkthrough
 
-```text
-Delivery 1   { message: U }
-  turn.started { turn_1 }
-  model → C; gate: user-approval → task.started { turn_1, t1, c1 }        history: U, C, R₀
-  input.requested { turn_1, t1, [a1] }
-  model → "I've asked for approval to email Bob."
-  turn.waiting { turn_1 }
+Alice asks the agent to email a report, then keeps talking while the approval is open.
 
-Delivery 2   { message: U₂ }                                               // steers turn_1
-  model → M₂                                                             history: …, U₂, M₂
-  turn.waiting { turn_1 }
+| #   | What happens                          | The model reads                                | The model does                                   | Events                                                  |
+| --- | ------------------------------------- | ---------------------------------------------- | ------------------------------------------------ | ------------------------------------------------------- |
+| 1   | Alice: "email the report to Bob"      | Her message                                    | Calls `send_email`                               | `turn.started turn_1`                                   |
+| 2   | eve gates the call and starts `t1`    | The receipt: waiting for approval, has not run | Replies "I've asked for approval."               | `task.started t1`, `input.requested t1`, `turn.waiting` |
+| 3   | Alice: "also, what's on my calendar?" | Her message                                    | Calls `calendar.list`, then replies with her day | `turn.waiting`                                          |
+| 4   | Alice clicks Approve                  | Nothing; the model is not called               |                                                  | `input.resolved t1 approved`                            |
+| 5   | `t1` sends the email                  | The task result: sent                          | Replies "Sent the report to Bob."                | `task.settled t1 completed`, `turn.completed turn_1`    |
 
-Delivery 3   { inputResponses: [{ requestId: a1, optionId: approve }] }
-  input.resolved { turn_1, t1, approved }
-  t1 runs send_email → task.settled { turn_1, t1, c1, completed }
-  model reads T → M                                                      history: …, T, M
-  turn.completed { turn_1 }
-```
+Every event carries `turn_1`. The turn ends at step 5 because nothing is working anymore.
+
+What the model should do if Alice writes something else at step 3:
+
+| Alice writes                 | The model                                                                            |
+| ---------------------------- | ------------------------------------------------------------------------------------ |
+| "approve"                    | Is not called. The text answers the one open request, and the flow goes on at step 5 |
+| "actually, send it to Carol" | Cancels `t1` with `task_cancel` and calls `send_email` again, which starts `t2`      |
+| "did it send?"               | Answers from the receipt in its history: not yet, it's waiting for approval          |
 
 ### History is append-only
 
-History is never edited after a write. The receipt stays as the call's result for good, and the
-outcome arrives later as its own message. This is how every task result reaches the model on `main`:
-`appendTaskContext` appends one `task.result` message and the `[Tasks]` note at a step boundary and
-never touches the receipt (`execution/tasks/model-step.ts:145-168`).
+History is never edited after a write. After the walkthrough it holds, in the order written: Alice's
+message, the `send_email` call, the receipt, the reply, Alice's second message, the calendar call and
+its result, the reply, the task result, and the final reply.
 
-```text
-history:  U, C, R₀, U₂, M₂, T, M      // each message written once, in order
-```
+This is how every task result reaches the model on `main`: `appendTaskContext` appends one
+`task.result` message and the `[Tasks]` note at a step boundary and never touches the receipt
+(`execution/tasks/model-step.ts:145-168`).
 
-Nothing is stitched. Withholding `C`, reinserting it with an approval response, removing an
-interrupted call, and ordering preamble messages around the tail all go away. Replacing `R₀` with the
-real result later would be a history rewrite: it brings back ordering rules, invalidates the
+Nothing is stitched. Holding the call back, writing it back with an approval response, removing an
+interrupted call, and ordering preamble messages around the tail all go away. Replacing the receipt
+with the real result later would be a history rewrite: it brings back ordering rules, invalidates the
 provider's prompt cache from that point, and hides from the model what it was told while it waited.
 
 ## Budget questions
@@ -219,7 +207,7 @@ it is answered, so the turn owns it and waits.
 | ------------------------------------ | ------------------------------------------------------------------------------------------- |
 | The person picks Stop                | The turn is cancelled, as today (`SessionLimitDeclinedError`)                               |
 | The turn's principal sends a message | It is saved; the model reads it after Continue. Channels show the pause from `turn.waiting` |
-| A gate task settles                  | Its `T` is saved; the model reads it after Continue                                         |
+| A gate task settles                  | Its task result is saved; the model reads it after Continue                                 |
 
 Unchanged from today: with nobody to answer, the turn fails with `SESSION_TOKEN_LIMIT_REACHED`, and
 a child that inherited a zero budget fails so its parent asks instead.
@@ -245,45 +233,31 @@ The model never waits. eve calls it when there is something new to read.
 
 | eve calls the model when        | New in the prompt                                      |
 | ------------------------------- | ------------------------------------------------------ |
-| The turn starts                 | `U`                                                    |
+| The turn starts                 | The person's message                                   |
 | A step's tool calls finish      | Their results, including a receipt for each gated call |
 | The turn's principal steers     | The message                                            |
-| A task settles                  | `T`, and a refreshed `[Tasks]` note                    |
+| A task settles                  | The task result, and a refreshed `[Tasks]` note        |
 | A budget question gets Continue | Nothing; the pending model call runs                   |
 
-An answer does not call the model: it goes to the owner, and the model is called when `T` lands.
+An answer does not call the model: it goes to the owner, and the model is called when the task
+result arrives.
 
 | The model                           | eve                                                               |
 | ----------------------------------- | ----------------------------------------------------------------- |
-| Calls tools                         | Runs each one or gates it; a gated call returns a receipt at once |
+| Calls tools                         | Runs each one or gates it; a gated call gets its receipt at once  |
 | Replies with text while tasks work  | Posts it (`finishReason: "stop"`), keeps the turn open, and parks |
 | Replies with text and no task works | Ends the turn                                                     |
 | Calls `task_wait`                   | Parks without posting, until a task settles or a message arrives  |
 | Calls `task_cancel({ taskId })`     | Withdraws that task's requests; the call never runs               |
 
-The receipt says the call has not run:
+The receipt reads:
 `Task t1 is waiting for approval to run send_email. It has not run. Its result will arrive in a <task_result> message.`
 The sign-in variant names the connection. Task guidance adds two lines: cancel a waiting task when
 the person changes what they want, and don't report a gated action as done before its result
 arrives.
 
-The example, from the model's side:
-
-```text
-call 1   reads U                     → calls send_email; gets R₀
-call 2   reads R₀                    → "I've asked for approval."        (posted; turn parks)
-call 3   reads U₂                    → calls calendar.list
-call 4   reads the calendar result   → "You have …"                      (posted; turn parks)
-         the person approves         → no model call; t1 runs send_email
-call 5   reads T                     → "Sent the report to Bob."         (nothing working: turn ends)
-```
-
-If the person writes "actually, send it to Carol", the model calls `task_cancel(t1)` and calls
-`send_email` again, which starts `t2`. If they write "did it send?", the receipt in history answers
-it.
-
-**Only a person grants.** The model can withdraw a request but never answer one. It made the call
-it would be approving, and tool output claiming "the user approved" must never become a grant.
+**Only a person grants.** The model can withdraw a request but never answer one. It made the call it
+would be approving, and tool output claiming "the user approved" must never become a grant.
 
 ## Stream events
 
@@ -309,24 +283,14 @@ Response readers (`send().result()`, MCP) already stop at `turn.waiting` while r
    where the session accepts it.
 6. Only a person's answer grants. Model output never answers a request.
 
-## Architecture boundary
+## Where each piece lives
 
-```text
-generate() ─ tool calls ─► gate ─┬─ pass ─► run ─► C + R
-                                 ├─ deny ─► C + D
-                                 └─ gate task ─► C + R₀ ─► held turn
-held turn ─ before each model call ─► budget check ─ over ─► budget question (owner: turn)
-session inbox ─ answer ─► response policy ─► owner (gate task | execute call | turn)
-             ─ steer ─► next model call
-             ─ cancel ─► withdraw every open request
-```
-
-- **The gate** sits where deferred calls are collected today (`collectDeferredCalls`,
-  `harness/tool-loop.ts:2855`) and adds one outcome: start a gate task.
-- **The gate task** is a framework-provided `task()` body on public workflow API, like `ask_question`
-  and `sleep`: `ctx.ask` for the approval, `requireAuth` for the sign-in, then the tool's `execute`.
-- **The budget question** is raised where `enforceSessionUsageLimit` runs today, but parks the turn
-  on the session inbox instead of ending it.
+| Piece        | Where                                                                                          | What changes                                                                 |
+| ------------ | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| Gate         | Where deferred calls are collected today (`collectDeferredCalls`, `harness/tool-loop.ts:2855`) | One new outcome: start a gate task                                           |
+| Gate task    | A framework-provided `task()` body on public workflow API, like `ask_question` and `sleep`     | New. It asks with `ctx.ask` or `requireAuth`, then runs the tool's `execute` |
+| Budget check | `enforceSessionUsageLimit`, before every model call                                            | Parks the turn on the session inbox instead of ending it                     |
+| Answers      | The session inbox, the route `ctx.ask` answers take                                            | The response policy runs here, before the answer reaches its owner           |
 
 ## What this removes
 
@@ -353,21 +317,23 @@ session inbox ─ answer ─► response policy ─► owner (gate task | execut
    and guidance address it.
 4. **One more model step and one workflow run per gated call** (`research/eve-tasks.md` §11, risks 1
    and 6). Calls that need no person pay nothing.
-5. **Rich outputs become text.** `T` renders files as `[file: name]` (`execution/tasks/render.ts`
-   `renderModelOutputText`). This applies to every task on `main`; fixing it there fixes gated calls.
+5. **Rich outputs become text.** A task result renders files as `[file: name]`
+   (`execution/tasks/render.ts` `renderModelOutputText`). This applies to every task on `main`;
+   fixing it there fixes gated calls.
 6. **Long turns.** Turn duration and trace spans include time waiting for a person.
 
 ## Migration
 
 Pre-1.0: breaking, no dual path. On load, eve settles each approval parked under the old model as
-withdrawn, appends `C + D` with a reason saying it expired in an upgrade, and drops the
-`[Pending approvals]` note. Open plain-tool challenges and budget questions from before the upgrade
-are dropped the same way; the next call or model step raises a new one.
+withdrawn: it writes the held-back call with a result saying the approval expired in an upgrade, and
+drops the `[Pending approvals]` note. Open plain-tool challenges and budget questions from before the
+upgrade are dropped the same way; the next call or model step raises a new one.
 
 ## Alternatives considered
 
-- **Withhold `C` and answer steering without it.** The model does not know its own call is pending,
-  and appending `C + R` later puts the call after messages it came before. That is history stitching.
+- **Hold the call back and answer steering without it.** The model does not know its own call is
+  pending, and writing the call and its result later puts them after messages they came before. That
+  is history stitching.
 - **Withdraw an approval on any new message** (the `ask_question` approach). Keeps one turn and
   append-only history, but a person cannot talk while an approval is open.
 - **Hold the turn and queue every message.** Keeps the request open but locks the conversation until
