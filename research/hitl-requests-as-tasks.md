@@ -27,7 +27,11 @@ The authoring API does not change. The observable changes are:
 - an approval or sign-in no longer ends the turn; every event of one request carries one `turnId`;
 - the model sees a receipt, then a `task.result`, instead of a withheld call;
 - a person can keep talking while a request is open, and the request stays open;
-- the model withdraws a request with `task_cancel`, not a message heuristic.
+- the model withdraws a request with `task_cancel`, not a message heuristic;
+- a text reply that matches an option still answers a request and is consumed, but only for the
+  newest open group. Any other message steers the held turn instead of starting a new turn, and the
+  request stays open. This is what text-only channels see: GitHub and Linear render options as text,
+  and Twilio, linq, and photon have no approval UI of their own.
 
 Line numbers refer to `origin/main` `66f295eb6` (2026-09-28) and `ai@7.0.105`; every symbol and
 file named here still exists on `e9dd41827` (2026-09-30). Paths are relative to `packages/eve/src`
@@ -130,47 +134,55 @@ longer passes it to the AI SDK as `toolApproval`. The SDK never sees an approval
 Only a gated call becomes a task. A call the gate lets through runs as it does today, with no
 receipt and no extra model step.
 
-### Lifecycle of a gated call
+### When a tool call needs a person
 
-```text
-model step → tool call c1 → gate
-  "approved" | "not-applicable", credentials present → run c1 in the step → C + R
-  "denied"                                           → C + D            (D: execution-denied)
-  "user-approval" or sign-in needed                  → start gate task t1 → C + R₀ → turn holds
-      t1 raises its requests → input.requested / authorization.required { turnId, taskId }
-      approval answered approve → response policy at acceptance
-          allowed  → t1 runs c1 → task.settled completed → T (result)
-          rejected → the request stays open
-      approval answered deny                   → task.settled completed → T (denied, not run)
-      sign-in completes                        → t1 runs c1 → T (result)
-      sign-in fails or times out               → task.settled completed → T (not run, reason)
-      task_cancel / session.cancel()           → requests withdrawn → task.settled cancelled
-```
+The usual path, for an approval:
 
-A gate task for an approval that also needs a sign-in raises the approval first and the sign-in only
-after the approval is accepted. That way a person is not asked to sign in for a call they then deny.
+1. The model calls `send_email`. The approval policy returns `"user-approval"`.
+2. eve starts gate task `t1` and gives the model a receipt as the call's result. The person sees the
+   approval prompt, and the turn keeps going.
+3. The person approves. If the tool has a response policy, it checks who answered.
+4. `t1` runs `send_email`. The result reaches the model as `T`, in the same turn.
 
-### Lifecycle of a limit request
+Everything else:
 
-```text
-held turn wants a model step → usage limit check (before every model call)
-  within budget                         → model step
-  over budget, nobody can answer        → turn fails SESSION_TOKEN_LIMIT_REACHED     (as today)
-  over budget, zero inherited window    → child fails; its parent reaches the limit  (as today)
-  over budget, requestInput             → limit request L1 → input.requested { turnId } → turn.waiting
-      grant   → bump the budget window → the same model step runs, same turnId
-      decline → the turn tree is cancelled → turn.cancelled                           (as today)
-      message from the turn's principal → recorded in history; L1 stays open
-      session.cancel()                  → L1 withdrawn → turn.cancelled
-```
+| What happens                                                   | Result                                                                                                                       |
+| -------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| The approval policy returns `"approved"` or `"not-applicable"` | The call runs right away. No task, no receipt                                                                                |
+| The approval policy returns `"denied"`                         | The call does not run; its result says it was denied                                                                         |
+| The person denies                                              | `T` says the call was denied and did not run                                                                                 |
+| The response policy rejects whoever answered                   | The request stays open for someone else                                                                                      |
+| The tool needs a sign-in instead                               | Same path; `t1` waits for the sign-in instead of an approval                                                                 |
+| The sign-in fails or times out                                 | `T` says the call did not run, and why                                                                                       |
+| The call needs both an approval and a sign-in                  | eve asks for the approval first and the sign-in only after it is approved, so nobody signs in for a call that is then denied |
+| The model calls `task_cancel`, or the session is cancelled     | The request is withdrawn; the call never runs                                                                                |
 
-The limit check runs wherever the turn is about to call the model, including after a steering message
-or a `T` during a hold. A turn can therefore hold on gate tasks and a limit request at once. The
-turn continues only when its limit request is resolved, and ends only when its gate tasks settle.
+### When the turn runs out of budget
 
-A limit request is not a task: there is no call to put a receipt on, and a task's hold wakes the
-model on steering, which a limit forbids. It uses the same request route, the same session authority
-over answers, and the same held turn as a gate task.
+The usual path:
+
+1. Before every model call, eve checks the session's token budget.
+2. The budget is spent. eve asks the person whether to continue (`input.requested`), and the turn
+   pauses (`turn.waiting`). The turn does not end.
+3. The person picks Continue. eve extends the budget and makes the model call it was about to make,
+   in the same turn.
+
+Everything else:
+
+| While the question is open           | Result                                                                                    |
+| ------------------------------------ | ----------------------------------------------------------------------------------------- |
+| The person picks Stop                | The turn is cancelled, as today                                                           |
+| The turn's principal sends a message | The message is saved; the question stays open; the model reads the message after Continue |
+| A gate task finishes                 | Its `T` is saved; the model reads it after Continue                                       |
+| The session is cancelled             | The question is withdrawn and the turn is cancelled                                       |
+
+Unchanged from today: when nobody can answer (a schedule, or a session without `requestInput`), the
+turn fails with `SESSION_TOKEN_LIMIT_REACHED`. A child that inherited a zero budget fails, and its
+parent asks instead.
+
+A budget question is owned by the turn, not by a task. There is no tool call to give a receipt to,
+and the model cannot run until the question is answered. Otherwise it behaves like a gate task's
+request: same route, same answers, same held turn.
 
 ### Example
 
@@ -207,30 +219,30 @@ the call, and `T` is an ordinary user-role message.
 
 ### Rules
 
-| #   | Given                                                                                      | When                                                    | Then                                                                                                                                                                                                                                            |
-| --- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | The approval policy returns `"approved"` or `"not-applicable"` and credentials are present | The model calls the tool                                | The call runs in the step; `C + R`. No task, no request                                                                                                                                                                                         |
-| 2   | The approval policy returns `"denied"`                                                     | The model calls the tool                                | `C + D`. No task, no request                                                                                                                                                                                                                    |
-| 3   | The approval policy returns `"user-approval"`                                              | The model calls the tool                                | Gate task `t1` starts; `C + R₀`; `input.requested` carries `taskId`; the turn holds                                                                                                                                                             |
-| 4   | An open approval without a response policy                                                 | An answer `approve` is accepted                         | `input.resolved` `approved`; `t1` runs the call; its outcome arrives as `T`                                                                                                                                                                     |
-| 5   | An open approval with a response policy                                                    | An answer `approve` arrives                             | The session runs the response policy before it accepts the answer. `allowed` → rule 4. `rejected` → the request stays open, `approval.candidate` `rejected` is emitted, and the answer is not consumed                                          |
-| 6   | An open approval                                                                           | An answer `deny` or `cancel` arrives                    | The response policy runs with `response.decision: "cancel"`, as on `main` since #3954. `allowed` → `input.resolved` `denied`; `t1` settles `completed` with a not-run output; `T` says the call was denied. `rejected` → the request stays open |
-| 7   | One step makes several gated calls                                                         |                                                         | One gate task per call. Their requests form one group. Each call runs as soon as its own requests are satisfied                                                                                                                                 |
-| 8   | Requests of one group are open                                                             | One delivery answers some of them                       | Each answer is applied independently; the rest stay open                                                                                                                                                                                        |
-| 9   | Any request is open                                                                        | The turn's principal sends a message                    | The message steers the held turn and the model replies. Requests stay open (tasks are untouched by steering)                                                                                                                                    |
-| 10  | Any request is open                                                                        | The model calls `task_cancel({ taskId: t1 })`           | `t1`'s requests are withdrawn (`input.resolved` `cancelled`); `task.settled` `cancelled`; the call never runs                                                                                                                                   |
-| 11  | Any request is open                                                                        | Another principal sends a message                       | It queues until the turn ends, then starts that principal's turn                                                                                                                                                                                |
-| 12  | Any request is open                                                                        | `session.cancel()`, turn failure, or session end        | Every gate task is cancelled and its requests withdrawn                                                                                                                                                                                         |
-| 13  | A withdrawn or resolved request                                                            | A late answer or callback arrives                       | It is stale and changes nothing. A late sign-in may still store the credential; it never runs the withdrawn call                                                                                                                                |
-| 14  | The session cannot reach a person (a schedule, a child without `requestInput`)             | A gated call is made                                    | The request resolves `unavailable` at once; `t1` settles with a not-run output                                                                                                                                                                  |
-| 15  | A child session's gated call                                                               |                                                         | The child holds its own turn; its requests travel up the owner chain and answers route down by `requestId`, as child questions do today                                                                                                         |
-| 16  | Gate tasks are working                                                                     | The model tries to end the turn or calls `final_output` | As for any task: the turn holds, and `final_output` returns the error naming the working tasks                                                                                                                                                  |
-
-| 17 | The session is over budget and can request input | The turn is about to call the model | A limit request opens with the turn's `turnId`; the turn holds (`turn.waiting`), with no `turn.completed` |
-| 18 | An open limit request | An answer `grant` is accepted | The budget window is bumped and the pending model step runs in the same turn |
-| 19 | An open limit request | An answer `decline` is accepted | The turn tree is cancelled, as today (`SessionLimitDeclinedError`) |
-| 20 | An open limit request | The turn's principal sends a message | The message is recorded in history and the request stays open. The model sees the message after a grant |
-| 21 | An open limit request and working gate tasks | A gate task settles | `T` is recorded; the model runs only after the limit request is granted |
+| #   | Given                                                                                      | When                                                                                                                  | Then                                                                                                                                                                                                                                                                                 |
+| --- | ------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | The approval policy returns `"approved"` or `"not-applicable"` and credentials are present | The model calls the tool                                                                                              | The call runs in the step; `C + R`. No task, no request                                                                                                                                                                                                                              |
+| 2   | The approval policy returns `"denied"`                                                     | The model calls the tool                                                                                              | `C + D`. No task, no request                                                                                                                                                                                                                                                         |
+| 3   | The approval policy returns `"user-approval"`                                              | The model calls the tool                                                                                              | Gate task `t1` starts; `C + R₀`; `input.requested` carries `taskId`; the turn holds                                                                                                                                                                                                  |
+| 4   | An open approval without a response policy                                                 | An answer `approve` is accepted                                                                                       | `input.resolved` `approved`; `t1` runs the call; its outcome arrives as `T`                                                                                                                                                                                                          |
+| 5   | An open approval with a response policy                                                    | An answer `approve` arrives                                                                                           | The session runs the response policy before it accepts the answer. `allowed` → rule 4. `rejected` → the request stays open, `approval.candidate` `rejected` is emitted, and the answer is not consumed                                                                               |
+| 6   | An open approval                                                                           | An answer `deny` or `cancel` arrives                                                                                  | The response policy runs with `response.decision: "cancel"`, as on `main` since #3954. `allowed` → `input.resolved` `denied`; `t1` settles `completed` with a not-run output; `T` says the call was denied. `rejected` → the request stays open                                      |
+| 7   | One step makes several gated calls                                                         |                                                                                                                       | One gate task per call. Their requests form one group. Each call runs as soon as its own requests are satisfied                                                                                                                                                                      |
+| 8   | Requests of one group are open                                                             | One delivery answers some of them                                                                                     | Each answer is applied independently; the rest stay open                                                                                                                                                                                                                             |
+| 9   | Any request is open                                                                        | The turn's principal sends a message that is not a text answer (rule 22)                                              | The message steers the held turn and the model replies. Requests stay open (tasks are untouched by steering)                                                                                                                                                                         |
+| 10  | Any request is open                                                                        | The model calls `task_cancel({ taskId: t1 })`                                                                         | `t1`'s requests are withdrawn (`input.resolved` `cancelled`); `task.settled` `cancelled`; the call never runs                                                                                                                                                                        |
+| 11  | Any request is open                                                                        | Another principal sends a message                                                                                     | It queues until the turn ends, then starts that principal's turn                                                                                                                                                                                                                     |
+| 12  | Any request is open                                                                        | `session.cancel()`, turn failure, or session end                                                                      | Every gate task is cancelled and its requests withdrawn                                                                                                                                                                                                                              |
+| 13  | A withdrawn or resolved request                                                            | A late answer or callback arrives                                                                                     | It is stale and changes nothing. A late sign-in may still store the credential; it never runs the withdrawn call                                                                                                                                                                     |
+| 14  | The session cannot reach a person (a schedule, a child without `requestInput`)             | A gated call is made                                                                                                  | The request resolves `unavailable` at once; `t1` settles with a not-run output                                                                                                                                                                                                       |
+| 15  | A child session's gated call                                                               |                                                                                                                       | The child holds its own turn; its requests travel up the owner chain and answers route down by `requestId`, as child questions do today                                                                                                                                              |
+| 16  | Gate tasks are working                                                                     | The model tries to end the turn or calls `final_output`                                                               | As for any task: the turn holds, and `final_output` returns the error naming the working tasks                                                                                                                                                                                       |
+| 17  | The session is over budget and can request input                                           | The turn is about to call the model                                                                                   | A limit request opens with the turn's `turnId`; the turn holds (`turn.waiting`), with no `turn.completed`                                                                                                                                                                            |
+| 18  | An open limit request                                                                      | An answer `grant` is accepted                                                                                         | The budget window is bumped and the pending model step runs in the same turn                                                                                                                                                                                                         |
+| 19  | An open limit request                                                                      | An answer `decline` is accepted                                                                                       | The turn tree is cancelled, as today (`SessionLimitDeclinedError`)                                                                                                                                                                                                                   |
+| 20  | An open limit request                                                                      | The turn's principal sends a message                                                                                  | The message is recorded in history and the request stays open. The model sees the message after a grant                                                                                                                                                                              |
+| 21  | An open limit request and working gate tasks                                               | A gate task settles                                                                                                   | `T` is recorded; the model runs only after the limit request is granted                                                                                                                                                                                                              |
+| 22  | Requests are open                                                                          | The turn's principal sends text that matches an option of a request in the newest open group, by id, label, or number | The text is that request's answer, as on `main` (`channel/resolve-text.ts`, `resolveTextMessageInput` in `harness/input-requests.ts`). The message is consumed and does not steer. Requests in older groups, and requests with a response policy, are not answered by text, as today |
 
 Rules 9 to 13 and 16 are the task rules on `main` applied to gate tasks (`research/eve-tasks.md` §2,
 §6, §7). Rules 4 and 5 move the response-policy check from the harness
@@ -249,7 +261,89 @@ answer.
   with the existing task guidance. The guidance adds: cancel a waiting task when the person changes
   what they want, and don't report a gated action as done before its result arrives.
 - **No approval parts** and no `[Pending approvals]` note. The `[Tasks]` note lists working gate
-  tasks.
+  tasks with what they wait for, for example
+  `<task id="t1" tool="send_email" status="working" waiting="approval"/>`, so the model can answer
+  "did it send?" without guessing. `waiting` is new; the rest of the note is as on `main`
+  (`renderTasksNote`).
+
+### History is append-only
+
+History is never edited after a write. The receipt is the call's real tool result and stays in
+history for good; the outcome arrives later as its own message. This is how every task result
+reaches the model on `main`: `appendTaskContext` appends one `task.result` message and the `[Tasks]`
+note at a step boundary, and nothing rewrites the receipt (`execution/tasks/model-step.ts:145-168`).
+
+```text
+written at step 0:   U, C, R₀
+written at step 2:   U₂, M₂
+written at step 4:   T, M
+history:             U, C, R₀, U₂, M₂, T, M        // nothing earlier is ever rewritten
+```
+
+There is nothing to stitch. The code that exists today only to stitch history goes away: withholding
+`C` in a `PendingInputBatch`, reinserting it with the approval response, removing an interrupted call
+(`projectCompletedSiblingCalls`), and ordering preamble messages around the tail. The one rule the
+provider imposes, that a call is followed by its result, holds as soon as `R₀` is written.
+
+Replacing `R₀` with the real result once it exists would look cleaner, but it is a history rewrite.
+It brings back ordering rules, invalidates the provider's prompt cache from that point on, and hides
+from the model what it was told while the call was pending. This design does not do it.
+
+### How the model works in a held turn
+
+The model never waits. eve calls it when there is something new to read, and between calls the turn
+is parked (`turn.waiting`) at no cost.
+
+eve calls the model when:
+
+| Trigger                                                  | New in the prompt                                             |
+| -------------------------------------------------------- | ------------------------------------------------------------- |
+| The turn starts                                          | The person's message `U`                                      |
+| A step's tool calls finish                               | Their results, including a receipt `R₀` for each gated call   |
+| The turn's principal sends a message (not a text answer) | The message `U₂`                                              |
+| A task settles, gate or other                            | A `<task_result>` message `T`, and a refreshed `[Tasks]` note |
+| A budget question gets Continue                          | Nothing; the model call that was about to happen runs         |
+
+eve does not call the model when:
+
+- **An answer arrives.** It goes to the gate task. The model is called when the task's `T` lands.
+- **Another principal writes.** The message waits for the turn to end.
+- **A budget question is open.** Messages and results are saved for after Continue.
+
+In each step, the model can:
+
+| The model does                        | eve does                                                                                        |
+| ------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Calls tools                           | Runs each one or gates it. A gated call returns a receipt at once                               |
+| Replies with text while tasks work    | Posts the reply (`finishReason: "stop"`), keeps the turn open, and parks until the next trigger |
+| Replies with text and no tasks work   | Ends the turn (`turn.completed`)                                                                |
+| Calls `task_wait`                     | Parks without posting anything, until a task settles or a message arrives                       |
+| Calls `task_cancel({ taskId })`       | Withdraws that task's requests. The call never runs                                             |
+| Calls `final_output` while tasks work | Returns the error naming the working tasks, as on `main`                                        |
+
+The same example, from the model's side:
+
+```text
+call 1   reads U "email the report to Bob"           → calls send_email
+         gets R₀ "t1 is waiting for approval; send_email has not run"
+call 2   reads R₀, [Tasks] t1 waiting=approval       → replies "I've asked for approval."   (posted; turn parks)
+call 3   reads U₂ "also, what's on my calendar?"     → calls calendar.list
+call 4   reads the calendar result                   → replies "You have …"                (posted; turn parks)
+         the person clicks Approve                   → no model call; t1 runs send_email
+call 5   reads T "t1 completed: sent"                → replies "Sent the report to Bob."   (no task working: the turn ends)
+```
+
+Variations on call 3:
+
+| The person writes            | The model reads                                      | A good next step                                                           |
+| ---------------------------- | ---------------------------------------------------- | -------------------------------------------------------------------------- |
+| "approve"                    | Nothing. The text answers the newest group (rule 22) | eve calls it with `T` once the call runs                                   |
+| "actually, send it to Carol" | `U₂`, and `t1` still waiting                         | `task_cancel(t1)`, then `send_email` to Carol, which starts gate task `t2` |
+| "did it send?"               | `U₂` and `[Tasks]` `t1 waiting="approval"`           | "Not yet. It's waiting for your approval."                                 |
+| "never mind"                 | `U₂`                                                 | `task_cancel(t1)` and a short reply                                        |
+
+Only a person grants. The model can withdraw a request but never answer one: it made the call, so it
+cannot be what approves it, and text in tool output must never turn into an approval.
 
 ### Stream events
 
@@ -279,6 +373,8 @@ the open requests, as they do for questions.
 6. A turn ends only after each of its gate tasks settles, as for every task.
 7. No request resumes a turn that has ended, and no request starts a turn.
 8. Every request has exactly one owner: a gate task or the turn. No HITL request ends a turn.
+9. History is append-only. No HITL path removes, moves, or replaces a message once written.
+10. Only a person's answer grants. Model output never answers a request.
 
 ## Architecture boundary
 
@@ -332,7 +428,11 @@ session inbox ─ grant ─► bump budget ─► model step, same turnId
    (`research/eve-tasks.md` §1).
 4. **One more model step per gated call**, and one workflow run per gate task (§11, risks 1 and 6).
    Gate tasks count toward the 32-task cap (`TOO_MANY_TASKS`).
-5. **Long turns.** Turn duration and trace spans include time waiting for a person. Waiting time is
+5. **Rich outputs become text.** `T` renders a tool's output as text, and files become
+   `[file: name]` (`renderModelOutputText`, `execution/tasks/render.ts:219-243`). A gated tool that
+   returns an image or file today reaches the model as a label. This applies to every task on `main`;
+   fixing it there fixes gate tasks too.
+6. **Long turns.** Turn duration and trace spans include time waiting for a person. Waiting time is
    visible from `turn.waiting` and `input.resolved` timestamps.
 
 ## Migration
@@ -348,6 +448,15 @@ one.
 - **Deferred `execute` call, withdrawn on any new message** (the same approach as `ask_question`). Keeps the pair
   invariant and one turn, but any message from the person kills the approval, so a person cannot
   talk while a request is open.
+- **Let the model answer requests from messages.** The model would read "sure, go ahead" and answer
+  the approval itself. It handles phrasing that exact matching misses, but the model made the call it
+  would be approving, and any tool output claiming "the user approved" could produce the grant. The
+  model may withdraw (`task_cancel`), because a wrong withdrawal only means nothing runs. Grants stay
+  with people: structured answers, or the exact text match in rule 22.
+- **Channels translate text into `inputResponses`; the core stops parsing.** The core already
+  matches text exactly (`channel/resolve-text.ts`), and GitHub, Linear, Twilio, linq, photon, and
+  child relays (`subagents/hitl-proxy.ts:323`) rely on it. Moving it into every channel duplicates
+  it and breaks custom channels without warning.
 - **Hold the turn and queue every message.** Keeps the request open, but locks the conversation until
   a person answers, which reintroduces #3494.
 - **Keep SDK approvals and centralize the tail guard** (#2344, closed). Fixes today's writers but
@@ -365,9 +474,10 @@ one.
    gate requests use it instead of a gate-specific check.
 3. **Denial shape.** `task.settled` `completed` with a not-run output (proposed) or `failed`.
    Affects clients and the eval assertions.
-4. **Text answers.** Today a text message matching an option can answer an approval
-   (`harness/input-requests.ts:230-254`). Under this design a message steers. Proposed: channels
-   that need text answers translate them into `inputResponses`; the core does not parse messages.
+4. **Text answers for policy-guarded requests.** Rule 22 keeps today's exclusion: text never answers
+   a request with a response policy. With the policy checked when an answer is accepted, a text
+   answer could carry the message's principal and go through the policy like a structured one.
+   Decide whether to allow that.
 5. **Grouping.** Several gate tasks from one step each raise their own request. Decide whether the
    session emits one `input.requested` for the group.
 6. **Messages during a limit.** Rule 20 records the message and leaves it unanswered until a grant.
@@ -396,5 +506,8 @@ A spike with one approval-gated plain tool and one sign-in-gated plain tool. It 
 6. A limit request holds the turn: a grant continues under the same `turnId`, a decline cancels
    the turn, and `harness/session-limit-enforcement.ts` no longer calls `emitTurnEpilogue`.
 
-After the spike, e2e coverage in `e2e/fixtures/agent-tools-hitl/evals/` for rules 3 to 21, one
+7. Typing `approve` answers the newest open approval and does not steer, and an older open approval
+   stays open.
+
+After the spike, e2e coverage in `e2e/fixtures/agent-tools-hitl/evals/` for rules 3 to 22, one
 Given/When/Then eval each.
