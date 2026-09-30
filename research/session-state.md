@@ -8,24 +8,28 @@ last_updated: "2026-09-30"
 
 ## Summary
 
-eve works out where a session stands in many places. On the server, pending work lives in ten
-durable records, and the code that changes a record also has to emit the matching stream event.
-Web chat, `eve dev`, `respond()`, Slack task cards, evals, and ACP each read those events with
-their own rules, and they disagree. A subagent that fails shows as failed in the chat but
-completed in ACP, and an eval that checks for a completed call passes.
+eve computes the state of a session in many places. On the server, pending work lives in ten
+durable records. wherever we add code that changes a record, we need to be sure that we emit
+a matching stream event so that consumers can know that that transition happened. this is 
+impossible in practice and we have a huge number of subtle issues linking back to this.
+
+even if we do emit events as needed, web chat, `eve dev`, `respond()`, Slack task cards, 
+evals, and ACP each read those events with their own rules, and they disagree. A subagent 
+that fails shows as failed in the chat but completed in ACP, and an eval that checks for
+a completed call passes.
 
 This plan gives each piece of session state exactly one owner:
 
-- **A session machine** is the only code that changes pending work or builds lifecycle events.
+- **A session state machine** is the only code that changes pending work or builds lifecycle events.
 - **A session projection** is folded from the events the machine publishes. It answers every
   lifecycle question, on the server and in every reader, with the same code.
 - **Private records** hold what the stream never shows. Each is keyed by an ID the projection
   tracks and is dropped when its owner closes.
 - **Caches** are written in one place.
 
-The stream states the facts readers used to guess, and every reader asks the projection instead
-of folding events itself. The work lands in the seven PRs listed under
-[Implementation plan](#implementation-plan).
+We add information to the streamed events to give authoritative answers to facts that readers
+currently have to guess, and every reader uses the same projection instead of a custom fold over
+the streamed events. The work lands in the seven PRs listed under [Implementation plan](#implementation-plan).
 
 ## Starting point
 
@@ -156,9 +160,7 @@ Every durable piece of session state is exactly one of these:
 | Private record | What readers never see, keyed by an ID the projection tracks: relay routes, sign-in attempts, task runs, approval candidates                      | The machine; dropped when its owner closes |
 | Cache          | A derived value for a reader that can't load the session, such as `hasProxyInputRequests`                                                         | The save function                          |
 
-A record with its own status, or a flag recording whether an event went out, is none of these.
-
-### One fold, every reader
+### Single unified fold
 
 The readers in the first diagram become small consumers of one fold. The server stores the
 projection with each step, clients carry it in `ConversationState`, and evals and ACP fold a
@@ -294,7 +296,7 @@ async function commit(view: SessionView, t: Transition, publish: Publish) {
 }
 ```
 
-Cancelling a turn shows the difference. Today `settleCancelledTurnStep` is a durable step in
+Cancelling a turn shows the difference. Today `settleCancelledTurnStep` is a durable step with
 three parts. `restoreSessionStep` rebuilds the runtime context and reads the durable session from
 the step's input. `publishFromSessionStep` opens the session's event publisher, which writes each
 event to the stream, hands it to the channel adapter, and runs hooks, and it takes two callbacks
@@ -346,7 +348,9 @@ third row of the table above. Even the turn being cancelled comes from whichever
 the coordination batch if one is parked, else the emission state. (#4083, open, replaces
 `clearAllProxyInputRequests` with reported withdrawals. The other three clears stay silent.)
 
-With the machine, there is one callback, and its events are the change:
+With the state machine, there is one callback, and it only needs to think about what events it
+returns, and even that is done with structured helpers rather than hand-rolled conditionals.
+Translating those events into stored state is the job of the shared `foldSession`:
 
 ```ts
 // execution/settle-cancelled-turn-step.ts
@@ -742,7 +746,7 @@ export function settledStatus(error: Error | undefined, conversation: Conversati
 // receivedFollowUpEvents, and followUpSubmissionIds, reconciled by countFollowUpDeliveries.
 ```
 
-With the projection, only sends not yet accepted, HTTP errors, and aborts stay local:
+With the projection, only not-yet-accepted sends, HTTP errors, and aborts stay local:
 
 ```ts
 function storeStatus(conversation: ConversationState, sends: LocalSends): EveAgentStoreStatus {
@@ -851,29 +855,9 @@ Sessions aren't ported to the new state. This follows existing practice:
 PRs 1–4 change durable state, so each bumps `SESSION_CHECKPOINT_VERSION`, as does any later PR
 that changes it.
 
-### Older writers
-
-A reader can't tell from the response which code wrote an event. `x-eve-stream-version` is the
-serving deployment's constant, but the events come from the session's stream, which its owner
-writes. The owner is often an older deployment, because incompatible handoffs are refused. A
-`respond()` that trusted the header and filtered by its answer's delivery ID would skip every
-event a v26 owner wrote.
-
-So each stream change identifies itself on the event it affects, as
-`normalizePersistedMessageStreamEvent` already does for shape changes. No existing field changes
-meaning unless a new field marks it. A field whose absence readers rely on is always written,
-empty if need be, like `processedDeliveryIds: []`, so absence means an older writer. `meta` holds
-only facts readers use when present, since channel adapters see events before they're stamped.
-
-When a new field is missing, readers keep today's behavior: a read ends at the first boundary,
-and an approved call runs in the open turn or the next. Each PR that adds a fact adds its
-fallback, with a test over an older writer's events. The header moves to 27 in PR 3 only so older
-clients reject values they would misread, such as a `cancelled` result.
-
 ## Performance
 
-The plan stores about the same state, shaped differently: today's records hold the same pending
-requests, calls, and runs that the stored projection and private records will. What needs care:
+The plan stores essentially the same state as we do today, just in a different shape. What needs care:
 
 - **Stored projection size.** Every session step copies and diffs the whole durable state
   (`withSessionStateDelta`), so the server's projection must stay proportional to open work.
@@ -928,10 +912,6 @@ removing the clear withdrawals fails 40%, and removing the sign-in ask beside an
 
 ## Implementation plan
 
-Seven PRs, each of which builds, passes CI, and carries its own tests, docs, and changeset. They
-land in order, except that PRs 5 and 6 are independent of each other. Each PR that adds a stream
-fact also adds its fallback for older writers.
-
 ```mermaid
 flowchart LR
   F[first four PRs] --> P1[1 session machine]
@@ -957,9 +937,7 @@ Sizes are rough net estimates for production code in `packages/eve/src`.
 | 7   | Web template                  | template             | template     |
 
 In total, production code in `packages/eve/src` should shrink by roughly 850–1,700 lines. Tests
-should shrink by about 3,000, mostly suites written against the replaced records. These are
-estimates, not measurements. PR 3 is the best calibration point: after the session machine, it
-is the largest deletion, and it exercises the whole derived-record pattern.
+should shrink by about 3,000, mostly suites written against the replaced records.
 
 ### 1. Session machine
 
