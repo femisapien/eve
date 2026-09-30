@@ -1,16 +1,23 @@
 #!/usr/bin/env node
-// Verifies a gap-register report: anonymization, structure, counts, index anchors, and that
-// every code excerpt is verbatim (modulo redaction) against the project checkout.
-// Usage: check-report.mjs <report.md> <project-root> [--map <dir>]   (default map dir: .eve-friction)
-import { readFileSync, existsSync } from "node:fs";
-import { resolve, join } from "node:path";
+// Verifies a gap-register report: anonymization, structure, counts, index anchors, that every
+// quote in "What eve says" exists in the eve sources given with --eve, and that every code
+// excerpt is verbatim (modulo redaction) against the project checkout.
+// Usage: check-report.mjs <report.md> <project-root> --eve <dir> [--eve <dir>] [--map <dir>]
+//   --eve  a directory holding eve docs/CHANGELOG/source, e.g. node_modules/eve; repeatable
+//          (pass the pinned version and the newest one). Default map dir: .eve-friction
+import { readFileSync, existsSync, readdirSync, statSync } from "node:fs";
+import { resolve, join, extname } from "node:path";
 import { loadMap, redact, unredactPath, findLeaks } from "./redact.mjs";
 
 const args = process.argv.slice(2);
-const positional = args.filter((a, i) => !a.startsWith("--") && args[i - 1] !== "--map");
+const FLAGS = new Set(["--map", "--eve"]);
+const positional = args.filter((a, i) => !a.startsWith("--") && !FLAGS.has(args[i - 1]));
 const [reportPath, root] = positional;
-if (!reportPath || !root) {
-  console.error("usage: check-report.mjs <report.md> <project-root> [--map <dir>]");
+const eveDirs = args.flatMap((a, i) => (a === "--eve" ? [args[i + 1]] : []));
+if (!reportPath || !root || eveDirs.length === 0) {
+  console.error(
+    "usage: check-report.mjs <report.md> <project-root> --eve <dir> [--eve <dir>] [--map <dir>]",
+  );
   process.exit(2);
 }
 const mapDir = args.includes("--map") ? args[args.indexOf("--map") + 1] : ".eve-friction";
@@ -49,8 +56,8 @@ const header = (cells) =>
     "m",
   );
 if (!/^## Index\s*$/m.test(text)) fail("missing '## Index' section");
-else if (!header(["ID", "Gap", "Workaround (lines)", "Tracked"]).test(text))
-  fail("index is missing its header row (ID | Gap | Workaround (lines) | Tracked)");
+else if (!header(["ID", "Gap", "Kind", "Workaround (lines)", "Tracked"]).test(text))
+  fail("index is missing its header row (ID | Gap | Kind | Workaround (lines) | Tracked)");
 if (!/^## Tool shape\s*$/m.test(text)) fail("missing '## Tool shape' section");
 else if (!header(["Family", "Members", "Lines", "With approval", ".*"]).test(text))
   fail("Tool shape section is missing its family table");
@@ -78,6 +85,53 @@ for (const row of indexRows) {
     fail(`index anchor for ${row.id} is #${row.anchor}, heading slug is #${expected}`);
 }
 
+// eve sources for quote verification: one normalized corpus over docs, changelog, and source.
+const normText = (s) =>
+  s
+    .replace(/[\u201c\u201d]/g, '"')
+    .replace(/[\u2018\u2019]/g, "'")
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1") // markdown links → their text
+    .replace(/[`*]/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+const trimPunct = (s) => s.replace(/[.,;:]+$/, "").trim();
+function walk(dir, out) {
+  for (const name of readdirSync(dir)) {
+    if (name === "node_modules" || name.startsWith(".")) continue;
+    const p = join(dir, name);
+    const st = statSync(p);
+    if (st.isDirectory()) walk(p, out);
+    else if (
+      [".md", ".mdx", ".ts", ".tsx", ".js", ".mjs", ".txt", ".json"].includes(extname(name)) &&
+      st.size < 4_000_000
+    )
+      out.push(p);
+  }
+}
+const corpus = (() => {
+  const files = [];
+  for (const d of eveDirs) {
+    if (!existsSync(d)) {
+      fail(`--eve directory not found: ${d}`);
+      continue;
+    }
+    walk(d, files);
+  }
+  return files.map((f) => normText(readFileSync(f, "utf8"))).join("\n");
+})();
+// Odd segments between straight quotes, long enough to be a real quotation. A quote that
+// directly follows an issue reference (`#123 "title"`) is an issue title, not a doc quote.
+function quotesIn(paragraph) {
+  const parts = paragraph.split('"');
+  const out = [];
+  for (let i = 1; i < parts.length; i += 2) {
+    if (/#\d+[^"]{0,60}$/.test(parts[i - 1])) continue;
+    const q = normText(parts[i]);
+    if (q.length >= 40) out.push(q);
+  }
+  return out;
+}
+
 // Per-block structure and language
 const labels = [
   "**Gap.**",
@@ -85,10 +139,47 @@ const labels = [
   "**What the project built.**",
   "**How it fails.**",
 ];
+const KINDS = ["own", "buildable", "docs", "mismatch"];
+const AREAS = [
+  "tasks",
+  "delivery",
+  "channels",
+  "auth",
+  "hitl",
+  "cost",
+  "budgets",
+  "subagents",
+  "sandbox",
+  "extensions",
+  "models",
+  "schedules",
+  "tooling",
+  "docs",
+];
 const stripFences = (s) => s.replace(/```[\s\S]*?```/g, "");
 for (const b of blocks) {
   const body = lines.slice(b.start, b.end);
   const joined = body.join("\n");
+  const km = body.find((l) => l.startsWith("Kind:"))?.match(/^Kind: (\S+) · Area: (\S+)\s*$/);
+  if (!km) fail(`${b.id}: missing "Kind: <${KINDS.join("|")}> · Area: <area>" line`);
+  else {
+    if (!KINDS.includes(km[1])) fail(`${b.id}: Kind "${km[1]}" is not one of ${KINDS.join(", ")}`);
+    if (!AREAS.includes(km[2])) fail(`${b.id}: Area "${km[2]}" is not one of ${AREAS.join(", ")}`);
+  }
+  const saysIdx = body.findIndex((l) => l.startsWith("**What eve says.**"));
+  if (saysIdx >= 0) {
+    let end = saysIdx;
+    while (end < body.length && body[end].trim() !== "") end++;
+    for (const q of quotesIn(body.slice(saysIdx, end).join(" "))) {
+      const parts = q
+        .split("…")
+        .map((p) => trimPunct(p))
+        .filter((p) => p.length >= 20);
+      const missing = parts.filter((p) => !corpus.includes(p));
+      if (missing.length)
+        fail(`${b.id}: quote not found in eve sources: "${missing[0].slice(0, 100)}"`);
+    }
+  }
   for (const label of labels) {
     const n = body.filter((l) => l.startsWith(label)).length;
     if (n !== 1) fail(`${b.id}: expected exactly one paragraph starting with ${label}, found ${n}`);

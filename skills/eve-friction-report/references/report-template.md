@@ -23,9 +23,9 @@ defaults, issues the team has filed.>
 
 ## Index
 
-| ID               | Gap          | Workaround (lines) | Tracked   |
-| ---------------- | ------------ | ------------------ | --------- |
-| [A1](#a1-<slug>) | <one clause> | ~n                 | #n / none |
+| ID               | Gap          | Kind                              | Workaround (lines) | Tracked   |
+| ---------------- | ------------ | --------------------------------- | ------------------ | --------- |
+| [A1](#a1-<slug>) | <one clause> | own / buildable / docs / mismatch | ~n                 | #n / none |
 
 ## Upgrade exposure (<pin> → <latest>)
 
@@ -38,7 +38,9 @@ defaults, issues the team has filed.>
 <Facts only, from `sweep.sh` S12 and the files you opened. This section records
 how the project distributed behavior between tools, approval policy, and
 instructions. It is not a gap unless an eve limitation forced the shape; then
-it also gets a gap block, cited.>
+it also gets a gap block, cited. When a family member's description or a
+comment states a reason for the narrow shape (least privilege, audit by tool
+name, a non-technical audience), quote it here.>
 
 |                                            |                                                                                                |
 | ------------------------------------------ | ---------------------------------------------------------------------------------------------- |
@@ -57,6 +59,8 @@ family, showing what differs between them.>
 ---
 
 ## A1. <gap, as a sentence about eve>
+
+Kind: <own | buildable | docs | mismatch> · Area: <tasks | delivery | channels | auth | hitl | cost | budgets | subagents | sandbox | extensions | models | schedules | tooling | docs>
 
 **Gap.** <Two to four sentences. What eve lacks or gets wrong, stated so a
 reader with no knowledge of this project understands the hole. Name the eve

@@ -19,8 +19,8 @@ scope: "read-only; every claim cites path:line; [V] read, [I] inferred from the 
 
 # <org>/eve (<agent>): eve gap register
 
-17 gaps. The files that carry the workarounds total ≈5,800 of 24,237 lines of `agent/`
-TypeScript. Zero internal imports; three runtime reach-ins into `channel.adapter[...]`. Every
+18 gaps. The files that carry the workarounds total ≈5,800 of 24,237 lines of `agent/`
+TypeScript. No static internal imports; one dynamic import of `eve/dist` in a test helper and three runtime reach-ins into `channel.adapter[...]`. Every
 eve `limits.*` is `false`. The team has filed one issue against eve, withdrawn.
 
 | | |
@@ -32,12 +32,12 @@ eve `limits.*` is `false`. The team has filed one issue against eve, withdrawn.
 
 ## Index
 
-| ID | Gap | Workaround (lines) | Tracked |
-|---|---|---|---|
-| [A1](#a1-slack-posts-from-app-code-have-no-idempotency-reconciliation-or-chunking) | Slack posts from app code: no idempotency, reconciliation, chunking | ~3,200 | none |
-| [A2](#a2-no-turn-level-idle-deadline-no-in-process-cancel) | No turn-level idle deadline; no in-process cancel | ~660 | none |
-| [A3](#a3-step-usage-has-no-served-model-id-compaction-and-auto-calls-are-unmetered-root-hooks-do-not-fire-in-subagents) | Cost attribution: no served model id, unmetered compaction/`auto()`, hooks not inherited | ~530 | #3483 |
-| … | | | |
+| ID | Gap | Kind | Workaround (lines) | Tracked |
+|---|---|---|---|---|
+| [A1](#a1-slack-posts-from-app-code-have-no-idempotency-reconciliation-or-chunking) | Slack posts from app code: no idempotency, reconciliation, chunking | own | ~3,200 | none |
+| [A2](#a2-no-turn-level-idle-deadline-no-in-process-cancel) | No turn-level idle deadline; no in-process cancel | own | ~660 | none |
+| [A3](#a3-step-usage-has-no-served-model-id-compaction-and-auto-calls-are-unmetered-root-hooks-do-not-fire-in-subagents) | Cost attribution: no served model id, unmetered compaction/`auto()`, hooks not inherited | own | ~530 | #3483 |
+| … | | | | |
 
 ## Upgrade exposure (0.63.0 → 0.66.1)
 
@@ -118,6 +118,8 @@ export const CurrentReceiptUpdateInputSchema = z
 ---
 
 ## A2. No turn-level idle deadline; no in-process cancel
+
+Kind: own · Area: tasks
 
 **Gap.** eve has no "no meaningful activity for N minutes" signal or policy on a turn.
 `limits.sessionTimeoutMs` is a whole-session lifetime (default 30 days). Cancel exists as the
@@ -217,6 +219,8 @@ export function createEveCancellationTransport(input: {
 ---
 
 ## A12. The Slack `ts` of eve's own reply is not exposed
+
+Kind: buildable · Area: channels
 
 **Gap.** After the built-in `message.completed` handler posts the reply, no event, state
 field, or return value carries the Slack message id. Authored code cannot annotate, edit, or

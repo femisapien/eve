@@ -10,8 +10,8 @@ scope: "read-only; every claim cites path:line; [V] read, [I] inferred from the 
 
 # <org>/eve (<agent>): eve gap register
 
-17 gaps. The files that carry the workarounds total ≈5,800 of 24,237 lines of `agent/`
-TypeScript. Zero internal imports; three runtime reach-ins into `channel.adapter[...]`. Every
+18 gaps. The files that carry the workarounds total ≈5,800 of 24,237 lines of `agent/`
+TypeScript. No static internal imports; one dynamic import of `eve/dist` in a test helper and three runtime reach-ins into `channel.adapter[...]`. Every
 eve `limits.*` is `false`. The team has filed one issue against eve, withdrawn.
 
 | | |
@@ -23,25 +23,26 @@ eve `limits.*` is `false`. The team has filed one issue against eve, withdrawn.
 
 ## Index
 
-| ID | Gap | Workaround (lines) | Tracked |
-|---|---|---|---|
-| [A1](#a1-slack-posts-from-app-code-have-no-idempotency-reconciliation-or-chunking) | Slack posts from app code: no idempotency, reconciliation, chunking | ~3,200 | none |
-| [A2](#a2-no-turn-level-idle-deadline-no-in-process-cancel) | No turn-level idle deadline; no in-process cancel | ~660 | none |
-| [A3](#a3-step-usage-has-no-served-model-id-compaction-and-auto-calls-are-unmetered-root-hooks-do-not-fire-in-subagents) | Cost attribution: no served model id, unmetered compaction/`auto()`, hooks not inherited | ~530 | #3483 |
-| [A4](#a4-approval-delivery-cannot-target-a-designated-approver) | Approval delivery cannot target a designated approver | ~450 | none |
-| [A5](#a5-limits-are-per-session-lifetime-caps-nothing-per-request-day-or-principal) | Limits are per-session lifetime caps only | ~300; all limits `false` | #551 |
-| [A6](#a6-a-published-extension-stops-mounting-on-every-capability-contract-bump) | Published extension stops mounting on each contract bump | vendored package | agent-browser#1841 |
-| [A7](#a7-workflow-tool-yield-progress-is-not-rendered-in-slack) | Workflow-tool `yield` progress not rendered in Slack | ~200 | #2087 adj. |
-| [A8](#a8-evechannel-route-auth-does-not-bind-a-session-to-its-creator) | `eveChannel` does not bind a session to its creator | ~120 | none |
-| [A9](#a9-verceloidc-admits-other-project-development-tokens-only-as-service) | Cross-project dev tokens admitted only as `service` | ~90 | none |
-| [A10](#a10-ctxask-answers-carry-no-responder-identity) | `ctx.ask()` answers carry no responder | ~68 | none |
-| [A11](#a11-declared-subagents-inherit-no-tools-hooks-or-skills) | Subagents inherit nothing | 58 files | #626 |
-| [A12](#a12-the-slack-ts-of-eves-own-reply-is-not-exposed) | Posted reply `ts` not exposed | ~50 | #3974 |
-| [A13](#a13-auto-cannot-be-composed-reasoning-enum-stops-at-xhigh) | `auto()` not composable; no `max` reasoning | ~35 | #3676, #2022 |
-| [A14](#a14-defineschedule-has-no-timezone) | `defineSchedule` has no timezone | ~20 | none |
-| [A15](#a15-githubchannel-sandbox-checkout-cannot-be-disabled) | GitHub channel checkout cannot be disabled | 1 override | none |
-| [A16](#a16-runtime-value-of-ctxchannelkind-is-undocumented) | `ctx.channel.kind` value undocumented | 1 line | none |
-| [A17](#a17-sandbox-fingerprint-scope-is-undefined) | Sandbox fingerprint scope undefined | manual key bumps | none |
+| ID | Gap | Kind | Workaround (lines) | Tracked |
+|---|---|---|---|---|
+| [A1](#a1-slack-posts-from-app-code-have-no-idempotency-reconciliation-or-chunking) | Slack posts from app code: no idempotency, reconciliation, chunking | own | ~3,200 | none |
+| [A2](#a2-no-turn-level-idle-deadline-no-in-process-cancel) | No turn-level idle deadline; no in-process cancel | own | ~660 | none |
+| [A3](#a3-step-usage-has-no-served-model-id-compaction-and-auto-calls-are-unmetered-root-hooks-do-not-fire-in-subagents) | Cost attribution: no served model id, unmetered compaction/`auto()`, hooks not inherited | own | ~530 | #3483 |
+| [A4](#a4-approval-delivery-cannot-target-a-designated-approver) | Approval delivery cannot target a designated approver | own | ~450 | none |
+| [A5](#a5-limits-are-per-session-lifetime-caps-nothing-per-request-day-or-principal) | Limits are per-session lifetime caps only | own | ~300; all limits `false` | #551 |
+| [A6](#a6-a-published-extension-stops-mounting-on-every-capability-contract-bump) | Published extension stops mounting on each contract bump | own | vendored package | agent-browser#1841 |
+| [A7](#a7-workflow-tool-yield-progress-is-not-rendered-in-slack) | Workflow-tool `yield` progress not rendered in Slack | own | ~200 | #2087 adj. |
+| [A8](#a8-evechannel-route-auth-does-not-bind-a-session-to-its-creator) | `eveChannel` does not bind a session to its creator | own | ~120 | none |
+| [A9](#a9-verceloidc-admits-other-project-development-tokens-only-as-service) | Cross-project dev tokens admitted only as `service` | buildable | ~90 | none |
+| [A10](#a10-ctxask-answers-carry-no-responder-identity) | `ctx.ask()` answers carry no responder | own | ~68 | none |
+| [A11](#a11-declared-subagents-inherit-no-tools-hooks-or-skills) | Subagents inherit nothing | buildable | 58 files | #626 |
+| [A12](#a12-the-slack-ts-of-eves-own-reply-is-not-exposed) | Posted reply `ts` not exposed | buildable | ~50 | #3974 |
+| [A13](#a13-auto-cannot-be-composed-reasoning-enum-stops-at-xhigh) | `auto()` not composable; no `max` reasoning | buildable | ~35 | #3676, #2022 |
+| [A14](#a14-defineschedule-has-no-timezone) | `defineSchedule` has no timezone | own | ~20 | none |
+| [A15](#a15-githubchannel-sandbox-checkout-cannot-be-disabled) | GitHub channel checkout cannot be disabled | buildable | 1 override | none |
+| [A16](#a16-runtime-value-of-ctxchannelkind-is-undocumented) | `ctx.channel.kind` value undocumented | docs | 1 line | none |
+| [A17](#a17-sandbox-fingerprint-scope-is-undefined) | Sandbox fingerprint scope undefined | docs | manual key bumps | none |
+| [A18](#a18-definestate-and-context-accessors-cannot-run-outside-an-eve-execution-so-tests-import-the-container-from-dist) | `defineState` cannot run outside an eve execution; tests import the container from `dist` | buildable | ~10 | none |
 
 ## Upgrade exposure (0.63.0 → 0.66.1)
 
@@ -123,6 +124,8 @@ export const CurrentReceiptUpdateInputSchema = z
 
 ## A1. Slack posts from app code have no idempotency, reconciliation, or chunking
 
+Kind: own · Area: delivery
+
 **Gap.** eve owns the Slack transport, token resolution, and the 12,000-character/snippet
 chunking for model replies. App code that posts outside a model reply (scheduled digests,
 progress cards, recovery notices) gets `callSlackApi` / `ctx.thread.post` with no
@@ -195,6 +198,8 @@ export default defineSchedule({
 ---
 
 ## A2. No turn-level idle deadline; no in-process cancel
+
+Kind: own · Area: tasks
 
 **Gap.** eve has no "no meaningful activity for N minutes" signal or policy on a turn.
 `limits.sessionTimeoutMs` is a whole-session lifetime (default 30 days). Cancel exists as the
@@ -295,6 +300,8 @@ export function createEveCancellationTransport(input: {
 
 ## A3. Step usage has no served model id; compaction and `auto()` calls are unmetered; root hooks do not fire in subagents
 
+Kind: own · Area: cost
+
 **Gap.** A per-turn or per-task cost total cannot be assembled from eve's events. `step.completed`
 carries `usage` but not which model actually served the step (Gateway fallback can differ from
 the requested id); routing (`auto()`) and compaction model calls emit no usage; and a root hook
@@ -304,7 +311,7 @@ does not see subagent turns, so the same hook must be authored in every subagent
 `usage` and `providerMetadata`, no model id; served model reaches only instrumentation
 (`src/instrumentation/lifecycle.ts:439`, `responseModelId`). `src/models/auto.ts:167` calls
 `evaluate()` with no usage capture (grep `usage|cost` empty at pin and HEAD).
-`docs/guides/hooks.md:183`: "Parent-agent hooks do not fire for subagent turns."
+`docs/guides/hooks.md:183`: "Parent-agent hooks do not fire for subagent turns"
 `docs/agent-config.md:153-207` (0.63.0): `maxTokenCostUsdPerSession` is enforcement, "not
 tool or infrastructure spend"; no readout. 0.66.1 `d6fc658` adds usage on delegated task
 results (task level, not hooks). vercel/eve#3483 (open, 2026-09-17) asks for compaction usage
@@ -364,13 +371,15 @@ export { default } from "../../../hooks/factory-cost";
 
 ## A4. Approval delivery cannot target a designated approver
 
+Kind: own · Area: hitl
+
 **Gap.** Slack `approvalChannel: "direct-message"` delivers a tool-approval request to the
 user who triggered the turn. The common enterprise shape — a teammate requests, a fixed owner
 approves — cannot be expressed, so the project owns delivery, the card, the click-to-request
 binding, and the session resume.
 
 **What eve says.** `docs/channels/slack.mdx:451`: "Return `"direct-message"` when the request
-must be visible only to the Slack user who triggered the turn." The type comment at
+must be visible only to the Slack user who triggered the turn" The type comment at
 `src/public/channels/slack/slackChannel.ts:647-650` (0.63.0) says the same. The internal
 delivery function already accepts any reviewer:
 `src/public/channels/slack/private-approval-delivery.ts:10-14` `deliverPrivateInputRequest({ reviewer })`.
@@ -431,6 +440,8 @@ export function privateApprovalChannel(channel:SlackChannel):SlackChannel {
 
 ## A5. Limits are per-session lifetime caps; nothing per request, day, or principal
 
+Kind: own · Area: budgets
+
 **Gap.** eve's `limits` are session-scoped token and cost ceilings that pause the session with
 an Approve/Stop prompt when reached. There is no per-request, per-day, or per-principal budget
 and no way to reserve spend before a step runs.
@@ -481,6 +492,8 @@ in place but recording nothing.
 
 ## A6. A published extension stops mounting on every capability-contract bump
 
+Kind: own · Area: extensions
+
 **Gap.** eve refuses to mount an extension built against an older capability contract. A
 consumer of a third-party extension whose maintainer has not republished must vendor the
 source and rebuild it on each bump. The bumps themselves are not named in the changelog.
@@ -522,14 +535,16 @@ config 1. Eve 0.57.0 reports no unsupported requirements for that manifest.
 
 ## A7. Workflow-tool `yield` progress is not rendered in Slack
 
+Kind: own · Area: channels
+
 **Gap.** A `defineWorkflowTool` body `yield`s progress, which becomes an `action.partial`
 event. The Slack channel's default handlers and activity renderers do not handle
 `action.partial`, so a multi-phase workflow shows no phase progress in Slack. Background
 yields are dropped entirely.
 
 **What eve says.** `docs/tools/workflows.mdx:18-19` (0.63.0): "Use `yield` to report
-progress"; `:438`: "`yield value` — Emits an `action.partial` snapshot for the pending tool
-call / [background] Consumes the value without publishing progress." Slack defaults at
+progress"; `:438`: "Emits an `action.partial` snapshot for the pending tool call" and, for
+background tools, "Consumes the value without publishing progress" Slack defaults at
 `src/public/channels/slack/defaults.ts:417-609` (0.63.0) handle `turn.started`,
 `reasoning.*`, `actions.requested`, `message.completed`, failures, authorization — not
 `action.partial`; `experimental_slackActivityStatus/Tree` key on `actions.requested` and
@@ -569,6 +584,8 @@ export async function updateSlackProgress(input:{sessionId:string;turnId:string;
 ---
 
 ## A8. `eveChannel` route auth does not bind a session to its creator
+
+Kind: own · Area: auth
 
 **Gap.** Route auth on `eveChannel` identifies the caller, but nothing ties a session id to
 the principal that created it. Any authenticated caller who learns a session id can stream,
@@ -643,6 +660,8 @@ until ownership is saved; unavailable storage fails closed. …
 
 ## A9. `vercelOidc` admits other-project development tokens only as `service`
 
+Kind: buildable · Area: auth
+
 **Gap.** A frontend project's local development calling a deployed eve presents a Vercel
 development OIDC token from a different project. eve's helper accepts tokens from other
 projects only when their `sub` matches a configured `subjects` entry, and then as a `service`
@@ -678,6 +697,8 @@ export function <app-1>DevelopmentOidc(
 ---
 
 ## A10. `ctx.ask()` answers carry no responder identity
+
+Kind: own · Area: hitl
 
 **Gap.** A workflow tool parked on `ctx.ask()` resumes with `{ optionId, text }` and does not
 learn who answered. A question used as an authorization step ("approve this brief") must be
@@ -722,6 +743,8 @@ export async function admitBriefResponse(response: {requestId: string; optionId?
 
 ## A11. Declared subagents inherit no tools, hooks, or skills
 
+Kind: buildable · Area: subagents
+
 **Gap.** A declared subagent's directory is its own agent root. It gets framework defaults for
 unauthored slots but never the root's authored tools, hooks, or skills. Sharing means a
 workspace extension or a re-export file per slot per subagent.
@@ -754,6 +777,8 @@ export { default } from "../../../tools/bash";
 ---
 
 ## A12. The Slack `ts` of eve's own reply is not exposed
+
+Kind: buildable · Area: channels
 
 **Gap.** After the built-in `message.completed` handler posts the reply, no event, state
 field, or return value carries the Slack message id. Authored code cannot annotate, edit, or
@@ -805,6 +830,8 @@ export function captureSlackReply(channel: SlackChannel): SlackChannel {
 ---
 
 ## A13. `auto()` cannot be composed; reasoning enum stops at `xhigh`
+
+Kind: buildable · Area: models
 
 **Gap.** `auto()` returns a dynamic model whose selection runs in a `step.started` handler.
 There is no documented way to pre-empt or post-process that selection (channel-specific
@@ -858,6 +885,8 @@ export async function resolve<agent>Model(event: unknown, ctx: DynamicResolveCon
 
 ## A14. `defineSchedule` has no timezone
 
+Kind: own · Area: schedules
+
 **Gap.** Schedules take a cron expression evaluated in UTC. A "09:00 local, weekdays" cadence
 cannot be written; it requires an hour window covering both DST offsets and a runtime gate.
 
@@ -885,6 +914,8 @@ export default defineSchedule({
 ---
 
 ## A15. `githubChannel` sandbox checkout cannot be disabled
+
+Kind: buildable · Area: channels
 
 **Gap.** The GitHub channel clones the triggering ref into the root sandbox on every turn
 before the first model call. There is no option to turn this off for a project that owns its
@@ -914,6 +945,8 @@ clone returns and conflicts with the factory's brokered Git stations [I].
 
 ## A16. Runtime value of `ctx.channel.kind` is undocumented
 
+Kind: docs · Area: channels
+
 **Gap.** Hooks receive `ctx.channel.kind` typed as `string`. The runtime value for Slack is
 `"channel:slack"`, not `"slack"`; a hook that guesses the literal never fires.
 
@@ -935,6 +968,8 @@ const isSlackChannel = (kind: string | undefined) => kind === "channel:slack" ||
 ---
 
 ## A17. Sandbox fingerprint scope is undefined
+
+Kind: docs · Area: sandbox
 
 **Gap.** eve replaces a durable sandbox when its "source fingerprint" changes. The docs do not
 say whether a change in a module the sandbox definition imports (here, the network policy)
@@ -958,4 +993,43 @@ sandbox with the old egress policy.
 // source fingerprint. Bump this key whenever the baseline policy changes so
 // durable sessions cannot reattach to a sandbox that retained the old policy.
 export const SANDBOX_REVALIDATION_KEY = "<config-value>";
+```
+
+---
+
+## A18. `defineState` and context accessors cannot run outside an eve execution, so tests import the container from `dist`
+
+Kind: buildable · Area: tooling
+
+**Gap.** `eve/context` exports `defineState`, but a handle's `get()` and `update()` only work
+inside an active eve execution, and eve exposes no public way to open one. A unit test for a
+module that reads state has to construct eve's internal context container itself.
+
+**What eve says.** `docs/guides/session-context.md:77` (0.63.0): "Its `get()` and `update()`
+methods still require active eve execution." The public `eve/context` entry exports
+`defineState`, `StateHandle`, and `SessionContext` types only (`src/public/context/index.ts:13-21`
+at 0.63.0). The container lives at `src/context/container.ts` (`ContextContainer`,
+`contextStorage`) and is not in the export map. No changelog entry through 0.68.0 adds a test
+harness for it. [V]
+
+**What the project built.** A test helper that resolves `eve/package.json`, appends
+`dist/src/context/container.js` to its directory, dynamically imports it, and runs the test
+body inside `contextStorage.run(new ContextContainer(), …)`. Used by three test files. Since
+2026-09-22 (pin 0.63.0). Own words: "The pinned Eve runtime's real context container, used
+only by local integration checks." [V]
+
+**How it fails.** Loud: a moved or renamed `dist/src/context/container.js`, or a change to
+`contextStorage`/`ContextContainer`, breaks the import at test time. The static-import scan
+in this audit missed it because the path is assembled at runtime; any check that greps for
+`from "eve/dist` will miss it the same way.
+
+`tests/helpers/eve-context.ts:5-10`
+
+```ts
+// The pinned Eve runtime's real context container, used only by local integration checks.
+const require = createRequire(import.meta.url);
+const runtime = await import(pathToFileURL(join(dirname(require.resolve("eve/package.json")), "dist/src/context/container.js")).href);
+export function withEveContext<T>(run: () => T): T {
+  return runtime.contextStorage.run(new runtime.ContextContainer(), run);
+}
 ```

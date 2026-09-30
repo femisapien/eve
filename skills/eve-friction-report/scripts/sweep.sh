@@ -15,6 +15,8 @@ grep -rnE "^\s*(//|\*|/\*\*?|#|-)\s*.*\b[Ee]ve\b" "$AGENT" docs --include='*.ts'
 
 H "S1 internal imports and type reach-ins"
 G "from ['\"]eve/(dist|src|internal)" "$AGENT" tests scripts
+echo "-- dynamic or path-built imports of eve internals:"
+G "eve/package\.json|[\"'/]dist/src/|import\(.*eve" "$AGENT" tests scripts evals
 G "\.adapter\b|\.adapter\?\.\[|Runtime[A-Z][A-Za-z]*Channel|__eve|Symbol\.for\(['\"]eve" "$AGENT"
 G "as unknown as|as any\b" "$AGENT" | grep -iE "eve|channel|session|state|ctx"
 GI "installed eve .*incompatible|refusing to start" "$AGENT"

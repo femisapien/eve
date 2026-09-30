@@ -41,6 +41,12 @@ retyping searches; they are what makes two runs of this skill agree.
   Do not cite the number of an issue filed by the project's own contributors;
   say how many and their state. Third-party vendor names (Slack, Shopify,
   Redis) and public eve issue numbers filed by others are fine.
+  What this protects against: a reader or search engine linking the report
+  to the organization by name, handle, ID, or codename. What it does not
+  protect against: someone who already has the source recognizing it from
+  the excerpts, which are verbatim by design. If the report may be published
+  beyond the eve team, get the team's consent first; anonymization is not a
+  substitute for it.
 - Read-only. Do not change, commit, deploy, or query production systems.
 - Every claim carries a citation (`path:line` or `path:line-line`, commit
   SHA, issue URL) and an evidence tag: `[V]` you read it, `[I]` inferred from
@@ -157,11 +163,28 @@ Append one record per W to `.eve-friction/records.md`:
 
 A record stays only if all three hold:
 
-1. Only eve can do it correctly, because eve owns the state, protocol,
-   timing, or rendering involved.
+1. eve is the right place to close it: eve owns the state, protocol, timing,
+   or rendering involved, or eve is the only place a hook or option could
+   make it buildable on top.
 2. Any eve project with the same shape would hit it; it is not this
    project's product policy.
 3. The workaround disappears, or shrinks to configuration, once eve has it.
+
+Give each surviving record a **Kind**, one of:
+
+- `own` — eve must own it (the state, protocol, or timing is eve's).
+- `buildable` — eve should expose an option, event, or hook so the project
+  can build it; eve need not ship the feature.
+- `docs` — eve has it; the docs are silent or wrong.
+- `mismatch` — the project's design assumes a model eve does not have (for
+  example blocking delegation on a background-task runtime). The block's
+  "What eve says" states eve's model; "What the project built" states the
+  assumption.
+
+And an **Area** from: tasks, delivery, channels, auth, hitl, cost, budgets,
+subagents, sandbox, extensions, models, schedules, tooling, docs. These two
+words are what lets reports from different projects be compared; keep to the
+lists.
 
 Three mistakes drop real gaps. Do not make them:
 
@@ -195,12 +218,17 @@ project is current.
 
 Fill `references/report-template.md`. Sections, in order: three lines of
 facts, subject table, index, upgrade exposure, tool shape, then one block
-per gap, ordered by workaround size, largest first.
+per gap, ordered by workaround size, largest first. Size is a fact about the
+project, not a severity: a 3-line override can mark a deeper gap than 3,000
+lines of outbox. Do not let the order imply otherwise in prose.
 
 Tool shape is a facts table from S12 plus one excerpt comparing two members
 of the largest family. State counts, shared backends, approval placement,
 and how many tool names the prompt routes by hand. Quote what eve's
-approval docs support. Do not write "should"; the numbers carry the point.
+approval docs support. When the project states a reason for narrow tools
+(least privilege, audit by tool name, a non-technical audience), quote it;
+narrow tools are sometimes a security boundary, and the section must not
+read as if they never are. Do not write "should"; the numbers carry the point.
 A family becomes a gap block only when an eve limitation forced the split,
 and then the block cites that limitation like any other gap.
 
@@ -226,7 +254,8 @@ end. No "should", no proposed shapes, no acceptance criteria, no priorities.
 
 ```sh
 node <skill-dir>/scripts/redact.mjs <report.md> --map .eve-friction --project <project-root>
-node <skill-dir>/scripts/check-report.mjs <report.md> <project-root> --map .eve-friction
+node <skill-dir>/scripts/check-report.mjs <report.md> <project-root> --map .eve-friction \
+  --eve node_modules/eve --eve <dir with the newest eve docs and changelog>
 ```
 
 `redact.mjs` rewrites the report in place with placeholders and lists any
@@ -237,13 +266,24 @@ verbatim modulo anonymization.
 `check-report.mjs` verifies: no mapped term, identifier class, or project
 commit SHA anywhere in the report; the opening gap count equals index rows
 equals blocks; every index anchor resolves to its heading; every block has
-the four paragraphs in order, at least one excerpt, and a `[V]`; no
-"should", "propose", "recommend", "acceptance", or priority labels in prose;
-and every fenced excerpt anywhere in the report (gap blocks and tool shape)
-matches the cited file lines verbatim modulo redaction, with brace paths
-expanded and each alternative checked, blank lines skipped, and in-line `…`
-allowed. Fix and rerun until it prints `OK`. Do not
-deliver a report that fails the check.
+a valid `Kind: … · Area: …` line, the four paragraphs in order, at least one
+excerpt, and a `[V]`; no "should", "propose", "recommend", "acceptance", or
+priority labels in prose; **every quoted passage in "What eve says" exists
+verbatim in the eve sources passed with `--eve`** (docs, changelog, or
+source; issue titles written as `#123 "title"` are exempt); and every fenced
+excerpt anywhere in the report matches the cited file lines verbatim modulo
+redaction, with brace paths expanded and each alternative checked, blank
+lines skipped, and in-line `…` allowed. Fix and rerun until it prints `OK`.
+Do not deliver a report that fails the check.
+
+The quote check is strict on purpose: a period where the doc has a comma
+fails. Copy eve's sentences; do not reconstruct them from memory or join
+table cells with slashes.
+
+What the check does not do: it cannot tell whether a gap statement is true,
+whether eve has the capability under another name, or whether "How it
+fails" will happen. `OK` means the report is well-formed, anonymized, and
+quotes real text. The judgment is still yours; tag it.
 
 After it passes, read the report once more as a stranger would: a project
 codename, a city, a customer's name in a fixture, or a distinctive env var
