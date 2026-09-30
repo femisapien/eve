@@ -2,6 +2,8 @@ import {
   agentCallTurns,
   agentToolSession,
   conversationAuthorizations,
+  pendingSignIns,
+  signInState,
   followedAgentToolCallIds,
   isAgentCallContentPending,
   type ConversationState,
@@ -176,10 +178,7 @@ export class ConversationTranscript {
           !isPanelRoutedTool(part.toolName),
       );
       const states = new Map(
-        tools.map((part) => [
-          part,
-          toolState(conversation, part, { turnId: message.metadata?.turnId, streaming: working }),
-        ]),
+        tools.map((part) => [part, toolState(conversation, part, { streaming: working })]),
       );
       const activeSteps = activeToolSteps(states);
 
@@ -188,7 +187,9 @@ export class ConversationTranscript {
           const block = this.#contentBlock(message, index, options, working);
           if (block !== undefined) blocks.push(block);
         } else if (part.type === "authorization") {
-          if (options.connectionAuth !== "hidden") blocks.push(this.#authorizationBlock(part));
+          if (options.connectionAuth !== "hidden") {
+            blocks.push(this.#authorizationBlock(part, signInState(conversation, part)));
+          }
         } else if (part.type === "dynamic-tool") {
           const taskCall = taskCalls.get(part.toolCallId);
           if (taskCall !== undefined) {
@@ -402,10 +403,7 @@ export class ConversationTranscript {
           continue;
         }
         const childTask = childTasks.get(part.toolCallId);
-        const state = toolState(child, part, {
-          turnId: message.metadata?.turnId,
-          streaming: running,
-        });
+        const state = toolState(child, part, { streaming: running });
         const id = `subagent:${record.callId}:tool:${part.toolCallId}`;
         const block = this.#memoize(id, [part, state.status, record.name], () => {
           const context = this.#presentationContext(part.toolCallId, part, state, options, {
@@ -519,9 +517,9 @@ export class ConversationTranscript {
     );
   }
 
-  #authorizationBlock(part: EveAuthorizationPart): Block {
-    return this.#memoize(`connection-auth:${authorizationKey(part)}`, [part], () => {
-      const state = part.state === "completed" ? part.outcome : part.state;
+  #authorizationBlock(part: EveAuthorizationPart, signIn: ReturnType<typeof signInState>): Block {
+    const state = signIn.status === "completed" ? (signIn.outcome ?? "completed") : "required";
+    return this.#memoize(`connection-auth:${authorizationKey(part)}`, [part, state], () => {
       const terminalMessage = authorizationTerminalMessage(state);
       return {
         kind: "connection-auth",
@@ -642,10 +640,16 @@ export function turnActivity(view: AgentTUIConversationView, tasks: readonly Tas
   )
     return "Running";
   if (turn === undefined || turn.waiting === true) {
-    const signIns = conversationAuthorizations(conversation).filter(
-      (part) => part.state === "required" && part.awaitsCallback === true,
-    );
-    if (signIns.length > 0) return signInLabel(signIns.map((part) => part.displayName));
+    const signIns = pendingSignIns(conversation);
+    if (signIns.length > 0) {
+      const parts = conversationAuthorizations(conversation);
+      return signInLabel(
+        signIns.map(
+          (attempt) =>
+            parts.find((part) => part.attemptId === attempt.attemptId)?.displayName ?? attempt.name,
+        ),
+      );
+    }
   }
   if (turn?.waiting === true && tasks.length > 0) return waitingLabel(tasks);
   if (message === undefined) return "Thinking";

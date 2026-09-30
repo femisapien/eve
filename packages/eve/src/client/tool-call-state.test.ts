@@ -71,35 +71,47 @@ function approve(callId: string): UnstampedMessageStreamEvent {
   });
 }
 
+/** The batch resolves once both lookups are decided; the approved calls run in `turn_2`. */
+const batchResolved = createInputResolvedEvent({
+  resolutions: callIds.map((callId) => ({
+    kind: "tool-approval" as const,
+    outcome: "approved" as const,
+    requestId: `approve_${callId}`,
+    resumeTurnId: "turn_2",
+  })),
+  sequence: 4,
+  stepIndex: 0,
+  turnId: "turn_1",
+});
+
 function statuses(state: ConversationState): Record<string, ToolCallStatus> {
   const entries = state.messages.flatMap((message) =>
     message.parts
       .filter((part): part is EveDynamicToolPart => part.type === "dynamic-tool")
-      .map((part) => [
-        part.toolCallId,
-        toolCallState(state, part, { turnId: message.metadata?.turnId }).status,
-      ]),
+      .map((part) => [part.toolCallId, toolCallState(state, part).status]),
   );
   return Object.fromEntries(entries);
 }
 
 describe("toolCallState", () => {
-  it("runs an approved call in the turn after its approval, not the turn that asked", () => {
+  it("runs an approved call in the turn its approval names, not the turn that asked", () => {
     expect(statuses(askedForApproval)).toEqual({
       alice_lookup: "awaiting-input",
       bob_lookup: "awaiting-input",
     });
 
+    // Approved, but the batch still waits on Bob's lookup.
     const approvedOne = reduce([approve("alice_lookup")], askedForApproval);
     expect(statuses(approvedOne)).toEqual({
-      alice_lookup: "running",
+      alice_lookup: "awaiting-input",
       bob_lookup: "awaiting-input",
     });
 
     const resumed = reduce(
       [
         approve("bob_lookup"),
-        createTurnStartedEvent({ sequence: 5, turnId: "turn_2" }),
+        batchResolved,
+        createTurnStartedEvent({ continuesTurnId: "turn_1", sequence: 5, turnId: "turn_2" }),
         createActionResultEvent({
           result: { callId: "alice_lookup", kind: "tool-result", output: 7, toolName: "lookup" },
           sequence: 6,
@@ -109,10 +121,10 @@ describe("toolCallState", () => {
       ],
       approvedOne,
     );
-    expect(statuses(resumed)).toEqual({ alice_lookup: "done", bob_lookup: "running" });
+    expect(statuses(resumed)).toEqual({ alice_lookup: "completed", bob_lookup: "running" });
 
     const ended = reduce([createTurnCompletedEvent({ sequence: 7, turnId: "turn_2" })], resumed);
-    expect(statuses(ended)).toEqual({ alice_lookup: "done", bob_lookup: "interrupted" });
+    expect(statuses(ended)).toEqual({ alice_lookup: "completed", bob_lookup: "interrupted" });
   });
 
   it("cancels an approved call whose resumed turn was cancelled", () => {
@@ -120,7 +132,8 @@ describe("toolCallState", () => {
       [
         approve("alice_lookup"),
         approve("bob_lookup"),
-        createTurnStartedEvent({ sequence: 5, turnId: "turn_2" }),
+        batchResolved,
+        createTurnStartedEvent({ continuesTurnId: "turn_1", sequence: 5, turnId: "turn_2" }),
         createTurnCancelledEvent({ sequence: 6, turnId: "turn_2" }),
       ],
       askedForApproval,
@@ -176,8 +189,8 @@ describe("toolCallState", () => {
     expect(statuses(next)).toEqual({ ask_bob: "cancelled" });
   });
 
-  it("runs a call approved for a subagent while the subagent's task works", () => {
-    const state = reduce([
+  it("holds a task's call on the approval its subagent passed up, and shows the subagent's call through it", () => {
+    const asked = reduce([
       createTurnStartedEvent({ sequence: 0, turnId: "turn_1" }),
       createActionsRequestedEvent({
         actions: [{ callId: "delegate", input: {}, kind: "tool-call", toolName: "researcher" }],
@@ -193,6 +206,7 @@ describe("toolCallState", () => {
         turnId: "turn_1",
       }),
       createInputRequestedEvent({
+        callId: "delegate",
         requests: [
           {
             action: { callId: "child_lookup", input: {}, kind: "tool-call", toolName: "lookup" },
@@ -207,17 +221,23 @@ describe("toolCallState", () => {
         turnId: "turn_1",
       }),
       createTurnCompletedEvent({ sequence: 3, turnId: "turn_1" }),
-      createApprovalSettledEvent({
-        outcome: "approved",
-        requestId: "approve_child_lookup",
-        responderPrincipalId: "alice",
-        sequence: 4,
-        stepIndex: 0,
-        turnId: "turn_1",
-      }),
-      createTurnStartedEvent({ sequence: 5, turnId: "turn_2" }),
-      createTurnCompletedEvent({ sequence: 6, turnId: "turn_2" }),
     ]);
-    expect(statuses(state)).toEqual({ child_lookup: "running", delegate: "running" });
+    expect(asked.inputs.approve_child_lookup?.callId).toBe("delegate");
+    expect(statuses(asked)).toEqual({ child_lookup: "awaiting-input", delegate: "awaiting-input" });
+
+    const approved = reduce(
+      [
+        createInputResolvedEvent({
+          resolutions: [
+            { kind: "tool-approval", outcome: "approved", requestId: "approve_child_lookup" },
+          ],
+          sequence: 4,
+          stepIndex: 0,
+          turnId: "turn_1",
+        }),
+      ],
+      asked,
+    );
+    expect(statuses(approved)).toEqual({ child_lookup: "running", delegate: "running" });
   });
 });

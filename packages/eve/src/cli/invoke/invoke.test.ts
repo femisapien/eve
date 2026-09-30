@@ -152,11 +152,21 @@ describe("runInvoke", () => {
         [
           {
             type: "authorization.required",
-            data: { description: "Sign in", name: "linear", webhookUrl: "https://linear.test" },
+            data: {
+              attemptId: "attempt_linear",
+              description: "Sign in",
+              name: "linear",
+              webhookUrl: "https://linear.test",
+            },
           },
           {
             type: "authorization.required",
-            data: { description: "Sign in", name: "github", webhookUrl: "https://github.test" },
+            data: {
+              attemptId: "attempt_github",
+              description: "Sign in",
+              name: "github",
+              webhookUrl: "https://github.test",
+            },
           },
           {
             type: "session.waiting",

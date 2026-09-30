@@ -21,6 +21,7 @@ export function createAuthorizationRequiredPart(
       event.data.name,
       displayName,
     ),
+    attemptId: event.data.attemptId,
     displayName,
     name: event.data.name,
     state: "required",
@@ -28,7 +29,6 @@ export function createAuthorizationRequiredPart(
     turnId: event.data.turnId,
     type: "authorization",
   };
-  if (event.data.attemptId !== undefined) part.attemptId = event.data.attemptId;
   if (event.data.webhookUrl !== undefined) part.awaitsCallback = true;
   return part;
 }
@@ -50,6 +50,7 @@ export function createAuthorizationCompletedPart(
     description:
       existing?.description ??
       buildCompletedAuthorizationDescription(displayName, event.data.outcome, event.data.reason),
+    attemptId: event.data.attemptId,
     displayName,
     name: event.data.name,
     outcome: event.data.outcome,
@@ -58,8 +59,6 @@ export function createAuthorizationCompletedPart(
     turnId: existing?.turnId ?? event.data.turnId,
     type: "authorization",
   };
-  const attemptId = event.data.attemptId ?? existing?.attemptId;
-  if (attemptId !== undefined) part.attemptId = attemptId;
   if (existing?.awaitsCallback) part.awaitsCallback = true;
   if (event.data.reason !== undefined) part.reason = event.data.reason;
   return part;

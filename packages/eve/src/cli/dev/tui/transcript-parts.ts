@@ -52,15 +52,15 @@ export function toolState(
   const state = toolCallState(conversation, part, context);
   switch (state.status) {
     case "running":
-    case "done":
-      return state.output === undefined
-        ? { status: state.status }
-        : { status: state.status, output: state.output };
+    case "completed": {
+      const status = state.status === "running" ? "running" : "done";
+      return state.output === undefined ? { status } : { status, output: state.output };
+    }
     case "awaiting-input":
       return { status: "approval" };
     case "failed":
       return { status: "error", errorText: state.errorText };
-    case "denied":
+    case "rejected":
       return { status: "denied", errorText: state.errorText ?? "Denied by user." };
     case "cancelled":
       return { status: "error", errorText: state.errorText ?? "cancelled" };

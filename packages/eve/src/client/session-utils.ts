@@ -145,9 +145,6 @@ function isFinalMessageCompleted(
   return event.type === "message.completed" && event.data.finishReason !== "tool-calls";
 }
 
-export function authorizationKey(data: {
-  readonly name: string;
-  readonly attemptId?: string;
-}): string {
-  return data.attemptId === undefined ? `name:${data.name}` : `attempt:${data.attemptId}`;
+export function authorizationKey(data: { readonly attemptId: string }): string {
+  return `attempt:${data.attemptId}`;
 }

@@ -174,13 +174,13 @@ describe("conversation reducer tasks and agent sessions", () => {
       createTurnStartedEvent({ sequence: 0, turnId: "t1" }),
       createTurnWaitingEvent({ sequence: 0, turnId: "t1" }),
     ]);
-    expect(parked.turns.t1).toEqual({ turnId: "t1", status: "active", waiting: true });
+    expect(parked.turns.t1).toMatchObject({ turnId: "t1", status: "active", waiting: true });
     expect(parked.activeTurnId).toBe("t1");
     const resumed = reduce(
       [createStepStartedEvent({ modelId: "mock", sequence: 0, stepIndex: 1, turnId: "t1" })],
       parked,
     );
-    expect(resumed.turns.t1).toEqual({ turnId: "t1", status: "active" });
+    expect(resumed.turns.t1?.waiting).toBeUndefined();
     const ended = reduce(
       [
         createTurnWaitingEvent({ sequence: 0, turnId: "t1" }),
@@ -188,7 +188,8 @@ describe("conversation reducer tasks and agent sessions", () => {
       ],
       resumed,
     );
-    expect(ended.turns.t1).toEqual({ turnId: "t1", status: "completed" });
+    expect(ended.turns.t1).toMatchObject({ turnId: "t1", status: "completed" });
+    expect(ended.turns.t1?.waiting).toBeUndefined();
     expect(ended.activeTurnId).toBeUndefined();
   });
 });

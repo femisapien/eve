@@ -105,7 +105,8 @@ export type EveAuthorizationPart = {
   readonly description: string;
   readonly displayName: string;
   readonly name: string;
-  readonly attemptId?: string;
+  /** The attempt the part shows; its `authorization.completed` names the same one. */
+  readonly attemptId: string;
   /** The sign-in's callback settles this attempt and resumes the parked turn. */
   readonly awaitsCallback?: boolean;
   readonly stepIndex: number;

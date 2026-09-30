@@ -1,14 +1,15 @@
-import type {
-  AgentObservation,
-  ConversationAgentSession,
-  ConversationInput,
-  ConversationState,
-  ConversationTask,
-  ConversationTurn,
+import {
+  initialConversation,
+  sessionProjectionOf,
+  type AgentObservation,
+  type ConversationAgentSession,
+  type ConversationProjection,
+  type ConversationState,
 } from "#client/conversation-state.js";
 import { defaultMessageReducer } from "#client/message-reducer.js";
 import type { EveAgentReducer, EveAgentReducerEvent } from "#client/reducer.js";
 import type { MessageStreamEvent } from "#protocol/message.js";
+import { reduceSessionProjection } from "#protocol/session-projection.js";
 
 /**
  * Transport facts about followed agent sessions. Only the canonical conversation receives them;
@@ -29,60 +30,14 @@ export type ConversationEvent = EveAgentReducerEvent | ClientAgentEvent;
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
 export function initialConversationState(): ConversationState {
-  return { messages: [], turns: {}, inputs: {}, tasks: {}, agents: {} };
-}
-
-function updateTurn(
-  state: ConversationState,
-  turnId: string,
-  update: (turn: ConversationTurn) => ConversationTurn,
-): ConversationState {
-  const turn = state.turns[turnId];
-  if (turn === undefined) return state;
-  const next = update(turn);
-  return next === turn ? state : { ...state, turns: { ...state.turns, [turnId]: next } };
-}
-
-function updateTask(
-  state: ConversationState,
-  taskId: string,
-  update: (task: ConversationTask) => ConversationTask,
-): ConversationState {
-  const task = state.tasks[taskId];
-  if (task === undefined) return state;
-  const next = update(task);
-  return next === task ? state : { ...state, tasks: { ...state.tasks, [taskId]: next } };
-}
-
-/**
- * A root tool approval ends its turn, so the next turn runs the approved call. A question parks
- * its turn, which resumes under the same ID, and a task's request resumes the task's own session.
- */
-function resumeSettledApprovals(
-  inputs: ConversationState["inputs"],
-  turnId: string,
-): ConversationState["inputs"] {
-  let next: Record<string, ConversationInput> | undefined;
-  for (const [requestId, input] of Object.entries(inputs)) {
-    if (
-      input.status !== "settled" ||
-      input.request.kind !== "tool-approval" ||
-      input.taskId !== undefined ||
-      input.resumeTurnId !== undefined
-    ) {
-      continue;
-    }
-    next ??= { ...inputs };
-    next[requestId] = { ...input, resumeTurnId: turnId };
-  }
-  return next ?? inputs;
+  return initialConversation();
 }
 
 function updateObservation(
-  state: ConversationState,
+  state: ConversationProjection,
   sessionId: string,
   update: (observation: AgentObservation) => AgentObservation,
-): ConversationState {
+): ConversationProjection {
   const agent = state.agents[sessionId];
   if (agent === undefined) return state;
   const observation = update(agent.observation);
@@ -94,91 +49,17 @@ function observedConversation(observation: AgentObservation): ConversationState 
   return observation.status === "not-followed" ? undefined : observation.conversation;
 }
 
-/** Applies lifecycle identity and closure to an already projected message state. */
-function reduceConversationLifecycle(
-  state: ConversationState,
+/**
+ * Folds what only a client knows into the conversation: the agent sessions its runs opened and
+ * this client's own answers, which read as responded until the stream settles them. Everything
+ * else about turns, requests, tasks, calls, and sign-ins comes from the session projection eve
+ * also folds for its own activity.
+ */
+function reduceClientLifecycle(
+  state: ConversationProjection,
   event: EveAgentReducerEvent,
-): ConversationState {
+): ConversationProjection {
   switch (event.type) {
-    case "turn.started":
-      return {
-        ...state,
-        activeTurnId: event.data.turnId,
-        turns: {
-          ...state.turns,
-          [event.data.turnId]: { turnId: event.data.turnId, status: "active" },
-        },
-        inputs: resumeSettledApprovals(state.inputs, event.data.turnId),
-      };
-    case "turn.waiting":
-      return updateTurn(state, event.data.turnId, (turn) =>
-        turn.status === "active" && !turn.waiting ? { ...turn, waiting: true } : turn,
-      );
-    case "step.started":
-      return updateTurn(state, event.data.turnId, (turn) =>
-        turn.waiting ? { turnId: turn.turnId, status: turn.status } : turn,
-      );
-    case "turn.completed":
-    case "turn.cancelled":
-    case "turn.failed": {
-      const { turnId } = event.data;
-      return {
-        ...state,
-        activeTurnId: state.activeTurnId === turnId ? undefined : state.activeTurnId,
-        turns: {
-          ...state.turns,
-          [turnId]: {
-            turnId,
-            status:
-              event.type === "turn.completed"
-                ? "completed"
-                : event.type === "turn.failed"
-                  ? "failed"
-                  : "cancelled",
-          },
-        },
-      };
-    }
-    // Only a turn's end reaches a session boundary, so no turn stays open across one.
-    case "session.waiting":
-    case "session.completed":
-    case "session.failed":
-      return state.activeTurnId === undefined ? state : { ...state, activeTurnId: undefined };
-    case "task.started": {
-      const { callId, kind, name, taskId, turnId } = event.data;
-      const task = state.tasks[taskId] ?? { taskId, name, kind, calls: {} };
-      if (task.calls[callId] !== undefined) return state;
-      return {
-        ...state,
-        tasks: {
-          ...state.tasks,
-          [taskId]: {
-            ...task,
-            calls: { ...task.calls, [callId]: { callId, turnId, status: "working" } },
-          },
-        },
-      };
-    }
-    case "task.settled": {
-      const { callId, error, output, status, taskId } = event.data;
-      return updateTask(state, taskId, (task) => {
-        const call = task.calls[callId];
-        if (call === undefined || call.status !== "working") return task;
-        const settled = { callId, turnId: call.turnId, status };
-        return {
-          ...task,
-          calls: {
-            ...task.calls,
-            [callId]:
-              status === "completed" && output !== undefined
-                ? { ...settled, output }
-                : status === "failed" && error !== undefined
-                  ? { ...settled, error }
-                  : settled,
-          },
-        };
-      });
-    }
     case "agent.started": {
       const { callId, name, sessionId, taskId, turnId } = event.data;
       if (state.agents[sessionId] !== undefined) return state;
@@ -192,21 +73,6 @@ function reduceConversationLifecycle(
       if (taskId !== undefined) agent.taskId = taskId;
       return { ...state, agents: { ...state.agents, [sessionId]: agent } };
     }
-    case "input.requested": {
-      const inputs = { ...state.inputs };
-      for (const request of event.data.requests) {
-        if (inputs[request.requestId] !== undefined) continue;
-        const input: Mutable<ConversationInput> = {
-          request,
-          turnId: event.data.turnId,
-          stepIndex: event.data.stepIndex,
-          status: "open",
-        };
-        if (event.data.taskId !== undefined) input.taskId = event.data.taskId;
-        inputs[request.requestId] = input;
-      }
-      return { ...state, inputs };
-    }
     case "client.input.responded": {
       const inputs = { ...state.inputs };
       for (const response of event.data.responses) {
@@ -216,45 +82,11 @@ function reduceConversationLifecycle(
       }
       return { ...state, inputs };
     }
-    case "approval.candidate": {
-      const current = state.inputs[event.data.requestId];
-      if (current === undefined || current.status === "settled") return state;
-      if (event.data.outcome === "pending") return state;
-      return {
-        ...state,
-        inputs: {
-          ...state.inputs,
-          [event.data.requestId]: { ...current, status: "open", response: undefined },
-        },
-      };
-    }
-    case "approval.settled": {
-      const current = state.inputs[event.data.requestId];
-      if (current === undefined || current.status === "settled") return state;
-      return {
-        ...state,
-        inputs: {
-          ...state.inputs,
-          [event.data.requestId]: { ...current, status: "settled", outcome: event.data.outcome },
-        },
-      };
-    }
-    case "input.resolved": {
-      const inputs = { ...state.inputs };
-      for (const resolution of event.data.resolutions) {
-        const current = inputs[resolution.requestId];
-        if (current === undefined || current.status === "settled") continue;
-        inputs[resolution.requestId] = {
-          ...current,
-          status: "settled",
-          outcome: resolution.outcome,
-          response: resolution.response ?? current.response,
-        };
-      }
-      return { ...state, inputs };
-    }
-    default:
+    case "client.message.failed":
+    case "client.message.submitted":
       return state;
+    default:
+      return reduceSessionProjection(state, event);
   }
 }
 
@@ -265,6 +97,13 @@ export function reduceConversation(
   state: ConversationState,
   event: ConversationEvent,
 ): ConversationState {
+  return reduceProjectedConversation(sessionProjectionOf(state), event);
+}
+
+function reduceProjectedConversation(
+  state: ConversationProjection,
+  event: ConversationEvent,
+): ConversationProjection {
   switch (event.type) {
     case "client.agent.following":
       return updateObservation(state, event.data.sessionId, (observation) =>
@@ -299,7 +138,7 @@ export function reduceConversation(
       });
     default: {
       const projected = messageReducer.reduce(state, event);
-      return reduceConversationLifecycle({ ...state, ...projected }, event);
+      return reduceClientLifecycle({ ...state, ...projected }, event);
     }
   }
 }

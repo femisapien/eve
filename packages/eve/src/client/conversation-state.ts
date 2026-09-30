@@ -1,4 +1,10 @@
 import type { EveAuthorizationPart, EveMessageData } from "#client/message-reducer-types.js";
+import {
+  initialSessionProjection,
+  type SessionAuthorization,
+  type SessionProjection,
+} from "#protocol/session-projection.js";
+import type { AuthorizationOutcome } from "#protocol/message.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
 import type { JsonValue } from "#shared/json.js";
 
@@ -15,13 +21,19 @@ export interface ConversationInput {
   readonly stepIndex: number;
   /** The task whose run asks, when a task asks. */
   readonly taskId?: string;
+  /** `"responded"` is this client's own answer, which the stream has not settled yet. */
   readonly status: "open" | "responded" | "settled";
   readonly response?: InputResponse;
   readonly outcome?: string;
   /**
-   * For a root tool approval, the first turn that started after it settled. Asking for approval
-   * ends the turn, and the approved call runs in this one. Absent for questions, whose turn parks
-   * and resumes under its own ID, and for requests a task asked.
+   * This session's call that waits on the request: the call an approval asks about, or for a
+   * request a task's run asks, the call that run serves. A subagent's approval passed up through
+   * its task names the task's call here, while its `request.action` names the subagent's own call.
+   */
+  readonly callId?: string;
+  /**
+   * For an approved tool approval this session asked, the turn that runs the approved call, as the
+   * approval's `input.resolved` names it.
    */
   readonly resumeTurnId?: string;
 }
@@ -83,6 +95,34 @@ export interface ConversationState extends EveMessageData {
   readonly agents: Readonly<Record<string, ConversationAgentSession>>;
 }
 
+/**
+ * The conversation with the lifecycle eve folds for it: every call's standing and every sign-in
+ * attempt, which the public type leaves out so eve can change how it keeps them. The canonical
+ * reducer builds this shape; code inside eve reads it through {@link sessionProjectionOf}.
+ */
+export type ConversationProjection = ConversationState & SessionProjection;
+
+/** An empty conversation, with the lifecycle eve folds for it. */
+export function initialConversation(): ConversationProjection {
+  return { ...initialSessionProjection(), agents: {}, messages: [] };
+}
+
+function isProjected(state: ConversationState): state is ConversationProjection {
+  return "calls" in state && "authorizations" in state;
+}
+
+/**
+ * The session projection behind a conversation. A conversation assembled by hand, without the
+ * canonical reducer, has no call or sign-in lifecycle yet.
+ */
+export function sessionProjectionOf(state: ConversationState): ConversationProjection {
+  if (isProjected(state)) return state;
+  const turns = Object.fromEntries(
+    Object.entries(state.turns).map(([turnId, turn]) => [turnId, { ...turn, rootTurnId: turnId }]),
+  );
+  return { ...state, authorizations: {}, calls: {}, turns };
+}
+
 /** Inputs awaiting an answer, including requests introduced in earlier turns. */
 export function openConversationInputs(state: ConversationState): readonly ConversationInput[] {
   return Object.values(state.inputs).filter((input) => input.status === "open");
@@ -99,11 +139,42 @@ export function conversationAuthorizations(
   );
 }
 
+/** Sign-ins the session still waits on, each resuming its work when its callback arrives. */
+export function pendingSignIns(state: ConversationState): readonly SessionAuthorization[] {
+  return Object.values(sessionProjectionOf(state).authorizations).filter(
+    (attempt) => attempt.status === "required" && attempt.awaitsCallback === true,
+  );
+}
+
 /** A sign-in the session still waits on, which resumes its work when the callback arrives. */
 export function hasPendingAuthorizations(state: ConversationState): boolean {
-  return conversationAuthorizations(state).some(
-    (part) => part.state === "required" && part.awaitsCallback === true,
-  );
+  return pendingSignIns(state).length > 0;
+}
+
+/** Where one sign-in attempt stands. */
+export interface ConversationSignIn {
+  readonly status: "required" | "completed";
+  /** How the attempt ended; present once `status` is `"completed"`. */
+  readonly outcome?: AuthorizationOutcome;
+}
+
+/**
+ * Where a sign-in part's attempt stands, from the session's lifecycle rather than the part, which
+ * carries only what to show.
+ */
+export function signInState(
+  state: ConversationState,
+  part: EveAuthorizationPart,
+): ConversationSignIn {
+  const attempt = sessionProjectionOf(state).authorizations[part.attemptId];
+  if (attempt !== undefined) {
+    return attempt.outcome === undefined
+      ? { status: attempt.status }
+      : { outcome: attempt.outcome, status: attempt.status };
+  }
+  return part.state === "completed"
+    ? { outcome: part.outcome, status: "completed" }
+    : { status: "required" };
 }
 
 /**

@@ -617,7 +617,7 @@ function completeAuthorization(
   data: EveMessageData,
   event: AuthorizationCompletedStreamEvent,
 ): EveMessageData {
-  const existing = findPendingAuthorizationPart(data, event.data.name, event.data.attemptId);
+  const existing = findPendingAuthorizationPart(data, event.data.attemptId);
   const next = createAuthorizationCompletedPart(event, existing);
 
   const turnId = existing?.turnId ?? event.data.turnId;
@@ -647,8 +647,7 @@ function isSettledToolPart(part: EveDynamicToolPart): boolean {
 
 function findPendingAuthorizationPart(
   data: EveMessageData,
-  name: string,
-  attemptId: string | undefined,
+  attemptId: string,
 ): EveAuthorizationPart | undefined {
   for (let messageIndex = data.messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
     const message = data.messages[messageIndex];
@@ -661,9 +660,7 @@ function findPendingAuthorizationPart(
       if (
         part?.type === "authorization" &&
         part.state === "required" &&
-        (attemptId === undefined
-          ? part.attemptId === undefined && part.name === name
-          : part.attemptId === attemptId)
+        part.attemptId === attemptId
       ) {
         return part;
       }

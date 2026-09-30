@@ -31,9 +31,7 @@ export function partKey(part: EveMessagePart): string {
     case "step-start":
       return "step-start";
     case "authorization":
-      return part.attemptId === undefined
-        ? `authorization:${part.turnId}:${part.stepIndex}:${part.name}`
-        : `authorization:${part.attemptId}`;
+      return `authorization:${part.attemptId}`;
     case "dynamic-tool":
       return `dynamic-tool:${part.toolCallId}`;
   }
