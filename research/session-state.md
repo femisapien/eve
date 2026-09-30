@@ -9,21 +9,22 @@ last_updated: "2026-09-30"
 ## Summary
 
 eve works out where a session stands in many places. On the server, pending work lives in ten
-durable records. The code that changes a record also has to emit the matching stream event. On
-the client and in eve's own readers, several folds read the same events with their own rules.
-Many of the lifecycle bugs found while preparing this plan were two of these copies disagreeing.
+durable records, and the code that changes a record also has to emit the matching stream event.
+Web chat, `eve dev`, `respond()`, Slack task cards, evals, and ACP each read those events with
+their own rules, and they disagree. A subagent that fails shows as failed in the chat but
+completed in ACP, and an eval that checks for a completed call passes.
 
 This plan gives each piece of session state exactly one owner:
 
 - **A session machine** is the only code that changes pending work or builds lifecycle events.
-- **A session projection** is folded from the events the machine publishes, and it answers every
-  lifecycle question on the server and the client.
+- **A session projection** is folded from the events the machine publishes. It answers every
+  lifecycle question, on the server and in every reader, with the same code.
 - **Private records** hold what the stream never shows. Each is keyed by an ID the projection
   tracks and is dropped when its owner closes.
 - **Caches** are written in one place.
 
-The stream states the facts readers used to guess. Clients, Slack task cards, evals, and ACP read
-the projection instead of folding events themselves. The work lands as the 16 PRs listed under
+The stream states the facts readers used to guess, and every reader asks the projection instead
+of folding events itself. The work lands in the seven PRs listed under
 [Implementation plan](#implementation-plan).
 
 ## Starting point
@@ -37,35 +38,58 @@ This plan assumes these four PRs have merged:
 | #3880 | `eve dev` runs on `EveAgentStore`                                                                                                                                                                      |
 | #3965 | A task call's tool part keeps running until `task.settled`                                                                                                                                             |
 
-After them, the client folds lifecycle once, in `ConversationState`. The server is unchanged: it
-keeps the records below and publishes stream version 26.
+After them, web chat and `eve dev` share one fold of turns, inputs, and tasks in
+`ConversationState`. Everything else is unchanged: the server keeps the records below and
+publishes stream version 26, and the other readers fold raw events.
 
 ## Problem
 
 ### Many copies of the same state
 
 ```text
-            server records, each written and cleared on its own
-            ┌──────────────────────────────────────────────────┐
- harness ──▶│ pending input batches   coordination batch       │
- steps      │ deferred step input     workflow tool runs       │
-            │ approval grants         emission state           │
-            │ relayed requests        pending sign-ins         │
-            │ approval candidates     task table               │
-            └──────────────────────────────────────────────────┘
-                 │  events built separately, in 16 files
-                 ▼
-               stream ──▶ ConversationState fold   message reducer's part.state
-                     ──▶ ClientSession TurnSegment  EveAgentStore helpers
-                     ──▶ Slack task-card fold       eval run facts   ACP adapter
+┌─ server: ten records ────────┐           ┌─ readers, each with its own rules ───────────┐
+│ pending input batches        │           │ web chat      message reducer's part.state   │
+│ coordination batch           │           │ eve dev       transcript toolState           │
+│ deferred step input          │           │ respond()     ClientSession TurnSegment      │
+│ workflow tool runs           │  events,  │ store status  EveAgentStore helpers          │
+│ approval grants              │  built in │ task cards    task-card fold                 │
+│ emission state               │  16 files │ evals         derive-run-facts               │
+│ relayed requests             │  ───────▶ │ ACP           the adapter's event switch     │
+│ pending sign-ins             │           │                                              │
+│ approval candidates          │           │ web chat and eve dev share the               │
+│ task table                   │           │ ConversationState fold for turns,            │
+│                              │           │ inputs, and tasks, but not calls             │
+│ idle check: probes raw keys  │           └──────────────────────────────────────────────┘
+└──────────────────────────────┘
 ```
 
 | Question                                     | Where eve answers it                                                                                                                                                                                                                                     |
 | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Is a turn open? Is the session idle?         | emission state, the cached `DurableSessionState.turn`, `isSessionStateIdleForHandoff`, `ConversationState.activeTurnId`, `TurnSegment`, `EveAgentStore` status, `derive-run-facts`, the ACP adapter                                                      |
 | What is pending?                             | pending input batches, the coordination batch, deferred step input, workflow tool runs, relayed requests and the cached `hasProxyInputRequests`, pending sign-ins, approval candidates, the task table, client inputs, message parts, task-card blockers |
-| Where does a call stand?                     | the pending batches and run registry, the task table, `part.state`, client task calls, Slack task cards, `derive-run-facts`, the ACP adapter                                                                                                             |
+| Where does a call stand?                     | the pending batches and run registry, the task table, `part.state`, `eve dev`'s `toolState`, client task calls, task cards, `derive-run-facts`, the ACP adapter                                                                                          |
 | Which turn or call does something belong to? | emission state, `TurnDeliveryIdsKey` (messages only), the client's settlement buffering, `agentCallTurns`                                                                                                                                                |
+
+### Where readers disagree
+
+Three ordinary situations, as each reader reports them today:
+
+| What happened                                  | Web chat (`part.state`)                   | `eve dev`            | Task cards                    | ACP                               | Evals                                                   |
+| ---------------------------------------------- | ----------------------------------------- | -------------------- | ----------------------------- | --------------------------------- | ------------------------------------------------------- |
+| A subagent fails                               | `output-error`                            | error                | `failed`                      | `completed`, as soon as it starts | `calledTool` sees `completed`; `noFailedActions` passes |
+| The user or a policy denies a call             | `output-denied`                           | denied               | `failed`                      | `failed`                          | `noFailedActions` fails the run                         |
+| A turn is cancelled while a workflow tool runs | `input-available`, so it shows as running | error: "interrupted" | `working`, on a finished card | `pending`                         | `pending`                                               |
+
+Task cards here means the `TaskCardView` that channel renderers draw. Each row has one cause:
+
+- **A task call has two results.** Its `action.result` is the start receipt the model reads, and
+  its outcome arrives later in `task.settled`. The conversation reducer and task cards wait for
+  `task.settled`. ACP and the eval tool-call facts take the receipt.
+- **A denial has two encodings.** The user's denial is `rejected`, and a policy's is `failed`
+  with `TOOL_EXECUTION_DENIED`. The message reducer checks both. Task cards and ACP report both as
+  failures, and `noFailedActions` counts both.
+- **A stopped call has no result.** Cancelling a turn emits `turn.cancelled` and drops the call's
+  run record. Each reader decides on its own what a call without a result means.
 
 ### Why they drift
 
@@ -77,13 +101,13 @@ keeps the records below and publishes stream version 26.
    sites, and sign-ins at two, plus supersession.
 3. **A record tracks whether its events went out.** Approval candidates carry `eventEmitted` and
    `pendingEventEmitted` flags. The tool loop emits every unmarked entry, then marks it.
-4. **Readers re-derive from raw events.** The message reducer folds a second call lifecycle into
-   `part.state`. `agentCallTurns` assigns a child session's turns to calls by counting messages.
-   The task-card fold maps a denied call to `failed`.
+4. **Readers re-derive from raw events.** Each reader above maps results with its own rules. The
+   message reducer folds a second call lifecycle into `part.state`, and `agentCallTurns` assigns a
+   child session's turns to calls by counting messages.
 5. **Status is inferred from shape.** The handoff idle check probes five raw keys and three
    registries. Nothing writes one of those keys, `eve.harness.pendingWorkflowInterrupt`.
 
-These cause user-visible bugs:
+Besides the disagreements above, these cause user-visible bugs:
 
 - `clear` leaves approvals answerable, so a later answer runs a call from the cleared context.
 - A workflow call can dispatch while its approval is open. #3983 added a filter for this.
@@ -111,17 +135,38 @@ Every durable piece of session state is exactly one of these:
 
 A record with its own status, or a flag recording whether an event went out, is none of these.
 
+### One fold, every reader
+
+The readers in the first diagram become small consumers of one fold. The server stores the
+projection with each step, clients carry it in `ConversationState`, and evals and ACP fold a
+run's events through the same function:
+
 ```text
-                     ┌────────────── session machine ─────────────┐
- message, answers, ─▶│ transition(view, input) → { turn, events } │
- results, cancel ... └───────┬───────────────────────────┬──────────┘
-                             ▼                           ▼
-                 TurnState + private records      events ──▶ stream ──▶ client fold
-                                                     │                 (same code)
-                                                     ▼
-                                          stored SessionProjection ──▶ task cards,
-                                                                       idle check, caches
+  message, answers, results, cancel, clear
+                       │
+                       ▼
+┌─ session machine ────────────────────────────┐
+│ transition(view, input) → { turn, events }   │ ──▶ TurnState and private records
+└──────────────────────┬───────────────────────┘
+                       │ events
+                       ▼
+┌─ protocol/session-projection.ts ───────────────────────────────────────────────────────┐
+│ foldSession(projection, event)                                                         │
+│ callStatus · openInputs · signInState · reachedBoundary · isIdle                       │
+└────────────┬───────────────────────────────┬───────────────────────────────┬───────────┘
+             │ stored with each step         │ in ConversationState          │ a run's events
+             ▼                               ▼                               ▼
+┌─ server ─────────────────┐   ┌─ clients ──────────────────┐   ┌─ evals and ACP ────────┐
+│ the machine's view       │   │ toolCallState, part.state  │   │ run facts, assertions  │
+│ handoff idle check       │   │ respond() and send() ends  │   │ ACP tool call updates  │
+│ hasProxyInputRequests    │   │ EveAgentStore status       │   └────────────────────────┘
+│ Slack task cards         │   │ web chat, eve dev, hooks   │
+└──────────────────────────┘   └────────────────────────────┘
 ```
+
+Each reader keeps only its presentation. Web chat, `eve dev`, task cards, and ACP map one call
+status onto their own vocabulary, so the three rows in
+[Where readers disagree](#where-readers-disagree) read the same everywhere.
 
 ### Invariants
 
@@ -158,7 +203,7 @@ harness/session-machine/
   view.ts         SessionView: turn state, stored projection, private records
   transitions.ts  every lifecycle transition
   commit.ts       publish, fold, prune, save: the only way state changes
-protocol/session-projection.ts   the fold, shared with clients
+protocol/session-projection.ts   the fold, shared with every reader
 ```
 
 ```ts
@@ -195,12 +240,21 @@ interface Transition {
 }
 ```
 
-Durable steps share one shape. A step loads the view, runs its effects, returns a transition,
-and `commit` does the rest:
+Every durable step has the same shape. `step` loads the view and hands it to a callback, which
+runs the step's effects, such as tools, model calls, or run commands, and returns a transition.
+`commit` does the rest:
 
 ```ts
 // harness/session-machine/commit.ts (sketch)
-export async function commit(view: SessionView, t: Transition, publish: Publish) {
+export async function step(
+  input: SessionStepInput,
+  run: (view: SessionView) => Promise<Transition>,
+) {
+  const view = await loadView(input);
+  return await commit(view, await run(view), input.publish);
+}
+
+async function commit(view: SessionView, t: Transition, publish: Publish) {
   for (const event of t.events) await publish(event); // stream, channel, hooks, instrumentation
   const projection = prune(t.events.reduce(foldSession, view.projection));
   return {
@@ -211,54 +265,59 @@ export async function commit(view: SessionView, t: Transition, publish: Publish)
 }
 ```
 
-Cancelling a task shows the difference. Today (from `execution/tasks/steps.ts`, trimmed):
+Cancelling a turn shows the difference. Today (from `execution/settle-cancelled-turn-step.ts`,
+trimmed):
 
 ```ts
-let table = readTaskTable(session.state);
-for (const taskId of input.taskIds) {
-  const cancelled = cancelTask(table, taskId);
-  table = cancelled.table;
-  events.push(...taskSettledEvents(record, cancelled.settled, CANCELLED));
-  if (cancelled.send !== undefined) await sendTaskRunCommands(cancelled.send);
-}
-const withdrawn = withdrawWorkflowAsks(session, (_id, runId) => stoppedRunIds.has(runId));
-const relayed = await relaySessionEvents(
-  { ...input, sessionState: saveTable(input.sessionState, withdrawn.session, table) },
-  withdrawn.events,
-);
-return await publishSessionEvents({ ...input, ...relayed }, events);
-
-// A run that finishes on its own takes a second path, which emits nothing:
-function forgetRunQuestions(session: DurableSession, runId: string): DurableSession {
-  return clearProxyInputRequestsWhere(session, (route) => route.workflowAsk?.runId === runId);
-}
+await publishFromSessionStep(step, {
+  // Only turn.cancelled and session.waiting.
+  publish: (emit) => emitCancelledTurn(emit, getHarnessEmissionState(durableState)),
+  updateSession: (session, emissionState) => ({
+    session: setHarnessEmissionState(
+      clearPendingSessionLimitPrompt(
+        clearAllProxyInputRequests(
+          commitCancelledCoordinationBatch(
+            removeBlockingWorkflowToolRuns({ ...session, outputSchema: undefined }, owningTurnId),
+          ),
+        ),
+      ),
+      emissionState,
+    ),
+  }),
+});
 ```
 
-With the machine:
+Four pieces of state are cleared, and none of it reaches the stream. Each reader decides for itself what
+happened to the running call and to the relayed question, which is the third row of the table
+above. With the machine:
 
 ```ts
-export async function cancelTasksStep(input: SessionStep & { taskIds: readonly string[] }) {
+// execution/settle-cancelled-turn-step.ts
+export async function settleCancelledTurnStep(input: SessionStepInput) {
   "use step";
-  return await step(input, async (view) => {
-    await stopRuns(view.records.runs, input.taskIds); // effect
-    return finishRun(view, { taskIds: input.taskIds, outcome: "cancelled" }); // decision
-  });
+  return await step(input, async (view) => cancel(view));
 }
 
-// transitions.ts: one path for a cancel and for a run that ends on its own
-function finishRun(view: SessionView, run: { taskIds: readonly string[]; outcome: TaskOutcome }) {
+// harness/session-machine/transitions.ts
+function cancel(view: SessionView): Transition {
+  const { turnId } = view.turn.open;
   return {
-    turn: view.turn,
+    turn: { ...view.turn, open: undefined, prompt: undefined },
     events: [
-      ...openInputs(view.projection, run).map(withdrawn), // input.resolved "cancelled"
-      ...openTaskCalls(view.projection, run).map((call) => taskSettled(call, run.outcome)),
+      ...openInputs(view.projection).map(inputWithdrawn), // input.resolved "cancelled"
+      ...openSignIns(view.projection).map(signInWithdrawn), // authorization.completed "failed"
+      ...unsettledCalls(view.projection, turnId).map(callStopped), // action.result "cancelled", PR 4
+      turnCancelled(turnId),
+      sessionWaiting(),
     ],
   };
 }
 ```
 
-Relay routes and task runs are never cleared by hand. `commit` drops them once the projection
-shows their request or task closed.
+`commit` then drops the relay routes and run records whose requests and calls those events
+closed. Nothing is cleared by hand. Cancelling a task takes the same shape: `finishRun` is the
+one transition for a cancelled task and for a run that ends on its own. Today the second path
+clears the run's relayed requests without an event.
 
 ### Turn and call lifecycles
 
@@ -309,14 +368,14 @@ the model runs.
 
 | Record                                                 | Public part, read from the projection                 | Private part that remains                                                                                | Plan PR |
 | ------------------------------------------------------ | ----------------------------------------------------- | -------------------------------------------------------------------------------------------------------- | ------- |
-| The six pending-work records                           | pending approvals, calls, and turns                   | `TurnState`                                                                                              | 3       |
-| Approval candidates (`eve.runtime.hitl.approvalState`) | settlements                                           | responder progress (candidate, expiry, sign-in challenges), owned by its request                         | 3       |
-| `TurnDeliveryIdsKey`                                   | none                                                  | `TurnState.turn.deliveryIds`                                                                             | 3       |
-| `eve.harness.pendingWorkflowInterrupt`                 | none                                                  | none; deleted                                                                                            | 3       |
-| Pending sign-ins (`eve.runtime.pendingAuthorization`)  | open or closed, name, `callIds`, coordinates          | attempt by `attemptId`: callback URL, resume value, principal, connection instance                       | 6       |
-| Relayed requests (`eve.runtime.proxyInputRequests`)    | open or closed, kind, coordinates, question, `callId` | route by `requestId`: continuation token, inbox, remote binding, workflow-ask route                      | 7       |
-| Task table (`eve.taskTable`)                           | name, kind, calls and outcomes                        | run by `taskId`: hook token, run ID, held commands, usage, `resumable`; unread results go to `TurnState` | 8       |
-| Slack task cards (`channel.state`)                     | calls, statuses, blockers                             | presentation: titles, bounded inputs, summaries, times                                                   | 5       |
+| The six pending-work records                           | pending approvals, calls, and turns                   | `TurnState`                                                                                              | 1       |
+| Approval candidates (`eve.runtime.hitl.approvalState`) | settlements                                           | responder progress (candidate, expiry, sign-in challenges), owned by its request                         | 1       |
+| `TurnDeliveryIdsKey`                                   | none                                                  | `TurnState.turn.deliveryIds`                                                                             | 1       |
+| `eve.harness.pendingWorkflowInterrupt`                 | none                                                  | none; deleted                                                                                            | 1       |
+| Pending sign-ins (`eve.runtime.pendingAuthorization`)  | open or closed, name, `callIds`, coordinates          | attempt by `attemptId`: callback URL, resume value, principal, connection instance                       | 3       |
+| Relayed requests (`eve.runtime.proxyInputRequests`)    | open or closed, kind, coordinates, question, `callId` | route by `requestId`: continuation token, inbox, remote binding, workflow-ask route                      | 3       |
+| Task table (`eve.taskTable`)                           | name, kind, calls and outcomes                        | run by `taskId`: hook token, run ID, held commands, usage, `resumable`; unread results go to `TurnState` | 4       |
+| Slack task cards (`channel.state`)                     | calls, statuses, blockers                             | presentation: titles, bounded inputs, summaries, times                                                   | 2       |
 
 Derived questions become one-liners:
 
@@ -334,24 +393,25 @@ from each open turn to its root instead.
 
 ### What the stream states
 
-Each fact the session knew but the stream left unstated becomes a field or value. The stream
-version moves to 27 with the first PR that changes a meaning.
+Each fact the session knew but the stream left unstated becomes a field or value. PR 1 reports
+withdrawals with events and values v26 already has. The stream version moves to 27 in PR 3, the
+first PR that changes what an event means.
 
 | Fact                                        | Readers guessed                                                      | Now                                                                                      | PR  |
 | ------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | --- |
-| Withdrawals                                 | a cancelled turn or a finished run dropped relayed requests silently | `input.resolved` `cancelled`, `authorization.completed` `failed`, before the owner ends  | 3   |
-| Which calls a sign-in stops                 | every unsettled call in a closed turn with an open sign-in           | `authorization.required.callIds`; each settles `cancelled` with `AUTHORIZATION_REQUIRED` | 6   |
-| Which attempt a completion closes           | `attemptId`, else the approval candidate, else the latest attempt    | `attemptId` required on both events                                                      | 6   |
-| When a sign-in callback completes           | the completion could follow the resumed turn's start                 | it precedes that turn, at the asking turn's coordinates                                  | 6   |
-| Which call a relayed request serves         | the parent adopted the child's call and guessed its status           | relayed `input.requested.callId`, with the served call's coordinates and `taskId`        | 7   |
-| Which turn a turn continues                 | settlements buffered between turns                                   | `turn.started.continuesTurnId`                                                           | 9   |
-| Which turn runs an approved call            | the open turn, or else the next                                      | `input.resolved` resolutions carry `resumeTurnId`                                        | 9   |
-| Calls eve stops                             | no result; readers inferred from the turn's status                   | `action.result` status `cancelled`, with `TURN_CANCELLED` or `CONTEXT_CLEARED`           | 9   |
-| Policy denials                              | `failed` with `TOOL_EXECUTION_DENIED`                                | `rejected`                                                                               | 9   |
-| Approval policy events' coordinates         | they named the turn about to start                                   | they name the step that asked                                                            | 9   |
-| Which delivery an answer's events belong to | the IDs of the message that started the parked turn                  | the answer's own delivery ID                                                             | 10  |
-| Which parent call a child's turn serves     | counting the child's user messages                                   | `task.started.deliveryId` for agent calls; the child stamps it                           | 11  |
-| Which code wrote an event                   | the serving deployment's `x-eve-stream-version` header               | `meta.streamVersion` on every event                                                      | 2   |
+| Withdrawals                                 | a cancelled turn or a finished run dropped relayed requests silently | `input.resolved` `cancelled`, `authorization.completed` `failed`, before the owner ends  | 1   |
+| Which code wrote an event                   | the serving deployment's `x-eve-stream-version` header               | `meta.streamVersion` on every event                                                      | 3   |
+| Which calls a sign-in stops                 | every unsettled call in a closed turn with an open sign-in           | `authorization.required.callIds`; each settles `cancelled` with `AUTHORIZATION_REQUIRED` | 3   |
+| Which attempt a completion closes           | `attemptId`, else the approval candidate, else the latest attempt    | `attemptId` required on both events                                                      | 3   |
+| When a sign-in callback completes           | the completion could follow the resumed turn's start                 | it precedes that turn, at the asking turn's coordinates                                  | 3   |
+| Which call a relayed request serves         | the parent adopted the child's call and guessed its status           | relayed `input.requested.callId`, with the served call's coordinates and `taskId`        | 3   |
+| Which turn a turn continues                 | settlements buffered between turns                                   | `turn.started.continuesTurnId`                                                           | 4   |
+| Which turn runs an approved call            | the open turn, or else the next                                      | `input.resolved` resolutions carry `resumeTurnId`                                        | 4   |
+| Calls eve stops                             | no result; readers inferred from the turn's status                   | `action.result` status `cancelled`, with `TURN_CANCELLED` or `CONTEXT_CLEARED`           | 4   |
+| Policy denials                              | `failed` with `TOOL_EXECUTION_DENIED`                                | `rejected`                                                                               | 4   |
+| Approval policy events' coordinates         | they named the turn about to start                                   | they name the step that asked                                                            | 4   |
+| Which delivery an answer's events belong to | the IDs of the message that started the parked turn                  | the answer's own delivery ID                                                             | 5   |
+| Which parent call a child's turn serves     | counting the child's user messages                                   | `task.started.deliveryId` for agent calls; the child stamps it                           | 5   |
 
 With delivery attribution, overlapping answers each reach their own boundary:
 
@@ -369,9 +429,65 @@ sequenceDiagram
 
 ### Clients and eve's other readers
 
-`ConversationState` embeds `SessionProjection`, and everything else is a selector over it.
+**The conversation state.** `ConversationState` is the message list plus the projection. The
+conversation reducer runs the message reducer for content and the shared fold for lifecycle, on
+the same object:
 
-**Tool call state.** Status comes from the projection, and content from the canonical part:
+```ts
+// protocol/session-projection.ts: the one fold, used by the server and every reader
+export interface SessionProjection {
+  readonly activeTurnId?: string;
+  readonly turns: Readonly<Record<string, SessionTurn>>;
+  readonly inputs: Readonly<Record<string, SessionInput>>; // by requestId
+  readonly tasks: Readonly<Record<string, SessionTask>>;
+  readonly calls: Readonly<Record<string, SessionCall>>; // by callId
+  readonly authorizations: Readonly<Record<string, SessionAuthorization>>; // by attemptId
+}
+export declare function foldSession<S extends SessionProjection>(state: S, event: StreamEvent): S;
+
+// client/conversation-state.ts
+export type ConversationState = EveMessageData &
+  SessionProjection & {
+    /** Agent sessions this client followed; only a client knows these. */
+    readonly agents: Readonly<Record<string, ConversationAgentSession>>;
+  };
+
+// client/conversation-reducer.ts
+export function reduceConversation(state: ConversationState, event: ClientEvent) {
+  const next = { ...state, messages: reduceMessages(state, event).messages };
+  return isStreamEvent(event) ? foldSession(next, event) : reduceClientEvent(next, event);
+}
+```
+
+Every lifecycle question a UI asks is then a short selector over those fields:
+
+```ts
+export const openInputs = (c: ConversationState) =>
+  Object.values(c.inputs).filter((input) => input.status === "open");
+
+export const pendingSignIns = (c: ConversationState) =>
+  Object.values(c.authorizations).filter((attempt) => attempt.status === "required");
+```
+
+The public type can keep `calls` and `authorizations` out, as the draft in #3986 does, so eve can
+change how it stores them. The selectors read them either way.
+
+**Tool call state.** Today `eve dev` maps a tool call from the part, the inputs, the tasks, and
+the store's status, in its own function (from `cli/dev/tui/transcript-parts.ts`, trimmed):
+
+```ts
+export function toolState(part, conversation, working: boolean): ToolState {
+  const task = conversation.tasks[part.toolMetadata?.eve?.taskId ?? ""];
+  if (task?.calls[part.toolCallId]?.status === "working") return { status: "running" };
+  const state = settledToolState(part, conversation); // a switch over part.state and the inputs
+  return state.status === "running" && !working
+    ? { status: "error", errorText: "interrupted" }
+    : state;
+}
+```
+
+Web chat has no such function. Its renderers switch on `part.state`. With the projection, both ask
+one selector, which takes the status from the projection and the content from the part:
 
 ```ts
 export function toolCallState(
@@ -388,8 +504,23 @@ export function toolCallState(
 The store always keeps canonical `conversation` beside a custom reducer's `data`, so this works
 with any reducer.
 
-**`part.state`.** The message reducer keeps content (text, reasoning, tool input, and output) and
-writes `part.state` from the projection:
+**`part.state`.** Each tool call in `messages` is an AI SDK `UIMessage` part, and its `state`
+field is what AI SDK renderers such as `useChat` UIs switch on:
+
+```ts
+{
+  type: "dynamic-tool",
+  toolCallId: "call_1",
+  toolName: "deploy",
+  input: { service: "api" },
+  state: "input-available", // or approval-requested, output-available, output-error, output-denied
+}
+```
+
+Today the message reducer computes `state` from events with its own rules, a second call
+lifecycle beside the projection. That's how the stopped call in the table above stays
+`input-available`. With the projection, the reducer keeps content (text, reasoning, tool input,
+and output) and writes `state` from the call's status:
 
 | Projection status                                    | `part.state`                                                  |
 | ---------------------------------------------------- | ------------------------------------------------------------- |
@@ -429,16 +560,64 @@ for (const message of conversation.messages) {
 }
 ```
 
-With PR 11:
+With the projection:
 
 ```ts
 const callTurns = (child: ConversationState, deliveryId: string) =>
   Object.values(child.turns).filter((turn) => turn.deliveryIds.includes(deliveryId));
 ```
 
-**eve's other readers.** Slack task cards, `derive-run-facts`, eval assertions, the ACP adapter,
-and the `eve dev` runner read the projection. ACP stops reporting rejected and cancelled calls as
-failed, and task cards stop reporting denied calls as failed.
+**Task cards, evals, and ACP.** These don't hold a `ConversationState`, but they read the same
+projection. Task cards read the stored one on the server. Evals and ACP fold the events they
+receive through `foldSession` and ask `callStatus`. ACP today (from `acp/adapter.ts`, trimmed):
+
+```ts
+case "action.result": {
+  // A task call's receipt reads as completed; task.settled and turn.cancelled are ignored.
+  const status = event.data.status !== "completed" || result.isError ? "failed" : "completed";
+  await notifyUpdate(client, sessionId, { sessionUpdate: "tool_call_update", toolCallId, status });
+}
+```
+
+With the projection:
+
+```ts
+const before = session.projection;
+session.projection = foldSession(before, event);
+for (const callId of changedCalls(before, session.projection)) {
+  const status = ACP_STATUS[callStatus(session.projection, callId)];
+  await notifyUpdate(client, sessionId, {
+    sessionUpdate: "tool_call_update",
+    toolCallId: callId,
+    status,
+  });
+}
+
+// ACP has no statuses for denied or stopped calls.
+const ACP_STATUS: Record<SessionCallStatus, ToolCallStatus> = {
+  running: "in_progress",
+  "awaiting-input": "pending",
+  completed: "completed",
+  failed: "failed",
+  rejected: "failed",
+  cancelled: "failed",
+  interrupted: "failed",
+};
+```
+
+`noFailedActions` becomes a filter over the same statuses, so a failed subagent fails the run
+and a denial doesn't:
+
+```ts
+const projection = result.events.reduce(foldSession, initialSessionProjection());
+const failed = Object.keys(projection.calls).filter(
+  (id) => callStatus(projection, id) === "failed",
+);
+```
+
+`eve dev` already reads `ConversationState`. Its `toolState` becomes a relabeling of
+`toolCallState`, and its diagnostics log reads failures from the projection instead of raw
+`action.result` events, so a failed subagent reaches the log too.
 
 ## Compatibility
 
@@ -452,19 +631,20 @@ Sessions aren't ported to the new state. This follows existing practice:
 - Local and in-place upgrades have no old code to keep. The next delivery fails with
   `Unsupported session checkpoint. Start a new session on this deployment.`
 
-Each PR that changes durable state bumps `SESSION_CHECKPOINT_VERSION`: PRs 3, 5, 6, 7, and 8.
+PRs 1–4 change durable state, so each bumps `SESSION_CHECKPOINT_VERSION`, as does any later PR
+that changes it.
 
 Streams need one addition. `x-eve-stream-version` reports the serving deployment's version, but
 the events come from shared storage, and an older owner may have written them. Reading by that
 header would misread old sessions: a `respond()` that filters by its answer's delivery ID would
-wait forever on events a v26 owner wrote. PR 2 stamps each event's `meta.streamVersion`.
+wait forever on events a v26 owner wrote. PR 3 stamps each event's `meta.streamVersion`.
 Everything that depends on the version keys off the event instead of the header, including the
 `respond()` filter and the projection's guesses for older writers. Those guesses stay until eve
 sets a floor for the writer versions it reads.
 
-Clients from before v27 reject v27 streams with an unsupported-version error. The v27 stream
-changes ship in one release. If they span releases, each release that changes a meaning bumps the
-version.
+Clients from before v27 reject v27 streams with an unsupported-version error. PRs 3–5 change
+the stream's meaning and should ship in one release. If they span releases, each release that
+changes a meaning bumps the version.
 
 ## Testing
 
@@ -481,14 +661,14 @@ version.
 
   | Rule                | A reader may rely on                                                        | PR  |
   | ------------------- | --------------------------------------------------------------------------- | --- |
-  | `turn-order`        | one turn at a time, content inside its turn, nothing after the session ends | 4   |
-  | `resolved-twice`    | a request resolves once                                                     | 4   |
-  | `open-after-owner`  | no request or sign-in outlives its task, turn, a clear, or the session      | 4   |
-  | `state-agreement`   | the projection shows exactly what the session awaits                        | 4   |
-  | `unasked-sign-in`   | a call settled for a sign-in is named by an `authorization.required`        | 6   |
-  | `own-coordinates`   | events name only turns and calls this stream announced                      | 7   |
-  | `unsettled-call`    | a completed turn leaves no call without an outcome                          | 9   |
-  | `delivery-boundary` | every accepted delivery reaches a boundary stamped with its ID              | 10  |
+  | `turn-order`        | one turn at a time, content inside its turn, nothing after the session ends | 1   |
+  | `resolved-twice`    | a request resolves once                                                     | 1   |
+  | `open-after-owner`  | no request or sign-in outlives its task, turn, a clear, or the session      | 1   |
+  | `state-agreement`   | the projection shows exactly what the session awaits                        | 2   |
+  | `unasked-sign-in`   | a call settled for a sign-in is named by an `authorization.required`        | 3   |
+  | `own-coordinates`   | events name only turns and calls this stream announced                      | 3   |
+  | `unsettled-call`    | a completed turn leaves no call without an outcome                          | 4   |
+  | `delivery-boundary` | every accepted delivery reaches a boundary stamped with its ID              | 5   |
 
 - **End-to-end evals** cover approvals (partial, separate, stale, and policy-settled answers),
   sign-ins, relayed questions, task and workflow calls, cancellation, and `respond()` with
@@ -501,172 +681,113 @@ removing the clear withdrawals fails 40%, and removing the sign-in ask beside an
 
 ## Implementation plan
 
-Every PR builds, passes CI, and carries its own tests, docs, and changeset. PRs 1–3 don't depend
-on one another; the rest land in order.
+Seven PRs, each of which builds, passes CI, and carries its own tests, docs, and changeset. They
+land in order, except that PRs 5 and 6 are independent of each other.
 
 ```mermaid
 flowchart LR
-  F[first four PRs] --> P1[1 projection in protocol]
-  F --> P2[2 writer versions]
-  F --> P3[3 session machine]
-  P3 --> P4[4 contract checker]
-  P1 --> P5[5 stored projection]
-  P4 --> P5
-  P2 --> P6[6 sign-ins, v27]
-  P5 --> P6
-  P6 --> P7[7 relayed requests]
-  P7 --> P8[8 tasks]
-  P8 --> P9[9 turn relations and outcomes]
-  P9 --> P10[10 delivery attribution]
-  P10 --> P11[11 agent-call deliveries]
-  P5 --> P12[12 tool call state]
-  P9 --> P13[13 part.state]
-  P12 --> P13
-  P10 --> P14[14 reads and store status]
-  P13 --> P14
-  P9 --> P15[15 evals, ACP, eve dev]
-  P11 --> P16[16 web template]
-  P14 --> P16
+  F[first four PRs] --> P1[1 session machine]
+  P1 --> P2[2 one stored projection]
+  P2 --> P3[3 sign-ins and relayed requests, v27]
+  P3 --> P4[4 tasks and turn outcomes]
+  P4 --> P5[5 delivery attribution]
+  P4 --> P6[6 readers on the projection]
+  P5 --> P7[7 web template]
+  P6 --> P7
 ```
 
 Sizes are rough net estimates for production code in `packages/eve/src`.
 
-| #   | PR                                | Kind                          | Est. net     |
-| --- | --------------------------------- | ----------------------------- | ------------ |
-| 1   | Session projection in `protocol/` | move                          | ~0           |
-| 2   | Writer versions                   | stream, additive              | +40          |
-| 3   | Session machine                   | server refactor and behavior  | −700 to −800 |
-| 4   | Contract checker                  | tests                         | 0            |
-| 5   | Stored projection                 | server                        | 0 to +100    |
-| 6   | Sign-ins                          | stream (v27), derived record  | −50 to 0     |
-| 7   | Relayed requests                  | stream, derived record        | −150 to −230 |
-| 8   | Tasks                             | derived record                | −150 to −250 |
-| 9   | Turn relations and outcomes       | stream                        | +50 to +100  |
-| 10  | Delivery attribution              | stream, client                | +80 to +120  |
-| 11  | Agent-call deliveries             | stream, remote-agent protocol | +40 to +80   |
-| 12  | Tool call state                   | client API                    | +80 to +120  |
-| 13  | `part.state` from the projection  | client behavior               | −100 to −150 |
-| 14  | Reads and store status            | client                        | −150 to −300 |
-| 15  | Evals, ACP, and `eve dev`         | readers                       | −80 to −150  |
-| 16  | Web template                      | template                      | template     |
+| #   | PR                            | Area                 | Est. net     |
+| --- | ----------------------------- | -------------------- | ------------ |
+| 1   | Session machine               | server               | −700 to −800 |
+| 2   | One stored projection         | server, client       | 0 to +100    |
+| 3   | Sign-ins and relayed requests | stream (v27), server | −150 to −240 |
+| 4   | Tasks and turn outcomes       | stream, server       | −50 to −200  |
+| 5   | Delivery attribution          | stream, client       | −180 to +50  |
+| 6   | Readers on the projection     | client, evals, ACP   | −60 to −220  |
+| 7   | Web template                  | template             | template     |
 
-In total, production code in `packages/eve/src` should shrink by roughly 750–1,650 lines. Tests
+In total, production code in `packages/eve/src` should shrink by roughly 800–1,650 lines. Tests
 should shrink by about 3,000, mostly suites written against the replaced records. These are
-estimates, not measurements. PR 7 is the best calibration point: after the session machine, it
+estimates, not measurements. PR 3 is the best calibration point: after the session machine, it
 is the largest deletion, and it exercises the whole derived-record pattern.
 
-### 1. Session projection in `protocol/`
-
-- Moves the conversation reducer's turn, input, and task fold into
-  `protocol/session-projection.ts`, unchanged in meaning.
-- `ConversationState` embeds it. No behavior changes.
-
-### 2. Writer versions
-
-- Stamps `meta.streamVersion` on every event. Readers treat its absence as 26 or older.
-- Client version checks read the event's version instead of the header.
-
-### 3. Session machine
+### 1. Session machine
 
 - `TurnState` replaces the six pending-work records. The machine is the only writer of turn state
   and the only builder of lifecycle events, and `commit` is the only way state changes.
 - `TurnDeliveryIdsKey` moves into `TurnState.turn`. Approval candidates' transitions move into the
   machine, and their emitted flags go.
 - Adds `isIdle` and the guards, and deletes the interrupt key.
-- Cancel, clear, and a run ending report every withdrawal.
+- Cancel, clear, and a run ending report every withdrawal with events the stream already has.
 - eve runs approved calls itself, before the model reads their results, and `ctx.messages` is the
   model's history. `clear` withdraws approvals, the prompt, and sign-ins. A partial answer returns
   the session to waiting. Workflow calls dispatch only once ready.
+- Adds the contract checker and generated sessions, test only, with the first three rules.
 - Regression tests hold three cases: a policy pass that settles nothing doesn't start a turn, an
-  approval's first decision stands, and a declined session-limit prompt resolves once.
-- Ports the #3983 approved-workflow scenarios, the approval-resume suite, and the #3494
-  adversarial suite.
+  approval's first decision stands, and a declined session-limit prompt resolves once. Ports the
+  #3983 approved-workflow scenarios, the approval-resume suite, and the #3494 adversarial suite.
 
-### 4. Contract checker
+This is the largest PR. Most of its diff moves code out of `tool-loop.ts` or deletes records, so
+it reviews best commit by commit: extract the machine, move each record onto it, then delete the
+old paths.
 
-- Test only: the checker, its runs in the tool-loop fixture and in tests that read a session's
-  workflow stream, and generated sessions.
-- Adds the rules that hold after PR 3: `turn-order`, `resolved-twice`, `open-after-owner`, and
-  `state-agreement`.
+### 2. One stored projection
 
-### 5. Stored projection
-
-- Folds every published event, own and relayed, into the stored projection, with bounded pruning.
-- Adds calls and sign-ins to the projection.
+- Moves the conversation reducer's turn, input, and task fold into
+  `protocol/session-projection.ts`, and adds calls and sign-ins. `ConversationState` carries it.
+- The server folds every published event, own and relayed, into the stored projection, with
+  bounded pruning.
 - The handoff idle check and Slack task cards read it, and the task-card fold goes. Task cards
-  keep their presentation details in channel state.
+  keep their presentation details, such as titles and summaries, in channel state.
+- Adds the `state-agreement` rule.
 
-### 6. Sign-ins
+### 3. Sign-ins and relayed requests
 
-- `authorization.required.callIds`, and `attemptId` required on both sign-in events.
-- A call stopped for a sign-in settles `cancelled` with `AUTHORIZATION_REQUIRED`. This moves the
-  stream to v27.
-- A callback's completion precedes the turn it resumes.
-- Pending sign-ins become projection plus private attempts, and supersession emits `failed`.
+- Stamps `meta.streamVersion` on every event. Readers treat its absence as 26 or older.
+- Sign-ins: `authorization.required.callIds`, `attemptId` required on both events, a stopped
+  call settles `cancelled` with `AUTHORIZATION_REQUIRED` (stream v27), and a callback's
+  completion precedes the turn it resumes. Pending sign-ins become projection plus private
+  attempts, and supersession emits `failed`.
+- Relayed requests: a relayed `input.requested` names the served call in `callId` and uses its
+  coordinates and `taskId`, and the parent stops recording the child's call. Relayed requests
+  become projection plus private routes, and `hasProxyInputRequests` is derived. `turn.waiting`
+  follows a relayed request only while the parent has an open turn.
 - Regression tests hold three cases: a call that needs a sign-in beside an approval asks for it, a
   sign-in doesn't close a turn while runs work, and an approved call that needs a sign-in leaves
-  its step.
-- Adds the `unasked-sign-in` rule.
+  its step. Adds the `unasked-sign-in` and `own-coordinates` rules.
 
-### 7. Relayed requests
-
-- A relayed `input.requested` names the served call in `callId` and uses its coordinates and
-  `taskId`. The parent stops recording the child's call.
-- Relayed requests become projection plus private routes, and `hasProxyInputRequests` is derived.
-- `turn.waiting` follows a relayed request only while the parent has an open turn.
-- Adds the `own-coordinates` rule.
-
-### 8. Tasks
+### 4. Tasks and turn outcomes
 
 - The task table splits three ways: lifecycle comes from the projection, unread results move into
   `TurnState`, and runs become private records.
-
-### 9. Turn relations and outcomes
-
 - `turn.started.continuesTurnId`, and `resumeTurnId` on approved resolutions.
-- `cancelled` with `TURN_CANCELLED` or `CONTEXT_CLEARED` for calls eve stops, and `rejected` for a
-  policy's automatic denials.
-- Approval policy events name the step that asked.
-- The projection drops its guesses for v27 writers. `noFailedActions()` skips cancelled calls.
-- Adds the `unsettled-call` rule.
+- `cancelled` with `TURN_CANCELLED` or `CONTEXT_CLEARED` for calls eve stops, `rejected` for a
+  policy's denials, and approval policy events at the step that asked.
+- The projection drops its guesses for v27 writers. Adds the `unsettled-call` rule.
 
-### 10. Delivery attribution
+### 5. Delivery attribution
 
 - An answer's events carry its own delivery ID, including answers forwarded to a child session or
-  a workflow run.
-- `respond()` filters by that ID for v27 writers.
-- An accepted delivery that the session ignores still gets a boundary stamped with its ID.
+  a workflow run. An accepted delivery that the session ignores still gets a stamped boundary.
+- `task.started.deliveryId` for agent calls, carried by the remote-agent protocol. The projection
+  records each turn's delivery IDs, and `agentCallTurns` stops counting.
+- `ClientSession` reads end at their delivery's boundary for v27 writers, and `TurnSegment` goes.
+  `EveAgentStore` status is derived, and its helpers and follow-up counters go.
 - Adds the `delivery-boundary` rule.
 
-### 11. Agent-call deliveries
-
-- `task.started.deliveryId` for agent calls, carried by the remote-agent protocol.
-- The projection records each turn's delivery IDs, and `agentCallTurns` stops counting.
-
-### 12. Tool call state
+### 6. Readers on the projection
 
 - `toolCallState(conversation, callId, { streaming })` and `signInState`, exported from
-  `eve/client`, `eve/react`, `eve/vue`, and `eve/svelte`.
-- `ConversationInput` gains `callId` and `resumeTurnId`. Tool parts keep their labels and error
-  codes.
-- `eve dev` uses the selectors and resumes only root tool approvals in the next turn.
+  `eve/client`, `eve/react`, `eve/vue`, and `eve/svelte`. `ConversationInput` gains `callId` and
+  `resumeTurnId`, and tool parts keep their labels and error codes.
+- The message reducer writes `part.state` from the projection.
+- `eve dev`'s tool states and diagnostics, `derive-run-facts`, eval assertions, and the ACP adapter
+  read the projection. `noFailedActions` counts `failed` calls only. `eve dev` resumes only root
+  tool approvals in the next turn.
 
-### 13. `part.state` from the projection
-
-- The message reducer keeps content, and `part.state` follows the mapping above.
-- `toolCallState`'s part fallback goes.
-
-### 14. Reads and store status
-
-- `ClientSession` reads end at their delivery's boundary, and `TurnSegment` goes.
-- `EveAgentStore` status is derived, and its helpers and follow-up counters go.
-
-### 15. Evals, ACP, and `eve dev`
-
-- `derive-run-facts`, eval assertions, the ACP adapter, and the `eve dev` runner read the
-  projection.
-
-### 16. Web template
+### 7. Web template
 
 - Folds activity under each stretch of an answer, and shows requests inline where they arrived.
 - Builds on the public selectors, with no copied helpers.
@@ -681,7 +802,7 @@ projection would be `evolve` restricted to public facts.
 
 The cost is in the pending-work path, which interleaves decisions with user code: response
 policies, connection authorization, approved tool runs, and sandbox staging. The plan above is a
-subset of this shape, so none of it is wasted. After PR 3, approval coordination is the slice to
+subset of this shape, so none of it is wasted. After PR 1, approval coordination is the slice to
 prototype before deciding.
 
 ## Out of scope
@@ -715,5 +836,5 @@ This document replaces the design notes in the drafts it supersedes:
 - `research/server-session-projection.md` (#4044).
 
 `research/client-conversation-state.md` (#3922) describes the `ConversationState` the first four
-PRs implement. `research/slack-task-cards.md` describes the task cards PR 5 moves onto the
+PRs implement. `research/slack-task-cards.md` describes the task cards PR 2 moves onto the
 projection.
