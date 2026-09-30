@@ -935,7 +935,7 @@ describe("ClientSession", () => {
       for await (const _event of session.stream()) {
         // Invalid events fail before delivery.
       }
-    }).rejects.toThrow("Invalid message append delta for stream version 26.");
+    }).rejects.toThrow("Invalid message append delta for stream version 27.");
     expect(fetchMock).toHaveBeenCalledOnce();
   });
 
@@ -1202,6 +1202,39 @@ describe("ClientSession", () => {
     ]);
     expect(result.status).toBe("waiting");
     expect(result.inputRequests.at(-1)?.requestId).toBe("request_2");
+  });
+
+  it.each([
+    [EVE_MESSAGE_STREAM_VERSION, ["approval.settled", "turn.started", "session.waiting"]],
+    ["26", ["approval.settled", "session.waiting"]],
+  ])("reads an answer's own boundary on stream version %s", async (version, expected) => {
+    const waiting = { continuationToken: "session-id", wait: "next-user-message" };
+    const events = [
+      [{ type: "approval.settled", data: { requestId: "request_a" } }, "delivery_0"],
+      [{ type: "session.waiting", data: waiting }, "delivery_0"],
+      [{ type: "approval.settled", data: { requestId: "request_b" } }, "delivery_1"],
+      [{ type: "turn.started", data: { sequence: 1, turnId: "turn_1" } }, "delivery_1"],
+      [{ type: "session.waiting", data: waiting }, "delivery_1"],
+    ] as const;
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) =>
+      (init?.method ?? "GET") === "POST"
+        ? createAcceptedResponse()
+        : new Response(
+            events
+              .map(([event, deliveryId]) =>
+                JSON.stringify({ ...event, meta: { deliveryIds: [deliveryId] } }),
+              )
+              .join("\n"),
+            { headers: { [EVE_STREAM_VERSION_HEADER]: version } },
+          ),
+    );
+
+    const response = await createSession().respond([
+      { optionId: "approve", requestId: "request_b" },
+    ]);
+    const result = await response.result();
+
+    expect(result.events.map((event) => event.type)).toEqual(expected);
   });
 
   it("honors an explicit idle reconnect limit for an active turn", async () => {

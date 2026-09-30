@@ -27,7 +27,7 @@ export const EVE_STREAM_TAIL_INDEX_HEADER = "x-eve-stream-tail-index";
 export const EVE_STREAM_VERSION_HEADER = "x-eve-stream-version";
 export const EVE_MESSAGE_STREAM_CONTENT_TYPE = "application/x-ndjson; charset=utf-8";
 export const EVE_MESSAGE_STREAM_FORMAT = "ndjson";
-export const EVE_MESSAGE_STREAM_VERSION = "26";
+export const EVE_MESSAGE_STREAM_VERSION = "27";
 
 /** Version of transport control records understood by this eve release. */
 export const EVE_STREAM_CONTROL_VERSION = "1";
@@ -70,7 +70,11 @@ export interface StepCompletedProviderMetadata {
  * or replaying a finished session — yields the same values every time.
  */
 export interface MessageStreamEventMeta {
-  /** Server-issued message delivery identities, retained across the turn's workflow steps. */
+  /**
+   * Server-issued identities of the deliveries that caused this event: the
+   * messages that own the turn and, from stream version 27, an answer's own
+   * delivery. Retained across the turn's workflow steps.
+   */
   readonly deliveryIds?: readonly string[];
   /** ISO-8601 emission time. */
   readonly at: string;

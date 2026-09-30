@@ -273,6 +273,56 @@ const threadContextAdapter: ChannelAdapter = {
   },
 };
 
+/** Runs each turn step against a harness that only reports the session waiting. */
+function mockWaitingStep(session: HarnessSession): void {
+  installSessionStoreMocks([session]);
+  vi.mocked(getCompiledRuntimeAgentBundle).mockResolvedValue({
+    adapterRegistry: {
+      adaptersByKind: new Map([[threadContextAdapter.kind, threadContextAdapter]]),
+    },
+    compiledArtifactsSource: {},
+    graph: {
+      nodesByNodeId: new Map(),
+      root: { sandboxRegistry: { sandbox: null }, turnAgent: TestTurnAgent },
+    },
+    moduleMap: { nodes: {} },
+    hookRegistry: createRuntimeHookRegistry([]),
+    resolvedAgent: { config: {} },
+    subagentRegistry: {},
+    toolRegistry: {},
+    turnAgent: TestTurnAgent,
+  } as never);
+  vi.mocked(createExecutionNodeStep).mockImplementation((input) => async (stepSession) => {
+    await input.handleEvent?.({
+      type: "session.waiting",
+      data: { continuationToken: "continuation_test", wait: "next-user-message" },
+    });
+    return { next: null, session: stepSession };
+  });
+}
+
+function deliveryOf(
+  deliveries: readonly (readonly [deliveryId: string, payload: DeliverPayload])[],
+): Parameters<typeof turnStep>[0]["input"] {
+  return {
+    kind: "deliver",
+    payloads: deliveries.map(([, payload]) => payload),
+    deliveryMetadata: deliveries.map(([deliveryId], payloadIndex) => ({
+      channelKind: "eve",
+      channelName: "eve",
+      deliveryId,
+      payloadIndex,
+    })),
+  };
+}
+
+function firstEventDeliveryIds(namespace: string): unknown {
+  const [event] = (workflowWritesByNamespace.get(namespace) ?? []).map((chunk) =>
+    JSON.parse(new TextDecoder().decode(chunk as Uint8Array)),
+  );
+  return event?.meta?.deliveryIds;
+}
+
 function createStubSession(overrides: Partial<HarnessSession> = {}): HarnessSession {
   return {
     agent: { modelReference: { id: "test" }, system: "", tools: [] },
@@ -394,6 +444,49 @@ describe("routeProxiedDeliverStep", () => {
         },
         type: "input.resolved",
       }),
+    ]);
+  });
+
+  it("stamps a routed answer's delivery on its resolution and the open turn", async () => {
+    const session = upsertProxyInputRequests({
+      entries: [
+        [
+          "request-1",
+          {
+            childContinuationToken: "child-token",
+            childSessionInbox: { sessionId: "child" },
+            event: REQUEST_EVENT,
+            kind: "question",
+          },
+        ],
+      ],
+      forChildContinuationToken: "child-token",
+      session: atSessionTurn(createStubSession(), {
+        sequence: 0,
+        turn: { id: "turn_0", stepIndex: 0 },
+      }),
+    });
+    installSessionStoreMocks([session]);
+
+    const result = await runSessionStateStep(
+      {
+        serializedContext: {
+          ...createSerializedContext(),
+          [TurnDeliveryIdsKey.name]: ["delivery-message"],
+        },
+        sessionWritable: createTestWritable("routed"),
+        delivery: deliveryOf([
+          ["delivery-answer", { inputResponses: [{ requestId: "request-1", text: "yes" }] }],
+        ]) as DeliverHookPayload,
+        sessionState: createStubSessionState({ hasProxyInputRequests: true }),
+      },
+      routeProxiedDeliverStep,
+    );
+
+    expect(firstEventDeliveryIds("routed")).toEqual(["delivery-answer"]);
+    expect(result.serializedContext[TurnDeliveryIdsKey.name]).toEqual([
+      "delivery-message",
+      "delivery-answer",
     ]);
   });
 
@@ -958,44 +1051,11 @@ describe("turnStep", () => {
   });
 
   it("retains coalesced delivery ownership when a message steers the active turn", async () => {
-    const session = atSessionTurn(createStubSession(), {
-      sequence: 1,
-      turn: { id: "turn_1", stepIndex: 0 },
-    });
-    installSessionStoreMocks([session]);
-    vi.mocked(getCompiledRuntimeAgentBundle).mockResolvedValue({
-      adapterRegistry: {
-        adaptersByKind: new Map([[threadContextAdapter.kind, threadContextAdapter]]),
-      },
-      compiledArtifactsSource: {},
-      graph: {
-        nodesByNodeId: new Map(),
-        root: { sandboxRegistry: { sandbox: null }, turnAgent: TestTurnAgent },
-      },
-      moduleMap: { nodes: {} },
-      hookRegistry: createRuntimeHookRegistry([]),
-      resolvedAgent: { config: {} },
-      subagentRegistry: {},
-      toolRegistry: {},
-      turnAgent: TestTurnAgent,
-    } as never);
-    vi.mocked(createExecutionNodeStep).mockImplementation((input) => async (stepSession) => {
-      await input.handleEvent?.({
-        type: "session.waiting",
-        data: { continuationToken: "continuation_test", wait: "next-user-message" },
-      });
-      return { next: null, session: stepSession };
-    });
-    const delivery = (ids: string[]): Parameters<typeof turnStep>[0]["input"] => ({
-      kind: "deliver",
-      payloads: ids.map((message) => ({ message })),
-      deliveryMetadata: ids.map((deliveryId, payloadIndex) => ({
-        channelKind: "eve",
-        channelName: "eve",
-        deliveryId,
-        payloadIndex,
-      })),
-    });
+    mockWaitingStep(
+      atSessionTurn(createStubSession(), { sequence: 1, turn: { id: "turn_1", stepIndex: 0 } }),
+    );
+    const delivery = (ids: string[]) =>
+      deliveryOf(ids.map((deliveryId) => [deliveryId, { message: deliveryId }] as const));
 
     const first = await turnStep({
       input: delivery(["delivery-a", "delivery-b"]),
@@ -1040,6 +1100,32 @@ describe("turnStep", () => {
         }),
       ]);
     }
+  });
+
+  it("stamps each answer's events with its own delivery, not the parked turn's", async () => {
+    mockWaitingStep(atSessionTurn(createStubSession(), { sequence: 1 }));
+    const answer = (requestId: string) => ({
+      inputResponses: [{ optionId: "approve", requestId }],
+    });
+
+    const first = await turnStep({
+      input: deliveryOf([["delivery-a", answer("request-a")]]),
+      sessionWritable: createTestWritable("answer-a"),
+      serializedContext: {
+        ...createSerializedContext(),
+        [TurnDeliveryIdsKey.name]: ["delivery-message"],
+      },
+      sessionState: createStubSessionState(),
+    });
+    await turnStep({
+      input: deliveryOf([["delivery-b", answer("request-b")]]),
+      sessionWritable: createTestWritable("answer-b"),
+      serializedContext: first.serializedContext,
+      sessionState: first.sessionState,
+    });
+
+    expect(firstEventDeliveryIds("answer-a")).toEqual(["delivery-a"]);
+    expect(firstEventDeliveryIds("answer-b")).toEqual(["delivery-b"]);
   });
 
   it("does not rebind the previous turn before the next turn starts", async () => {

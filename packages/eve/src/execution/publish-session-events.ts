@@ -41,7 +41,8 @@ const log = createLogger("execution.publish-session-events");
  * boundary that question causes here, and the `input.resolved` for the answer
  * this session routes back. This session's instrumentation and activity never
  * track that pending input, so no event of the exchange reaches them; the
- * child records its side as its own.
+ * child records its side as its own. A relayed event carries only the
+ * deliveries its publisher names, such as the answer it routes back.
  */
 export type SessionEventOrigin = "own" | "relayed";
 
@@ -74,14 +75,16 @@ export async function publishSessionEvents(
 export async function relaySessionEvents(
   target: SessionStepState,
   events: readonly UnstampedMessageStreamEvent[],
+  deliveryIds?: readonly string[],
 ): Promise<PublishedSessionEvents> {
-  return await publishFromStep(target, "relayed", events);
+  return await publishFromStep(target, "relayed", events, deliveryIds);
 }
 
 async function publishFromStep(
   target: SessionStepState,
   origin: SessionEventOrigin,
   events: readonly UnstampedMessageStreamEvent[],
+  deliveryIds?: readonly string[],
 ): Promise<PublishedSessionEvents> {
   if (events.length === 0) {
     return { serializedContext: target.serializedContext, sessionState: target.sessionState };
@@ -90,6 +93,7 @@ async function publishFromStep(
   const { session } = await withSessionEventEmitter(
     {
       ctx,
+      deliveryIds,
       durableSession: readDurableSession(target.sessionState),
       origin,
       sessionWritable: target.sessionWritable,
@@ -115,6 +119,8 @@ async function publishFromStep(
 export async function withSessionEventEmitter<T>(
   input: {
     readonly ctx: ContextContainer;
+    /** The deliveries relayed events carry; own events carry their turn's. */
+    readonly deliveryIds?: readonly string[];
     readonly durableSession: DurableSession;
     readonly origin: SessionEventOrigin;
     readonly sessionWritable: WritableStream<Uint8Array>;
@@ -145,6 +151,7 @@ export async function withSessionEventEmitter<T>(
 
   const sink = openSessionEventStream({
     ctx,
+    deliveryIds: input.deliveryIds,
     origin: input.origin,
     sessionId: session.sessionId,
     sessionWritable: input.sessionWritable,
@@ -204,6 +211,7 @@ export function createSessionEventSink(input: {
 
 function openSessionEventStream(input: {
   readonly ctx: ContextContainer;
+  readonly deliveryIds?: readonly string[];
   readonly origin: SessionEventOrigin;
   readonly sessionId: string;
   readonly sessionWritable: WritableStream<Uint8Array>;
@@ -236,7 +244,7 @@ function openSessionEventStream(input: {
       setChannelContext(ctx, { ...adapter, state: { ...adapterCtx.state } });
       const stamped = stampMessageStreamEvent(
         routed,
-        origin === "own" ? ctx.get(TurnDeliveryIdsKey) : undefined,
+        origin === "own" ? ctx.get(TurnDeliveryIdsKey) : input.deliveryIds,
       );
       await writer.write(encodeMessageStreamEvent(stamped));
       if (origin === "own") {

@@ -110,7 +110,7 @@ for await (const event of response) {
 
 After reconnecting without local state, replay the earlier events or wait for the completed event instead of appending a later delta to an empty value. Apply the same rule to `reasoningDelta` and `inputTextDelta`. If a model provider fails after partial output and eve retries the call, the durable stream keeps events from both attempts. A later completed event replaces provisional text only when the failed attempt did not already complete that block; the protocol has no attempt identity with which to retract earlier completed blocks.
 
-The eve client validates the stream version on every connection. It accepts v21 through v26. v25 and v26 events already use the current delta-only `MessageStreamEvent` contract, and the client normalizes v21–v24 cumulative message and reasoning append events and v24 offset-based tool-input appends to it. This also applies when an automatic reconnect reaches a newer deployment. A missing or unsupported `x-eve-stream-version` header fails the stream instead of treating unknown JSON as the current event type.
+The eve client validates the stream version on every connection. It accepts v21 through v27. v25 through v27 events already use the current delta-only `MessageStreamEvent` contract, and the client normalizes v21–v24 cumulative message and reasoning append events and v24 offset-based tool-input appends to it. This also applies when an automatic reconnect reaches a newer deployment. A missing or unsupported `x-eve-stream-version` header fails the stream instead of treating unknown JSON as the current event type.
 
 ## Handle event types
 

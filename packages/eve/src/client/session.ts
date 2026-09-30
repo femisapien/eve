@@ -1,6 +1,7 @@
 import { TurnSegment } from "#client/session-utils.js";
 import type { AgentStartedStreamEvent, MessageStreamEvent } from "#protocol/message.js";
 import { EVE_SESSION_ID_HEADER } from "#protocol/message.js";
+import type { MessageStreamVersion } from "#protocol/message-version.js";
 import {
   EVE_SESSION_ROUTE_PATH,
   createEveSessionRoutePath,
@@ -10,6 +11,7 @@ import { ClientAgentSession } from "#client/agent-session.js";
 import { ClientError } from "#client/client-error.js";
 import { MessageResponse } from "#client/message-response.js";
 import { followStreamIterable, sleep } from "#client/open-stream.js";
+import { answersCarryDeliveryIds } from "#client/stream-version.js";
 import {
   cancelClientSession,
   clearClientSession,
@@ -61,6 +63,7 @@ export interface ClientSessionContext {
 export class ClientSession {
   readonly #context: ClientSessionContext;
   #state: ClientSessionState;
+  #streamVersion: MessageStreamVersion | undefined;
 
   /** @internal */
   constructor(context: ClientSessionContext, state: ClientSessionState) {
@@ -158,12 +161,7 @@ export class ClientSession {
         "Message route did not return a delivery id. Update the server before sending with this client.",
       );
     }
-    return this.#messageResponse<TOutput>(
-      response,
-      input,
-      initialStreamIndex,
-      input.message === undefined ? undefined : deliveryId,
-    );
+    return this.#messageResponse<TOutput>(response, input, initialStreamIndex, deliveryId);
   }
 
   /** Requests cooperative cancellation of this session's active turn. */
@@ -247,7 +245,7 @@ export class ClientSession {
     source?: AsyncIterable<MessageStreamEvent>,
   ): AsyncGenerator<MessageStreamEvent> {
     let eventCount = 0;
-    let started = deliveryId === undefined;
+    let started = false;
     let reachedBoundary = false;
     const segment = new TurnSegment({ followCallbacks: true });
     try {
@@ -260,8 +258,12 @@ export class ClientSession {
           streamReconnectPolicy: input.streamReconnectPolicy,
         })) {
         eventCount += 1;
-        if (deliveryId !== undefined) {
-          const matches = event.meta?.deliveryIds?.includes(deliveryId) === true;
+        const ownDeliveryId =
+          input.message !== undefined || answersCarryDeliveryIds(this.#streamVersion)
+            ? deliveryId
+            : undefined;
+        if (ownDeliveryId !== undefined) {
+          const matches = event.meta?.deliveryIds?.includes(ownDeliveryId) === true;
           const terminal = event.type === "session.failed" || event.type === "session.completed";
           if (!matches && terminal && (!started || event.type === "session.completed")) {
             throw new Error(
@@ -330,6 +332,9 @@ export class ClientSession {
   }): AsyncIterable<MessageStreamEvent> {
     return followStreamIterable({
       onCaughtUp: input.onCaughtUp,
+      onStreamVersion: (version) => {
+        this.#streamVersion = version;
+      },
       follow: input.follow,
       host: this.#context.host,
       keepAlive: input.keepAlive,

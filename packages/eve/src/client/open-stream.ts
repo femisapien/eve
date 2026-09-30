@@ -87,6 +87,8 @@ function resolveStreamReconnectPolicy(
 interface FollowStreamInput {
   /** Called once after consuming the durable tail captured when the connection opens. */
   readonly onCaughtUp?: () => void;
+  /** Called with each connection's declared stream version, before any of its events. */
+  readonly onStreamVersion?: (version: MessageStreamVersion) => void;
   readonly host: string;
   /** Keep following empty streams unless the caller configures an idle retry limit. */
   readonly keepAlive?: boolean;
@@ -165,6 +167,7 @@ export async function* followStreamIterable(
       }
       throw error;
     }
+    input.onStreamVersion?.(connection.streamVersion);
 
     if ((input.follow === false || input.onCaughtUp !== undefined) && tailIndex === undefined) {
       tailIndex = connection.tailIndex;

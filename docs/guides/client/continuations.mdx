@@ -59,6 +59,12 @@ do not need to drain the stream before sending. Upgrade the server alongside the
 client: a server that omits the accepted delivery identity causes `send()` to
 throw instead of returning an ambiguous result.
 
+`respond()` correlates the same way on stream version 27 and later, so answers
+sent without awaiting each other each collect their own result. Answering one
+approval of several settles it and returns the session to waiting; the step
+runs once the last one is answered. On an older server, `respond()` collects
+from its starting cursor to the first boundary, whichever delivery reached it.
+
 If a configured reconnect limit ends the stream before the accepted turn reaches
 a boundary, collecting its response throws. A partial stream is not a completed
 result.

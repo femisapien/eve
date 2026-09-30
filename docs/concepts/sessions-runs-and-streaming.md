@@ -109,7 +109,7 @@ The default client reducer accumulates assistant text, reasoning, and streamed t
 
 If a model provider fails after partial output and eve retries the call, the durable stream keeps events from both attempts. When the failed attempt emitted only deltas, a later completed event lets replaceable projections converge on the successful attempt. A completed block does not mean the provider attempt itself later succeeded; removing abandoned completed blocks would require attempt identity, which these events do not carry.
 
-The client validates the `x-eve-stream-version` header on every connection. It accepts v21 through v26 and normalizes v21–v24 cumulative message and reasoning appends, plus v24 offset-based tool-input appends, to the delta-only contract that v25 introduced. This lets a reconnect cross deployments without changing the reducer input. A current server performs the same normalization when replaying a session written by an earlier deployment. A missing or unsupported version, or an append whose fields do not match its declared version, fails instead of being interpreted as a current event.
+The client validates the `x-eve-stream-version` header on every connection. It accepts v21 through v27 and normalizes v21–v24 cumulative message and reasoning appends, plus v24 offset-based tool-input appends, to the delta-only contract that v25 introduced. This lets a reconnect cross deployments without changing the reducer input. A current server performs the same normalization when replaying a session written by an earlier deployment. A missing or unsupported version, or an append whose fields do not match its declared version, fails instead of being interpreted as a current event.
 
 When a streamed tool input becomes a validated call, its `action.input.appended` events precede the matching `actions.requested` event. The default client reducer projects the potentially incomplete JSON as a `dynamic-tool` part with `state: "input-streaming"` and cumulative text in `inputText`. `actions.requested` replaces that part with `state: "input-available"` and the validated `input`. Excluded internal actions never publish their input stream.
 
@@ -169,10 +169,12 @@ Alongside `type` and `data`, every event carries a `meta` envelope:
 
 - **`meta.id`** uniquely identifies the event. It is an `evt_`-prefixed [ULID](https://github.com/ulid/spec): a millisecond timestamp followed by random bits, so ids are broadly time-ordered.
 - **`meta.at`** is the ISO-8601 time the event was emitted.
-- **`meta.deliveryIds`**, when present, identifies the accepted messages that own
-  the turn. `POST /eve/v1/session/:sessionId` returns its `deliveryId`, allowing
-  clients to skip earlier turns when resuming from an old cursor. Coalesced
-  messages share the same turn events.
+- **`meta.deliveryIds`**, when present, identifies the accepted deliveries that
+  caused the event: the messages that own the turn and, from stream version 27,
+  an answer's own delivery. `POST /eve/v1/session/:sessionId` returns its
+  `deliveryId`, allowing clients to skip earlier turns when resuming from an old
+  cursor and to tell their own boundary from another delivery's. Coalesced
+  messages, and answers that join an open turn, share the turn's events.
 
 `meta.id` is stable. eve mints it once, when the event is written to the durable stream, and stores it with the event. Reconnecting from a cursor, rewinding to `startIndex=0`, or replaying a finished session all return the same id for the same event.
 

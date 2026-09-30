@@ -30,19 +30,20 @@ these events come from.
 Each row is a fact the session knew but the stream didn't say, what readers
 did instead, and what the stream says now.
 
-| #   | Gap                                        | What readers did                                                                                                                                                 | Now                                                                                                       |
-| --- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| 1   | Which turn a new turn continues            | Buffered settlements seen between turns and attached them to the next `turn.started`. This depended on event order, and a session boundary dropped the buffer.   | `turn.started.continuesTurnId`; a turn's root is found by following it                                    |
-| 2   | Which turn runs an approved call           | Assumed the turn open when the approval resolved, or else the next to start                                                                                      | `resumeTurnId` on each approved resolution in `input.resolved`                                            |
-| 3   | Which calls a sign-in stops                | Assumed every unsettled call in a closed turn with an open sign-in                                                                                               | `authorization.required.callIds`; each such call settles `cancelled`                                      |
-| 4   | Which call a passed-up request belongs to  | The parent adopted the subagent's call as its own, guessed its status from task liveness, and UIs hid duplicates by matching followed child sessions' tool calls | Relayed `input.requested.callId` names the served call; the parent no longer records the subagent's call  |
-| 5   | Which attempt a sign-in completion closes  | Matched by `attemptId` when present, else by approval candidate, else the latest open attempt for the connection name                                            | `attemptId` required on both authorization events                                                         |
-| 6   | Calls eve abandons                         | Got no result. Readers inferred cancellation from turn status, and a call that asked for a sign-in stayed "running" beside the sign-in                           | `action.result` status `cancelled`, with `AUTHORIZATION_REQUIRED`, `TURN_CANCELLED`, or `CONTEXT_CLEARED` |
-| 7   | Denials reported as failures               | A policy's automatic denial arrived as `failed` with `TOOL_EXECUTION_DENIED`, and readers mapped the code                                                        | `rejected`, like every other denial                                                                       |
-| 8   | Relayed requests' coordinates              | A child's question named the child's own `turn_0`, so clients attached it to the root's first message                                                            | The served call's coordinates, with `taskId`                                                              |
-| 9   | Silent withdrawals                         | Cancel, clear, and a run ending dropped requests and sign-ins without an event, and readers kept showing them as answerable                                      | `input.resolved` `cancelled` or `authorization.completed` `failed`, before the event that ends the owner  |
-| 10  | Order of a sign-in callback and its resume | `authorization.completed` could follow the resumed `turn.started`, at the new turn's coordinates                                                                 | It precedes that turn, at the asking turn's coordinates                                                   |
-| 11  | Approval policy events' coordinates        | They named the turn about to start                                                                                                                               | They name the step that asked for the approval                                                            |
+| #   | Gap                                         | What readers did                                                                                                                                                                      | Now                                                                                                       |
+| --- | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| 1   | Which turn a new turn continues             | Buffered settlements seen between turns and attached them to the next `turn.started`. This depended on event order, and a session boundary dropped the buffer.                        | `turn.started.continuesTurnId`; a turn's root is found by following it                                    |
+| 2   | Which turn runs an approved call            | Assumed the turn open when the approval resolved, or else the next to start                                                                                                           | `resumeTurnId` on each approved resolution in `input.resolved`                                            |
+| 3   | Which calls a sign-in stops                 | Assumed every unsettled call in a closed turn with an open sign-in                                                                                                                    | `authorization.required.callIds`; each such call settles `cancelled`                                      |
+| 4   | Which call a passed-up request belongs to   | The parent adopted the subagent's call as its own, guessed its status from task liveness, and UIs hid duplicates by matching followed child sessions' tool calls                      | Relayed `input.requested.callId` names the served call; the parent no longer records the subagent's call  |
+| 5   | Which attempt a sign-in completion closes   | Matched by `attemptId` when present, else by approval candidate, else the latest open attempt for the connection name                                                                 | `attemptId` required on both authorization events                                                         |
+| 6   | Calls eve abandons                          | Got no result. Readers inferred cancellation from turn status, and a call that asked for a sign-in stayed "running" beside the sign-in                                                | `action.result` status `cancelled`, with `AUTHORIZATION_REQUIRED`, `TURN_CANCELLED`, or `CONTEXT_CLEARED` |
+| 7   | Denials reported as failures                | A policy's automatic denial arrived as `failed` with `TOOL_EXECUTION_DENIED`, and readers mapped the code                                                                             | `rejected`, like every other denial                                                                       |
+| 8   | Relayed requests' coordinates               | A child's question named the child's own `turn_0`, so clients attached it to the root's first message                                                                                 | The served call's coordinates, with `taskId`                                                              |
+| 9   | Silent withdrawals                          | Cancel, clear, and a run ending dropped requests and sign-ins without an event, and readers kept showing them as answerable                                                           | `input.resolved` `cancelled` or `authorization.completed` `failed`, before the event that ends the owner  |
+| 10  | Order of a sign-in callback and its resume  | `authorization.completed` could follow the resumed `turn.started`, at the new turn's coordinates                                                                                      | It precedes that turn, at the asking turn's coordinates                                                   |
+| 11  | Approval policy events' coordinates         | They named the turn about to start                                                                                                                                                    | They name the step that asked for the approval                                                            |
+| 12  | Which delivery an answer's events belong to | An answer's events carried the IDs of the message that started the parked turn, so `respond()` read to the first boundary after its cursor, and overlapping answers took each other's | Each answer's events carry its own delivery ID; from v27 `respond()` reads only its own                   |
 
 None of these facts needs new durable state. Parked steps keep their origin,
 pending sign-ins keep theirs, relayed runs carry `from.callId`, and the next
@@ -69,6 +70,15 @@ turn's ID is known before its `turn.started`.
   case needs the step to checkpoint what it reported.
 - **Stream loss.** When a stream stops, a reader can only call its running
   calls `interrupted`.
+- **Knowing a send is done from the stream alone.** With row 12, whether a
+  delivery reached its boundary is a fold over the stream, so the agent
+  store could wait on that instead of reading each send's response in turn.
+  Today an answer sent while another delivery's response is being read
+  resolves when that one's does. Relying on the fold also needs every
+  accepted delivery to reach a boundary stamped with it, which the stream
+  alone can't show: a delivery the adapter ignores emits nothing. The
+  checker can't hold streams to that without the accepted IDs, so the
+  stamping is covered by unit tests and an e2e eval instead.
 
 ## Observable changes
 
@@ -89,9 +99,15 @@ For stream readers:
   policy coordinates change as in rows 8–11.
 - `turn.waiting` follows a relayed request only while the parent has an open
   turn.
-- The stream version stays 26, since every change adds a field or a value.
-  A client that doesn't know `cancelled` shows such a call as completed, with
-  the error as its output.
+- An answer's events carry its own delivery ID in `meta.deliveryIds`. An
+  answer that joins an open turn adds its ID to the turn's, as a steering
+  message does, and so does one the session forwards to a child session or a
+  workflow run, whose relayed `input.resolved` carries it too.
+- The stream version is 27. No event changes shape, but a client that
+  doesn't know `cancelled` would show such a call as completed, and a
+  `respond()` that filters by its delivery would never find its events on an
+  older server. Older clients reject v27 streams; a v27 client still reads
+  v21–v26 streams and collects `respond()` there as before.
 
 Server fixes that come with this:
 
@@ -230,6 +246,7 @@ What found each defect, and what catches it now:
 | a policy's automatic denial reported `failed`                     | restored #3983 scenario      | integration test                    |
 | an approval a policy settled first lost its resume turn           | client adoption tests        | projection unit test                |
 | a declined session-limit prompt resolved twice                    | workflow stream checks       | `resolved-twice`, integration test  |
+| overlapping answers took each other's boundary                    | e2e eval                     | unit tests, e2e eval                |
 
 The turn state change dropped three suites, and this change restores them
 against the new state: the [#3983](https://github.com/vercel/eve/pull/3983)

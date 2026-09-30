@@ -32,6 +32,8 @@ import {
   type UnstampedMessageStreamEvent,
 } from "#protocol/message.js";
 import { retireProxyInputRequests } from "#harness/proxy-input-requests.js";
+import { readTurnState } from "#harness/turn-state.js";
+import { TurnDeliveryIdsKey } from "#context/keys.js";
 
 export type RoutedDeliverResult =
   | {
@@ -188,15 +190,34 @@ async function routeProxiedDeliver(
     retired = true;
   }
 
+  // Answers routed down are this delivery's part in the turn, as a message
+  // steering it would be: the relayed resolutions and the turn's later events
+  // carry its IDs, so its reader finds the boundary it reaches.
+  const routedDeliveryIds = (sourceDelivery.deliveryMetadata ?? [])
+    .filter((metadata) => !parentPayloads.has(metadata.payloadIndex))
+    .map((metadata) => metadata.deliveryId);
+  const turnDeliveryIds =
+    readTurnState(durableSession.state).turn === undefined
+      ? routedDeliveryIds
+      : [
+          ...new Set([
+            ...((input.serializedContext[TurnDeliveryIdsKey.name] as readonly string[]) ?? []),
+            ...routedDeliveryIds,
+          ]),
+        ];
   const context = await relaySessionEvents(
     {
-      serializedContext: input.serializedContext,
+      serializedContext:
+        routedDeliveryIds.length === 0
+          ? input.serializedContext
+          : { ...input.serializedContext, [TurnDeliveryIdsKey.name]: turnDeliveryIds },
       sessionState: retired
         ? replaceDurableSessionSnapshot({ session: durableSession, state: input.sessionState })
         : input.sessionState,
       sessionWritable: input.sessionWritable,
     },
     resolvedEvents,
+    routedDeliveryIds,
   );
   if (parentAction !== undefined) return { ...context, ...parentAction };
   const orderedParentPayloads = [...parentPayloads].sort(([a], [b]) => a - b);

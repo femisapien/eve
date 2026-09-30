@@ -390,7 +390,12 @@ describe("EveAgentStore lifecycle", () => {
     vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) =>
       init?.method === "POST"
         ? await start.promise
-        : streamResponse(stampTestEvents([createSessionWaitingEvent()])),
+        : streamResponse(
+            stampTestEvents([createSessionWaitingEvent()]).map((event) => ({
+              ...event,
+              meta: { ...event.meta, deliveryIds: ["delivery_1"] },
+            })),
+          ),
     );
     const store = createStore<readonly string[]>({
       initialSession: { sessionId: "session_1", streamIndex: 0 },

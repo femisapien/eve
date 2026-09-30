@@ -8,6 +8,7 @@ const supportedMessageStreamVersions = {
   "24": true,
   "25": true,
   "26": true,
+  "27": true,
 } as const satisfies Record<MessageStreamVersion, true>;
 
 /** Reads and validates the schema version declared by a message stream response. */
@@ -21,4 +22,9 @@ export function readMessageStreamVersion(headers: Headers): MessageStreamVersion
     throw new TypeError(`Missing ${EVE_STREAM_VERSION_HEADER} response header.`);
   }
   throw new TypeError(`Unsupported message stream version: ${version}.`);
+}
+
+/** From v27 an answer's events carry its own delivery ID, as a message's always have. */
+export function answersCarryDeliveryIds(version: MessageStreamVersion | undefined): boolean {
+  return version !== undefined && Number(version) >= 27;
 }

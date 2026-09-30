@@ -290,8 +290,13 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
       else ctx.set(AuthKey, previousAuth);
       adapterCtx.state = previousAdapterState!;
     } else {
-      if (rawDelivery?.payloads.some((payload) => payload.message !== undefined)) {
-        const ids = rawDelivery.deliveryMetadata?.map((entry) => entry.deliveryId) ?? [];
+      const ids = rawDelivery?.deliveryMetadata?.map((entry) => entry.deliveryId) ?? [];
+      // An answer stamps its own delivery like a message does, so each reader
+      // finds the boundary its delivery reached rather than an earlier one's.
+      if (
+        ids.length > 0 ||
+        rawDelivery?.payloads.some((payload) => payload.message !== undefined)
+      ) {
         ctx.set(
           TurnDeliveryIdsKey,
           initialTurnState.turn !== undefined
