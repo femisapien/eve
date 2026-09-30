@@ -116,8 +116,9 @@ routes:
 | Run one tool             | missing                                              | missing                                              |
 | Read one skill file      | missing                                              | missing                                              |
 
-The harness loop does not change. The work adds a tool execution scope that comes from a request
-instead of a turn.
+On the server side, the harness loop does not change: `invokeTool` adds a tool execution scope
+that comes from a request instead of a turn. The calling side does need harness work, a new
+interrupt for remote `input_required`; see [Client](#client-eve-connections).
 
 ### 1. `describe()`: what the agent offers callers
 
@@ -221,7 +222,11 @@ call as `sha256(forwarder, auth.current, key)`.
   forwarder, reaches the session. A leaked key grants nothing. Nothing is stored, and no call
   reads an owner record. This meets SEP-2567's rule to check the handle against the caller on
   every call. Deriving it in core means no channel hashes ids itself.
-- **No key means a one-off session.** Its sandbox is deleted after the call.
+- **No key means a one-off session.** Core mints a random one-off nonce for the call and derives
+  the id as `sha256(forwarder, auth.current, "one-off:" + nonce)`, so it is still bound to the
+  authenticated principals. Its sandbox is deleted when the request ends, including a request
+  that ends with `approval-required` or `authorization-required`. A retry reruns the tool from
+  the start in a fresh sandbox, so nothing from the first attempt is kept.
 
 The tool sees the same `ctx` it sees in a turn:
 
@@ -397,8 +402,12 @@ The MCP rules the channel must follow:
   request, `server/discover` and `resources/read` included, and deployment protection and
   proxies can see it.
 - **`requestState` is signed.** It carries `callId`, the tool-session id, the tool name, the
-  argument hash, and an expiry, and the channel HMAC-signs it with a deployment secret. A retry
-  whose signature, binding, or expiry does not check out is rejected. A valid signature is still
+  argument hash, and an expiry, plus the one-off nonce when the call has no key. The channel
+  HMAC-signs it with a deployment secret shared by every instance, so any instance can verify a
+  retry. On a retry the channel re-derives the session id from the request's own principals and
+  its key, or from the signed nonce when there is none, and requires it to equal the signed id. A
+  retry whose signature, binding, or expiry does not check out is rejected, so a state lifted
+  from another caller or forwarder fails on the binding even with a valid signature. A valid signature is still
   never evidence that a check passed; the operation re-evaluates everything. Signing stops a
   client from minting or editing state, which the prototype's unsigned approved flag allowed.
 - A retry that is missing a requested answer gets `input_required` again, not a decline.
@@ -423,8 +432,9 @@ vendor extension instead, which clients opt into per request:
   `tools/call` and `resources/read`, retries included. `requestState` binds to the key. There
   is no setup request: the first call carries the key, and nothing may depend on an earlier one.
 - **A client that does not declare it gets a one-off tool session per call**, as the
-  extensions guidance asks: the fallback is core behavior, not an error. Skill reads need no
-  session.
+  extensions guidance asks: the fallback is core behavior, not an error. Its approval and sign-in
+  retries carry the nonce in the signed `requestState`, as above, and can land on any instance.
+  Skill reads need no session.
 - **Results report the sandbox** in `_meta["dev.eve/sandbox"]`, as `{ state, ms }` from
   `invokeTool`, when the call opened it. Clients that do not know the key ignore it. The same
   fields go on the server's trace spans.
@@ -655,6 +665,9 @@ work lands. In between, `mcpChannel` answers `server/discover` with an empty too
   re-evaluation (a forged `callId` or missing answer never executes, and a `rejected` response
   is `denied`), `requestState` signature, binding, and expiry (an edited or unsigned state is
   rejected), session ownership, forwarder refusal.
+- Unit: one-off retries. Without the extension, an approval retry verifies on a second instance
+  sharing only the secret; the same `requestState` replayed by another user or forwarder is
+  rejected on the binding; and the first attempt's sandbox is deleted before the retry runs.
 - Unit: `mcpChannel` defaults. With `auth` only, it lists invocable tools and skills;
   `tools: false` / `skills: false` remove them from `tools/list`, `server/discover`, and the
   skill methods. No `agent_*` tool is served.
