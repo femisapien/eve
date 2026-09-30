@@ -62,35 +62,68 @@ keeps both behaviors.
 
 ## Motivation
 
-Today an approval ends the turn while the tool call has no result. eve holds the call back. The answer
-starts a new turn, which rebuilds context and writes the call back into history, followed by the AI
-SDK's approval response. The SDK runs the call only if that response is the last message
-(`collectToolApprovals`, `ai@7.0.105` `dist/index.js:2936`). Plain-tool sign-in also ends the turn,
-removes the interrupted call from history (`harness/inline-tool-authorization.ts:62-89`), and resumes
-from the callback in a new turn with no user message (`execution/session/program.ts:332-343`). A
-budget question ends the turn too (`harness/session-limit-enforcement.ts:146`).
+### How it works today
 
-This produces five failure classes:
+An approval ends the turn while the tool call has no result, and eve holds the call back. The answer
+starts a new turn. That turn rebuilds context and writes the call back into history, followed by the
+AI SDK's approval response. The SDK runs the call only if that response is the last message
+(`collectToolApprovals`, `ai@7.0.105` `dist/index.js:2936`). Plain-tool sign-in also ends the turn.
+It removes the interrupted call from history (`harness/inline-tool-authorization.ts:62-89`) and
+resumes from the callback in a new turn with no user message (`execution/session/program.ts:332-343`).
+A budget question ends the turn too (`harness/session-limit-enforcement.ts:146`).
 
-1. **Tail order.** Any framework message written after the approval response drops the approval:
-   skills (#2826), `clientContext` (#3594), memory recall with turn instructions (#3899, #3943),
-   sign-in resume (#3771), a second park (#2594). The defenses are `hasTailApprovalResponse`
-   (`harness/current-messages.ts:57`, `harness/input-requests.ts:124`) and a preamble reordering
-   whose comment names the constraint ("so an approval response stays in the final tool message,
-   where the AI SDK reads it"). #3983 adds another writer that must respect it, and its PR leaves a
-   known case open: a provider failure after an approval resume drops the approval exchange.
-2. **Resume context.** The approving turn rebuilds the turn id, principal, and turn-scoped
-   connections (#3705, #3760, #3751). One approval spans the turn ids `""`, `turn_1`, `turn_2`.
-3. **Single tail.** Only one tool message can be last, so one approval batch resolves per step
-   (#3711, #3564).
-4. **Park-path divergence.** Each park site builds its own pending state. One omitted the
-   response-policy flag, so the policy was skipped when an approval parked next to a workflow call
-   (#3891). #3954 fixed that site; every new park site still has to remember the flag.
-5. **Split interpreters.** Approvals live in harness session state; questions, child requests, and
-   workflow sign-ins live in the execution layer's route map.
+Each request kind has its own park and resume path. Approvals live in harness session state.
+Questions, child requests, and workflow sign-ins live in the execution layer's route map.
 
-Classes 1 to 3 exist because a call waits without a result. Classes 4 and 5 exist because each
-request kind has its own park and resume path.
+### The record
+
+From 2026-08-20 to 2026-09-30:
+
+- **46 HITL issues** were filed, and 27 are still open. They cover tool approvals, `ask_question`
+  and `ctx.ask`, budget questions, sign-ins, and how each is relayed, shown, and resumed.
+- **About 40 HITL pull requests** were opened. 26 are bot-written fixes, and 20 of those were still
+  unmerged on 2026-09-29.
+- **87 commits** on `main` touched HITL files: 60 from 08-29 to 09-28, and 27 more by 09-30.
+  `harness/tool-loop.ts` was touched by 55 commits since 08-29 and is now 3,356 lines.
+- **The same failure keeps coming back.** Seven distinct issues, plus one duplicate, come from a
+  message landing after an approval response or next to a waiting call. The approval is dropped, or
+  the provider rejects the request and the session ends. Each was fixed with a guard at one site
+  (#2656, #2919, #3595, #3903), and the next writer broke it again.
+
+### The issues, by cause
+
+| Cause                                                                                                                     | Issues                                                         | Fixed by this design                                                                                                                                                    |
+| ------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A message lands after the approval response**, so the approval is dropped or the provider rejects a call with no result | #2594, #2699, #2826, #2874, #3594, #3771, #3899, #3943         | Yes. History is append-only and a call always has its result                                                                                                            |
+| **Resume loses turn context**: the turn id, the answering principal, turn-scoped connections, or a user message           | #3705, #3760, #3771, #3906 (and #3751, fixed without an issue) | Yes. The answer continues the same turn                                                                                                                                 |
+| **Several approvals wait on each other**: one batch resolves per step, and text answers or a second batch get stuck       | #3494, #3711, #4024                                            | Yes. Each gated call has its own task and runs when its own request is answered                                                                                         |
+| **A message is misread** as an answer, a dismissal, deferred input, or a new turn, differently on each path               | #2466, #2469, #2699, #3421, #3494, #3680, #3711                | Mostly. Answers go to their owner, text matches one rule, and every other message steers. #4035 (a free-text question takes the next message) stays with `ask_question` |
+| **Pending state is split**, and cancel, steer, or settle clears only part of it                                           | #2442, #2874, #3414, #3458, #3887                              | Mostly. Every request has one owner, and cancel withdraws every open request. #3887 is in the MCP projection                                                            |
+| **Child and task relays drift** from the root path on hooks, settle events, limits, steering, and auth                    | #2520, #3458, #3589, #3680, #3784, #3887, #3990                | Partly. One route for every request; relays still carry it up the owner chain                                                                                           |
+| **Events are missing or not reduced**, so clients and channels get stuck                                                  | #2421, #2520, #3705, #3757, #3784, #3911, #3990                | Partly. One route emits every request's events with one `turnId`                                                                                                        |
+| **Policy and identity gaps**: the response policy is skipped, runs too late, or can't see who asked                       | #3198, #3238, #3680, #3822, #3891, #3906                       | Partly. The response policy runs in one place, when an answer is accepted. #3238 (permissive defaults) is a separate decision                                           |
+
+Not addressed here: channel rendering (#2471, #2476, #2779, #3615, #3712), configuration
+(#2845, #3895), durability (#3103, #3546), budget arithmetic for delegated sessions (#2806),
+scoped approval keys (#2319), and packaging (#3497).
+
+### Two root causes
+
+The first three rows share one cause: a tool call waits without a result. The AI SDK will only run
+it if the approval response is the last message. The defenses are `hasTailApprovalResponse`, called
+from two sites (`harness/current-messages.ts:57`, `harness/input-requests.ts:124`), and a preamble
+reordering whose comment names the constraint ("so an approval response stays in the final tool
+message, where the AI SDK reads it"). Any other writer can still break it. #3983 added another
+writer that has to respect it, and its PR leaves a known case open: a provider failure after an
+approval resume drops the approval exchange.
+
+The rest share the other cause: each request kind has its own park, resume, and routing path, and a
+fix on one path doesn't reach the others. #3891 is the clearest case. One park site omitted the
+response-policy flag, so the policy was skipped when an approval parked next to a workflow call.
+#3954 fixed that site, and every new park site still has to remember the flag.
+
+This design removes the first cause by giving every waiting call a result at once, and the second by
+routing every request through one path with one owner.
 
 ## Requests and owners
 
@@ -110,14 +143,14 @@ calls the turn is parked (`turn.waiting`) and costs nothing.
 
 These rules apply to every owner:
 
-| When                                                                | Then                                                                                                                                                                            |
-| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| The turn's principal sends a message that is not a text answer      | It steers the turn. Approvals and sign-ins stay open; an `execute` call's question is withdrawn, as on `main`; during a budget question the message is saved for after Continue |
-| Another principal sends a message                                   | It waits for the turn to end                                                                                                                                                    |
-| The session is cancelled, the turn fails, or the session ends       | Every open request is withdrawn (`input.resolved` `cancelled`)                                                                                                                  |
-| An answer or callback arrives for a withdrawn or answered request   | It is stale and changes nothing                                                                                                                                                 |
-| Nobody can answer (a schedule, or a session without `requestInput`) | The request resolves `unavailable` at once                                                                                                                                      |
-| A child session raises a request                                    | The child holds its own turn; the request travels up the owner chain and the answer routes down by `requestId`, as child questions do today                                     |
+| When                                                                | Then                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| The turn's principal sends a message that is not a text answer      | It steers the turn. Approvals and sign-ins stay open; an `execute` call's question is withdrawn, or answered when it accepts free text, as on `main` (#4035); during a budget question the message is saved for after Continue |
+| Another principal sends a message                                   | It waits for the turn to end                                                                                                                                                                                                   |
+| The session is cancelled, the turn fails, or the session ends       | Every open request is withdrawn (`input.resolved` `cancelled`)                                                                                                                                                                 |
+| An answer or callback arrives for a withdrawn or answered request   | It is stale and changes nothing                                                                                                                                                                                                |
+| Nobody can answer (a schedule, or a session without `requestInput`) | The request resolves `unavailable` at once                                                                                                                                                                                     |
+| A child session raises a request                                    | The child holds its own turn; the request travels up the owner chain and the answer routes down by `requestId`, as child questions do today                                                                                    |
 
 ## Gated calls
 
