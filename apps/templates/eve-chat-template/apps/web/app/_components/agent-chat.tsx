@@ -1094,6 +1094,7 @@ export function AgentChatSession({
 }
 
 type PendingConnectionAuthorization = {
+  readonly attemptId: string;
   readonly description: string;
   readonly displayName: string;
   readonly expiresAt?: string;
@@ -1140,6 +1141,7 @@ function toPendingAuthorization(
   const displayName = challenge?.displayName ?? event.data.name;
 
   return {
+    attemptId: event.data.attemptId,
     authorization: challenge,
     description:
       challenge?.instructions ??
@@ -1211,6 +1213,7 @@ function createAuthorizationDeclinedEvents(
   return [
     {
       data: {
+        attemptId: authorization.attemptId,
         authorization: authorization.authorization,
         name: authorization.name,
         outcome: "declined",
