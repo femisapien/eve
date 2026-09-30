@@ -222,8 +222,9 @@ describe("proxied stream hooks", () => {
       Response.json({ ok: true }, { status: 202 }),
     );
     vi.stubGlobal("fetch", fetchMock);
-    const sink = createSessionEventSink({
+    const publisher = openSessionEventPublisher({
       ctx: f.ctx,
+      origin: "own",
       sessionId: "parent-session",
       sessionWritable: f.sessionWritable,
     });
@@ -235,8 +236,8 @@ describe("proxied stream hooks", () => {
       turnId: "child-turn",
     });
     try {
-      await sink.emit({ type: "input.requested", data: f.hookPayload.event });
-      await sink.emit(signIn);
+      await publisher.emit({ type: "input.requested", data: f.hookPayload.event });
+      await publisher.emit(signIn);
       const bodies = fetchMock.mock.calls.map(([, init]) => JSON.parse(init.body as string));
       const envelope = {
         callId: "remote-call",
@@ -251,7 +252,7 @@ describe("proxied stream hooks", () => {
       ]);
       expect(f.order).not.toContain("channel:input.requested");
     } finally {
-      sink.release();
+      publisher.writer.release();
       vi.unstubAllGlobals();
     }
   });
@@ -267,17 +268,18 @@ describe("proxied stream hooks", () => {
     f.ctx.set(LegacyRemoteAgentCallerKey, {});
     const fetchMock = vi.fn(async () => Response.json({ ok: true }, { status: 202 }));
     vi.stubGlobal("fetch", fetchMock);
-    const sink = createSessionEventSink({
+    const publisher = openSessionEventPublisher({
       ctx: f.ctx,
+      origin: "own",
       sessionId: "parent-session",
       sessionWritable: f.sessionWritable,
     });
     try {
-      await sink.emit({ type: "input.requested", data: f.hookPayload.event });
+      await publisher.emit({ type: "input.requested", data: f.hookPayload.event });
       expect(fetchMock).not.toHaveBeenCalled();
       expect(f.order).toContain("channel:input.requested");
     } finally {
-      sink.release();
+      publisher.writer.release();
       vi.unstubAllGlobals();
     }
   });
