@@ -92,20 +92,25 @@ From 2026-08-20 to 2026-09-30:
 
 ### The issues, by cause
 
-| Cause                                                                                                                     | Issues                                                         | Fixed by this design                                                                                                                                                    |
-| ------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **A message lands after the approval response**, so the approval is dropped or the provider rejects a call with no result | #2594, #2699, #2826, #2874, #3594, #3771, #3899, #3943         | Yes. History is append-only and a call always has its result                                                                                                            |
-| **Resume loses turn context**: the turn id, the answering principal, turn-scoped connections, or a user message           | #3705, #3760, #3771, #3906 (and #3751, fixed without an issue) | Yes. The answer continues the same turn                                                                                                                                 |
-| **Several approvals wait on each other**: one batch resolves per step, and text answers or a second batch get stuck       | #3494, #3711, #4024                                            | Yes. Each gated call has its own task and runs when its own request is answered                                                                                         |
-| **A message is misread** as an answer, a dismissal, deferred input, or a new turn, differently on each path               | #2466, #2469, #2699, #3421, #3494, #3680, #3711                | Mostly. Answers go to their owner, text matches one rule, and every other message steers. #4035 (a free-text question takes the next message) stays with `ask_question` |
-| **Pending state is split**, and cancel, steer, or settle clears only part of it                                           | #2442, #2874, #3414, #3458, #3887                              | Mostly. Every request has one owner, and cancel withdraws every open request. #3887 is in the MCP projection                                                            |
-| **Child and task relays drift** from the root path on hooks, settle events, limits, steering, and auth                    | #2520, #3458, #3589, #3680, #3784, #3887, #3990                | Partly. One route for every request; relays still carry it up the owner chain                                                                                           |
-| **Events are missing or not reduced**, so clients and channels get stuck                                                  | #2421, #2520, #3705, #3757, #3784, #3911, #3990                | Partly. One route emits every request's events with one `turnId`                                                                                                        |
-| **Policy and identity gaps**: the response policy is skipped, runs too late, or can't see who asked                       | #3198, #3238, #3680, #3822, #3891, #3906                       | Partly. The response policy runs in one place, when an answer is accepted. #3238 (permissive defaults) is a separate decision                                           |
+Some of these were already fixed on `main` with a local patch. The table keeps them because they show
+how often each cause produced a bug. The last column says what this design does for the issues that
+are still open.
+
+| Cause                                                                                                                     | Still open                        | Fixed locally on `main`              | What this design does for the open ones                                                                                                                                                                                                                       |
+| ------------------------------------------------------------------------------------------------------------------------- | --------------------------------- | ------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A message lands after the approval response**, so the approval is dropped or the provider rejects a call with no result | #2699, #3594, #3771, #3899        | #2594, #2826, #2874, #3943           | Fixes all four. History is append-only and a call always has its result                                                                                                                                                                                       |
+| **Resume loses turn context**: the turn id, the answering principal, turn-scoped connections, or a user message           | #3705, #3771                      | #3751, #3760, #3906                  | Fixes #3771: the sign-in continues the same turn. #3705 is `ask_question`, which stopped ending the turn in #3850; check whether it still reproduces                                                                                                          |
+| **Several approvals wait on each other**: one batch resolves per step                                                     | #3711, #4024                      | #3494                                | Fixes both. Each gated call has its own task and runs when its own request is answered                                                                                                                                                                        |
+| **A message is misread** as an answer, a dismissal, deferred input, or a new turn                                         | #2699, #3421, #3680, #3711, #4035 | #2466, #2469, #3494                  | Fixes #2699, #3421, #3711: one classifier decides for every request (see One route). Not #3680: text still doesn't answer policy-guarded requests (open question 3). Not #4035: a free-text question still takes the next message                             |
+| **Pending state is split**, and cancel, steer, or settle clears only part of it                                           | #3414, #3458, #3887               | #2442, #2874                         | Fixes #3414 and #3458: the harness store they go stale in is deleted, and approvals no longer park the child. #3887 is the MCP projection of a task's sign-in; the held turn keeps the parent from starting its next turn, but the projection is not verified |
+| **Child and task relays drift** from the root path on hooks, settle events, and steering                                  | #2520, #3458, #3680               | #3589, #3784, #3990                  | Fixes #2520 only if the root emits the settle events for answers it routes (see Stream events). #3458 as above. Not #3680, as above. Relays still exist, so a relay-only bug can still happen                                                                 |
+| **Events are missing or not reduced**, so clients and channels get stuck                                                  | #2421, #2520, #3911               | #3757, #3784, #3990                  | #2520 as above. Not #2421: concurrent sign-ins superseding each other is in the authorization layer. Not #3911: the client reducer still has to derive approval state from `input.resolved` (open question 5)                                                 |
+| **Policy gaps**: the response policy is skipped, or a gated tool runs before approval                                     | #3198, #3891                      | #3822, #3906 (#3891's case by #3954) | Fixes both by construction: a gated call runs only after its request is answered, and the policy runs in one place. #3983 may already fix #3198; the issue is still open                                                                                      |
 
 Not addressed here: channel rendering (#2471, #2476, #2779, #3615, #3712), configuration
 (#2845, #3895), durability (#3103, #3546), budget arithmetic for delegated sessions (#2806),
-scoped approval keys (#2319), and packaging (#3497).
+scoped approval keys (#2319), packaging (#3497), and permissive answer defaults (#3238, closed as
+by design).
 
 ### Two root causes
 
@@ -117,19 +122,60 @@ message, where the AI SDK reads it"). Any other writer can still break it. #3983
 writer that has to respect it, and its PR leaves a known case open: a provider failure after an
 approval resume drops the approval exchange.
 
-The rest share the other cause: each request kind has its own park, resume, and routing path, and a
-fix on one path doesn't reach the others. #3891 is the clearest case. One park site omitted the
-response-policy flag, so the policy was skipped when an approval parked next to a workflow call.
-#3954 fixed that site, and every new park site still has to remember the flag.
+The rest share the other cause: requests live in two stores, answers are classified by two
+functions, and sign-ins resume through a third path (see One route). A fix on one path doesn't reach
+the others. #3891 is the clearest case. One park site omitted the response-policy flag, so the
+policy was skipped when an approval parked next to a workflow call. #3954 fixed that site, and every
+new park site still has to remember the flag.
 
-This design removes the first cause by giving every waiting call a result at once, and the second by
-routing every request through one path with one owner.
+Gated calls remove the first cause: every waiting call has a result at once. Moving approvals and
+budget questions into the store and classifier that questions already use removes the second.
 
 ## Requests and owners
 
-All requests share one route. The session alone accepts or withdraws an answer, as it already does
-for `ctx.ask` (`research/eve-tasks.md` §7, "One inbox per run"). An answer goes to the request's
-owner and never steers the turn.
+### One route
+
+Today requests are stored and answered in three places:
+
+| Request                                                                                     | Stored in                                                                                       | Answer classified by                                                            | Text answers                                                         |
+| ------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| Approval, root budget question                                                              | The harness's pending-input batches (`harness/pending-input-batches.ts`)                        | `resolveTextMessageInput` and `routePendingInput` (`harness/input-requests.ts`) | Every open request the text matches; policy-guarded requests skipped |
+| `ctx.ask` question (including `ask_question`), child request, relayed child budget question | The session's route table, `eve.runtime.proxyInputRequests` (`harness/proxy-input-requests.ts`) | `routeDeliverPayload` (`subagents/hitl-proxy.ts:135`)                           | Only when exactly one question is open                               |
+| Plain-tool sign-in                                                                          | Authorization attempts, resumed by `authorization-resume` (`execution/session/next-input.ts`)   | The callback                                                                    | None                                                                 |
+
+Sign-ins inside a workflow body take a second sign-in path, inside the workflow step
+(`execution/tools/workflow/step-execution.ts`), and never end the turn.
+
+Under this design:
+
+| Request                    | Stored in                                                                                            | Answer classified by                        |
+| -------------------------- | ---------------------------------------------------------------------------------------------------- | ------------------------------------------- |
+| Approval                   | The route table, as a `ctx.ask` question from the gate task                                          | `routeDeliverPayload`                       |
+| Budget question            | The route table, as a new turn-owned entry. The table already carries relayed child budget questions | `routeDeliverPayload`                       |
+| Question, child request    | The route table, unchanged                                                                           | `routeDeliverPayload`, unchanged            |
+| Sign-in, plain or workflow | The workflow step, from the gate task or the body                                                    | The callback, unchanged for workflow bodies |
+
+The harness's pending-input batches, their classifier, the approval coordinator, and
+`authorization-resume` are deleted. What is left is one table and one classifier for every request
+a person answers, and one sign-in path.
+
+Every delivery goes through that classifier in the same order:
+
+1. **Answers.** Each `inputResponses` entry goes to its request's owner, after the response policy.
+   An answer never steers.
+2. **Text answers.** When exactly one request is open, a text message from the turn's principal
+   that matches one of its options answers it and is consumed. A question that accepts free text
+   takes any text (#4035). This is the rule `routeDeliverPayload` already applies to questions.
+3. **Steering.** Any other message from the turn's principal steers the held turn.
+4. **Everyone else.** A message from another principal waits for the turn to end.
+
+Cancel withdraws every entry in the table, as `withdrawWorkflowAsks`
+(`execution/tools/workflow/withdraw-step.ts:71`) already does for questions.
+
+### Owners
+
+The session alone accepts or withdraws an answer, as it already does for `ctx.ask`
+(`research/eve-tasks.md` §7, "One inbox per run"). The owner is what continues once it does.
 
 | Owner          | Requests                                                        | Continues on answer                                       | Carries `taskId`                                |
 | -------------- | --------------------------------------------------------------- | --------------------------------------------------------- | ----------------------------------------------- |
@@ -289,6 +335,8 @@ a child that inherited a zero budget fails so its parent asks instead.
 A text message from the turn's principal answers a request when it matches an option of exactly one
 open request, by id, label, or number, using today's matcher (`channel/resolve-text.ts`). The message
 is consumed and does not steer. Requests with a response policy are not answered by text, as today.
+This is the rule `routeDeliverPayload` already applies to questions; approvals and budget questions
+adopt it when they move into the route table.
 
 With two or more open requests, text answers none of them and steers instead, so the model can ask
 which one is meant. On `main`, one text reply answers every open request it matches
@@ -341,6 +389,10 @@ would be approving, and tool output claiming "the user approved" must never beco
 | The gated call's outcome                                     | `action.result` in a new turn                                      | `task.started` at the call, `task.settled` at the outcome |
 | The answering delivery                                       | `turn.started` with a new `turnId`                                 | `step.started` with the same `turnId`                     |
 
+The session that accepts an answer emits its `input.resolved` and, for an approval,
+`approval.settled`. For a relayed child request that is the root, the session whose channel showed
+the prompt, so the channel that posted a card is the one told to settle it (#2520).
+
 Response readers (`send().result()`, MCP) already stop at `turn.waiting` while requests are pending
 (`client/session-utils.ts` `isTurnSegmentBoundary`), and return `status: "waiting"`.
 
@@ -354,15 +406,17 @@ Response readers (`send().result()`, MCP) already stop at `turn.waiting` while r
 5. The approval policy runs once per call, at the gate. The response policy runs once per answer,
    where the session accepts it.
 6. Only a person's answer grants. Model output never answers a request.
+7. Every request a person answers is an entry in the session's route table, and every delivery is
+   classified by one function.
 
 ## Where each piece lives
 
-| Piece        | Where                                                                                          | What changes                                                                 |
-| ------------ | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
-| Gate         | Where deferred calls are collected today (`collectDeferredCalls`, `harness/tool-loop.ts:2855`) | One new outcome: start a gate task                                           |
-| Gate task    | A framework-provided `task()` body on public workflow API, like `ask_question` and `sleep`     | New. It asks with `ctx.ask` or `requireAuth`, then runs the tool's `execute` |
-| Budget check | `enforceSessionUsageLimit`, before every model call                                            | Parks the turn on the session inbox instead of ending it                     |
-| Answers      | The session inbox, the route `ctx.ask` answers take                                            | The response policy runs here, before the answer reaches its owner           |
+| Piece        | Where                                                                                          | What changes                                                                                               |
+| ------------ | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- |
+| Gate         | Where deferred calls are collected today (`collectDeferredCalls`, `harness/tool-loop.ts:2855`) | One new outcome: start a gate task                                                                         |
+| Gate task    | A framework-provided `task()` body on public workflow API, like `ask_question` and `sleep`     | New. It asks with `ctx.ask` or `requireAuth`, then runs the tool's `execute`                               |
+| Budget check | `enforceSessionUsageLimit`, before every model call                                            | Parks the turn on the session inbox instead of ending it                                                   |
+| Answers      | The route table and `routeDeliverPayload`, the path `ctx.ask` answers take                     | Approvals and budget questions join it. The response policy runs here, before the answer reaches its owner |
 
 ## What this removes
 
@@ -371,6 +425,8 @@ Response readers (`send().result()`, MCP) already stop at `turn.waiting` while r
 - `hasTailApprovalResponse`, the tail guard in `harness/current-messages.ts`, and the preamble
   reordering for approvals.
 - The AI SDK's `toolApproval` path for eve tools.
+- The harness's answer classifier for approvals and budget questions (`resolveTextMessageInput`,
+  `routePendingInput` in `harness/input-requests.ts`). `routeDeliverPayload` classifies every answer.
 - Every park site that ends a turn: approvals and plain-tool sign-ins (`harness/tool-loop.ts:2715`,
   `:2771`) and budget questions (`harness/session-limit-enforcement.ts:112-152`), plus the path that
   records a message while a batch is pending and ends the turn again (`harness/tool-loop.ts:877-940`).
@@ -434,6 +490,10 @@ upgrade are dropped the same way; the next call or model step raises a new one.
    through the response policy like a structured answer. Decide whether to allow it.
 4. **Credential lifetime.** Whether turn-scoped tokens fetched before a long wait are refreshed when
    the gate task runs the call.
+5. **Client approval state.** Clients show an approval's state from the tool part's `eve` metadata,
+   which `approval.settled` doesn't always update (#3911). With the call's result now a receipt,
+   `useEveAgent` and `EveAgentStore` must derive approval state from `input.requested`,
+   `input.resolved`, and `task.settled` instead.
 
 Follow-ups, not needed for the first version: one `input.requested` per step for several gated calls,
 and default request deadlines in shared threads (reusing `expireApprovalCandidates`).
