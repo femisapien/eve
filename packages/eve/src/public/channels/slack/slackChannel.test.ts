@@ -54,6 +54,7 @@ import {
 import type { SessionContext } from "#public/definitions/callback-context.js";
 import { type InputResponse, parseInputResponses } from "#shared/input.js";
 import { mockAgentDescriptionRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
+import { unusedInvokeTool } from "#internal/testing/unused-invoke-tool.js";
 
 function slackRespondTypeChecks(
   interaction: SlackInteractionContext,
@@ -488,6 +489,7 @@ async function firePost(
     to: vi.fn() as any,
     params: {},
     requestIp: null,
+    invokeTool: unusedInvokeTool,
   });
 
   let drained = 0;
@@ -5669,6 +5671,7 @@ describe("slackChannel().receive", () => {
       to: vi.fn() as any,
       params: {},
       requestIp: null,
+      invokeTool: unusedInvokeTool,
     });
 
     let drained = 0;

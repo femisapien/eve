@@ -62,6 +62,13 @@ export type {
   AgentSkillDescription,
   AgentToolDescription,
 } from "#channel/agent-description.js";
+export type {
+  InvokeToolAuthorizationChallenge,
+  InvokeToolFn,
+  InvokeToolOptions,
+  InvokeToolResult,
+  InvokeToolSandboxReport,
+} from "#channel/invoke-tool.js";
 export { DELETE, GET, HEAD, OPTIONS, PATCH, POST, PUT, WS } from "#channel/routes.js";
 export type {
   AttachSessionFn,

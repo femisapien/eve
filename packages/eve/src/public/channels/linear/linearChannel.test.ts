@@ -14,6 +14,7 @@ import { signLinearWebhookBody } from "#public/channels/linear/verify.js";
 import type { InputRequest } from "#shared/input.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
 import { mockAgentDescriptionRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
+import { unusedInvokeTool } from "#internal/testing/unused-invoke-tool.js";
 
 const SECRET = "linear-secret";
 
@@ -137,6 +138,7 @@ async function firePost(
     params: {},
     to: vi.fn() as any,
     requestIp: null,
+    invokeTool: unusedInvokeTool,
     waitUntil,
   });
 

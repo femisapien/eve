@@ -166,6 +166,12 @@ export const LegacyRemoteAgentCallerKey = new ContextKey<LegacyRemoteAgentCaller
 // ---------------------------------------------------------------------------
 
 export const SessionKey = new ContextKey<Session>("eve.session");
+
+/**
+ * Present while a tool runs in a tool session (`invokeTool`) instead of a
+ * conversation. Tool sessions have no step boundary to commit authored state.
+ */
+export const ToolSessionKey = new ContextKey<{ readonly toolName: string }>("eve.toolSession");
 export const SandboxKey = new ContextKey<SandboxAccess>("eve.sandbox");
 export const HandleEventKey = new ContextKey<HandleEventFn>("eve.internal.handleEvent");
 

@@ -32,6 +32,7 @@ import { eveChannel, type EveChannelInput } from "#public/channels/eve.js";
 import { attachRouteSessionCreator } from "#internal/nitro/routes/channel-route-context.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
 import { mockAgentDescriptionRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
+import { unusedInvokeTool } from "#internal/testing/unused-invoke-tool.js";
 
 const ROUTER_CALLER: SessionAuthContext = {
   attributes: {},
@@ -101,6 +102,7 @@ function createEveCreateHandler(input: EveChannelInput) {
           params: {},
           waitUntil: () => undefined,
           requestIp: "127.0.0.1",
+          invokeTool: unusedInvokeTool,
         },
         createSession,
       );

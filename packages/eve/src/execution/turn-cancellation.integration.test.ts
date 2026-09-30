@@ -29,6 +29,7 @@ import type { ResolvedToolDefinition } from "#runtime/types.js";
 import { toInputSchema } from "#tools/schema.js";
 import { captureConsoleOutput } from "#internal/testing/log-records.js";
 import { mockAgentDescriptionRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
+import { unusedInvokeTool } from "#internal/testing/unused-invoke-tool.js";
 
 /**
  * Turn cancellation settles as `turn.cancelled` → `session.waiting` with
@@ -308,6 +309,7 @@ function createCancelRouteCaller(): (
       params: { sessionId },
       waitUntil: () => undefined,
       requestIp: "127.0.0.1",
+      invokeTool: unusedInvokeTool,
     } satisfies RouteHandlerArgs;
     return await handler(request, args);
   };

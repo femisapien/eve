@@ -1,5 +1,6 @@
 import { ContextKey } from "#context/key.js";
 import { loadContext } from "#context/container.js";
+import { ToolSessionKey } from "#context/keys.js";
 
 /**
  * Typed handle returned by {@link defineState}. Reads and updates a
@@ -72,6 +73,13 @@ function createStateHandle<T>(name: string, initial: () => T): StateHandle<T> {
 
     update(fn: (current: T) => T): void {
       const ctx = loadContext();
+      const toolSession = ctx.get(ToolSessionKey);
+      if (toolSession !== undefined) {
+        throw new Error(
+          `Tool "${toolSession.toolName}" cannot update state "${name}": it runs in a tool session, which has no session state. ` +
+            "Keep state that must outlive the call in the sandbox, or return a handle the caller passes back.",
+        );
+      }
       const current = ctx.ensure(key, initial);
       ctx.set(key, fn(current));
     },

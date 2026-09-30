@@ -10,6 +10,7 @@ import { none } from "#public/channels/auth.js";
 import { eveChannel, type TrustedForwarders } from "#public/channels/eve.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
 import { mockAgentDescriptionRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
+import { unusedInvokeTool } from "#internal/testing/unused-invoke-tool.js";
 
 function route(
   method: "GET" | "POST",
@@ -47,6 +48,7 @@ function createArgs(session = createFixedSession()): RouteHandlerArgs {
     params: { sessionId: "wrun_A" },
     waitUntil: vi.fn(),
     requestIp: "127.0.0.1",
+    invokeTool: unusedInvokeTool,
   };
 }
 

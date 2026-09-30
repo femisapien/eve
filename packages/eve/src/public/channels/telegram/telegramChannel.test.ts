@@ -16,6 +16,7 @@ import {
 import { isTelegramBotMentioned } from "#public/channels/telegram/defaults.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
 import { mockAgentDescriptionRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
+import { unusedInvokeTool } from "#internal/testing/unused-invoke-tool.js";
 
 const SECRET = "telegram-secret";
 
@@ -102,6 +103,7 @@ async function firePost(
     to: vi.fn() as any,
     params: {},
     requestIp: null,
+    invokeTool: unusedInvokeTool,
     waitUntil,
   });
 
@@ -399,6 +401,7 @@ describe("telegramChannel() inbound route", () => {
         to: vi.fn() as any,
         params: {},
         requestIp: null,
+        invokeTool: unusedInvokeTool,
         waitUntil: vi.fn(),
       },
     );

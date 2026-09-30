@@ -13,6 +13,7 @@ import {
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import { teamsChannel, type TeamsChannelState } from "#public/channels/teams/index.js";
 import { mockAgentDescriptionRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
+import { unusedInvokeTool } from "#internal/testing/unused-invoke-tool.js";
 
 function adapter(channel: unknown) {
   return asCompiled<TeamsChannelState>(channel).adapter;
@@ -101,6 +102,7 @@ async function firePost(
       params: {},
       to: vi.fn(),
       requestIp: null,
+      invokeTool: unusedInvokeTool,
       waitUntil,
     },
   );

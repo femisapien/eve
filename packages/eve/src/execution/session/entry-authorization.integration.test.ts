@@ -35,6 +35,7 @@ import {
   expectSingleTurn,
 } from "#internal/testing/entry-test-helpers.js";
 import { mockAgentDescriptionRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
+import { unusedInvokeTool } from "#internal/testing/unused-invoke-tool.js";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -121,6 +122,7 @@ describe("workflowEntry integration", () => {
           attachSession: vi.fn() as never,
           params: {},
           requestIp: null,
+          invokeTool: unusedInvokeTool,
           to: vi.fn() as never,
           waitUntil: (task) => void pending.push(task),
         },

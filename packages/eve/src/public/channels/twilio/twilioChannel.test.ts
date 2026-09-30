@@ -13,6 +13,7 @@ import { twilioChannel, type TwilioContext } from "#public/channels/twilio/twili
 import { signTwilioRequest } from "#public/channels/twilio/verify.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
 import { mockAgentDescriptionRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
+import { unusedInvokeTool } from "#internal/testing/unused-invoke-tool.js";
 
 const AUTH_TOKEN = "test-auth-token";
 
@@ -118,6 +119,7 @@ async function firePost(
     to: vi.fn() as any,
     params: {},
     requestIp: null,
+    invokeTool: unusedInvokeTool,
     waitUntil,
   });
 
@@ -155,6 +157,7 @@ async function fireGet(
     to: vi.fn() as any,
     params: {},
     requestIp: null,
+    invokeTool: unusedInvokeTool,
     waitUntil,
   });
 
@@ -389,6 +392,7 @@ describe("twilioChannel() inbound text pipeline", () => {
         to: vi.fn() as any,
         params: {},
         requestIp: null,
+        invokeTool: unusedInvokeTool,
         waitUntil: vi.fn(),
       },
     );

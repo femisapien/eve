@@ -178,7 +178,7 @@ export interface SandboxProvider<
   ): SandboxEnvironment<OpenOptions, Session>;
 }
 
-type ErasedSandboxProviderImplementation = SandboxProviderImplementation<
+export type ErasedSandboxProviderImplementation = SandboxProviderImplementation<
   object | undefined,
   SandboxPreparedArtifact,
   SandboxPreparedArtifact,

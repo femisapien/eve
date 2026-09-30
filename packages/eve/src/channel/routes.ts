@@ -2,6 +2,7 @@ import type { UserContent } from "ai";
 
 import type { CrossChannelToFn } from "#channel/cross-channel-receive.js";
 import type { ChannelFrom, ChannelResolveSession } from "#channel/channel-operations.js";
+import type { InvokeToolFn } from "#channel/invoke-tool.js";
 import type { InputResponse } from "#shared/input.js";
 import type { Session } from "#channel/session.js";
 import type { JsonObject } from "#shared/json.js";
@@ -48,6 +49,8 @@ export interface RouteHandlerArgs<TState = undefined> {
    * files, so they count toward the deployed function's size limit.
    */
   readSkill(skill: string, path?: string): Promise<string | Uint8Array>;
+  /** Runs one of the agent's tools in a tool session, outside any conversation. */
+  readonly invokeTool: InvokeToolFn;
 }
 
 export interface SendPayload {

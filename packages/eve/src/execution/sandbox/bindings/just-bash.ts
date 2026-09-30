@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { type Dirent } from "node:fs";
-import { mkdir, readdir, rename, rm, stat } from "node:fs/promises";
+import { cp, mkdir, readdir, rename, rm, stat } from "node:fs/promises";
 import { dirname, join } from "node:path";
 
 import {
@@ -36,6 +36,11 @@ import {
   type SandboxProviderImplementation,
   type SandboxProviderSessionContext,
 } from "#shared/sandbox-provider.js";
+import {
+  SandboxNameConflictError,
+  type SandboxProviderTag,
+} from "#execution/sandbox/named-sessions.js";
+import { withNamedSandboxSessions } from "#execution/sandbox/named-sessions.js";
 import { SandboxTemplateNotProvisionedError } from "#shared/sandbox-template-error.js";
 
 const JUST_BASH_CACHE_DIRECTORY_NAME = "just-bash";
@@ -65,7 +70,7 @@ export function createJustBashSandboxProvider(
     version: 2,
   };
 
-  return {
+  const implementation: ReturnType<typeof createJustBashSandboxProvider> = {
     async prepare(context) {
       const templateIdentity = createSandboxProviderIdentity({
         ...environmentIdentity,
@@ -145,6 +150,85 @@ export function createJustBashSandboxProvider(
       };
     },
   };
+  // Named sandboxes live under a directory per tag; the root's mtime records its last use.
+  return withNamedSandboxSessions(implementation, {
+    async create(context, _openOptions, artifactValue, { name, tag }) {
+      const artifact = requirePreparedJustBashArtifact(artifactValue);
+      const rootPath = namedRootPath(context.storagePath, tag, name);
+      await createNamedRoot(artifact, rootPath, name);
+      return await openHandle(context, rootPath, options);
+    },
+    async delete(context, { name, tag }) {
+      await rm(namedRootPath(context.storagePath, tag, name), {
+        force: true,
+        recursive: true,
+      });
+    },
+    async find(context, artifactValue, { name, tag }) {
+      requirePreparedJustBashArtifact(artifactValue);
+      const rootPath = namedRootPath(context.storagePath, tag, name);
+      if (!(await pathExists(rootPath))) return null;
+      await touchDirectory(rootPath);
+      // Nothing keeps running between calls; the filesystem is the sandbox.
+      return { handle: await openHandle(context, rootPath, options), running: false };
+    },
+    async list(context, tag) {
+      const directory = namedDirectory(context.storagePath, tag);
+      let entries: Dirent<string>[];
+      try {
+        entries = await readdir(directory, { withFileTypes: true });
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") return [];
+        throw error;
+      }
+      return await Promise.all(
+        entries
+          .filter((entry) => entry.isDirectory() && !entry.name.endsWith(".tmp"))
+          .map(async (entry) => ({
+            lastUsedAt: (await stat(join(directory, entry.name))).mtimeMs,
+            name: entry.name,
+            running: false,
+          })),
+      );
+    },
+  });
+}
+
+function namedDirectory(storagePath: string, tag: SandboxProviderTag): string {
+  return join(
+    storagePath,
+    JUST_BASH_CACHE_DIRECTORY_NAME,
+    "named",
+    `${encodeURIComponent(tag.key)}=${encodeURIComponent(tag.value)}`,
+  );
+}
+
+function namedRootPath(storagePath: string, tag: SandboxProviderTag, name: string): string {
+  return join(namedDirectory(storagePath, tag), encodeURIComponent(name));
+}
+
+async function createNamedRoot(
+  artifact: JustBashPreparedArtifact,
+  rootPath: string,
+  name: string,
+): Promise<void> {
+  if (!(await pathExists(artifact.templateRootPath))) {
+    throw new SandboxTemplateNotProvisionedError({
+      providerName: JUST_BASH_PROVIDER_NAME,
+      templateKey: artifact.templateRootPath,
+    });
+  }
+  const temporaryPath = `${rootPath}.${randomUUID()}.tmp`;
+  await mkdir(dirname(rootPath), { recursive: true });
+  try {
+    await cp(artifact.templateRootPath, temporaryPath, { recursive: true });
+    // rename refuses a non-empty target, so exactly one concurrent create wins.
+    await rename(temporaryPath, rootPath);
+  } catch (error) {
+    await rm(temporaryPath, { force: true, recursive: true }).catch(() => {});
+    if (await pathExists(rootPath)) throw new SandboxNameConflictError(name, { cause: error });
+    throw error;
+  }
 }
 
 function sessionRootPath(

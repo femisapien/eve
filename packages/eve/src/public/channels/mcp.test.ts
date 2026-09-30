@@ -11,6 +11,7 @@ import { MCP_PROTOCOL_VERSION } from "#internal/mcp/streamable-http-server.js";
 import { ForbiddenError, none, oauthResource, withAuthChallenges } from "#public/channels/auth.js";
 import { mcpChannel } from "#public/channels/mcp.js";
 import { mockAgentDescriptionRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
+import { unusedInvokeTool } from "#internal/testing/unused-invoke-tool.js";
 
 const MCP_LEGACY_PROTOCOL_VERSION = "2025-11-25";
 
@@ -493,6 +494,7 @@ function routeArgs(createSession: () => Promise<never> = vi.fn()): RouteHandlerA
     from: unavailable,
     params: {},
     requestIp: "127.0.0.1",
+    invokeTool: unusedInvokeTool,
     resolveSession: vi.fn(),
     to: unavailable,
     waitUntil: vi.fn(),
