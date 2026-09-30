@@ -41,23 +41,23 @@ design keeps both behaviors.
 
 ## Terms
 
-| Term            | Meaning                                                                                                                                                                                  |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| history         | The durable `ModelMessage[]` eve stores for a session (`HarnessSession.history`)                                                                                                         |
-| pair invariant  | Every tool call in a model prompt has its tool result in the tool message that immediately follows. Providers reject prompts that break it                                               |
-| request         | One question eve puts to a person: an approval or a session-limit continuation (`InputRequest` with options), or an authorization challenge (sign-in). Identified by `requestId`         |
-| group           | The requests raised by one model step. Presented together, answerable separately                                                                                                         |
-| gated call      | A tool call whose approval policy returns `"user-approval"`, or whose tool needs a sign-in eve cannot satisfy yet                                                                        |
-| gate            | eve's evaluation of the approval policy (and the credential check) for a tool call, before it runs                                                                                       |
-| gate task       | The task eve starts for a gated call. It owns the call's requests and runs the call once they are satisfied                                                                              |
-| receipt         | The gated call's immediate tool result, naming the gate task (`R₀`)                                                                                                                      |
-| task result     | The `task.result` user-role message that carries the gate task's outcome at a step boundary (`T`)                                                                                        |
-| held turn       | A turn that stays open while a task works (`research/eve-tasks.md` §6, "the turn rule")                                                                                                  |
-| steering        | A message from the turn's principal arriving during a turn (`execution/session/input-queue.ts:223-234`)                                                                                  |
-| owner           | What a request belongs to and what continues when it resolves: a gate task, or the turn for a session limit. A child session's requests are answered at the root through the owner chain |
-| limit request   | The session-limit continuation prompt (`createSessionLimitContinuationRequest`), raised before a model call when the session is over budget                                              |
-| approval policy | The request-time `ApprovalPolicy`, returning an `ApprovalStatus`                                                                                                                         |
-| response policy | The answer-time `ApprovalResponsePolicy` deciding whether a responder may approve or cancel (`approval.response`)                                                                        |
+| Term            | Meaning                                                                                                                                                                                                                                    |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| history         | The durable `ModelMessage[]` eve stores for a session (`HarnessSession.history`)                                                                                                                                                           |
+| pair invariant  | Every tool call in a model prompt has its tool result in the tool message that immediately follows. Providers reject prompts that break it                                                                                                 |
+| request         | One question eve puts to a person: an approval or a session-limit continuation (`InputRequest` with options), or an authorization challenge (sign-in). Identified by `requestId`                                                           |
+| group           | The requests raised by one model step. Presented together, answerable separately                                                                                                                                                           |
+| gated call      | A tool call whose approval policy returns `"user-approval"`, or whose tool needs a sign-in eve cannot satisfy yet                                                                                                                          |
+| gate            | eve's evaluation of the approval policy (and the credential check) for a tool call, before it runs                                                                                                                                         |
+| gate task       | The task eve starts for a gated call. It owns the call's requests and runs the call once they are satisfied                                                                                                                                |
+| receipt         | The gated call's immediate tool result, naming the gate task (`R₀`)                                                                                                                                                                        |
+| task result     | The `task.result` user-role message that carries the gate task's outcome at a step boundary (`T`)                                                                                                                                          |
+| held turn       | A turn that stays open while a task works (`research/eve-tasks.md` §6, "the turn rule")                                                                                                                                                    |
+| steering        | A message from the turn's principal arriving during a turn (`execution/session/input-queue.ts:223-234`)                                                                                                                                    |
+| owner           | What a request belongs to and what continues when it resolves: a gate task, the `execute` call that asked (`ask_question`), or the turn for a budget question. A child session's requests are answered at the root through the owner chain |
+| limit request   | The session-limit continuation prompt (`createSessionLimitContinuationRequest`), raised before a model call when the session is over budget                                                                                                |
+| approval policy | The request-time `ApprovalPolicy`, returning an `ApprovalStatus`                                                                                                                                                                           |
+| response policy | The answer-time `ApprovalResponsePolicy` deciding whether a responder may approve or cancel (`approval.response`)                                                                                                                          |
 
 Message symbols used below:
 
@@ -368,11 +368,14 @@ the open requests, as they do for questions.
 2. A gated call runs only inside its gate task, and only after every request it raised is satisfied.
 3. The approval policy is evaluated once per call, by the gate.
 4. The response policy runs at answer acceptance, in one place, for every approval.
-5. Every event of one request carries the `turnId` of the turn that raised it and the `taskId` of
-   its gate task.
+5. Every event of one request carries the `turnId` of the turn that raised it. It also carries a
+   `taskId` exactly when a task owns the request, as `input.requested` and `authorization.*` already
+   do on `main` (`research/eve-tasks.md` §6). A gate task's requests have one; a budget question
+   and an `ask_question` question do not.
 6. A turn ends only after each of its gate tasks settles, as for every task.
 7. No request resumes a turn that has ended, and no request starts a turn.
-8. Every request has exactly one owner: a gate task or the turn. No HITL request ends a turn.
+8. Every request has exactly one owner: a gate task, the `execute` call that asked (`ask_question`),
+   or the turn (a budget question). No HITL request ends a turn.
 9. History is append-only. No HITL path removes, moves, or replaces a message once written.
 10. Only a person's answer grants. Model output never answers a request.
 
@@ -457,6 +460,13 @@ one.
   matches text exactly (`channel/resolve-text.ts`), and GitHub, Linear, Twilio, linq, photon, and
   child relays (`subagents/hitl-proxy.ts:323`) rely on it. Moving it into every channel duplicates
   it and breaks custom channels without warning.
+- **Make the budget question a task too.** Every request would then carry a `taskId`. But a task on
+  `main` is started by a tool call: its record is committed alongside the call and `task.started`
+  names that `callId` (`research/eve-tasks.md` §7, "Start once"). A budget question has no call and
+  no receipt. The task rule wakes the model on steering, which a spent budget forbids. `task_cancel`
+  would let the model dismiss the question, but a decline cancels the whole turn tree, not one task.
+  The question would also count toward the 32-task cap and cost a workflow run. Each of these needs
+  a special case in the task model, which is more than the one optional field it saves.
 - **Hold the turn and queue every message.** Keeps the request open, but locks the conversation until
   a person answers, which reintroduces #3494.
 - **Keep SDK approvals and centralize the tail guard** (#2344, closed). Fixes today's writers but
