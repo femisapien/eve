@@ -15,6 +15,7 @@ import { withdrawWorkflowToolRunQuestionStep } from "#execution/tools/workflow/w
 import type { SessionStateCursor } from "#execution/session/state-cursor.js";
 import {
   workflowToolRunOutcomeToToolResult,
+  workflowToolRunAuthorizationPayload,
   workflowToolRunRequestToInputRequestPayload,
 } from "#execution/tools/workflow/owner-inbox.js";
 import { findWorkflowRun, readTurnState } from "#harness/turn-state.js";
@@ -88,9 +89,10 @@ async function handleWorkflowToolRunRequest(
   const { cursor, message } = input;
   if (message.request.kind === "authorization-request") {
     const request = message.request;
+    const hookPayload = workflowToolRunAuthorizationPayload(message.from, request.event);
     await deliverWorkflowAuthorization({ ...message, request }, async () => {
       await cursor.advance((state) =>
-        runProxySubagentEventStep({ hookPayload: request.event, ...state }),
+        runProxySubagentEventStep({ hookPayload, runId: message.from.runId, ...state }),
       );
     });
     return;
@@ -101,6 +103,7 @@ async function handleWorkflowToolRunRequest(
         workflowAsk: createWorkflowAskRoute(message.from, message.request),
       }),
       hookPayload: workflowToolRunRequestToInputRequestPayload(message),
+      runId: message.from.runId,
       ...state,
     }),
   );

@@ -1,4 +1,8 @@
-import type { SubagentInputRequestHookPayload } from "#channel/types.js";
+import type {
+  SubagentAuthorizationEvent,
+  SubagentAuthorizationEventHookPayload,
+  SubagentInputRequestHookPayload,
+} from "#channel/types.js";
 import type {
   WorkflowToolRunOutcomeMessage,
   WorkflowToolRunRef,
@@ -64,10 +68,15 @@ function parseJsonValueOrUndefined(value: unknown): JsonValue | undefined {
   }
 }
 
+/**
+ * A run's requests belong to the call it serves, so the session presents them
+ * at that call's coordinates. A child session's own coordinates name turns the
+ * session's stream never started.
+ */
 export function workflowToolRunRequestToInputRequestPayload(
   message: WorkflowToolRunRequestMessage,
 ): SubagentInputRequestHookPayload {
-  const { from, replyTo, requestCoordinates } = message;
+  const { from, replyTo } = message;
   return {
     callId: from.callId,
     childContinuationToken: replyTo,
@@ -77,14 +86,39 @@ export function workflowToolRunRequestToInputRequestPayload(
     inputSource: message.inputSource,
     event: {
       requests: workflowToolRunInputRequests(message),
-      sequence: requestCoordinates?.sequence ?? from.sequence,
-      stepIndex: requestCoordinates?.stepIndex ?? from.stepIndex,
+      sequence: from.sequence,
+      stepIndex: from.stepIndex,
       taskId: from.taskId,
-      turnId: requestCoordinates?.turnId ?? from.turnId,
+      turnId: from.turnId,
     },
     kind: "subagent-input-request",
     subagentName: from.toolName,
   };
+}
+
+/** A run's sign-in or approval event, at the coordinates of the call it serves. */
+export function workflowToolRunAuthorizationPayload(
+  from: WorkflowToolRunRef,
+  payload: SubagentAuthorizationEventHookPayload,
+): SubagentAuthorizationEventHookPayload {
+  return { ...payload, event: atCallCoordinates(payload.event, from) };
+}
+
+function atCallCoordinates(
+  event: SubagentAuthorizationEvent,
+  from: WorkflowToolRunRef,
+): SubagentAuthorizationEvent {
+  const coordinates = { sequence: from.sequence, stepIndex: from.stepIndex, turnId: from.turnId };
+  switch (event.type) {
+    case "authorization.required":
+      return { ...event, data: { ...event.data, ...coordinates, taskId: from.taskId } };
+    case "authorization.completed":
+      return { ...event, data: { ...event.data, ...coordinates, taskId: from.taskId } };
+    case "approval.candidate":
+      return { ...event, data: { ...event.data, ...coordinates } };
+    case "approval.settled":
+      return { ...event, data: { ...event.data, ...coordinates } };
+  }
 }
 
 export function workflowToolRunInputRequests(

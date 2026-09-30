@@ -375,6 +375,42 @@ describe("turn state (real AI SDK)", () => {
     expect(deploy.execute).not.toHaveBeenCalled();
   });
 
+  it("settles an announced call that asks for a sign-in, so it never shows running", async () => {
+    const signal = requestAuthorization([
+      {
+        attemptId: "attempt-lookup",
+        challenge: { instructions: "Sign in to look up", url: "https://idp.example/auth" },
+        hookUrl: "https://app.example/callback",
+        name: "lookup",
+        principal: { type: "app" },
+      },
+    ]);
+    const interrupted = { ctx: undefined as ContextContainer | undefined };
+    const lookup = {
+      ...inlineTool(
+        "lookup",
+        vi.fn(async () => {
+          stashToolInterrupt(interrupted.ctx!, "call-0", signal);
+          return "sign-in required";
+        }),
+      ),
+      approval: undefined,
+    };
+    const fixture = setup([lookup], [calls("lookup")]);
+    interrupted.ctx = fixture.ctx;
+
+    const parked = await fixture.step(fixture.session, { message: "Look up Bob's order." });
+
+    expect(fixture.eventsSince(0)).toEqual(
+      expect.arrayContaining(["action.result", "authorization.required", "turn.completed"]),
+    );
+    expect(fixture.events.find((event) => event.type === "action.result")).toMatchObject({
+      data: { error: { code: "AUTHORIZATION_REQUIRED" }, status: "failed" },
+    });
+    // The call leaves history, so the model calls the tool again after the sign-in.
+    expect(toolResultIds(parked.session)).toEqual([]);
+  });
+
   it("parks on the sign-in an approved call asks for", async () => {
     const signal = requestAuthorization([
       {
@@ -401,8 +437,12 @@ describe("turn state (real AI SDK)", () => {
     const resumed = await fixture.step(parked.session, answer(parked.session, "approve"));
 
     expect(deploy.execute).toHaveBeenCalledOnce();
+    // The sign-in is asked in the turn that runs the approved call.
     expect(getPendingAuthorization(resumed.session.state)).toEqual({
-      challenges: signal.challenges,
+      challenges: signal.challenges.map((challenge) => ({
+        ...challenge,
+        origin: expect.objectContaining({ turnId: "turn_1" }),
+      })),
     });
     expect(fixture.eventsSince(start)).toContain("authorization.required");
     expect(fixture.eventsSince(start)).not.toContain("action.result");

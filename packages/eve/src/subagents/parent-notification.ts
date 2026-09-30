@@ -19,10 +19,8 @@ import { parseJsonValue } from "#shared/json.js";
 import type { TokenUsage } from "#shared/token-usage.js";
 import { resumeHook } from "#internal/workflow/runtime.js";
 import { postSessionCallbackRequest } from "#execution/session-callback-request.js";
-import {
-  withSessionStateDelta,
-  type SessionStateTransition,
-} from "#execution/session/state-delta.js";
+import { type SessionStateTransition } from "#execution/session/state-delta.js";
+import { withSessionStateDelta } from "#execution/session/with-session-state-delta.js";
 
 const log = createLogger("execution.delegated-parent-notification");
 

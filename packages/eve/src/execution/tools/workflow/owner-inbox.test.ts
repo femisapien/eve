@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   workflowToolRunFailureOutput,
+  workflowToolRunAuthorizationPayload,
   workflowToolRunRequestToInputRequestPayload,
 } from "#execution/tools/workflow/owner-inbox.js";
 
@@ -63,7 +64,7 @@ describe("workflow-tool task input", () => {
     ).toMatchObject({ inputSource: "child:alice", event: { requests: [request] } });
   });
 
-  it("uses child event coordinates for repeated forwarded requests", () => {
+  it("presents a forwarded child request at the coordinates of the call its run serves", () => {
     const request = {
       action: {
         callId: "child-call",
@@ -81,16 +82,46 @@ describe("workflow-tool task input", () => {
         from,
         replyTo: "subagent:parent:call-1",
         request,
-        requestCoordinates: { sequence: 4, stepIndex: 2, turnId: "turn-child" },
       }),
     ).toMatchObject({
       childContinuationToken: "subagent:parent:call-1",
       event: {
         requests: [request],
-        sequence: 4,
-        stepIndex: 2,
-        turnId: "turn-child",
+        sequence: 0,
+        stepIndex: 0,
+        turnId: "turn-1",
       },
+    });
+  });
+});
+
+describe("workflow-tool relayed sign-ins", () => {
+  it("presents a child's sign-in at the coordinates of the call its run serves", () => {
+    const payload = workflowToolRunAuthorizationPayload(
+      { ...from, taskId: "research-1" },
+      {
+        callId: "child-call",
+        childSessionId: "child-session",
+        event: {
+          data: {
+            description: "Sign in to notes.",
+            name: "notes",
+            sequence: 0,
+            stepIndex: 3,
+            turnId: "turn_0",
+          },
+          type: "authorization.required",
+        },
+        kind: "subagent-authorization-event",
+        subagentName: "research",
+      },
+    );
+
+    expect(payload.event.data).toMatchObject({
+      sequence: 0,
+      stepIndex: 0,
+      taskId: "research-1",
+      turnId: "turn-1",
     });
   });
 });

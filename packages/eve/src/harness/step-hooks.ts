@@ -325,13 +325,25 @@ export async function emitStepActions(
     }
 
     const rawOutput = rawOutputByCallId.get(result.callId);
-    if (shouldSkipAuthorizationActionResult(result.callId, rawOutput)) {
-      continue;
-    }
-
+    // A call that asks for a sign-in leaves history, and the model calls the
+    // tool again once the sign-in completes. Its announced call still settles,
+    // so no reader shows it running beside the sign-in.
+    const signInRequired =
+      result.kind === "tool-result" &&
+      shouldSkipAuthorizationActionResult(result.callId, rawOutput);
     await emitFn(
       createActionResultEvent({
-        result,
+        result: signInRequired
+          ? {
+              ...result,
+              isError: true,
+              output: {
+                code: "AUTHORIZATION_REQUIRED",
+                message:
+                  "The call needs a sign-in. The agent can call the tool again once it completes.",
+              },
+            }
+          : result,
         sequence: state.sequence,
         stepIndex: state.stepIndex,
         turnId: state.turnId,

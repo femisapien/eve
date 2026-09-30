@@ -31,6 +31,7 @@ import type { DynamicSubagentAgentConfig } from "#runtime/subagents/dynamic-agen
 import type { DynamicRemoteAgentConfig } from "#runtime/subagents/dynamic-remote-agent-config.js";
 import type { SandboxAccess } from "#sandbox/state.js";
 import type { HistoryViewProjector } from "#shared/history-view.js";
+import type { SessionProjection } from "#protocol/session-projection.js";
 import type { RuntimeModelReference } from "#runtime/agent/bootstrap.js";
 import type { PreparedRuntimeDelegationTool } from "#runtime/sessions/turn.js";
 import type { MemoryScope, MemoryTurnContext } from "#public/memory/index.js";
@@ -138,19 +139,14 @@ export const OtelTraceEnabledKey = new ContextKey<boolean>("eve.otelTraceEnabled
  */
 export const CapabilitiesKey = new ContextKey<SessionCapabilities>("eve.capabilities");
 export const ActivityObserverKey = new ContextKey<ActivityObserverConfig>("eve.activityObserver");
-/** Originating root turn that owns the current user-visible activity artifact. */
-export const ActivityRootTurnIdKey = new ContextKey<string>("eve.activityRootTurnId");
-/** Pending HITL request identities that keep the current activity artifact open. */
-export const ActivityPendingBlockersKey = new ContextKey<readonly string[]>(
-  "eve.activityPendingBlockers",
-);
 /**
- * Call IDs that got `task.started` this turn, so their `action.result` is a
- * receipt that leaves the activity running. Not read from the task table: a
- * call leaves it once it settles, which can happen before its receipt is
- * published. Cleared at turn end.
+ * The session's own events folded by the shared session projection, which activity reads for each
+ * event's root turn, its open blockers, and its calls. Kept only while an activity observer is set,
+ * and pruned to open work.
  */
-export const ActivityTaskCallsKey = new ContextKey<readonly string[]>("eve.activityTaskCalls");
+export const ActivitySessionProjectionKey = new ContextKey<SessionProjection>(
+  "eve.activitySessionProjection",
+);
 
 /**
  * Optional framework-owned caller callback captured when the session is created.

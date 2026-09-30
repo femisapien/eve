@@ -69,7 +69,6 @@ export interface ParkedStep {
   readonly calls: readonly ParkedCall[];
   /** Auth of the caller whose turn requested approval; `null` when anonymous. */
   readonly requester?: SessionAuthContext | null;
-  readonly activityRootTurnId?: string;
 }
 
 /** The harness-authored session-limit continuation prompt. */
@@ -408,6 +407,32 @@ export function cancelTurnWork(turnState: TurnState): TurnState {
     }
   }
   return next;
+}
+
+/** A request asked at `origin` that the session no longer takes an answer for. */
+export interface WithdrawnRequest {
+  readonly origin: EventCoordinates;
+  readonly request: InputRequest;
+}
+
+/** The requests `before` takes answers for and `after` does not. */
+export function withdrawnRequests(
+  before: TurnState,
+  after: TurnState,
+): readonly WithdrawnRequest[] {
+  const kept = new Set(openRequests(after).map(({ request }) => request.requestId));
+  return openRequests(before).filter(({ request }) => !kept.has(request.requestId));
+}
+
+function openRequests(turnState: TurnState): readonly WithdrawnRequest[] {
+  const approvals = turnState.steps.flatMap((step) =>
+    step.calls.flatMap((call) =>
+      call.status === "awaiting-approval" && call.approval !== undefined
+        ? [{ origin: step.origin, request: call.approval.request }]
+        : [],
+    ),
+  );
+  return turnState.prompt === undefined ? approvals : [...approvals, turnState.prompt];
 }
 
 /** A cleared context owes nothing: parked steps, the prompt, queued input, and grants go. */

@@ -7,6 +7,7 @@ import {
   type SessionInboxAddress,
 } from "#execution/session-inbox/address.js";
 import type { RemoteAgentBinding } from "#eve-channel/support.js";
+import { createInputResolvedEvent, type InputResolvedStreamEvent } from "#protocol/message.js";
 
 const PROXY_INPUT_REQUESTS_KEY = "eve.runtime.proxyInputRequests";
 
@@ -51,6 +52,8 @@ export interface ProxyInputRequest {
   readonly kind: InputRequestKind;
   /** Question metadata lets the human-facing parent resolve plain text before proxying by ID. */
   readonly question?: ProxyInputQuestion;
+  /** The run that relayed the request. Once it ends or stops, nobody can take the answer. */
+  readonly runId?: string;
 }
 
 export interface ProxyInputRequestBatch {
@@ -136,24 +139,37 @@ export function upsertProxyInputRequestState(input: {
   return Object.keys(state).length > 0 ? state : undefined;
 }
 
-/** Removes every proxy route the predicate selects. */
-export function clearProxyInputRequestsWhere<T extends { readonly state?: SessionStateMap }>(
+/**
+ * Withdraws the routes `select` picks, because nobody can take their answers
+ * now. Returns the `input.resolved` events that report them `cancelled`, at
+ * the coordinates this session asked them.
+ */
+export function withdrawProxyInputRequests<T extends { readonly state?: SessionStateMap }>(
   session: T,
-  select: (route: ProxyInputRequest) => boolean,
-): T {
+  select: (route: ProxyInputRequest, requestId: string) => boolean,
+): { readonly events: readonly InputResolvedStreamEvent[]; readonly session: T } {
   const current = readMap(session.state);
-  const next: Record<string, ProxyInputRequest> = {};
-  let changed = false;
-
+  const kept: Record<string, ProxyInputRequest> = {};
+  const withdrawn = new Map<string, InputResolvedStreamEvent>();
   for (const [requestId, route] of Object.entries(current)) {
-    if (select(route)) {
-      changed = true;
+    if (!select(route, requestId)) {
+      kept[requestId] = route;
       continue;
     }
-    next[requestId] = route;
+    const key = `${route.event.turnId}:${route.event.stepIndex}:${route.event.sequence}`;
+    const resolution = { kind: route.kind, outcome: "cancelled" as const, requestId };
+    const group = withdrawn.get(key);
+    withdrawn.set(
+      key,
+      createInputResolvedEvent({
+        resolutions: [...(group?.data.resolutions ?? []), resolution],
+        ...route.event,
+      }),
+    );
   }
-
-  return changed ? writeMap(session, next) : session;
+  if (withdrawn.size === 0) return { events: [], session };
+  const events = [...withdrawn.values()];
+  return { events, session: writeMap(session, kept) };
 }
 
 /** Removes only the request IDs whose responses were successfully forwarded. */
@@ -176,22 +192,12 @@ export function retireProxyInputRequests<T extends { readonly state?: SessionSta
 }
 
 /**
- * Removes every proxy entry. Called when a cancelled turn orphans its
- * descendants so stale HITL responses no longer route to them.
- */
-export function clearAllProxyInputRequests(session: HarnessSession): HarnessSession {
-  if (!hasProxyInputRequests(session.state)) {
-    return session;
-  }
-  return writeMap(session, {});
-}
-
-/**
  * Projects a {@link SubagentInputRequestHookPayload} into the
  * `(requestId, route)` tuples the session stores.
  */
 export function toProxyInputRequestEntries(
   payload: SubagentInputRequestHookPayload,
+  runId?: string,
 ): readonly (readonly [requestId: string, route: ProxyInputRequest])[] {
   const batch: ProxyInputRequestBatch = {
     approvalRequestIds: payload.event.requests.flatMap((request) =>
@@ -213,11 +219,12 @@ export function toProxyInputRequestEntries(
       readonly event: PendingInputBatchEvent;
       readonly kind: InputRequestKind;
       question?: ProxyInputQuestion;
-    } & { readonly batch: ProxyInputRequestBatch } = {
+    } & { readonly batch: ProxyInputRequestBatch; readonly runId?: string } = {
       batch,
       childContinuationToken: payload.childContinuationToken,
       ...(payload.inputSource !== undefined && { inputSource: payload.inputSource }),
       ...(payload.remote !== undefined && { remote: payload.remote }),
+      ...(runId !== undefined && { runId }),
       event,
       kind: request.kind,
     };
@@ -295,7 +302,10 @@ function parseProxyInputRequest(value: unknown, requestId: string): ProxyInputRe
   const childSessionInbox = "childSessionInbox" in value ? value.childSessionInbox : undefined;
   if (childSessionInbox !== undefined && !isSessionInboxAddress(childSessionInbox))
     return undefined;
+  const runId = "runId" in value ? value.runId : undefined;
+  if (runId !== undefined && typeof runId !== "string") return undefined;
   const request: {
+    runId?: string;
     workflowAsk?: WorkflowAskRoute;
     batch?: ProxyInputRequestBatch;
     readonly childContinuationToken: string;
@@ -316,6 +326,7 @@ function parseProxyInputRequest(value: unknown, requestId: string): ProxyInputRe
   if (childSessionInbox !== undefined) request.childSessionInbox = childSessionInbox;
   if (batch !== undefined && batch.requestIds.includes(requestId)) request.batch = batch;
   if (question !== undefined) request.question = question;
+  if (runId !== undefined) request.runId = runId;
   return request;
 }
 

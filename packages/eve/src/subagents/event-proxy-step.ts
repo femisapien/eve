@@ -14,10 +14,8 @@ import {
   type PublishedSessionEvents,
   type SessionStepState,
 } from "#execution/publish-session-events.js";
-import {
-  withSessionStateDelta,
-  type SessionStateTransition,
-} from "#execution/session/state-delta.js";
+import { type SessionStateTransition } from "#execution/session/state-delta.js";
+import { withSessionStateDelta } from "#execution/session/with-session-state-delta.js";
 import { reconcileSessionContinuationToken } from "#execution/reconcile-session-continuation-token.js";
 import { emitProxiedAuthorizationEvent, emitProxiedInputRequest } from "#subagents/hitl-proxy.js";
 import { upsertProxyInputRequests } from "#harness/proxy-input-requests.js";
@@ -32,12 +30,15 @@ export async function runProxySubagentEventStep(
   input: SessionStepState & {
     readonly workflowAsk?: WorkflowAskRoute;
     readonly hookPayload: SubagentEventHookPayload;
+    /** The run that relays the event, which alone can take an answer to it. */
+    readonly runId: string;
   },
 ): Promise<SessionStateTransition> {
   "use step";
 
   return await withSessionStateDelta(input, async (target) =>
     emitProxiedSubagentEvent({
+      runId: target.runId,
       workflowAsk: target.workflowAsk,
       ctx: await deserializeContext(target.serializedContext),
       durableSession: readDurableSession(target.sessionState),
@@ -53,6 +54,7 @@ export async function emitProxiedSubagentEvent(input: {
   readonly ctx: ContextContainer;
   readonly durableSession: DurableSession;
   readonly hookPayload: SubagentEventHookPayload;
+  readonly runId?: string;
   readonly sessionWritable: WritableStream<Uint8Array>;
 }): Promise<PublishedSessionEvents> {
   const { ctx, hookPayload } = input;
@@ -73,7 +75,12 @@ export async function emitProxiedSubagentEvent(input: {
         return { result: undefined, session };
       }
 
-      const entries = await emitProxiedInputRequest({ emit, hookPayload, session });
+      const entries = await emitProxiedInputRequest({
+        emit,
+        hookPayload,
+        runId: input.runId,
+        session,
+      });
       return { result: entries, session };
     },
   );

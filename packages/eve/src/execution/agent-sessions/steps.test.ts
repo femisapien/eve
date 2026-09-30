@@ -7,14 +7,16 @@ import {
   sendAgentSessionMessageStep,
 } from "#execution/agent-sessions/steps.js";
 import { deriveRootTurnActivityWorkId } from "#execution/activity-work-id.js";
-import { projectSessionActivity } from "#execution/session-activity-projection.js";
+import { advanceSessionActivity } from "#execution/session-activity-projection.js";
 import { createActivitySnapshot, reduceActivityBatch } from "#execution/session-activity.js";
 import {
   createWorkflowRuntime,
   dispatchWorkflowSessionCommand,
 } from "#execution/workflow-runtime.js";
 import { parseSessionMessageBody } from "#eve-channel/request.js";
+import type { ActivityWorkIdentityV1 } from "#protocol/activity.js";
 import type { MessageStreamEvent } from "#protocol/message.js";
+import { initialSessionProjection } from "#protocol/session-projection.js";
 import { REMOTE_AGENT_PROTOCOL_VERSION } from "#protocol/remote-agent-protocol.js";
 
 const researcher = {
@@ -126,14 +128,13 @@ function childTurn(turnId: string): MessageStreamEvent[] {
 }
 
 function rootTurnStarted() {
-  return projectSessionActivity({
-    event: {
+  return sessionActivity("parent", undefined, [
+    {
       data: { sequence: 0, turnId: "turn-1" },
       meta: { at, id: "parent:started" },
       type: "turn.started",
     },
-    sessionId: "parent",
-  });
+  ]);
 }
 
 function childSessionActivity(
@@ -141,9 +142,20 @@ function childSessionActivity(
   observer: ActivityObserverConfig | undefined,
   events: readonly MessageStreamEvent[],
 ) {
-  return events.flatMap((event) =>
-    projectSessionActivity({ event, sessionId, workIdentity: observer?.workIdentity }),
-  );
+  return sessionActivity(sessionId, observer?.workIdentity, events);
+}
+
+function sessionActivity(
+  sessionId: string,
+  workIdentity: ActivityWorkIdentityV1 | undefined,
+  events: readonly MessageStreamEvent[],
+) {
+  let previous = initialSessionProjection();
+  return events.flatMap((event) => {
+    const advanced = advanceSessionActivity({ event, previous, sessionId, workIdentity });
+    previous = advanced.projection;
+    return advanced.events;
+  });
 }
 
 function localChildRuntime() {

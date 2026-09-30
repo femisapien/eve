@@ -3,7 +3,13 @@ const MAX_ACTIVITY_EVENTS_PER_BATCH = 100;
 export type ActivityWorkKind = "root-turn" | "subagent" | "remote-agent";
 export type ActivityWorkPhase = "running" | "completed" | "failed" | "cancelled";
 type ActivityActionKind = "tool" | "skill";
-export type ActivityActionPhase = "running" | "completed" | "failed" | "rejected" | "cancelled";
+export type ActivityActionPhase =
+  | "running"
+  | "completed"
+  | "failed"
+  | "rejected"
+  | "cancelled"
+  | "interrupted";
 type ActivityBlockerKind = "approval" | "authorization" | "input";
 export type ActivityBlockerPhase = "blocked" | "completed" | "cancelled" | "failed";
 
@@ -219,7 +225,13 @@ function parseKnownEvent(value: Record<string, unknown>): ActivityEventV1 | null
       if (
         !isIdentity(value.actionId) ||
         !isIdentity(value.eventId) ||
-        !isOneOf(value.outcome, ["completed", "failed", "rejected", "cancelled"] as const) ||
+        !isOneOf(value.outcome, [
+          "completed",
+          "failed",
+          "rejected",
+          "cancelled",
+          "interrupted",
+        ] as const) ||
         !isBoundedString(value.settledAt)
       )
         return undefined;

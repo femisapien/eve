@@ -4,7 +4,14 @@ import { callSlackApi, type SlackBotToken } from "#public/channels/slack/api.js"
 import type { SlackTransportOptions } from "#public/channels/slack/transport.js";
 
 export const SLACK_ACTIVITY_PLAN_RENDERER_ID = "slack.experimental.plan.v1";
-type Phase = "running" | "completed" | "failed" | "rejected" | "cancelled" | "blocked";
+type Phase =
+  | "running"
+  | "completed"
+  | "failed"
+  | "rejected"
+  | "cancelled"
+  | "interrupted"
+  | "blocked";
 interface PlanState {
   readonly streams: Readonly<
     Record<
@@ -231,7 +238,7 @@ function icon(phase: Phase) {
     ? "•"
     : phase === "completed"
       ? "✓"
-      : phase === "cancelled"
+      : phase === "cancelled" || phase === "interrupted"
         ? "–"
         : "✗";
 }

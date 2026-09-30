@@ -516,6 +516,7 @@ function phaseIcon(phase: ActivityWorkStateV1["phase"] | ActivityActionStateV1["
     case "rejected":
       return "✗";
     case "cancelled":
+    case "interrupted":
       return "⊘";
     case "running":
       return "•";

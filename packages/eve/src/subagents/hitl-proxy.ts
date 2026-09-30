@@ -4,7 +4,7 @@ import type {
   SubagentAuthorizationEventHookPayload,
   SubagentInputRequestHookPayload,
 } from "#channel/types.js";
-import { activeTurnId, readTurnState } from "#harness/turn-state.js";
+import { activeTurnId, isBetweenTurns, readTurnState } from "#harness/turn-state.js";
 import { resolveInputOutcome } from "#harness/input-request-resolution.js";
 import type { EventCoordinates as PendingInputBatchEvent } from "#harness/turn-state.js";
 import {
@@ -35,6 +35,7 @@ import { SESSION_LIMIT_STOP_OPTION_ID } from "#harness/session-limit-continuatio
 export async function emitProxiedInputRequest(input: {
   readonly emit: HarnessEmitFn;
   readonly hookPayload: SubagentInputRequestHookPayload;
+  readonly runId?: string;
   readonly session: HarnessSession;
 }): Promise<readonly (readonly [requestId: string, route: ProxyInputRequest])[]> {
   await input.emit(
@@ -47,7 +48,7 @@ export async function emitProxiedInputRequest(input: {
     }),
   );
   await emitTurnWaiting(input.emit, input.session);
-  return toProxyInputRequestEntries(input.hookPayload);
+  return toProxyInputRequestEntries(input.hookPayload, input.runId);
 }
 
 /**
@@ -67,8 +68,10 @@ export async function emitProxiedAuthorizationEvent(input: {
   }
 }
 
+/** Parks the parent's open turn; a request that reaches it between turns parks nothing. */
 async function emitTurnWaiting(emit: HarnessEmitFn, session: HarnessSession): Promise<void> {
   const turnState = readTurnState(session.state);
+  if (isBetweenTurns(turnState)) return;
   await emit(
     createTurnWaitingEvent({ sequence: turnState.sequence, turnId: activeTurnId(turnState) }),
   );

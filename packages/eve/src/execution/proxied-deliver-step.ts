@@ -8,10 +8,8 @@ import {
   replaceDurableSessionSnapshot,
 } from "#execution/durable-session-store.js";
 import { relaySessionEvents, type SessionStepState } from "#execution/publish-session-events.js";
-import {
-  withSessionStateDelta,
-  type WithSessionStateDelta,
-} from "#execution/session/state-delta.js";
+import { type WithSessionStateDelta } from "#execution/session/state-delta.js";
+import { withSessionStateDelta } from "#execution/session/with-session-state-delta.js";
 import { deserializeContext } from "#context/serialize.js";
 import { BundleKey } from "#runtime/sessions/runtime-context-keys.js";
 import {

@@ -7,10 +7,8 @@ import {
 } from "#execution/coordination-dispatch-shared.js";
 import { createDurableSessionState } from "#execution/durable-session-store.js";
 import { publishSessionEvents } from "#execution/publish-session-events.js";
-import {
-  withSessionStateDelta,
-  type WithSessionStateDelta,
-} from "#execution/session/state-delta.js";
+import { type WithSessionStateDelta } from "#execution/session/state-delta.js";
+import { withSessionStateDelta } from "#execution/session/with-session-state-delta.js";
 import { startWorkflowTask, type StartWorkflowTaskInput } from "#execution/tools/workflow/start.js";
 import { sendToTask, startTaskRun } from "#execution/tasks/start.js";
 import {

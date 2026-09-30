@@ -8,13 +8,17 @@ import type {
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import { isTaskControlTool } from "#protocol/task-tools.js";
 
+/**
+ * Maps the facts one event carries onto activity: actions, labels, blockers, and delegated work.
+ * Calls and root turns settle from the session projection instead.
+ */
 export function projectActivityEvents(input: {
   readonly at: string;
+  /** The sign-in attempt an authorization event names. */
+  readonly authorizationId?: string;
   readonly event: UnstampedMessageStreamEvent;
   readonly eventId?: string;
   readonly lineage: ActivityWorkIdentityV1;
-  /** Calls to tasks: their `action.result` is a receipt, and `task.settled` settles them. */
-  readonly taskCallIds?: readonly string[];
 }): readonly ActivityEventV1[] {
   const { event, lineage } = input;
   if (event.type === "actions.requested") {
@@ -98,33 +102,19 @@ export function projectActivityEvents(input: {
     if (result.kind === "tool-result" && isTaskControlTool(result.toolName)) return [];
     const id = actionId(lineage.id, result.callId);
     const label = activityLabel(event.data.presentation?.[result.callId]?.label);
-    const labelUpdates =
-      label === undefined
-        ? []
-        : [
-            {
-              actionId: id,
-              eventId: `${id}:result:${input.eventId ?? input.at}`,
-              kind: "action.label.updated" as const,
-              label,
-            },
-          ];
-    const isTaskReceipt = input.taskCallIds?.includes(result.callId) === true;
-    if (isTaskReceipt) return labelUpdates;
-    return [...labelUpdates, actionSettled(id, event.data.status, input.at)];
+    return label === undefined
+      ? []
+      : [
+          {
+            actionId: id,
+            eventId: `${id}:result:${input.eventId ?? input.at}`,
+            kind: "action.label.updated",
+            label,
+          },
+        ];
   }
-  if (event.type === "task.settled") {
-    const id = actionId(lineage.id, event.data.callId);
-    return [actionSettled(id, event.data.status, input.at)];
-  }
-  if (event.type === "authorization.required") {
-    const id = blockerId(
-      "authorization",
-      lineage.id,
-      event.data.attemptId ??
-        event.data.candidateId ??
-        `${event.data.turnId}:${String(event.data.stepIndex)}:${event.data.name}`,
-    );
+  if (event.type === "authorization.required" && input.authorizationId !== undefined) {
+    const id = blockerId("authorization", lineage.id, input.authorizationId);
     return [
       {
         blocker: {
@@ -140,14 +130,8 @@ export function projectActivityEvents(input: {
       },
     ];
   }
-  if (event.type === "authorization.completed") {
-    const id = blockerId(
-      "authorization",
-      lineage.id,
-      event.data.attemptId ??
-        event.data.candidateId ??
-        `${event.data.turnId}:${String(event.data.stepIndex)}:${event.data.name}`,
-    );
+  if (event.type === "authorization.completed" && input.authorizationId !== undefined) {
+    const id = blockerId("authorization", lineage.id, input.authorizationId);
     const outcome =
       event.data.outcome === "authorized"
         ? "completed"
@@ -231,33 +215,10 @@ export function projectActivityEvents(input: {
       };
     });
   }
-  // Delegated work settles here too: an agent session's result reaches its
-  // caller's reply hook, not the caller's stream.
-  if (
-    event.type === "turn.completed" ||
-    event.type === "turn.failed" ||
-    event.type === "turn.cancelled"
-  ) {
-    const outcome =
-      event.type === "turn.completed"
-        ? "completed"
-        : event.type === "turn.failed"
-          ? "failed"
-          : "cancelled";
-    return [
-      {
-        eventId: `${lineage.id}:settled:${outcome}`,
-        kind: "work.settled",
-        outcome,
-        settledAt: input.at,
-        workId: lineage.id,
-      },
-    ];
-  }
   return [];
 }
 
-function actionSettled(
+export function actionSettled(
   id: string,
   outcome: Exclude<ActivityActionPhase, "running">,
   settledAt: string,

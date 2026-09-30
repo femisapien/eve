@@ -2974,6 +2974,7 @@ describe("runProxySubagentEventStep", () => {
       if (delivery === "proxied") {
         await runProxySubagentEventStep({
           hookPayload,
+          runId: "run-1",
           sessionWritable,
           serializedContext,
           sessionState,
@@ -3027,6 +3028,7 @@ describe("runProxySubagentEventStep", () => {
     const result = await runSessionStateStep(
       {
         hookPayload: buildHookPayload(),
+        runId: "run-1",
         sessionWritable: createTestWritable(),
         serializedContext: buildSerializedContextForAdapter(cachingAdapter, {
           acceptedForwardedTracePolicy: true,
@@ -3070,10 +3072,10 @@ describe("runProxySubagentEventStep", () => {
 
     // The step writes the outgoing `input.requested` event to the
     // durable stream so channel-side UI (Slack Block Kit buttons,
-    // HTTP stream consumers) sees the prompt, then follows it with
-    // `turn.waiting`, where clients stop and prompt the user for HITL input.
+    // HTTP stream consumers) sees the prompt. The parent is between
+    // turns, so no open turn parks behind it.
     const writes = workflowWritesByNamespace.get(DEFAULT_WORKFLOW_STREAM_NAMESPACE) ?? [];
-    expect(writes).toHaveLength(2);
+    expect(writes).toHaveLength(1);
   });
 
   it("returns every continuation address claimed by the input.requested handler", async () => {
@@ -3099,6 +3101,7 @@ describe("runProxySubagentEventStep", () => {
     const result = await runSessionStateStep(
       {
         hookPayload: buildHookPayload(),
+        runId: "run-1",
         sessionWritable: createTestWritable(),
         serializedContext: buildSerializedContextForAdapter(aliasingAdapter),
         sessionState,

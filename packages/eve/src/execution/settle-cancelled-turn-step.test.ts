@@ -1,12 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { ContextContainer } from "#context/container.js";
-import { ActivityPendingBlockersKey } from "#context/keys.js";
-import { deserializeContext } from "#context/serialize.js";
 import type { HarnessSession, SessionStateMap } from "#harness/types.js";
 import { readDurableSession } from "#execution/durable-session-store.js";
 import { readTurnState, writeTurnState, type ParkedCall } from "#harness/turn-state.js";
 import type { InputRequest } from "#shared/input.js";
+import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import { settleCancelledTurnStep } from "#execution/settle-cancelled-turn-step.js";
 import {
   accumulateTurnUsage,
@@ -23,16 +22,22 @@ vi.mock("#context/serialize.js", () => ({
   deserializeContext: vi.fn(async () => new ContextContainer()),
   serializeContext: () => ({}),
 }));
+const emitted = vi.hoisted((): UnstampedMessageStreamEvent[] => []);
 vi.mock("#execution/publish-session-events.js", () => ({
   withSessionEventEmitter: async (
     input: { readonly durableSession: HarnessSession },
     emitEvents: (
-      emit: () => Promise<void>,
+      emit: (event: UnstampedMessageStreamEvent) => Promise<void>,
       session: HarnessSession,
     ) => Promise<{ readonly result: unknown; readonly session: HarnessSession }>,
     // Hydration of a session with no compaction history yields empty compaction state.
   ) =>
-    await emitEvents(async () => {}, { ...input.durableSession, compaction: {} } as HarnessSession),
+    await emitEvents(
+      async (event) => {
+        emitted.push(event);
+      },
+      { ...input.durableSession, compaction: {} } as HarnessSession,
+    ),
 }));
 
 function spend<T extends { readonly state?: SessionStateMap }>(
@@ -70,7 +75,7 @@ function approval(requestId: string): ParkedCall {
 }
 
 describe("settleCancelledTurnStep", () => {
-  it("leaves only the requests the session can still answer holding its activity open", async () => {
+  it("withdraws what the cancel leaves unanswerable before the turn ends, and keeps the rest", async () => {
     const base = createTestSessionState({ sessionId: "deploy-session" });
     // An earlier turn parked Alice's staging approval. Her current turn waits
     // on a research run beside its production approval, and on a session-limit
@@ -100,14 +105,7 @@ describe("settleCancelledTurnStep", () => {
       ],
       turn: { id: "turn_1", stepIndex: 1 },
     });
-    const ctx = new ContextContainer();
-    ctx.set(ActivityPendingBlockersKey, [
-      "child-question-1",
-      "approval-0",
-      "approval-1",
-      "limit-1",
-    ]);
-    vi.mocked(deserializeContext).mockResolvedValueOnce(ctx);
+    emitted.length = 0;
 
     const result = await runSessionStateStep(
       {
@@ -119,7 +117,24 @@ describe("settleCancelledTurnStep", () => {
       settleCancelledTurnStep,
     );
 
-    expect(ctx.get(ActivityPendingBlockersKey)).toEqual(["approval-0"]);
+    expect(emitted.map((event) => event.type)).toEqual([
+      "input.resolved",
+      "input.resolved",
+      "turn.cancelled",
+      "session.waiting",
+    ]);
+    expect(
+      emitted.flatMap((event) => (event.type === "input.resolved" ? [event.data] : [])),
+    ).toEqual([
+      expect.objectContaining({
+        resolutions: [{ kind: "tool-approval", outcome: "cancelled", requestId: "approval-1" }],
+        turnId: "turn_1",
+      }),
+      expect.objectContaining({
+        resolutions: [{ kind: "session-limit", outcome: "cancelled", requestId: "limit-1" }],
+        turnId: "turn_1",
+      }),
+    ]);
     const turnState = readTurnState(readDurableSession(result.sessionState).state);
     expect(turnState.turn).toBeUndefined();
     expect(turnState.prompt).toBeUndefined();

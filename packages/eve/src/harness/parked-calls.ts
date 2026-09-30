@@ -1,7 +1,7 @@
 import type { ModelMessage, ToolSet, TypedToolCall, TypedToolError, TypedToolResult } from "ai";
 
 import { contextStorage } from "#context/container.js";
-import { SessionKey, ActivityRootTurnIdKey, AuthKey } from "#context/keys.js";
+import { SessionKey, AuthKey } from "#context/keys.js";
 import type { SessionAuthContext } from "#channel/types.js";
 import { commitCallEntry, isTaskTool } from "#execution/tasks/model-step.js";
 import { pendingTaskToolCalls } from "#execution/tasks/calls.js";
@@ -19,7 +19,7 @@ import {
   type ResolvedInputBatch,
 } from "#harness/input-request-resolution.js";
 import { isApprovalRequest } from "#harness/input-request-class.js";
-import { clearProxyInputRequestsWhere } from "#harness/proxy-input-requests.js";
+import { withdrawProxyInputRequests } from "#harness/proxy-input-requests.js";
 import {
   createWorkflowTaskRequestFromToolCall,
   resolveToolCallInputObject,
@@ -175,10 +175,6 @@ export function currentRequester(): SessionAuthContext | null {
   return auth?.principalType === "anonymous" ? null : auth;
 }
 
-export function currentActivityRootTurnId(): string | undefined {
-  return contextStorage.getStore()?.get(ActivityRootTurnIdKey);
-}
-
 // ---------------------------------------------------------------------------
 // Runtime results
 // ---------------------------------------------------------------------------
@@ -206,10 +202,12 @@ export async function settleRuntimeResults(input: {
     const run = call.workflow?.run;
     if (run !== undefined) {
       // A finished run's unanswered questions must not reach it after it ends.
-      session = clearProxyInputRequestsWhere(
+      const withdrawn = withdrawProxyInputRequests(
         session,
-        (route) => route.workflowAsk?.runId === run.runId,
+        (route) => (route.runId ?? route.workflowAsk?.runId) === run.runId,
       );
+      session = withdrawn.session;
+      for (const event of withdrawn.events) await input.emit?.(event);
     }
     turnState = settleCall(
       turnState,
@@ -253,10 +251,12 @@ export function decideApprovals(input: {
   for (const request of openApprovalRequests(turnState)) {
     const response = responses.get(request.requestId);
     if (response === undefined) continue;
-    turnState = updateCall(turnState, request.action.callId, (call) => ({
-      ...call,
-      approval: { ...call.approval!, decision: response },
-    }));
+    // The stream reported the first decision settled, so it stands.
+    turnState = updateCall(turnState, request.action.callId, (call) =>
+      call.approval!.decision === undefined
+        ? { ...call, approval: { ...call.approval!, decision: response } }
+        : call,
+    );
   }
 
   const resolved: ResolvedInputBatch[] = [];

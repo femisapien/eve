@@ -205,12 +205,15 @@ describe("workflowEntry integration", () => {
         const completed = filterEventsByType(authorizedTurn, "authorization.completed");
 
         expect(completeCalls()).toBe(1);
-        expectSingleTurn(authorizedTurn, "turn_1");
+        // The completion precedes the turn it resumes, where the sign-in was asked.
+        expect(authorizedTurn[0]?.type).toBe("authorization.completed");
+        expectSingleTurn(authorizedTurn.slice(1), "turn_1");
         expect(authorizedTurn.at(-1)?.type).toBe("session.waiting");
         expect(completed).toHaveLength(1);
         expect(completed[0]?.data).toMatchObject({
           name: "weather",
           outcome: "authorized",
+          turnId: "turn_0",
         });
         expect(
           authorizedTurn.some(
@@ -346,8 +349,10 @@ describe("workflowEntry integration", () => {
           (event) => event.type === "session.waiting",
         );
         const completed = filterEventsByType(callbackTurn, "authorization.completed");
-        expectSingleTurn(callbackTurn, "turn_2");
+        expect(callbackTurn[0]?.type).toBe("authorization.completed");
+        expectSingleTurn(callbackTurn.slice(1), "turn_2");
         expect(completed).toHaveLength(1);
+        expect(completed[0]?.data.turnId).toBe("turn_0");
         // The attempt stays bound to user-1 even though user-2 spoke last.
         expect(filterEventsByType(firstTurn, "authorization.required")[0]?.data.principalId).toBe(
           "user-1",

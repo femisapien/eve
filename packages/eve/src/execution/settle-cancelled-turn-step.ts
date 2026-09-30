@@ -1,5 +1,4 @@
 import { deserializeContext, serializeContext } from "#context/serialize.js";
-import { retainAnswerableActivityBlockers } from "#execution/activity-cohort.js";
 import {
   createDurableSessionState,
   type DurableSessionState,
@@ -7,19 +6,9 @@ import {
 } from "#execution/durable-session-store.js";
 import { withSessionEventEmitter } from "#execution/publish-session-events.js";
 import { reconcileSessionContinuationToken } from "#execution/reconcile-session-continuation-token.js";
-import {
-  withSessionStateDelta,
-  type WithSessionStateDelta,
-} from "#execution/session/state-delta.js";
-import { emitTurnCancelled } from "#harness/session-lifecycle.js";
-import {
-  cancelTurnWork,
-  readTurnState,
-  takeSettledSteps,
-  writeTurnState,
-} from "#harness/turn-state.js";
-import { validateHarnessModelMessages } from "#harness/messages.js";
-import { clearAllProxyInputRequests } from "#harness/proxy-input-requests.js";
+import { type WithSessionStateDelta } from "#execution/session/state-delta.js";
+import { withSessionStateDelta } from "#execution/session/with-session-state-delta.js";
+import { cancelTurn } from "#harness/session-lifecycle.js";
 import { getTurnUsageState, takeSessionUsageDelta } from "#harness/turn-tag-state.js";
 import type { TokenUsage } from "#shared/token-usage.js";
 
@@ -60,35 +49,19 @@ export async function settleCancelledTurn(
 ): Promise<CancelledTurnSettleResult> {
   const durableSession = readDurableSession(input.sessionState);
   const ctx = await deserializeContext(input.serializedContext);
-  // Every call the turn made or waits on settles as cancelled, and so does the
-  // session-limit prompt: the cancel withdraws what nobody may answer now.
-  const cancelled = takeSettledSteps(cancelTurnWork(readTurnState(durableSession.state)));
-  const cancelledDurable = writeTurnState(
-    {
-      ...durableSession,
-      history: validateHarnessModelMessages([...durableSession.history, ...cancelled.messages]),
-      outputSchema: undefined,
-    },
-    cancelled.turnState,
-  );
-  // Before `turn.cancelled` projects, so only what stays answerable holds the work open.
-  retainAnswerableActivityBlockers(ctx, cancelledDurable.state);
   const emitted = await withSessionEventEmitter(
     {
       ctx,
-      durableSession: cancelledDurable,
+      durableSession,
       origin: "own",
       sessionWritable: input.sessionWritable,
     },
     async (emit, scopedSession) => ({
-      result: await emitTurnCancelled(emit, cancelled.turnState),
-      session: scopedSession,
+      result: undefined,
+      session: await cancelTurn(emit, scopedSession),
     }),
   );
-  const cancelledSession = reconcileSessionContinuationToken(
-    ctx,
-    clearAllProxyInputRequests(writeTurnState(emitted.session, emitted.result)),
-  );
+  const cancelledSession = reconcileSessionContinuationToken(ctx, emitted.session);
   const base = { serializedContext: serializeContext(ctx) };
   if (!input.reportUsage || getTurnUsageState(cancelledSession.state) === undefined) {
     return { ...base, sessionState: createDurableSessionState({ session: cancelledSession }) };

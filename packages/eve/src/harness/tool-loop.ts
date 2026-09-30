@@ -86,12 +86,15 @@ import {
   emitTurnCompleted,
   emitTurnFailed,
   emitTurnOpened,
+  emitWithdrawnRequests,
+  emitWithdrawnSignIns,
 } from "#harness/session-lifecycle.js";
 import {
   activeTurnId,
   advanceStep,
   allCalls,
   clearContextWork,
+  withdrawnRequests,
   closeTurn,
   eventCoordinates,
   findStepForRequest,
@@ -110,7 +113,6 @@ import {
 } from "#harness/turn-state.js";
 import {
   createParkedCalls,
-  currentActivityRootTurnId,
   currentRequester,
   decideApprovals,
   effectiveGrants,
@@ -655,7 +657,17 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       // Parked calls, the prompt, and sign-ins leave with the history that
       // asked for them. Questions from live tasks and children stay routable:
       // clearing does not stop the work that asked them.
-      turnState = clearContextWork(turnState);
+      const cleared = clearContextWork(turnState);
+      if (emit) {
+        await emitWithdrawnRequests(emit, withdrawnRequests(turnState, cleared));
+        await emitWithdrawnSignIns(
+          emit,
+          getPendingAuthorization(session.state)?.challenges ?? [],
+          coordinates,
+          "The conversation was cleared.",
+        );
+      }
+      turnState = cleared;
       session = replaceSessionHistory(
         {
           ...session,
@@ -787,6 +799,21 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     });
     session = coordinated.session;
     turnState = readTurnState(session.state);
+    const coordinatedState = turnState;
+    const coordinatedAudit = getApprovalAuditState(session.state);
+    // Approval policy events belong to the approval, so they carry the
+    // coordinates of the step that asked for it, as its resolution does.
+    const requestOrigin = (requestId: string) =>
+      findStepForRequest(coordinatedState, requestId)?.origin ?? eventCoordinates(coordinatedState);
+    const candidateOrigin = (candidateId: string | undefined) => {
+      const requestId = [
+        ...coordinatedAudit.activeCandidates,
+        ...coordinatedAudit.candidateHistory,
+      ].find((candidate) => candidate.candidateId === candidateId)?.requestId;
+      return requestId === undefined
+        ? eventCoordinates(coordinatedState)
+        : requestOrigin(requestId);
+    };
     if (emit) {
       const coordinates = eventCoordinates(turnState);
       for (const message of coordinated.feedback) {
@@ -808,7 +835,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
             ...authorizationEventFields(challenge),
             outcome: "failed",
             reason: "The approval response expired. Please submit a new response.",
-            ...coordinates,
+            ...(challenge.origin ?? candidateOrigin(challenge.candidateId)),
           }),
         );
       }
@@ -821,7 +848,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
             outcome: "pending",
             requestId: candidate.requestId,
             responderPrincipalId: candidate.responder.principalId,
-            ...coordinates,
+            ...requestOrigin(candidate.requestId),
           }),
         );
         session = {
@@ -845,7 +872,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
             requestId: candidate.requestId,
             responderPrincipalId: candidate.responder.principalId,
             reason: candidate.reason,
-            ...coordinates,
+            ...requestOrigin(candidate.requestId),
           }),
         );
         session = {
@@ -862,7 +889,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
             outcome: settlement.outcome === "allowed" ? "approved" : "cancelled",
             requestId: settlement.requestId,
             responderPrincipalId: settlement.actor.principalId,
-            ...coordinates,
+            ...requestOrigin(settlement.requestId),
           }),
         );
         session = {
@@ -880,16 +907,19 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       return { next: runStep, session: persist(session) };
     }
     if (coordinated.challenges.length > 0) {
+      const challenges = coordinated.challenges.map((challenge) => ({
+        ...challenge,
+        origin: candidateOrigin(challenge.candidateId),
+      }));
       if (emit) {
-        const coordinates = eventCoordinates(turnState);
-        for (const challenge of coordinated.challenges) {
+        for (const challenge of challenges) {
           await emit(
             createAuthorizationRequiredEvent({
               ...authorizationEventFields(challenge),
               description:
                 challenge.challenge.instructions ?? `Authorization required for ${challenge.name}`,
               webhookUrl: challenge.hookUrl,
-              ...coordinates,
+              ...challenge.origin,
             }),
           );
         }
@@ -899,9 +929,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
         next: null,
         session: persist({
           ...session,
-          state: setPendingAuthorization(session.state, {
-            challenges: coordinated.challenges,
-          }),
+          state: setPendingAuthorization(session.state, { challenges }),
         }),
       };
     }
@@ -2605,7 +2633,6 @@ async function handleStepResult(input: {
       turnId: origin.turnId,
     });
     const step: Parameters<typeof parkStep>[1] = {
-      activityRootTurnId: currentActivityRootTurnId(),
       calls: parked.calls,
       origin,
       response: responseMessages,
@@ -2735,8 +2762,8 @@ async function parkOnAuthorization(input: {
   const { emit } = input;
   const { challenges, history } = input.interrupt;
   let { turnState } = input;
+  const coordinates = eventCoordinates(turnState);
   if (emit) {
-    const coordinates = eventCoordinates(turnState);
     for (const superseded of getSupersededAuthorizationChallenges(
       input.session.state,
       challenges,
@@ -2772,7 +2799,9 @@ async function parkOnAuthorization(input: {
       {
         ...input.session,
         history: validateHarnessModelMessages(history),
-        state: setPendingAuthorization(input.session.state, { challenges }),
+        state: setPendingAuthorization(input.session.state, {
+          challenges: challenges.map((challenge) => ({ ...challenge, origin: coordinates })),
+        }),
       },
       turnState,
     ),

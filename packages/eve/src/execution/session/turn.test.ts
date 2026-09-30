@@ -12,10 +12,10 @@ import { dispatchCoordinationStep } from "#execution/coordination-dispatch-step.
 import { routeDeliverToChildren } from "#execution/route-child-delivery.js";
 import { publishTurnWaitingStep } from "#execution/session/turn-waiting-step.js";
 import {
-  withSessionStateDelta,
   type SessionStateValues,
   type WithSessionStateDelta,
 } from "#execution/session/state-delta.js";
+import { withSessionStateDelta } from "#execution/session/with-session-state-delta.js";
 import type { DurableStepResult, TurnStepInput } from "#execution/session/turn-step-types.js";
 import type { CoordinationDispatchResult } from "#execution/coordination-dispatch-shared.js";
 import type { RoutedDeliverResult } from "#execution/proxied-deliver-step.js";

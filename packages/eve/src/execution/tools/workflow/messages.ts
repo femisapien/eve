@@ -80,11 +80,6 @@ export interface WorkflowToolRunRequestMessage {
   readonly inputSource?: string;
   readonly replyTo: string;
   readonly request: WorkflowToolRequest;
-  readonly requestCoordinates?: {
-    readonly sequence: number;
-    readonly stepIndex: number;
-    readonly turnId: string;
-  };
 }
 
 export interface WorkflowToolRunOutcomeMessage {

@@ -111,6 +111,7 @@ describe("projectActivityEvents", () => {
   it("normalizes and bounds authorization blocker labels", () => {
     const [event] = projectActivityEvents({
       at: "2026-01-01T00:00:00Z",
+      authorizationId: "attempt-1",
       event: {
         data: {
           attemptId: "attempt-1",
@@ -192,7 +193,7 @@ describe("projectActivityEvents", () => {
     ]);
   });
 
-  it("projects successful result text before tool settlement", () => {
+  it("projects a result's label", () => {
     expect(
       projectActivityEvents({
         at: "2026-01-01T00:00:02Z",
@@ -221,47 +222,6 @@ describe("projectActivityEvents", () => {
         eventId: "action:work:root:turn:tool-1:result:result-1",
         kind: "action.label.updated",
         label: "Report ready",
-      },
-      {
-        actionId: "action:work:root:turn:tool-1",
-        eventId: "action:work:root:turn:tool-1:settled:completed",
-        kind: "action.settled",
-        outcome: "completed",
-        settledAt: "2026-01-01T00:00:02Z",
-      },
-    ]);
-  });
-
-  it("projects safe failed tool settlement", () => {
-    expect(
-      projectActivityEvents({
-        at: "2026-01-01T00:00:01Z",
-        event: {
-          data: {
-            error: { code: "FAILED", message: "private detail" },
-            result: {
-              callId: "tool-1",
-              isError: true,
-              kind: "tool-result",
-              output: { secret: "hidden" },
-              toolName: "search",
-            },
-            sequence: 0,
-            status: "failed",
-            stepIndex: 0,
-            turnId: "turn",
-          },
-          type: "action.result",
-        },
-        lineage,
-      }),
-    ).toEqual([
-      {
-        actionId: "action:work:root:turn:tool-1",
-        eventId: "action:work:root:turn:tool-1:settled:failed",
-        kind: "action.settled",
-        outcome: "failed",
-        settledAt: "2026-01-01T00:00:01Z",
       },
     ]);
   });

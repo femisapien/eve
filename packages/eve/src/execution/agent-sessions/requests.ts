@@ -44,10 +44,5 @@ export async function forwardAgentSessionRequest(input: {
         ? request.childSessionInbox
         : undefined,
     request: { kind: "input-batch", requests: request.event.requests },
-    requestCoordinates: {
-      sequence: request.event.sequence,
-      stepIndex: request.event.stepIndex,
-      turnId: request.event.turnId,
-    },
   });
 }

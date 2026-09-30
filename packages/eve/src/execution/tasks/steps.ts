@@ -28,20 +28,24 @@ import {
   type PublishedSessionEvents,
   type SessionStepState,
 } from "#execution/publish-session-events.js";
-import {
-  withSessionStateDelta,
-  type SessionStateTransition,
-} from "#execution/session/state-delta.js";
+import { type SessionStateTransition } from "#execution/session/state-delta.js";
+import { withSessionStateDelta } from "#execution/session/with-session-state-delta.js";
 import type {
   WorkflowToolRunControlMessage,
   WorkflowToolRunMessage,
   WorkflowToolRunOutcomeMessage,
 } from "#execution/tools/workflow/messages.js";
 import { workflowToolRunFailureOutput } from "#execution/tools/workflow/owner-inbox.js";
-import { withdrawWorkflowAsks } from "#execution/tools/workflow/withdraw-step.js";
-import { clearProxyInputRequestsWhere } from "#harness/proxy-input-requests.js";
+import {
+  withdrawProxyInputRequests,
+  type ProxyInputRequest,
+} from "#harness/proxy-input-requests.js";
 import { resumeHook } from "#internal/workflow/runtime.js";
-import { createTaskSettledEvent, type TaskSettledStreamEvent } from "#protocol/message.js";
+import {
+  createTaskSettledEvent,
+  type TaskSettledStreamEvent,
+  type UnstampedMessageStreamEvent,
+} from "#protocol/message.js";
 
 /** The messages a task's run sends that change its record. */
 export type TaskRunMessage = Extract<
@@ -70,6 +74,7 @@ async function applyTaskRunMessage(
   }
   let table = readTaskTable(session.state);
   const events: TaskSettledStreamEvent[] = [];
+  let withdrawnEvents: readonly UnstampedMessageStreamEvent[] = [];
   switch (message.kind) {
     case "started": {
       const started = markTaskRunStarted(table, taskId, message.from.runId);
@@ -94,14 +99,16 @@ async function applyTaskRunMessage(
       const settled = settleRemainingTaskCalls(table, taskId, outcome);
       events.push(...settled.settled.map((call) => taskSettledEvent(taskId, call, outcome)));
       table = finishTaskRun(settled.table, taskId, message.from.runId);
-      session = forgetRunQuestions(session, message.from.runId);
+      ({ session, events: withdrawnEvents } = forgetRunQuestions(session, message.from.runId));
       break;
     }
   }
-  return await publishSessionEvents(
+  // Withdrawn questions resolve before the task settles, so none outlives the task on the stream.
+  const relayed = await relaySessionEvents(
     { ...input, sessionState: saveTable(input.sessionState, session, table) },
-    events,
+    withdrawnEvents,
   );
+  return await publishSessionEvents({ ...input, ...relayed }, events);
 }
 
 /**
@@ -134,7 +141,10 @@ async function cancelTasks(
     if (resumable === false) stoppedRunIds.add(cancelled.send.run.runId);
     await sendTaskRunCommands(cancelled.send);
   }
-  const withdrawn = withdrawWorkflowAsks(session, (_requestId, runId) => stoppedRunIds.has(runId));
+  const withdrawn = withdrawProxyInputRequests(session, (route) => {
+    const runId = runOf(route);
+    return runId !== undefined && stoppedRunIds.has(runId);
+  });
   const relayed = await relaySessionEvents(
     { ...input, sessionState: saveTable(input.sessionState, withdrawn.session, table) },
     withdrawn.events,
@@ -223,9 +233,13 @@ function countTaskRunUsage(
   };
 }
 
-/** A finished run can no longer take answers, so its unanswered questions are dropped. */
-function forgetRunQuestions(session: DurableSession, runId: string): DurableSession {
-  return clearProxyInputRequestsWhere(session, (route) => route.workflowAsk?.runId === runId);
+/** A finished run can no longer take answers, so its unanswered questions are withdrawn. */
+function forgetRunQuestions(session: DurableSession, runId: string) {
+  return withdrawProxyInputRequests(session, (route) => runOf(route) === runId);
+}
+
+function runOf(route: ProxyInputRequest): string | undefined {
+  return route.runId ?? route.workflowAsk?.runId;
 }
 
 function saveTable(
