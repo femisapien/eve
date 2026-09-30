@@ -325,6 +325,40 @@ describe("turn state (real AI SDK)", () => {
     expect(answered.settledTurn).toEqual({ output: "Bob owns staging." });
   });
 
+  it("answers a repeated response to a settled approval as a message", async () => {
+    const deploy = inlineTool("deploy");
+    const bobCall = {
+      input: "{}",
+      toolCallId: "call-bob",
+      toolName: "deploy",
+      type: "tool-call" as const,
+    };
+    const fixture = setup(
+      [deploy],
+      [
+        calls("deploy"),
+        streamOf([bobCall], "tool-calls"),
+        text("Bob's deployment is cancelled."),
+        text("Bob's deployment stays cancelled."),
+      ],
+    );
+    const alice = await fixture.step(fixture.session, { message: "Deploy Alice's release." });
+    const both = await fixture.step(alice.session, { message: "Deploy Bob's release too." });
+    const bob = requestIds(both.session)[1]!;
+    const cancelBob = { inputResponses: [{ optionId: "cancel", requestId: bob }] };
+    const cancelled = await fixture.step(both.session, cancelBob);
+
+    const repeated = await fixture.step(cancelled.session, cancelBob);
+
+    expect(fixture.doStream).toHaveBeenCalledTimes(4);
+    expect(JSON.stringify(fixture.doStream.mock.calls[3]![0].prompt)).toContain(
+      "The user submitted the following response to an earlier interactive prompt.",
+    );
+    expect(repeated.settledTurn).toEqual({ output: "Bob's deployment stays cancelled." });
+    expect(deploy.execute).not.toHaveBeenCalled();
+    expect(requestIds(repeated.session)).toEqual(requestIds(alice.session));
+  });
+
   it("revokes open approvals when the context is cleared", async () => {
     const deploy = inlineTool("deploy");
     const fixture = setup([deploy], [calls("deploy")]);

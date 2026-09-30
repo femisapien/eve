@@ -747,6 +747,22 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       return buildResponseAuthorizationTools({ authoredTools: config.tools, context: store });
     };
 
+    // A response is stale once its request left the session: answered,
+    // cleared, or cancelled. Stale prompt answers drop; stale approval
+    // answers reach the model as text and never authorize the earlier call.
+    // This runs before approval coordination, which would otherwise drop a
+    // repeated answer as a duplicate and leave its delivery unanswered.
+    const openIds = openRequestIds(turnState);
+    const staleConversion = convertStaleResponsesToUserMessage({
+      history: session.history,
+      pendingRequestIds: openIds,
+      stepInput: dropStaleSessionLimitContinuationResponses({
+        pendingRequestIds: openIds,
+        stepInput,
+      }),
+    });
+    stepInput = staleConversion.stepInput;
+
     const pendingApprovalChallenges = getPendingAuthorization(session.state)?.challenges ?? [];
     const coordinated = await coordinateApprovalDelivery({
       session: persist(session),
@@ -890,20 +906,6 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       };
     }
     stepInput = coordinated.stepInput;
-
-    // A response is stale once its request left the session: answered,
-    // cleared, or cancelled. Stale prompt answers drop; stale approval
-    // answers reach the model as text and never authorize the earlier call.
-    const openIds = openRequestIds(turnState);
-    const staleConversion = convertStaleResponsesToUserMessage({
-      history: session.history,
-      pendingRequestIds: openIds,
-      stepInput: dropStaleSessionLimitContinuationResponses({
-        pendingRequestIds: openIds,
-        stepInput,
-      }),
-    });
-    stepInput = staleConversion.stepInput;
     const preambleStepInput =
       staleConversion.kind === "converted"
         ? { ...stepInput, message: staleConversion.displayMessage }
