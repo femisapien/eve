@@ -4903,6 +4903,7 @@ describe("constrainAuthorizationRequired", () => {
   }
 
   const eventData = {
+    attemptId: "attempt_notion",
     authorization: { url: "https://connect.example.com/a/sca_1", userCode: "AAA-BBB" },
     description: "Authorization required for notion",
     name: "notion",

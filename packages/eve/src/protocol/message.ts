@@ -89,9 +89,13 @@ export interface MessageStreamEventMeta {
  *
  * `rejected` marks a tool call the user (or a policy) denied at a HITL
  * approval gate: it never executed, so it is neither a success nor a
- * runtime failure.
+ * runtime failure. `cancelled` marks a call eve stopped before it produced a
+ * result the model reads, which is not a failure either; `error.code` says
+ * why: `AUTHORIZATION_REQUIRED` for a call that asked for a sign-in (the
+ * agent can call the tool again once the sign-in completes),
+ * `TURN_CANCELLED`, or `CONTEXT_CLEARED`.
  */
-export type ActionResultStatus = "completed" | "failed" | "rejected";
+export type ActionResultStatus = "completed" | "failed" | "rejected" | "cancelled";
 
 /**
  * Stable failure payload projected onto `action.result`.
@@ -186,6 +190,12 @@ export interface SessionStartedStreamEvent {
  */
 export interface TurnStartedStreamEvent {
   data: {
+    /**
+     * The turn whose work this turn resumes: the turn that asked for the
+     * approvals, session-limit prompt, or sign-in whose settlement started
+     * this one. Absent when the turn starts fresh work.
+     */
+    continuesTurnId?: string;
     sequence: number;
     trace?: RuntimeTraceContext;
     turnId: string;
@@ -286,6 +296,12 @@ export interface ApprovalSettledStreamEvent {
  */
 export interface InputRequestedStreamEvent {
   data: {
+    /**
+     * When a task's run asks, including a subagent's request passed up: this
+     * session's call that the run serves, which waits on the requests. A passed
+     * up approval's `action` names the subagent's own call.
+     */
+    callId?: string;
     requests: readonly InputRequest[];
     sequence: number;
     stepIndex: number;
@@ -311,6 +327,11 @@ export interface InputResolution {
   readonly outcome: InputResolutionOutcome;
   readonly requestId: string;
   readonly response?: InputResponse;
+  /**
+   * For an approved tool approval this session asked: the turn that runs the
+   * approved call, either the open turn or the next turn to start.
+   */
+  readonly resumeTurnId?: string;
 }
 
 /**
@@ -679,8 +700,15 @@ export interface CompactionCompletedStreamEvent {
 export interface AuthorizationRequiredStreamEvent {
   data: {
     /** Stable identity of this exact authorization attempt. */
-    attemptId?: string;
+    attemptId: string;
     authorization?: ConnectionAuthorizationChallenge;
+    /**
+     * This session's calls that asked for the sign-in. Each settles as
+     * `cancelled` with `AUTHORIZATION_REQUIRED`; for a task's run, the call
+     * the run serves keeps running. Absent when no call asked, such as a
+     * connection's sign-in before a turn's first step.
+     */
+    callIds?: readonly string[];
     candidateId?: string;
     description: string;
     name: string;
@@ -721,7 +749,7 @@ export type ConnectionAuthorizationOutcome = AuthorizationOutcome;
 export interface AuthorizationCompletedStreamEvent {
   data: {
     /** Stable identity shared with the matching required event. */
-    attemptId?: string;
+    attemptId: string;
     candidateId?: string;
     /**
      * The challenge from the matching `authorization.required` event,
@@ -900,6 +928,7 @@ export function createSessionStartedEvent(input?: {
  * Creates the `turn.started` event for one prepared runtime turn.
  */
 export function createTurnStartedEvent(input: {
+  readonly continuesTurnId?: string;
   readonly sequence: number;
   readonly trace?: RuntimeTraceContext;
   readonly turnId: string;
@@ -908,6 +937,7 @@ export function createTurnStartedEvent(input: {
     sequence: input.sequence,
     turnId: input.turnId,
   };
+  if (input.continuesTurnId !== undefined) data.continuesTurnId = input.continuesTurnId;
 
   if (input.trace !== undefined) {
     data.trace = input.trace;
@@ -1189,8 +1219,9 @@ export function createActionInputAppendedEvent(input: {
  * for `getToken`-only authorization sources that authorize out of band.
  */
 export function createAuthorizationRequiredEvent(input: {
-  readonly attemptId?: string;
+  readonly attemptId: string;
   readonly authorization?: ConnectionAuthorizationChallenge;
+  readonly callIds?: readonly string[];
   readonly candidateId?: string;
   readonly description: string;
   readonly name: string;
@@ -1202,17 +1233,18 @@ export function createAuthorizationRequiredEvent(input: {
   readonly webhookUrl?: string;
 }): AuthorizationRequiredStreamEvent {
   const data: AuthorizationRequiredStreamEvent["data"] = {
+    attemptId: input.attemptId,
     description: input.description,
     name: input.name,
     sequence: input.sequence,
     stepIndex: input.stepIndex,
     turnId: input.turnId,
   };
-  if (input.attemptId !== undefined) {
-    data.attemptId = input.attemptId;
-  }
   if (input.authorization !== undefined) {
     data.authorization = input.authorization;
+  }
+  if (input.callIds !== undefined && input.callIds.length > 0) {
+    data.callIds = input.callIds;
   }
   if (input.candidateId !== undefined) {
     data.candidateId = input.candidateId;
@@ -1238,7 +1270,7 @@ export function createAuthorizationRequiredEvent(input: {
  * authorization deadline has expired.
  */
 export function createAuthorizationCompletedEvent(input: {
-  readonly attemptId?: string;
+  readonly attemptId: string;
   readonly authorization?: ConnectionAuthorizationChallenge;
   readonly candidateId?: string;
   readonly name: string;
@@ -1251,15 +1283,13 @@ export function createAuthorizationCompletedEvent(input: {
   readonly turnId: string;
 }): AuthorizationCompletedStreamEvent {
   const data: AuthorizationCompletedStreamEvent["data"] = {
+    attemptId: input.attemptId,
     name: input.name,
     outcome: input.outcome,
     sequence: input.sequence,
     stepIndex: input.stepIndex,
     turnId: input.turnId,
   };
-  if (input.attemptId !== undefined) {
-    data.attemptId = input.attemptId;
-  }
   if (input.authorization !== undefined) {
     data.authorization = input.authorization;
   }
@@ -1299,6 +1329,7 @@ export function createApprovalSettledEvent(
  * Creates the `input.requested` event for one pending HITL batch.
  */
 export function createInputRequestedEvent(input: {
+  readonly callId?: string;
   readonly requests: readonly InputRequest[];
   readonly sequence: number;
   readonly stepIndex: number;
@@ -1311,6 +1342,7 @@ export function createInputRequestedEvent(input: {
     stepIndex: input.stepIndex,
     turnId: input.turnId,
   };
+  if (input.callId !== undefined) data.callId = input.callId;
   if (input.taskId !== undefined) data.taskId = input.taskId;
   return { data, type: "input.requested" };
 }
@@ -1341,6 +1373,8 @@ export function createInputResolvedEvent(input: {
  * derived from the synthesized denial output.
  */
 export function createActionResultEvent(input: {
+  /** Why eve stopped the call before it produced a result; see {@link ActionResultStatus}. */
+  readonly cancelled?: ActionResultError;
   readonly presentation?: ActionPresentationByCallId;
   readonly rejected?: boolean;
   readonly result: RuntimeActionResult;
@@ -1349,9 +1383,11 @@ export function createActionResultEvent(input: {
   readonly turnId: string;
 }): ActionResultStreamEvent {
   const outcome =
-    input.rejected === true
-      ? { error: buildActionResultError(input.result), status: "rejected" as const }
-      : normalizeActionResultOutcome(input.result);
+    input.cancelled !== undefined
+      ? { error: input.cancelled, status: "cancelled" as const }
+      : input.rejected === true
+        ? { error: buildActionResultError(input.result), status: "rejected" as const }
+        : normalizeActionResultOutcome(input.result);
 
   return {
     data: {

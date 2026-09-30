@@ -99,6 +99,7 @@ describe("authorization callback results", () => {
 
 function candidateChallenge(name: string, candidateId: string) {
   return {
+    attemptId: `attempt-${candidateId}`,
     candidateId,
     challenge: { url: `https://idp.example/${candidateId}` },
     hookUrl: `https://eve.example/${candidateId}`,
@@ -139,12 +140,12 @@ describe("pending authorization state", () => {
     ]);
   });
 
-  it("clears by candidate ID", () => {
+  it("clears by attempt ID", () => {
     const state = setPendingAuthorization(undefined, {
       challenges: [candidateChallenge("github", "candidate-1")],
     });
 
-    expect(clearPendingAuthorization(state, ["candidate-1"])).toBeUndefined();
+    expect(clearPendingAuthorization(state, ["attempt-candidate-1"])).toBeUndefined();
   });
 });
 

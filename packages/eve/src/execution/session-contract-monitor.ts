@@ -1,12 +1,12 @@
 import { readDurableSession, type DurableSessionState } from "#execution/durable-session-store.js";
 import { getPendingAuthorization } from "#harness/authorization.js";
 import { getProxyInputRequests } from "#harness/proxy-input-requests.js";
-import { allCalls, readTurnState } from "#harness/turn-state.js";
+import { allCalls, findCall, readTurnState } from "#harness/turn-state.js";
 import { isEveDevEnvironment } from "#internal/application/dev-environment.js";
 import { createLogger } from "#internal/logging.js";
 import type { SessionStateMap } from "#harness/types.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
-import type { SessionProjection } from "#protocol/session-projection.js";
+import type { SessionAuthorization, SessionProjection } from "#protocol/session-projection.js";
 import {
   checkSessionEvent,
   initialSessionContractState,
@@ -105,15 +105,17 @@ export function checkSessionAgreement(
     ),
   );
   const signIns = new Set(
-    (getPendingAuthorization(state)?.challenges ?? []).map(
-      (challenge) => challenge.attemptId ?? challenge.candidateId ?? challenge.name,
-    ),
+    (getPendingAuthorization(state)?.challenges ?? []).map((challenge) => challenge.attemptId),
   );
+  // A task's or workflow run's sign-in is the run's to await; the session only relays it.
+  const relayed = (attempt: SessionAuthorization) =>
+    attempt.taskId !== undefined ||
+    (attempt.callIds !== undefined &&
+      attempt.callIds.length > 0 &&
+      attempt.callIds.every((callId) => findCall(turnState, callId)?.workflow !== undefined));
   const shownSignIns = new Set(
     Object.values(projection.authorizations).flatMap((attempt) =>
-      attempt.status === "required"
-        ? [attempt.attemptId ?? attempt.candidateId ?? attempt.name]
-        : [],
+      attempt.status === "required" && !relayed(attempt) ? [attempt.attemptId] : [],
     ),
   );
   const violations: SessionContractViolation[] = [];

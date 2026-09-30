@@ -1,4 +1,5 @@
 import type {
+  ActionResultStatus,
   AuthorizationCompletedStreamEvent,
   AuthorizationOutcome,
   AuthorizationRequiredStreamEvent,
@@ -14,8 +15,9 @@ export interface SessionTurn {
   /** The open turn is parked, holding on its tasks or on a question one of its calls asked. */
   readonly waiting?: boolean;
   /**
-   * The turn whose work this one continues. A turn that resumes answered approvals, a session-limit
-   * prompt, or a completed sign-in continues the turn that asked; any other turn is its own root.
+   * The first turn of the work this one continues: `turn.started` names the turn whose answered
+   * approvals, session-limit prompt, or completed sign-in it resumes, and that turn's root is this
+   * one's. Any other turn is its own root.
    */
   readonly rootTurnId: string;
 }
@@ -31,9 +33,13 @@ export interface SessionInput {
   readonly response?: InputResponse;
   readonly outcome?: string;
   /**
-   * For a root tool approval, the turn that runs the approved call: the turn open when the approval
-   * resolved, or else the next turn to start. Absent for questions, whose turn parks and resumes
-   * under its own ID, and for requests a task asked.
+   * This session's call that waits on the request: the call an approval asks about, or for a
+   * request a task's run asks, the call that run serves.
+   */
+  readonly callId?: string;
+  /**
+   * For an approved tool approval this session asked, the turn that runs the approved call, as the
+   * approval's `input.resolved` names it.
    */
   readonly resumeTurnId?: string;
 }
@@ -74,12 +80,14 @@ export interface SessionCall {
   /** The task the call started or reached; its `task.settled`, not `action.result`, settles it. */
   readonly taskId?: string;
   /** How the call's final `action.result` settled it. */
-  readonly result?: "completed" | "failed" | "rejected";
+  readonly result?: ActionResultStatus;
 }
 
 /**
  * Where a call stands. `"awaiting-input"` waits on an approval or question; `"rejected"` was
- * denied or not approved; `"interrupted"` was still running when the turn that runs it ended.
+ * denied or not approved; `"cancelled"` was stopped by eve, such as a call that asked for a
+ * sign-in or one a cancelled turn cut off; `"interrupted"` was still running when the turn that
+ * runs it ended, or when the stream stopped.
  */
 export type SessionCallStatus =
   | "running"
@@ -92,10 +100,11 @@ export type SessionCallStatus =
 
 /** One sign-in attempt, from its `authorization.required` to its `authorization.completed`. */
 export interface SessionAuthorization {
-  readonly id: string;
+  readonly attemptId: string;
   readonly name: string;
-  readonly attemptId?: string;
   readonly candidateId?: string;
+  /** This session's calls that asked for the sign-in. */
+  readonly callIds?: readonly string[];
   readonly turnId: string;
   /** The task that needs the sign-in, when a task's run asks. */
   readonly taskId?: string;
@@ -106,13 +115,12 @@ export interface SessionAuthorization {
 }
 
 /**
- * A session's turns, requests, tasks, and sign-ins as its event stream reports them. Clients fold
- * the stream they read, and eve folds a session's own events for its activity, so both apply the
- * same rules.
- *
- * Settlements that resume work precede the turn they resume: an answered approval batch's
- * `input.resolved` and a sign-in callback's `authorization.completed` arrive before that turn's
- * `turn.started`.
+ * A session's turns, requests, tasks, calls, and sign-ins as its event stream reports them.
+ * Clients fold the stream they read, and eve folds a session's own events for its activity, so
+ * both apply the same rules. Every relation here is one an event states: which turn a turn
+ * continues, which turn runs an approved call, which call a request or sign-in belongs to, and
+ * how a call ended. The fold infers only what no event can say: that a call still running when its
+ * turn ended, or when the stream stopped, was interrupted.
  */
 export interface SessionProjection {
   readonly activeTurnId?: string;
@@ -120,12 +128,8 @@ export interface SessionProjection {
   readonly inputs: Readonly<Record<string, SessionInput>>;
   readonly tasks: Readonly<Record<string, SessionTask>>;
   readonly calls: Readonly<Record<string, SessionCall>>;
+  /** Sign-in attempts by attempt ID. */
   readonly authorizations: Readonly<Record<string, SessionAuthorization>>;
-  /** Work settled while no turn was open, which the next turn to start resumes. */
-  readonly resuming?: {
-    readonly rootTurnId: string;
-    readonly approvalIds: readonly string[];
-  };
 }
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
@@ -141,10 +145,10 @@ export function rootTurnOf(projection: SessionProjection, turnId: string): strin
 
 /**
  * Where a call stands. A call that started a task runs until its task settles, even after its
- * turn ends. Asking for a root tool approval ends the turn, so an approved call runs in the turn
- * its approval resumes. A question parks its turn instead, and a request a subagent's task passed
- * up runs while that task works. Any other call still running when its turn ends is interrupted,
- * or cancelled when the turn was.
+ * turn ends, and waits on input while a request its task's run asked is open. An approved call
+ * runs in the turn its approval's `input.resolved` names. A question parks its turn instead, which
+ * resumes under the same ID. Any other call still running when its turn ends is interrupted, or
+ * cancelled when the turn was.
  *
  * `streaming: false` says nothing more will arrive, so a call whose turn never ended is
  * interrupted too.
@@ -158,30 +162,29 @@ export function callStatus(
   if (call === undefined) return undefined;
   const taskCall =
     call.taskId === undefined ? undefined : projection.tasks[call.taskId]?.calls[callId];
-  if (taskCall !== undefined) return taskCall.status === "working" ? "running" : taskCall.status;
+  if (taskCall !== undefined) {
+    if (taskCall.status !== "working") return taskCall.status;
+    return hasOpenRequest(projection, callId) ? "awaiting-input" : "running";
+  }
   if (call.result !== undefined) return call.result;
   const input = call.requestId === undefined ? undefined : projection.inputs[call.requestId];
   if (input?.status === "open") return "awaiting-input";
-  const approval = input?.request.kind === "tool-approval";
-  if (input !== undefined && approval && input.outcome === "cancelled") return "cancelled";
-  if (input !== undefined && approval && !isApproved(input)) return "rejected";
-  if (input?.taskId !== undefined && isTaskWorking(projection, input.taskId)) return "running";
-  const runsIn = approval && input.taskId === undefined ? input.resumeTurnId : call.turnId;
+  let runsIn = call.turnId;
+  if (input?.request.kind === "tool-approval") {
+    if (input.outcome === "cancelled") return "cancelled";
+    if (!isApproved(input)) return "rejected";
+    // Approved, but the rest of its batch is still unanswered.
+    if (input.resumeTurnId === undefined) return "awaiting-input";
+    runsIn = input.resumeTurnId;
+  }
   switch (turnLiveness(projection, runsIn)) {
     case "open":
       return options?.streaming === false ? "interrupted" : "running";
     case "cancelled":
       return "cancelled";
     case "closed":
-      // A turn that ended on a sign-in parked its unsettled calls behind it.
-      return awaitsSignIn(projection, runsIn) ? "awaiting-input" : "interrupted";
+      return "interrupted";
   }
-}
-
-function awaitsSignIn(projection: SessionProjection, turnId: string | undefined): boolean {
-  return Object.values(projection.authorizations).some(
-    (attempt) => attempt.status === "required" && attempt.turnId === turnId,
-  );
 }
 
 /** Whether a call's status can still change. */
@@ -193,43 +196,21 @@ function isApproved(input: SessionInput): boolean {
   return input.response?.optionId === "approve" || input.outcome === "approved";
 }
 
-function isTaskWorking(projection: SessionProjection, taskId: string): boolean {
-  const calls = Object.values(projection.tasks[taskId]?.calls ?? {});
-  return calls.some((call) => call.status === "working");
+function hasOpenRequest(projection: SessionProjection, callId: string): boolean {
+  return Object.values(projection.inputs).some(
+    (input) => input.callId === callId && input.status !== "settled",
+  );
 }
 
 /** A turn the projection hasn't seen yet can't have ended. */
 function turnLiveness(
   projection: SessionProjection,
-  turnId: string | undefined,
+  turnId: string,
 ): "open" | "cancelled" | "closed" {
-  const turn = turnId === undefined ? undefined : projection.turns[turnId];
+  const turn = projection.turns[turnId];
   if (turn === undefined) return "open";
   if (turn.status === "active") return projection.activeTurnId === turnId ? "open" : "closed";
   return turn.status === "cancelled" ? "cancelled" : "closed";
-}
-
-/**
- * The attempt an authorization event names: by attempt ID, else by approval candidate, else the
- * latest unfinished attempt for the same connection.
- */
-export function authorizationFor(
-  projection: SessionProjection,
-  data: Pick<AuthorizationCompletedStreamEvent["data"], "attemptId" | "candidateId" | "name">,
-): SessionAuthorization | undefined {
-  const attempts = Object.values(projection.authorizations);
-  if (data.attemptId !== undefined) {
-    return attempts.find((attempt) => attempt.attemptId === data.attemptId);
-  }
-  if (data.candidateId !== undefined) {
-    return attempts.find((attempt) => attempt.candidateId === data.candidateId);
-  }
-  return attempts.findLast(
-    (attempt) =>
-      attempt.attemptId === undefined &&
-      attempt.name === data.name &&
-      attempt.status === "required",
-  );
 }
 
 /** Applies one event. Returns `state` itself when the event changes nothing here. */
@@ -239,7 +220,7 @@ export function reduceSessionProjection<S extends SessionProjection>(
 ): S {
   switch (event.type) {
     case "turn.started":
-      return startTurn(state, event.data.turnId);
+      return startTurn(state, event.data);
     case "turn.waiting":
       return updateTurn(state, event.data.turnId, (turn) =>
         turn.status === "active" && turn.waiting !== true ? { ...turn, waiting: true } : turn,
@@ -269,14 +250,11 @@ export function reduceSessionProjection<S extends SessionProjection>(
         },
       };
     }
-    // Only a turn's end reaches a session boundary, so no turn stays open across one, and nothing
-    // settled before it is waiting to resume.
+    // Only a turn's end reaches a session boundary, so no turn stays open across one.
     case "session.waiting":
     case "session.completed":
     case "session.failed":
-      return state.activeTurnId === undefined && state.resuming === undefined
-        ? state
-        : { ...state, activeTurnId: undefined, resuming: undefined };
+      return state.activeTurnId === undefined ? state : { ...state, activeTurnId: undefined };
     case "actions.requested": {
       let next = state;
       for (const action of event.data.actions) {
@@ -306,22 +284,23 @@ export function reduceSessionProjection<S extends SessionProjection>(
     case "task.settled":
       return settleTaskCall(state, event.data);
     case "input.requested": {
+      const { callId, stepIndex, taskId, turnId } = event.data;
       let next = state;
       for (const request of event.data.requests) {
         if (next.inputs[request.requestId] !== undefined) continue;
         const input: Mutable<SessionInput> = {
+          callId: callId ?? request.action.callId,
           request,
           status: "open",
-          stepIndex: event.data.stepIndex,
-          turnId: event.data.turnId,
+          stepIndex,
+          turnId,
         };
-        if (event.data.taskId !== undefined) input.taskId = event.data.taskId;
-        next = recordCall(
-          { ...next, inputs: { ...next.inputs, [request.requestId]: input } },
-          request.action,
-          event.data.turnId,
-          request.requestId,
-        );
+        if (taskId !== undefined) input.taskId = taskId;
+        next = { ...next, inputs: { ...next.inputs, [request.requestId]: input } };
+        // A task's run asks on behalf of the call it serves; a passed up approval's action is
+        // another session's call, which this session never made.
+        if (callId === undefined)
+          next = recordCall(next, request.action, turnId, request.requestId);
       }
       return next;
     }
@@ -372,33 +351,18 @@ function updateTurn<S extends SessionProjection>(
   return next === turn ? state : { ...state, turns: { ...state.turns, [turnId]: next } };
 }
 
-function startTurn<S extends SessionProjection>(state: S, turnId: string): S {
-  const rootTurnId = state.turns[turnId]?.rootTurnId ?? state.resuming?.rootTurnId ?? turnId;
-  let inputs = state.inputs;
-  for (const requestId of state.resuming?.approvalIds ?? []) {
-    const input = inputs[requestId];
-    if (input === undefined || input.resumeTurnId !== undefined) continue;
-    inputs = { ...inputs, [requestId]: { ...input, resumeTurnId: turnId } };
-  }
+function startTurn<S extends SessionProjection>(
+  state: S,
+  data: Extract<UnstampedMessageStreamEvent, { readonly type: "turn.started" }>["data"],
+): S {
+  const { continuesTurnId, turnId } = data;
+  const rootTurnId =
+    state.turns[turnId]?.rootTurnId ??
+    (continuesTurnId === undefined ? turnId : rootTurnOf(state, continuesTurnId));
   return {
     ...state,
     activeTurnId: turnId,
-    inputs,
-    resuming: undefined,
     turns: { ...state.turns, [turnId]: { rootTurnId, status: "active", turnId } },
-  };
-}
-
-/** Records work that resumes in the next turn, which continues the first settled work's root. */
-function resume(
-  resuming: SessionProjection["resuming"],
-  rootTurnId: string,
-  approvalId?: string,
-): NonNullable<SessionProjection["resuming"]> {
-  const approvalIds = resuming?.approvalIds ?? [];
-  return {
-    approvalIds: approvalId === undefined ? approvalIds : [...approvalIds, approvalId],
-    rootTurnId: resuming?.rootTurnId ?? rootTurnId,
   };
 }
 
@@ -410,39 +374,21 @@ function resolveInputs<S extends SessionProjection>(
   >["data"]["resolutions"],
 ): S {
   const inputs = { ...state.inputs };
-  let resuming = state.resuming;
   let changed = false;
   for (const resolution of resolutions) {
     const current = inputs[resolution.requestId];
-    if (current === undefined) continue;
-    let next =
-      current.status === "settled"
-        ? current
-        : {
-            ...current,
-            outcome: resolution.outcome,
-            response: resolution.response ?? current.response,
-            status: "settled" as const,
-          };
-    // A task's request resumes the task's own session, not one of this session's turns.
-    if (current.taskId === undefined && current.resumeTurnId === undefined) {
-      const approval = current.request.kind === "tool-approval";
-      if (state.activeTurnId !== undefined) {
-        if (approval) next = { ...next, resumeTurnId: state.activeTurnId };
-      } else if (!resuming?.approvalIds.includes(resolution.requestId)) {
-        resuming = resume(
-          resuming,
-          rootTurnOf(state, current.turnId),
-          approval ? resolution.requestId : undefined,
-        );
-      }
-    }
-    if (next === current) continue;
+    if (current === undefined || current.status === "settled") continue;
+    const next: Mutable<SessionInput> = {
+      ...current,
+      outcome: resolution.outcome,
+      status: "settled",
+    };
+    if (resolution.response !== undefined) next.response = resolution.response;
+    if (resolution.resumeTurnId !== undefined) next.resumeTurnId = resolution.resumeTurnId;
     inputs[resolution.requestId] = next;
     changed = true;
   }
-  if (!changed && resuming === state.resuming) return state;
-  return { ...state, inputs, resuming };
+  return changed ? { ...state, inputs } : state;
 }
 
 function recordCall<S extends SessionProjection>(
@@ -489,12 +435,8 @@ function settleCall<S extends SessionProjection>(
     data.turnId,
   );
   const call = recorded.calls[callId]!;
-  const result =
-    data.status === "rejected" || data.error?.code === "TOOL_EXECUTION_DENIED"
-      ? "rejected"
-      : data.status;
-  if (call.result === result) return recorded;
-  return { ...recorded, calls: { ...recorded.calls, [callId]: { ...call, result } } };
+  if (call.result === data.status) return recorded;
+  return { ...recorded, calls: { ...recorded.calls, [callId]: { ...call, result: data.status } } };
 }
 
 function settleTaskCall<S extends SessionProjection>(
@@ -520,50 +462,36 @@ function settleTaskCall<S extends SessionProjection>(
   };
 }
 
-/** The ID a sign-in attempt goes by: its attempt ID, else its approval candidate, else its step. */
-export function authorizationId(
-  data: Pick<
-    AuthorizationRequiredStreamEvent["data"],
-    "attemptId" | "candidateId" | "name" | "stepIndex" | "turnId"
-  >,
-): string {
-  return (
-    data.attemptId ?? data.candidateId ?? `${data.turnId}:${String(data.stepIndex)}:${data.name}`
-  );
-}
-
 function requireAuthorization<S extends SessionProjection>(
   state: S,
   data: AuthorizationRequiredStreamEvent["data"],
 ): S {
-  const id = authorizationId(data);
-  if (state.authorizations[id] !== undefined) return state;
+  const { attemptId } = data;
+  if (state.authorizations[attemptId] !== undefined) return state;
   const attempt: Mutable<SessionAuthorization> = {
-    id,
+    attemptId,
     name: data.name,
     status: "required",
     turnId: data.turnId,
   };
-  if (data.attemptId !== undefined) attempt.attemptId = data.attemptId;
   if (data.candidateId !== undefined) attempt.candidateId = data.candidateId;
+  if (data.callIds !== undefined) attempt.callIds = data.callIds;
   if (data.taskId !== undefined) attempt.taskId = data.taskId;
   if (data.webhookUrl !== undefined) attempt.awaitsCallback = true;
-  return { ...state, authorizations: { ...state.authorizations, [id]: attempt } };
+  return { ...state, authorizations: { ...state.authorizations, [attemptId]: attempt } };
 }
 
 function completeAuthorization<S extends SessionProjection>(
   state: S,
   data: AuthorizationCompletedStreamEvent["data"],
 ): S {
-  const current = authorizationFor(state, data);
+  const current = state.authorizations[data.attemptId];
   if (current === undefined || current.status === "completed") return state;
-  const resumes = current.taskId === undefined && state.activeTurnId === undefined;
   return {
     ...state,
     authorizations: {
       ...state.authorizations,
-      [current.id]: { ...current, outcome: data.outcome, status: "completed" },
+      [data.attemptId]: { ...current, outcome: data.outcome, status: "completed" },
     },
-    resuming: resumes ? resume(state.resuming, rootTurnOf(state, current.turnId)) : state.resuming,
   };
 }

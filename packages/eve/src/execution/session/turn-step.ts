@@ -459,7 +459,7 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
             );
             if (firstCall && completedAuths) {
               let turnState = readTurnState(schemaSession.state);
-              const startsTurn = completedAuths.some(
+              const resumed = completedAuths.find(
                 ({ challenge }) => challenge.candidateId === undefined,
               );
               // A completion precedes the turn it resumes, as answers do, at the
@@ -473,7 +473,7 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
                   }),
                 );
               }
-              if (startsTurn && isBetweenTurns(turnState)) {
+              if (resumed !== undefined && isBetweenTurns(turnState)) {
                 const turnInput = createTurnInputMessages(
                   mergeStepInputs(turnState.queued, stepInput),
                 );
@@ -491,6 +491,7 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
                 });
                 try {
                   turnState = await emitTurnOpened({
+                    continuesTurnId: resumed.challenge.origin?.turnId,
                     emit: handleEvent,
                     turnState,
                     messages: history.projector({

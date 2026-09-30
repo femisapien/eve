@@ -296,6 +296,7 @@ describe("proxied stream hooks", () => {
     const event = {
       type: "authorization.required" as const,
       data: {
+        attemptId: "attempt_linear",
         description: "Sign in to Linear",
         name: "linear",
         sequence: 7,

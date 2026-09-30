@@ -263,9 +263,9 @@ function reduceMessageData(data: EveMessageData, event: EveAgentReducerEvent): E
       // A task call's result is only its start receipt, which can arrive after the task settled.
       if (existing?.toolMetadata?.eve?.taskId !== undefined) return data;
       const descriptor = normalizeActionResult(event.data.result);
-      const denied =
-        event.data.status === "rejected" || event.data.error?.code === "TOOL_EXECUTION_DENIED";
-      const failed = event.data.status === "failed" && !denied;
+      const denied = event.data.status === "rejected";
+      // A call eve stopped has no result either; its error says why.
+      const failed = event.data.status === "failed" || event.data.status === "cancelled";
       const approvalId = existing?.approval?.id ?? event.data.result.callId;
       const toolMetadata = mergeToolMetadata(existing, {
         kind: descriptor.kind,

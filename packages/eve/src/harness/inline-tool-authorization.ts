@@ -27,26 +27,36 @@ export function resolveInlineAuthorizationInterrupt(input: {
 }):
   | {
       readonly challenges: AuthorizationSignal["challenges"];
+      /** The interrupted calls that asked for each connection, by connection name. */
+      readonly callIdsByConnection: ReadonlyMap<string, readonly string[]>;
       readonly history: ModelMessage[];
     }
   | undefined {
   const signals: AuthorizationSignal[] = [];
   const interruptedCallIds = new Set<string>();
+  const callIdsByConnection = new Map<string, string[]>();
 
   for (const toolResult of input.toolResults ?? []) {
     const signal = readAuthorizationSignal(toolResult);
     if (signal === undefined) continue;
     signals.push(signal);
     interruptedCallIds.add(toolResult.toolCallId);
+    for (const { name } of signal.challenges) {
+      callIdsByConnection.set(name, [
+        ...(callIdsByConnection.get(name) ?? []),
+        toolResult.toolCallId,
+      ]);
+    }
   }
 
   if (signals.length === 0) return undefined;
 
   return {
+    callIdsByConnection,
     challenges: resolveActiveAuthorizationChallenges(
       signals.flatMap((signal) => signal.challenges),
     ),
-    history: projectCompletedSiblingCalls(input.messages, interruptedCallIds),
+    history: withoutCalls(input.messages, interruptedCallIds),
   };
 }
 
@@ -59,7 +69,8 @@ function readAuthorizationSignal(
   return isAuthorizationSignal(toolResult.output) ? toolResult.output : undefined;
 }
 
-function projectCompletedSiblingCalls(
+/** The messages without these calls, keeping only protocol-complete sibling calls. */
+export function withoutCalls(
   messages: readonly ModelMessage[],
   interruptedCallIds: ReadonlySet<string>,
 ): ModelMessage[] {

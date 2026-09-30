@@ -2988,7 +2988,10 @@ describe("runProxySubagentEventStep", () => {
       }
       expect(order).toEqual(["channel", "hook"]);
       expect(hook).toHaveBeenCalledExactlyOnceWith(
-        expect.objectContaining({ type: "input.requested", data: hookPayload.event }),
+        expect.objectContaining({
+          type: "input.requested",
+          data: expect.objectContaining(hookPayload.event),
+        }),
         expect.objectContaining({ session: expect.objectContaining({ id: "parent-session" }) }),
       );
     },

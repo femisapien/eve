@@ -54,7 +54,7 @@ const AUTHORIZATION_PENDING_BRAND = "__eveAuthorizationPending" as const;
 
 export interface AuthorizationChallenge {
   /** Opaque identity of this exact authorization attempt. */
-  readonly attemptId?: string;
+  readonly attemptId: string;
   readonly candidateId?: string;
   /** Opaque resolved connection identity; omitted for tool-hosted authorization. */
   readonly instanceId?: string;
@@ -372,7 +372,7 @@ export function clearPendingAuthorization(
     if (pending !== undefined) {
       const completedAttemptIds = new Set(attemptIds);
       const challenges = pending.challenges.filter(
-        (challenge) => !completedAttemptIds.has(authorizationAttemptKey(challenge)),
+        (challenge) => !completedAttemptIds.has(challenge.attemptId),
       );
       if (challenges.length > 0) {
         return {
@@ -386,10 +386,6 @@ export function clearPendingAuthorization(
   const state = { ...sessionState };
   delete state[PENDING_AUTHORIZATION_KEY];
   return Object.keys(state).length > 0 ? state : undefined;
-}
-
-function authorizationAttemptKey(challenge: AuthorizationChallenge): string {
-  return challenge.attemptId ?? challenge.candidateId ?? challenge.name;
 }
 
 export function getPendingAuthorization(

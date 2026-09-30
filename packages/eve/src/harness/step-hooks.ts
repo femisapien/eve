@@ -23,6 +23,7 @@ import {
   createRuntimeToolResultFromStepResult,
 } from "#harness/action-result-helpers.js";
 import type { EventCoordinates } from "#harness/turn-state.js";
+import { createCancelledCallEvent, SIGN_IN_REQUIRED } from "#harness/cancelled-calls.js";
 import { createStepStartedEvent } from "#protocol/message.js";
 import { normalizeAssistantStepFinishReason } from "#harness/finish-reason.js";
 import { extractToolApprovalInputRequests } from "#harness/input-extraction.js";
@@ -308,6 +309,12 @@ export async function emitStepActions(
   }
 
   const inlineCallIds = options.handledInlineToolResultCallIds;
+  // A policy that denies a call in the step answers it with a denial, not a failure.
+  const deniedCallIds = new Set(
+    extractToolResultParts(step.response.messages).flatMap((part) =>
+      part.output.type === "execution-denied" ? [part.toolCallId] : [],
+    ),
+  );
   const rawOutputByCallId = new Map<string, unknown>(
     (step.toolResults as TypedToolResult<ToolSet>[]).map((toolResult) => [
       toolResult.toolCallId,
@@ -332,22 +339,20 @@ export async function emitStepActions(
       result.kind === "tool-result" &&
       shouldSkipAuthorizationActionResult(result.callId, rawOutput);
     await emitFn(
-      createActionResultEvent({
-        result: signInRequired
-          ? {
-              ...result,
-              isError: true,
-              output: {
-                code: "AUTHORIZATION_REQUIRED",
-                message:
-                  "The call needs a sign-in. The agent can call the tool again once it completes.",
-              },
-            }
-          : result,
-        sequence: state.sequence,
-        stepIndex: state.stepIndex,
-        turnId: state.turnId,
-      }),
+      signInRequired
+        ? createCancelledCallEvent({
+            callId: result.callId,
+            coordinates: state,
+            reason: SIGN_IN_REQUIRED,
+            toolName: result.toolName,
+          })
+        : createActionResultEvent({
+            rejected: deniedCallIds.has(result.callId),
+            result,
+            sequence: state.sequence,
+            stepIndex: state.stepIndex,
+            turnId: state.turnId,
+          }),
     );
   }
 

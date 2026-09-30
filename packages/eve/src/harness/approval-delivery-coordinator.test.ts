@@ -242,6 +242,7 @@ describe("coordinateApprovalDelivery", () => {
         state: ingested.session.state,
         authorizationChallenges: [
           {
+            attemptId: "attempt_provider",
             name: "provider",
             hookUrl: "https://example.com/callback",
             challenge: { url: "https://example.com/login" },

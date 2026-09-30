@@ -96,7 +96,7 @@ describe("workflow-tool task input", () => {
 });
 
 describe("workflow-tool relayed sign-ins", () => {
-  it("presents a child's sign-in at the coordinates of the call its run serves", () => {
+  it("presents a child's sign-in at the coordinates of the call its run serves, which it names", () => {
     const payload = workflowToolRunAuthorizationPayload(
       { ...from, taskId: "research-1" },
       {
@@ -104,6 +104,7 @@ describe("workflow-tool relayed sign-ins", () => {
         childSessionId: "child-session",
         event: {
           data: {
+            attemptId: "attempt_notes",
             description: "Sign in to notes.",
             name: "notes",
             sequence: 0,
@@ -118,6 +119,7 @@ describe("workflow-tool relayed sign-ins", () => {
     );
 
     expect(payload.event.data).toMatchObject({
+      callIds: [from.callId],
       sequence: 0,
       stepIndex: 0,
       taskId: "research-1",

@@ -27,6 +27,7 @@ import {
 } from "#harness/runtime-calls.js";
 import {
   callOrigin,
+  dropCall,
   findCall,
   grantApprovals,
   openApprovalRequests,
@@ -37,7 +38,11 @@ import {
   type TurnState,
   type ToolResultPart,
 } from "#harness/turn-state.js";
-import { isInlineAuthorizationToolResult } from "#harness/inline-tool-authorization.js";
+import {
+  isInlineAuthorizationToolResult,
+  withoutCalls,
+} from "#harness/inline-tool-authorization.js";
+import { createCancelledCallEvent, SIGN_IN_REQUIRED } from "#harness/cancelled-calls.js";
 import { isTurnCancellation } from "#harness/turn-cancellation.js";
 import { projectResultPresentation } from "#harness/tool-presentation.js";
 import { resolveTextResponses } from "#harness/step-input.js";
@@ -418,11 +423,22 @@ export async function runApprovedCalls(input: {
         messages: input.messages,
         replayIdentity: input.replayIdentity,
       });
-      turnState = settleCall(turnState, call.callId, executed.part);
       if (executed.authorization !== undefined) {
+        turnState = dropCall(turnState, call.callId, (response) =>
+          withoutCalls(response, new Set([call.callId])),
+        );
         authorizationResults.push(executed.authorization);
+        await input.emit?.(
+          createCancelledCallEvent({
+            callId: call.callId,
+            coordinates: input.coordinates,
+            reason: SIGN_IN_REQUIRED,
+            toolName: call.toolName,
+          }),
+        );
         continue;
       }
+      turnState = settleCall(turnState, call.callId, executed.part);
       await input.emit?.(
         createActionResultEvent({
           presentation:
@@ -434,6 +450,7 @@ export async function runApprovedCalls(input: {
                   call.input,
                   executed.output,
                 ),
+          rejected: executed.denied,
           result: executed.result,
           ...input.coordinates,
         }),
@@ -451,6 +468,8 @@ async function runApprovedCall(input: {
   readonly replayIdentity?: (toolName: string) => string | undefined;
 }): Promise<{
   readonly authorization?: TypedToolResult<ToolSet>;
+  /** The tool's own approval check refused the call when it came to run. */
+  readonly denied?: true;
   readonly output?: unknown;
   readonly part: ToolResultPart;
   readonly result: RuntimeToolResultActionResult;
@@ -479,6 +498,7 @@ async function runApprovedCall(input: {
   }
   if (ran.denied) {
     return {
+      denied: true,
       part: {
         output: { reason: TOOL_EXECUTION_DENIED_MESSAGE, type: "execution-denied" },
         toolCallId: call.callId,

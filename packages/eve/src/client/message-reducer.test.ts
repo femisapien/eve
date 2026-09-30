@@ -725,10 +725,11 @@ describe("defaultMessageReducer", () => {
     ]);
   });
 
-  it("projects denied tool output distinctly from generic failures", () => {
+  it("projects a rejected call as denied, apart from failures", () => {
     const reducer = defaultMessageReducer();
     const data = reduceServerEvents(reducer, reducer.initial(), [
       createActionResultEvent({
+        rejected: true,
         result: {
           callId: "call_1",
           kind: "tool-result",
@@ -809,6 +810,7 @@ describe("defaultMessageReducer", () => {
     const reducer = defaultMessageReducer();
     const data = reduceServerEvents(reducer, reducer.initial(), [
       createAuthorizationRequiredEvent({
+        attemptId: "attempt_notion",
         authorization: {
           expiresAt: "2026-06-26T12:00:00.000Z",
           instructions: "Sign in to Notion to continue.",
@@ -834,6 +836,7 @@ describe("defaultMessageReducer", () => {
         parts: [
           { type: "step-start" },
           {
+            attemptId: "attempt_notion",
             authorization: {
               expiresAt: "2026-06-26T12:00:00.000Z",
               instructions: "Sign in to Notion to continue.",
@@ -895,6 +898,7 @@ describe("defaultMessageReducer", () => {
     const reducer = defaultMessageReducer();
     const data = reduceServerEvents(reducer, reducer.initial(), [
       createAuthorizationRequiredEvent({
+        attemptId: "attempt_notion",
         authorization: {
           displayName: "Notion",
           instructions: "Sign in to Notion to continue.",
@@ -908,6 +912,7 @@ describe("defaultMessageReducer", () => {
         webhookUrl: "https://agent.example.com/eve/v1/connections/notion/callback/hook",
       }),
       createAuthorizationCompletedEvent({
+        attemptId: "attempt_notion",
         authorization: {
           displayName: "Notion",
           url: "https://connect.example.com/authorize/sca_123",
@@ -930,6 +935,7 @@ describe("defaultMessageReducer", () => {
         parts: [
           { type: "step-start" },
           {
+            attemptId: "attempt_notion",
             authorization: {
               displayName: "Notion",
               instructions: "Sign in to Notion to continue.",

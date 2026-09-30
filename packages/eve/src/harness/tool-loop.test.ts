@@ -2432,7 +2432,7 @@ describe("createToolLoopHarness", () => {
     });
   });
 
-  it("parks without input (tool continuation) on stop", async () => {
+  it("finishes an open turn's continuation step that has no input", async () => {
     setupMockAgent({
       finishReason: "stop",
       response: { messages: [{ content: "The result is 42.", role: "assistant" }] },
@@ -2443,9 +2443,12 @@ describe("createToolLoopHarness", () => {
 
     const config = createTestConfig();
     const runStep = createToolLoopHarness(config);
-    const session = createTestSession({
-      history: [{ content: "prior message", kind: "user" as const, role: "user" }],
-    });
+    const session = atSessionTurn(
+      createTestSession({
+        history: [{ content: "prior message", kind: "user" as const, role: "user" }],
+      }),
+      { sequence: 0, turn: { id: "turn_0", stepIndex: 1 } },
+    );
 
     const result = await runStep(session);
 
@@ -5652,7 +5655,11 @@ describe("createToolLoopHarness", () => {
       createTestConfig(emit, { dispatchDynamicModelEvent, tools: new Map() }),
     );
 
-    await contextStorage.run(new ContextContainer(), () => harness(createTestSession()));
+    await contextStorage.run(new ContextContainer(), () =>
+      harness(
+        atSessionTurn(createTestSession(), { sequence: 0, turn: { id: "turn_0", stepIndex: 1 } }),
+      ),
+    );
 
     expect(dispatchDynamicModelEvent).toHaveBeenCalledWith(
       expect.objectContaining({

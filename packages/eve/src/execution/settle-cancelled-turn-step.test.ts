@@ -117,11 +117,30 @@ describe("settleCancelledTurnStep", () => {
       settleCancelledTurnStep,
     );
 
+    // The calls the cancel stops settle first, then what it withdraws.
     expect(emitted.map((event) => event.type)).toEqual([
+      "action.result",
+      "action.result",
       "input.resolved",
       "input.resolved",
       "turn.cancelled",
       "session.waiting",
+    ]);
+    expect(
+      emitted.flatMap((event) =>
+        event.type === "action.result"
+          ? [
+              {
+                callId: event.data.result.callId,
+                code: event.data.error?.code,
+                status: event.data.status,
+              },
+            ]
+          : [],
+      ),
+    ).toEqual([
+      { callId: "approval-1", code: "TURN_CANCELLED", status: "cancelled" },
+      { callId: "research-1", code: "TURN_CANCELLED", status: "cancelled" },
     ]);
     expect(
       emitted.flatMap((event) => (event.type === "input.resolved" ? [event.data] : [])),

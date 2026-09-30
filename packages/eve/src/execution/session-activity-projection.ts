@@ -7,8 +7,6 @@ import type { ActivityEventV1, ActivityWorkIdentityV1 } from "#protocol/activity
 import type { MessageStreamEvent } from "#protocol/message.js";
 import { isTaskControlTool } from "#protocol/task-tools.js";
 import {
-  authorizationFor,
-  authorizationId,
   callStatus,
   initialSessionProjection,
   isCallSettled,
@@ -87,7 +85,7 @@ function projectSessionActivity(input: SessionActivityInput): readonly ActivityE
   events.push(
     ...projectActivityEvents({
       at: event.meta.at,
-      authorizationId: eventAuthorizationId(input),
+      authorizationId: eventAuthorizationId(input.event),
       event,
       eventId: event.meta.id,
       lineage: work,
@@ -144,7 +142,7 @@ function subjectTurnId(input: SessionActivityInput): string | undefined {
     case "approval.settled":
       return projection.inputs[event.data.requestId]?.turnId ?? event.data.turnId;
     case "authorization.completed":
-      return authorizationFor(previous, event.data)?.turnId ?? event.data.turnId;
+      return previous.authorizations[event.data.attemptId]?.turnId ?? event.data.turnId;
     default:
       return "data" in event && "turnId" in event.data && typeof event.data.turnId === "string"
         ? event.data.turnId
@@ -152,13 +150,10 @@ function subjectTurnId(input: SessionActivityInput): string | undefined {
   }
 }
 
-function eventAuthorizationId(input: SessionActivityInput): string | undefined {
-  const { event } = input;
-  if (event.type === "authorization.required") return authorizationId(event.data);
-  if (event.type === "authorization.completed") {
-    return authorizationFor(input.previous, event.data)?.id ?? authorizationId(event.data);
-  }
-  return undefined;
+function eventAuthorizationId(event: MessageStreamEvent): string | undefined {
+  return event.type === "authorization.required" || event.type === "authorization.completed"
+    ? event.data.attemptId
+    : undefined;
 }
 
 function workFor(
@@ -213,7 +208,8 @@ function hasOpenBlockers(projection: SessionProjection, work: ActivityWorkIdenti
 
 /**
  * Drops what no later event of this session can change: settled calls of ended turns, settled
- * requests and sign-ins, and turns nothing open refers to.
+ * requests and sign-ins, and turns nothing open refers to. A turn that continues another keeps its
+ * root, because a later turn can continue it in turn.
  */
 function retainOpenWork(projection: SessionProjection): SessionProjection {
   const calls = retain(
@@ -223,13 +219,10 @@ function retainOpenWork(projection: SessionProjection): SessionProjection {
       !isCallSettled(callStatus(projection, call.callId)),
   );
   const kept = Object.values(calls);
-  const resuming = new Set(projection.resuming?.approvalIds);
   const inputs = retain(
     projection.inputs,
     (input, requestId) =>
-      input.status !== "settled" ||
-      resuming.has(requestId) ||
-      kept.some((call) => call.requestId === requestId),
+      input.status !== "settled" || kept.some((call) => call.requestId === requestId),
   );
   const authorizations = retain(
     projection.authorizations,
@@ -251,7 +244,10 @@ function retainOpenWork(projection: SessionProjection): SessionProjection {
     ...Object.values(authorizations).map((attempt) => attempt.turnId),
     ...Object.values(tasks).flatMap((task) => Object.values(task.calls).map((call) => call.turnId)),
   ]);
-  const turns = retain(projection.turns, (_turn, turnId) => turnIds.has(turnId));
+  const turns = retain(
+    projection.turns,
+    (turn, turnId) => turnIds.has(turnId) || turn.rootTurnId !== turnId,
+  );
   return { ...projection, authorizations, calls, inputs, tasks, turns };
 }
 

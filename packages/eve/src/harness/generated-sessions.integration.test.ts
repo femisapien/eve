@@ -4,9 +4,20 @@ import { describe, expect, it, vi } from "vitest";
 import { ContextContainer, contextStorage } from "#context/container.js";
 import { AuthKey, SessionIdKey, SessionKey } from "#context/keys.js";
 import { checkSessionAgreement } from "#execution/session-contract-monitor.js";
+import { workflowToolRunRequestToInputRequestPayload } from "#execution/tools/workflow/owner-inbox.js";
+import { requestAuthorization } from "#harness/authorization.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
+import { upsertProxyInputRequests } from "#harness/proxy-input-requests.js";
 import { cancelTurn } from "#harness/session-lifecycle.js";
-import { allCalls, openApprovalRequests, readTurnState } from "#harness/turn-state.js";
+import { stashToolInterrupt } from "#harness/tool-interrupts.js";
+import {
+  allCalls,
+  callOrigin,
+  openApprovalRequests,
+  readTurnState,
+  startWorkflowCall,
+  writeTurnState,
+} from "#harness/turn-state.js";
 import { createToolLoopHarness } from "#harness/tool-loop.js";
 import type { HarnessSession, StepInput, ToolLoopHarnessConfig } from "#harness/types.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
@@ -15,6 +26,7 @@ import {
   initialSessionContractState,
   type SessionContractViolation,
 } from "#protocol/session-contract.js";
+import { emitProxiedInputRequest } from "#subagents/hitl-proxy.js";
 import { always } from "#tools/approval/policies.js";
 
 // The harness runs outside a workflow body here, where run attributes cannot
@@ -23,10 +35,13 @@ vi.mock("#runtime/attributes/emit.js", () => ({ setEveAttributes: vi.fn(async ()
 
 /**
  * Drives sessions through random sequences of what people and the runtime do
- * (messages, answers, steering, workflow results, cancels, clears) with a
- * model that answers at random, and checks after every action that the stream
- * keeps its contract and shows what the session awaits. Hand-written tests
- * cover the sequences someone thought of; this covers the rest.
+ * (messages, answers, steering, workflow results, requests a workflow run
+ * passes up, cancels, clears) with a model that calls tools at random,
+ * including tools that ask for a sign-in, and checks after every action that
+ * the stream keeps its contract and shows what the session awaits.
+ * Hand-written tests cover the sequences someone thought of; this covers the
+ * rest. Answers routed down to a run and sign-in callbacks happen outside the
+ * harness, so their own tests cover them.
  *
  * Raise `EVE_GENERATED_SESSIONS` to explore more seeds locally.
  */
@@ -41,9 +56,13 @@ const usage = {
   outputTokens: { reasoning: undefined, text: 1, total: 1 },
 };
 
+const signInContext: { ctx?: ContextContainer; attempts: number } = { attempts: 0 };
+
 const TOOLS: readonly HarnessToolDefinition[] = [
   inlineTool("deploy", true),
   inlineTool("lookup", false),
+  signInTool("notes", false),
+  signInTool("release", true),
   workflowTool("build", false),
   workflowTool("publish", true),
 ];
@@ -63,6 +82,7 @@ type Action =
   | { readonly kind: "cancel" }
   | { readonly kind: "clear" }
   | { readonly kind: "message"; readonly message: string }
+  | { readonly kind: "relay"; readonly callId: string }
   | { readonly kind: "result"; readonly callIds: readonly string[] }
   | {
       readonly kind: "steer";
@@ -101,6 +121,8 @@ async function generateSession(seed: number) {
     tools: new Map(TOOLS.map((tool) => [tool.name, tool])),
   };
   const ctx = sessionContext();
+  signInContext.ctx = ctx;
+  let relays = 0;
   let session: HarnessSession = {
     agent: { modelReference: { id: "generated-model" }, system: "Help Alice.", tools: [] },
     compaction: { recentWindowSize: 10, threshold: 100_000 },
@@ -124,7 +146,7 @@ async function generateSession(seed: number) {
       const current = result.session;
       result = await contextStorage.run(ctx, () => next(current));
     }
-    session = result.session;
+    session = dispatchReadyWorkflows(result.session);
   };
 
   for (let index = 0; index < ACTIONS_PER_SESSION; index += 1) {
@@ -151,6 +173,52 @@ async function generateSession(seed: number) {
           })),
         });
         break;
+      case "relay": {
+        const turnState = readTurnState(session.state);
+        const call = allCalls(turnState).find((candidate) => candidate.callId === action.callId)!;
+        const origin = callOrigin(turnState, call.callId)!;
+        const relay = String(relays++);
+        const subagentCall = {
+          callId: `subagent-call-${relay}`,
+          input: {},
+          kind: "tool-call" as const,
+          toolName: "deploy",
+        };
+        const hookPayload = workflowToolRunRequestToInputRequestPayload({
+          from: {
+            callId: call.callId,
+            input: {},
+            runId: call.workflow!.run!.runId,
+            ...origin,
+            toolName: call.toolName,
+          },
+          replyTo: `reply-${relay}`,
+          request: {
+            kind: "input-batch",
+            requests: [
+              {
+                action: subagentCall,
+                kind: "tool-approval",
+                prompt: "Deploy Bob's build?",
+                requestId: `relayed-${relay}`,
+              },
+            ],
+          },
+        });
+        const emit = config.handleEvent!;
+        const entries = await emitProxiedInputRequest({
+          emit,
+          hookPayload,
+          runId: call.workflow!.run!.runId,
+          session,
+        });
+        session = upsertProxyInputRequests({
+          entries,
+          forChildContinuationToken: hookPayload.childContinuationToken,
+          session,
+        });
+        break;
+      }
       case "cancel": {
         const emit = config.handleEvent!;
         session = await contextStorage.run(ctx, () => cancelTurn(emit, session));
@@ -220,6 +288,7 @@ function nextAction(
       callIds: working.filter(() => random() < 0.6).map((call) => call.callId),
       kind: "result",
     }));
+    choices.push(() => ({ callId: pick(working).callId, kind: "relay" }));
   }
   // A cancel stops the open turn; a clear waits for the session to be between turns.
   if (turnState.turn !== undefined) choices.push(() => ({ kind: "cancel" }));
@@ -238,6 +307,43 @@ function inlineTool(name: string, gated: boolean): HarnessToolDefinition {
     inputSchema: jsonSchema({ type: "object" }),
     name,
   };
+}
+
+/** A tool whose connection asks for a sign-in every time it runs. */
+function signInTool(name: string, gated: boolean): HarnessToolDefinition {
+  return {
+    ...inlineTool(name, gated),
+    execute: async (_input: unknown, options: { readonly toolCallId: string }) => {
+      const attempt = String(signInContext.attempts++);
+      stashToolInterrupt(
+        signInContext.ctx!,
+        options.toolCallId,
+        requestAuthorization([
+          {
+            attemptId: `attempt-${attempt}`,
+            challenge: { url: `https://idp.example/${name}` },
+            hookUrl: `https://agent.example/callback/${attempt}`,
+            name,
+            principal: { type: "app" },
+          },
+        ]),
+      );
+      return "sign-in required";
+    },
+  };
+}
+
+/** Starts a run for each workflow call the harness readied, as execution does. */
+function dispatchReadyWorkflows(session: HarnessSession): HarnessSession {
+  let turnState = readTurnState(session.state);
+  for (const call of allCalls(turnState)) {
+    if (call.workflow === undefined || call.status !== "ready") continue;
+    turnState = startWorkflowCall(turnState, call.callId, {
+      hookToken: `hook-${call.callId}`,
+      runId: `run-${call.callId}`,
+    });
+  }
+  return writeTurnState(session, turnState);
 }
 
 function workflowTool(name: string, gated: boolean): HarnessToolDefinition {

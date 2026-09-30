@@ -30,7 +30,13 @@ describe("summarizeTurnEvents", () => {
       { type: "input.requested", data: { ...eventData, requests: [request] } },
       {
         type: "authorization.required",
-        data: { ...eventData, description: "Sign in", name: "linear", webhookUrl: "https://auth" },
+        data: {
+          attemptId: "attempt_linear",
+          ...eventData,
+          description: "Sign in",
+          name: "linear",
+          webhookUrl: "https://auth",
+        },
       },
       {
         type: "session.waiting",
@@ -115,7 +121,7 @@ describe("summarizeTurnEvents", () => {
     const events = [
       {
         type: "authorization.required",
-        data: { ...eventData, description: "Sign in", name: "linear" },
+        data: { attemptId: "attempt_linear", ...eventData, description: "Sign in", name: "linear" },
       },
       {
         type: "authorization.completed",
@@ -129,11 +135,11 @@ describe("summarizeTurnEvents", () => {
     const events = [
       {
         type: "authorization.required",
-        data: { ...eventData, description: "Sign in", name: "linear" },
+        data: { attemptId: "attempt_linear", ...eventData, description: "Sign in", name: "linear" },
       },
       {
         type: "authorization.completed",
-        data: { ...eventData, name: "linear", outcome: "authorized" },
+        data: { attemptId: "attempt_linear", ...eventData, name: "linear", outcome: "authorized" },
       },
       {
         type: "turn.failed",

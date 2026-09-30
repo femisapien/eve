@@ -317,6 +317,29 @@ export function settleCall(
 }
 
 /** Starts a ready workflow call: the session now waits on its run. */
+/**
+ * Takes a call out of its step, such as an approved call that asked for a
+ * sign-in: it leaves history, so the step commits without it.
+ */
+export function dropCall(
+  turnState: TurnState,
+  callId: string,
+  withoutCall: (response: readonly ModelMessage[]) => readonly ModelMessage[],
+): TurnState {
+  return {
+    ...turnState,
+    steps: turnState.steps.map((step) =>
+      step.calls.some((call) => call.callId === callId)
+        ? {
+            ...step,
+            calls: step.calls.filter((call) => call.callId !== callId),
+            response: withoutCall(step.response),
+          }
+        : step,
+    ),
+  };
+}
+
 export function startWorkflowCall(
   turnState: TurnState,
   callId: string,

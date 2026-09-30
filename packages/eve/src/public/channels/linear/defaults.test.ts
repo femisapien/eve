@@ -73,6 +73,7 @@ describe("createDefaultEvents authorization.required", () => {
 
     await events["authorization.required"]!(
       {
+        attemptId: "attempt_notion",
         authorization: {
           displayName: "Notion Workspace",
           url: "https://connect.example.com/a/sca_1",
@@ -108,6 +109,7 @@ describe("createDefaultEvents authorization.required", () => {
 
     await events["authorization.required"]!(
       {
+        attemptId: "attempt_notion",
         authorization: {
           instructions: "Open Notion on your phone.",
           userCode: "OTB-DGO",
@@ -138,6 +140,7 @@ describe("createDefaultEvents authorization.completed", () => {
 
     await events["authorization.completed"]!(
       {
+        attemptId: "attempt_notion",
         authorization: { displayName: "Notion Workspace" },
         name: "notion",
         outcome: "authorized",
@@ -164,6 +167,7 @@ describe("createDefaultEvents authorization.completed", () => {
 
     await events["authorization.completed"]!(
       {
+        attemptId: "attempt_notion",
         name: "notion",
         outcome: "timed-out",
         reason: "The challenge expired",

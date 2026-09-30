@@ -40,6 +40,7 @@ export async function emitProxiedInputRequest(input: {
 }): Promise<readonly (readonly [requestId: string, route: ProxyInputRequest])[]> {
   await input.emit(
     createInputRequestedEvent({
+      callId: input.hookPayload.callId,
       requests: input.hookPayload.event.requests,
       sequence: input.hookPayload.event.sequence,
       stepIndex: input.hookPayload.event.stepIndex,

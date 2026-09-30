@@ -1810,6 +1810,7 @@ describe("EveAgentStore session resume", () => {
       }),
       createSessionWaitingEvent(),
       createAuthorizationRequiredEvent({
+        attemptId: "attempt_linear",
         authorization: { url: "https://idp.example.com/authorize" },
         description: "Linear",
         name: "linear",
@@ -1820,6 +1821,7 @@ describe("EveAgentStore session resume", () => {
       }),
       createSessionWaitingEvent(),
       createAuthorizationCompletedEvent({
+        attemptId: "attempt_linear",
         name: "linear",
         outcome: "authorized",
         sequence: 1,

@@ -267,7 +267,8 @@ describe("subagent HITL proxy → Slack-style text-approve regression (Finding #
     expect(events.slice(1)).toEqual([
       { data: { sequence: 3, turnId: "turn_3" }, type: "turn.waiting" },
     ]);
-    expect(events[0]?.type).toBe("input.requested");
+    // The request names the parent's call that waits on it, not the child's call it approves.
+    expect(events[0]).toMatchObject({ data: { callId: "call-1" }, type: "input.requested" });
 
     // The serialized adapter state must include mutations made while
     // rendering the proxied input request.

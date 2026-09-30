@@ -42,6 +42,15 @@ const resolved = (requestId: string, turnId: string): UnstampedMessageStreamEven
   },
   type: "input.resolved",
 });
+const approved = (resumeTurnId?: string): UnstampedMessageStreamEvent => ({
+  data: {
+    resolutions: [
+      { kind: "tool-approval", outcome: "approved", requestId: "approval", resumeTurnId },
+    ],
+    ...at("turn_0"),
+  },
+  type: "input.resolved",
+});
 const taskStarted: UnstampedMessageStreamEvent = {
   data: {
     callId: "research",
@@ -141,6 +150,65 @@ describe("checkSessionStream", () => {
       "a turn that starts while another is open",
       "turn-order",
       [...started("turn_0"), { data: at("turn_1"), type: "turn.started" }],
+    ],
+    [
+      "a turn that continues a turn the stream never started",
+      "own-coordinates",
+      [
+        ...started("turn_0"),
+        ...ended("turn_0"),
+        { data: { ...at("turn_2"), continuesTurnId: "turn_1" }, type: "turn.started" },
+      ],
+    ],
+    [
+      "an approval that names no turn to run its call",
+      "turn-order",
+      [...started("turn_0"), asked("approval", "turn_0"), ...ended("turn_0"), approved()],
+    ],
+    [
+      "an approved call that runs in another turn than the one its approval named",
+      "turn-order",
+      [
+        ...started("turn_0"),
+        asked("approval", "turn_0"),
+        ...ended("turn_0"),
+        approved("turn_2"),
+        { data: at("turn_1"), type: "turn.started" },
+      ],
+    ],
+    [
+      "a sign-in tied to a call the stream never announced",
+      "own-coordinates",
+      [
+        ...started("turn_0"),
+        {
+          data: {
+            attemptId: "attempt_github",
+            callIds: ["lookup"],
+            description: "Connect GitHub",
+            name: "github",
+            ...at("turn_0"),
+          },
+          type: "authorization.required",
+        },
+      ],
+    ],
+    [
+      "a call settled for a sign-in the stream never asks for",
+      "unasked-sign-in",
+      [
+        ...started("turn_0"),
+        {
+          data: {
+            error: { code: "AUTHORIZATION_REQUIRED", message: "The call needs a sign-in." },
+            result: { callId: "lookup", kind: "tool-result", output: null, toolName: "lookup" },
+            status: "cancelled",
+            ...at("turn_0"),
+          },
+          type: "action.result",
+        },
+        ...ended("turn_0"),
+      ],
     ],
   ])("flags %s", (_name, rule, events) => {
     expect(checkSessionStream(events).map((violation) => violation.rule)).toContain(rule);

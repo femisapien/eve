@@ -413,6 +413,7 @@ describe("message stream protocol", () => {
 
   it("builds authorization.required with optional challenge and webhookUrl", () => {
     const bare = createAuthorizationRequiredEvent({
+      attemptId: "attempt_linear",
       name: "linear",
       description: "Linear",
       sequence: 3,
@@ -422,6 +423,7 @@ describe("message stream protocol", () => {
     expect(bare).toEqual({
       type: "authorization.required",
       data: {
+        attemptId: "attempt_linear",
         name: "linear",
         description: "Linear",
         sequence: 3,
@@ -436,6 +438,7 @@ describe("message stream protocol", () => {
       "abc",
     )}`;
     const full = createAuthorizationRequiredEvent({
+      attemptId: "attempt_linear",
       authorization: { url: "https://idp.example.com/authorize" },
       name: "linear",
       description: "Linear",
@@ -452,6 +455,7 @@ describe("message stream protocol", () => {
 
   it("builds authorization.completed with optional reason", () => {
     const authorized = createAuthorizationCompletedEvent({
+      attemptId: "attempt_linear",
       name: "linear",
       outcome: "authorized",
       sequence: 7,
@@ -462,6 +466,7 @@ describe("message stream protocol", () => {
     expect(authorized.data.outcome).toBe("authorized");
 
     const timedOut = createAuthorizationCompletedEvent({
+      attemptId: "attempt_linear",
       name: "linear",
       outcome: "timed-out",
       reason: "authorization_deadline_exceeded",
@@ -474,6 +479,7 @@ describe("message stream protocol", () => {
 
   it("builds authorization.completed with the journaled challenge", () => {
     const withoutChallenge = createAuthorizationCompletedEvent({
+      attemptId: "attempt_linear",
       name: "linear",
       outcome: "authorized",
       sequence: 7,
@@ -483,6 +489,7 @@ describe("message stream protocol", () => {
     expect(withoutChallenge.data).not.toHaveProperty("authorization");
 
     const withChallenge = createAuthorizationCompletedEvent({
+      attemptId: "attempt_linear",
       authorization: { displayName: "Linear", url: "https://idp.example.com/authorize" },
       name: "linear",
       outcome: "authorized",

@@ -77,7 +77,8 @@ function result(callId: string, turnId: string): UnstampedMessageStreamEvent {
   });
 }
 
-const start = (turnId: string) => createTurnStartedEvent({ sequence: 0, turnId });
+const start = (turnId: string, continuesTurnId?: string) =>
+  createTurnStartedEvent({ continuesTurnId, sequence: 0, turnId });
 const complete = (turnId: string) => createTurnCompletedEvent({ sequence: 0, turnId });
 
 /** Alice's turn asks to approve a lookup, which ends it. */
@@ -122,12 +123,19 @@ describe("advanceSessionActivity", () => {
     const { emitted, snapshot } = fold([
       ...askedForApproval,
       createInputResolvedEvent({
-        resolutions: [{ kind: "tool-approval", outcome: "approved", requestId: "approve-1" }],
+        resolutions: [
+          {
+            kind: "tool-approval",
+            outcome: "approved",
+            requestId: "approve-1",
+            resumeTurnId: "turn-2",
+          },
+        ],
         sequence: 0,
         stepIndex: 0,
         turnId: "turn-1",
       }),
-      start("turn-2"),
+      start("turn-2", "turn-1"),
       result("lookup-1", "turn-2"),
       complete("turn-2"),
     ]);
@@ -168,9 +176,9 @@ describe("advanceSessionActivity", () => {
         outcome: "authorized",
         sequence: 1,
         stepIndex: 0,
-        turnId: "turn_1",
+        turnId: "turn-1",
       }),
-      start("turn-2"),
+      start("turn-2", "turn-1"),
       complete("turn-2"),
     ]);
 
@@ -179,6 +187,39 @@ describe("advanceSessionActivity", () => {
     expect(snapshot.blockers[`authorization:${rootWork("turn-1")}:attempt-1`]).toMatchObject({
       phase: "completed",
     });
+  });
+
+  it("groups a chain of resumed turns under the first, after settled work is dropped", () => {
+    const signIn = (attemptId: string, turnId: string) => [
+      createAuthorizationRequiredEvent({
+        attemptId,
+        description: "Connect GitHub",
+        name: "github",
+        sequence: 0,
+        stepIndex: 0,
+        turnId,
+        webhookUrl: "https://agent.example.com/callback",
+      }),
+      complete(turnId),
+      createAuthorizationCompletedEvent({
+        attemptId,
+        name: "github",
+        outcome: "authorized",
+        sequence: 0,
+        stepIndex: 0,
+        turnId,
+      }),
+    ];
+    const { snapshot } = fold([
+      start("turn-1"),
+      ...signIn("attempt-1", "turn-1"),
+      start("turn-2", "turn-1"),
+      ...signIn("attempt-2", "turn-2"),
+      start("turn-3", "turn-2"),
+      complete("turn-3"),
+    ]);
+
+    expect(Object.keys(snapshot.work)).toEqual([rootWork("turn-1")]);
   });
 
   it("keeps a task call running from its receipt until task.settled", () => {

@@ -208,6 +208,11 @@ describe("workflowEntry integration", () => {
         // The completion precedes the turn it resumes, where the sign-in was asked.
         expect(authorizedTurn[0]?.type).toBe("authorization.completed");
         expectSingleTurn(authorizedTurn.slice(1), "turn_1");
+        // The resumed turn says which turn's work it continues.
+        expect(authorizedTurn[1]).toMatchObject({
+          data: { continuesTurnId: "turn_0", turnId: "turn_1" },
+          type: "turn.started",
+        });
         expect(authorizedTurn.at(-1)?.type).toBe("session.waiting");
         expect(completed).toHaveLength(1);
         expect(completed[0]?.data).toMatchObject({

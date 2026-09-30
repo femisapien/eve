@@ -67,7 +67,7 @@ import {
   createTurnWaitingEvent,
   type UnstampedMessageStreamEvent,
 } from "#protocol/message.js";
-import type { RuntimeTraceContext } from "#protocol/message.js";
+import type { InputResolution, RuntimeTraceContext } from "#protocol/message.js";
 import {
   hydrateSandboxAttachments,
   stageAttachmentsToSandbox,
@@ -86,6 +86,7 @@ import {
   emitTurnCompleted,
   emitTurnFailed,
   emitTurnOpened,
+  emitStoppedCalls,
   emitWithdrawnRequests,
   emitWithdrawnSignIns,
 } from "#harness/session-lifecycle.js";
@@ -190,6 +191,7 @@ import {
 } from "#harness/messages.js";
 import { normalizeProviderToolHistory } from "#harness/provider-tool-history.js";
 import { authorizationEventFields } from "#harness/authorization-event-fields.js";
+import { CONTEXT_CLEARED } from "#harness/cancelled-calls.js";
 import {
   clearPendingAuthorization,
   getPendingAuthorization,
@@ -604,6 +606,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       turnInput: StepInput,
       history: readonly HarnessModelMessage[],
       pendingInput: readonly UserModelMessage[],
+      continuesTurnId?: string,
     ): Promise<
       | { readonly messages: readonly ModelMessage[]; readonly state: HarnessSession["state"] }
       | { readonly failed: StepResult }
@@ -625,6 +628,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       try {
         const traceContext = await preparePreambleTrace();
         turnState = await emitTurnOpened({
+          continuesTurnId,
           emit,
           turnState,
           messages: projectHistory([...history, ...pendingInput], session.state),
@@ -659,6 +663,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       // clearing does not stop the work that asked them.
       const cleared = clearContextWork(turnState);
       if (emit) {
+        await emitStoppedCalls(emit, turnState, cleared, CONTEXT_CLEARED);
         await emitWithdrawnRequests(emit, withdrawnRequests(turnState, cleared));
         await emitWithdrawnSignIns(
           emit,
@@ -1006,13 +1011,19 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       await emit?.(
         createInputResolvedEvent({
           resolutions: batch.inputs.map((resolved) => {
-            const resolution = {
+            let resolution: InputResolution = {
               kind: resolved.request.kind,
               outcome: resolved.outcome,
               requestId: resolved.request.requestId,
             };
-            if (resolved.response === undefined) return resolution;
-            return { ...resolution, response: resolved.response };
+            if (resolved.response !== undefined) {
+              resolution = { ...resolution, response: resolved.response };
+            }
+            // An approved call runs in the open turn, or else in the turn this delivery opens.
+            if (resolved.request.kind === "tool-approval" && resolved.outcome === "approved") {
+              resolution = { ...resolution, resumeTurnId: activeTurnId(turnState) };
+            }
+            return resolution;
           }),
           ...batch.event,
         }),
@@ -1034,6 +1045,8 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     };
 
     const hasApprovedCalls = allCalls(turnState).some((call) => call.status === "approved");
+    // A response policy pass that settles no approval finishes the delivery that asked for it.
+    const answered = receivedDelivery || coordinated.kind === "responses-completed";
     const waitsOnRuntime = runtimeCalls(turnState).length > 0;
     if (
       turnState.turn === undefined &&
@@ -1041,12 +1054,11 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       !hasTurnInput(stepInput) &&
       committed.steps.length === 0 &&
       !hasApprovedCalls &&
-      !waitsOnRuntime &&
-      (receivedDelivery || input !== undefined)
+      !waitsOnRuntime
     ) {
       // Nothing reaches the model: the delivery only answered part of a step
-      // or was consumed, so the session goes back to waiting.
-      if (emit && receivedDelivery && getPendingAuthorization(session.state) === undefined) {
+      // or was consumed, or nothing arrived, so the session goes back to waiting.
+      if (emit && answered && getPendingAuthorization(session.state) === undefined) {
         await emitSessionWaiting(emit);
       }
       return { next: null, session: persist(session) };
@@ -1107,10 +1119,12 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     }
 
     if (hasStepInput(stepInput) || receivedDelivery || turnState.turn === undefined) {
-      const opened = await openTurnFor(turnPreambleInput ?? {}, session.history, [
-        ...ephemeralContextMessages,
-        ...preparedTurnInput,
-      ]);
+      const opened = await openTurnFor(
+        turnPreambleInput ?? {},
+        session.history,
+        [...ephemeralContextMessages, ...preparedTurnInput],
+        resolvedInputs[0]?.event.turnId,
+      );
       if ("failed" in opened) return opened.failed;
       session = {
         ...session,
@@ -2619,11 +2633,17 @@ async function handleStepResult(input: {
 
   if (approvalRequests.length > 0 || deferredToolCalls.length > 0) {
     const origin = eventCoordinates(turnState);
+    // Calls beside the parked ones that asked for a sign-in leave the step, as they would alone.
+    const signIns = resolveInlineAuthorizationInterrupt({
+      messages: responseMessages,
+      toolResults: result.toolResults,
+    });
+    const parkedResponse = signIns?.history ?? responseMessages;
     const parked = createParkedCalls({
       approvalRequests,
       deferredToolCalls,
       replayIdentity: config.toolReplayIdentity,
-      responseMessages,
+      responseMessages: parkedResponse,
       responseTools: buildResponseAuthorizationTools({
         authoredTools: config.tools,
         context: contextStorage.getStore(),
@@ -2635,7 +2655,7 @@ async function handleStepResult(input: {
     const step: Parameters<typeof parkStep>[1] = {
       calls: parked.calls,
       origin,
-      response: responseMessages,
+      response: parkedResponse,
     };
     // Response policies judge approvals against the caller who asked for them.
     turnState = parkStep(
@@ -2655,6 +2675,17 @@ async function handleStepResult(input: {
 
     if (emit && approvalRequests.length > 0) {
       await emit(createInputRequestedEvent({ requests: approvalRequests, ...origin }));
+    }
+    if (signIns !== undefined) {
+      parkedSession = {
+        ...parkedSession,
+        state: await askForSignIns({
+          coordinates: origin,
+          emit,
+          interrupt: signIns,
+          state: parkedSession.state,
+        }),
+      };
     }
     if (runtimeCalls(turnState).length > 0) {
       // The turn stays open while it waits on the runtime for these calls.
@@ -2749,25 +2780,19 @@ async function handleStepResult(input: {
 }
 
 /**
- * Parks on a sign-in a tool call asked for. The session keeps serving
- * ordinary turns while the challenge is open, so the turn closes: clients
- * wait on `session.waiting` and would otherwise hang on the parked turn.
+ * Asks for the sign-ins a step's calls need, at the step's coordinates, and
+ * records them as pending. The calls that asked have already left history.
  */
-async function parkOnAuthorization(input: {
+async function askForSignIns(input: {
   readonly emit?: ToolLoopHarnessConfig["handleEvent"];
   readonly interrupt: NonNullable<ReturnType<typeof resolveInlineAuthorizationInterrupt>>;
-  readonly turnState: TurnState;
-  readonly session: HarnessSession;
-}): Promise<StepResult> {
-  const { emit } = input;
-  const { challenges, history } = input.interrupt;
-  let { turnState } = input;
-  const coordinates = eventCoordinates(turnState);
+  readonly coordinates: EventCoordinates;
+  readonly state: HarnessSession["state"];
+}): Promise<HarnessSession["state"]> {
+  const { challenges, callIdsByConnection } = input.interrupt;
+  const { coordinates, emit } = input;
   if (emit) {
-    for (const superseded of getSupersededAuthorizationChallenges(
-      input.session.state,
-      challenges,
-    )) {
+    for (const superseded of getSupersededAuthorizationChallenges(input.state, challenges)) {
       await emit(
         createAuthorizationCompletedEvent({
           ...authorizationEventFields(superseded),
@@ -2781,6 +2806,7 @@ async function parkOnAuthorization(input: {
       await emit(
         createAuthorizationRequiredEvent({
           ...authorizationEventFields(challenge),
+          callIds: callIdsByConnection.get(challenge.name),
           description:
             challenge.challenge.instructions ?? `Authorization required for ${challenge.name}`,
           webhookUrl: challenge.hookUrl,
@@ -2788,21 +2814,43 @@ async function parkOnAuthorization(input: {
         }),
       );
     }
-    turnState = await emitTurnCompleted(emit, turnState, history);
+  }
+  return setPendingAuthorization(input.state, {
+    challenges: challenges.map((challenge) => ({ ...challenge, origin: coordinates })),
+  });
+}
+
+/**
+ * Parks on a sign-in a tool call asked for. The session keeps serving
+ * ordinary turns while the challenge is open, so the turn closes: clients
+ * wait on `session.waiting` and would otherwise hang on the parked turn. A
+ * turn still waiting on workflow runs stays open for them.
+ */
+async function parkOnAuthorization(input: {
+  readonly emit?: ToolLoopHarnessConfig["handleEvent"];
+  readonly interrupt: NonNullable<ReturnType<typeof resolveInlineAuthorizationInterrupt>>;
+  readonly turnState: TurnState;
+  readonly session: HarnessSession;
+}): Promise<StepResult> {
+  const { emit, interrupt } = input;
+  let { turnState } = input;
+  const state = await askForSignIns({
+    coordinates: eventCoordinates(turnState),
+    emit,
+    interrupt,
+    state: input.session.state,
+  });
+  if (runtimeCalls(turnState).length > 0) {
+    turnState = advanceStep(turnState);
+  } else if (emit) {
+    turnState = await emitTurnCompleted(emit, turnState, interrupt.history);
   } else {
     turnState = closeTurn(turnState);
   }
-
   return {
     next: null,
     session: writeTurnState(
-      {
-        ...input.session,
-        history: validateHarnessModelMessages(history),
-        state: setPendingAuthorization(input.session.state, {
-          challenges: challenges.map((challenge) => ({ ...challenge, origin: coordinates })),
-        }),
-      },
+      { ...input.session, history: validateHarnessModelMessages(interrupt.history), state },
       turnState,
     ),
   };

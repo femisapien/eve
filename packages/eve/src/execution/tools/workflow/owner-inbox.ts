@@ -111,7 +111,10 @@ function atCallCoordinates(
   const coordinates = { sequence: from.sequence, stepIndex: from.stepIndex, turnId: from.turnId };
   switch (event.type) {
     case "authorization.required":
-      return { ...event, data: { ...event.data, ...coordinates, taskId: from.taskId } };
+      return {
+        ...event,
+        data: { ...event.data, ...coordinates, callIds: [from.callId], taskId: from.taskId },
+      };
     case "authorization.completed":
       return { ...event, data: { ...event.data, ...coordinates, taskId: from.taskId } };
     case "approval.candidate":

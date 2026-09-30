@@ -77,10 +77,7 @@ export async function coordinateApprovalDelivery(input: {
     (candidate) => candidate.expiresAt <= now,
   );
   const expiredChallengeIds = expiredCandidates.flatMap(
-    (candidate) =>
-      candidate.authorizationChallenges?.map(
-        (challenge) => challenge.attemptId ?? challenge.candidateId ?? challenge.name,
-      ) ?? [],
+    (candidate) => candidate.authorizationChallenges?.map((challenge) => challenge.attemptId) ?? [],
   );
   const expiredState = expireApprovalCandidates({ now, state: input.session.state });
   let session: HarnessSession = {

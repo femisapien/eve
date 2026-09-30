@@ -32,6 +32,7 @@ function buildChannelStub(state: Partial<TeamsChannelState> = {}) {
 
 function authRequiredEvent(overrides: { displayName?: string } = {}) {
   return {
+    attemptId: "attempt_notion",
     authorization: { url: "https://connect.example.com/a/sca_1", ...overrides },
     description: "Authorization required for notion",
     name: "notion",
@@ -138,7 +139,14 @@ describe("defaultEvents authorization.completed", () => {
     const { channel, startTyping } = buildChannelStub();
 
     await defaultEvents["authorization.completed"]!(
-      { name: "notion", outcome: "authorized", sequence: 1, stepIndex: 0, turnId: "turn_0" },
+      {
+        attemptId: "attempt_notion",
+        name: "notion",
+        outcome: "authorized",
+        sequence: 1,
+        stepIndex: 0,
+        turnId: "turn_0",
+      },
       channel,
       sessionCtx,
     );
@@ -151,6 +159,7 @@ describe("defaultEvents authorization.completed", () => {
 
     await defaultEvents["authorization.completed"]!(
       {
+        attemptId: "attempt_notion",
         authorization: { displayName: "Notion Workspace" },
         name: "notion",
         outcome: "authorized",
@@ -172,7 +181,14 @@ describe("defaultEvents authorization.completed", () => {
     const { channel, update } = buildChannelStub({ pendingAuthActivityId: "act1" });
 
     await defaultEvents["authorization.completed"]!(
-      { name: "notion", outcome: "authorized", sequence: 1, stepIndex: 0, turnId: "turn_0" },
+      {
+        attemptId: "attempt_notion",
+        name: "notion",
+        outcome: "authorized",
+        sequence: 1,
+        stepIndex: 0,
+        turnId: "turn_0",
+      },
       channel,
       sessionCtx,
     );

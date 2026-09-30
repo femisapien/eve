@@ -574,6 +574,7 @@ describe("EveAcpAdapter", () => {
         {
           type: "authorization.required",
           data: {
+            attemptId: "attempt_linear",
             description: "Sign in",
             name: "linear",
             sequence: 1,

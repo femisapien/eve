@@ -4,6 +4,7 @@ import { authorizationEventFields } from "#harness/authorization-event-fields.js
 import { validateHarnessModelMessages, type HarnessModelMessage } from "#harness/messages.js";
 import { withdrawProxyInputRequests } from "#harness/proxy-input-requests.js";
 import type { AuthorizationChallenge } from "#harness/authorization.js";
+import { createCancelledCallEvent, TURN_CANCELLED } from "#harness/cancelled-calls.js";
 import {
   createAuthorizationCompletedEvent,
   createInputResolvedEvent,
@@ -25,6 +26,7 @@ import {
   cancelTurnWork,
   closeTurn,
   eventCoordinates,
+  findCall,
   openTurn,
   readTurnState,
   takeSettledSteps,
@@ -34,6 +36,7 @@ import {
   type TurnState,
   type WithdrawnRequest,
 } from "#harness/turn-state.js";
+import type { ActionResultError } from "#protocol/message.js";
 import type { HarnessEmitFn, SessionStateMap, StepInput } from "#harness/types.js";
 import type { JsonObject } from "#shared/json.js";
 
@@ -47,6 +50,8 @@ import type { JsonObject } from "#shared/json.js";
  */
 export async function emitTurnOpened(input: {
   readonly emit: HarnessEmitFn;
+  /** The turn whose settled approvals, prompt, or sign-in this turn resumes. */
+  readonly continuesTurnId?: string;
   readonly turnState: TurnState;
   readonly messages: readonly ModelMessage[];
   readonly runtimeIdentity?: RuntimeIdentity;
@@ -63,7 +68,12 @@ export async function emitTurnOpened(input: {
   }
   if (turnState.turn === undefined) {
     await emit(
-      createTurnStartedEvent({ sequence: opened.sequence, trace: input.traceContext, turnId }),
+      createTurnStartedEvent({
+        continuesTurnId: input.continuesTurnId,
+        sequence: opened.sequence,
+        trace: input.traceContext,
+        turnId,
+      }),
       input.messages,
     );
   }
@@ -125,6 +135,13 @@ export async function cancelTurn<
   const cancelledWork = cancelTurnWork(turnState);
   const cancelled = takeSettledSteps(cancelledWork);
   const orphaned = withdrawProxyInputRequests(session, () => true);
+  await emitStoppedCalls(
+    emit,
+    turnState,
+    cancelledWork,
+    TURN_CANCELLED,
+    eventCoordinates(turnState),
+  );
   await emitWithdrawnRequests(emit, withdrawnRequests(turnState, cancelledWork));
   for (const event of orphaned.events) await emit(event);
   return writeTurnState(
@@ -178,6 +195,35 @@ export async function emitTurnFailed(
   if (terminal === undefined) await emitSessionWaiting(emit);
   else await emit(createSessionFailedEvent({ ...failure, sessionId: terminal.sessionId }));
   return closeTurn(turnState);
+}
+
+/**
+ * Settles each parked call `before` still ran or waited on and `after` stopped
+ * as `cancelled`, at `coordinates` or else where the call was asked, before
+ * its approval is withdrawn.
+ */
+export async function emitStoppedCalls(
+  emit: HarnessEmitFn,
+  before: TurnState,
+  after: TurnState,
+  reason: ActionResultError,
+  coordinates?: EventCoordinates,
+): Promise<void> {
+  for (const step of before.steps) {
+    for (const call of step.calls) {
+      if (call.status === "settled") continue;
+      const stopped = findCall(after, call.callId);
+      if (stopped !== undefined && stopped.status !== "settled") continue;
+      await emit(
+        createCancelledCallEvent({
+          callId: call.callId,
+          coordinates: coordinates ?? step.origin,
+          reason,
+          toolName: call.toolName,
+        }),
+      );
+    }
+  }
 }
 
 /**

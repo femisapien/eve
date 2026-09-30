@@ -225,6 +225,7 @@ describe("subagent authorization proxy", () => {
     const sessionWritable = createCapturingWritable(chunks);
     const requiredEvent: SubagentAuthorizationEvent = {
       data: {
+        attemptId: "attempt_linear",
         authorization: {
           displayName: "Linear",
           instructions: "Sign in to continue.",
@@ -256,6 +257,7 @@ describe("subagent authorization proxy", () => {
 
     const completedEvent: SubagentAuthorizationEvent = {
       data: {
+        attemptId: "attempt_linear",
         authorization: requiredEvent.data.authorization,
         name: "linear",
         outcome: "authorized",

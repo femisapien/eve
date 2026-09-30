@@ -1,16 +1,17 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  createActionResultEvent,
   createActionsRequestedEvent,
   createAuthorizationCompletedEvent,
   createAuthorizationRequiredEvent,
   createInputRequestedEvent,
   createInputResolvedEvent,
-  createSessionWaitingEvent,
+  createTaskStartedEvent,
   createTurnCompletedEvent,
   createTurnStartedEvent,
   createTurnWaitingEvent,
-  type InputResolutionOutcome,
+  type InputResolution,
   type UnstampedMessageStreamEvent,
 } from "#protocol/message.js";
 import {
@@ -43,9 +44,11 @@ function askToDeploy(turnId: string): readonly UnstampedMessageStreamEvent[] {
   ];
 }
 
-function answer(outcome: InputResolutionOutcome): UnstampedMessageStreamEvent {
+function answer(
+  resolution: Pick<InputResolution, "outcome" | "resumeTurnId">,
+): UnstampedMessageStreamEvent {
   return createInputResolvedEvent({
-    resolutions: [{ kind: "tool-approval", outcome, requestId: "approve" }],
+    resolutions: [{ ...resolution, kind: "tool-approval", requestId: "approve" }],
     sequence: 0,
     stepIndex: 0,
     turnId: "turn_1",
@@ -53,66 +56,142 @@ function answer(outcome: InputResolutionOutcome): UnstampedMessageStreamEvent {
 }
 
 describe("reduceSessionProjection", () => {
-  it("runs an approval answered while its turn is still open in that turn", () => {
-    const state = fold([
-      ...askToDeploy("turn_1"),
-      createTurnWaitingEvent({ sequence: 0, turnId: "turn_1" }),
-      answer("approved"),
-    ]);
-
-    expect(state.inputs.approve?.resumeTurnId).toBe("turn_1");
-    expect(callStatus(state, "deploy")).toBe("running");
-  });
-
-  it("rejects a denied call before its result arrives, and resumes the turn that asked", () => {
+  it("runs an approved call in the turn its approval names, until that turn ends", () => {
     const asked = fold([
       ...askToDeploy("turn_1"),
       createTurnCompletedEvent({ sequence: 0, turnId: "turn_1" }),
     ]);
     expect(callStatus(asked, "deploy")).toBe("awaiting-input");
 
-    const denied = fold(
-      [answer("denied"), createTurnStartedEvent({ sequence: 1, turnId: "turn_2" })],
-      asked,
+    const approved = fold([answer({ outcome: "approved", resumeTurnId: "turn_2" })], asked);
+    expect(approved.inputs.approve?.resumeTurnId).toBe("turn_2");
+    expect(callStatus(approved, "deploy")).toBe("running");
+
+    const running = fold(
+      [createTurnStartedEvent({ continuesTurnId: "turn_1", sequence: 1, turnId: "turn_2" })],
+      approved,
     );
-    expect(callStatus(denied, "deploy")).toBe("rejected");
-    expect(denied.turns.turn_2?.rootTurnId).toBe("turn_1");
+    expect(callStatus(running, "deploy")).toBe("running");
+    expect(
+      callStatus(
+        fold([createTurnCompletedEvent({ sequence: 1, turnId: "turn_2" })], running),
+        "deploy",
+      ),
+    ).toBe("interrupted");
   });
 
-  it("resumes nothing across a session boundary", () => {
+  it("groups a turn under the root of the turn it says it continues", () => {
     const state = fold([
       ...askToDeploy("turn_1"),
       createTurnCompletedEvent({ sequence: 0, turnId: "turn_1" }),
-      answer("approved"),
-      createSessionWaitingEvent(),
-      createTurnStartedEvent({ sequence: 1, turnId: "turn_2" }),
+      answer({ outcome: "denied" }),
+      createTurnStartedEvent({ continuesTurnId: "turn_1", sequence: 1, turnId: "turn_2" }),
+      createTurnCompletedEvent({ sequence: 1, turnId: "turn_2" }),
+      createTurnStartedEvent({ continuesTurnId: "turn_2", sequence: 2, turnId: "turn_3" }),
+      createTurnCompletedEvent({ sequence: 2, turnId: "turn_3" }),
+      createTurnStartedEvent({ sequence: 3, turnId: "turn_4" }),
     ]);
 
-    expect(state.turns.turn_2?.rootTurnId).toBe("turn_2");
+    expect(callStatus(state, "deploy")).toBe("rejected");
+    expect(state.turns.turn_3?.rootTurnId).toBe("turn_1");
+    expect(state.turns.turn_4?.rootTurnId).toBe("turn_4");
   });
 
-  it("keeps an approved call waiting on the sign-in its turn ended on", () => {
+  it("settles a call that asked for a sign-in as cancelled and ties the sign-in to it", () => {
     const state = fold([
-      ...askToDeploy("turn_1"),
-      createTurnCompletedEvent({ sequence: 0, turnId: "turn_1" }),
-      answer("approved"),
-      createTurnStartedEvent({ sequence: 1, turnId: "turn_2" }),
+      createTurnStartedEvent({ sequence: 0, turnId: "turn_1" }),
+      createActionsRequestedEvent({
+        actions: [action],
+        sequence: 0,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
+      createActionResultEvent({
+        cancelled: { code: "AUTHORIZATION_REQUIRED", message: "The call needs a sign-in." },
+        result: {
+          callId: "deploy",
+          isError: true,
+          kind: "tool-result",
+          output: null,
+          toolName: "deploy",
+        },
+        sequence: 0,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
       createAuthorizationRequiredEvent({
+        attemptId: "attempt_github",
+        callIds: ["deploy"],
         description: "Connect GitHub",
         name: "github",
-        sequence: 1,
+        sequence: 0,
         stepIndex: 0,
-        turnId: "turn_2",
+        turnId: "turn_1",
       }),
-      createTurnCompletedEvent({ sequence: 1, turnId: "turn_2" }),
+      createTurnCompletedEvent({ sequence: 0, turnId: "turn_1" }),
     ]);
 
-    expect(callStatus(state, "deploy")).toBe("awaiting-input");
+    expect(callStatus(state, "deploy")).toBe("cancelled");
+    expect(state.authorizations.attempt_github?.callIds).toEqual(["deploy"]);
   });
 
-  it("completes the latest sign-in for a connection when the completion names no attempt", () => {
-    const required = (turnId: string) =>
+  it("holds a task's call on the request its run passes up, without adopting the subagent's call", () => {
+    const research = {
+      callId: "research",
+      input: {},
+      kind: "tool-call" as const,
+      toolName: "researcher",
+    };
+    const subagentCall = { ...action, callId: "subagent_deploy" };
+    const asked = fold([
+      createTurnStartedEvent({ sequence: 0, turnId: "turn_1" }),
+      createActionsRequestedEvent({
+        actions: [research],
+        sequence: 0,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
+      createTaskStartedEvent({
+        callId: "research",
+        kind: "agent",
+        name: "researcher",
+        taskId: "task_1",
+        turnId: "turn_1",
+      }),
+      createInputRequestedEvent({
+        callId: "research",
+        requests: [
+          { action: subagentCall, kind: "tool-approval", prompt: "Deploy?", requestId: "passed" },
+        ],
+        sequence: 0,
+        stepIndex: 0,
+        taskId: "task_1",
+        turnId: "turn_1",
+      }),
+    ]);
+
+    expect(asked.inputs.passed?.callId).toBe("research");
+    expect(asked.calls.subagent_deploy).toBeUndefined();
+    expect(callStatus(asked, "research")).toBe("awaiting-input");
+
+    const answered = fold(
+      [
+        createInputResolvedEvent({
+          resolutions: [{ kind: "tool-approval", outcome: "approved", requestId: "passed" }],
+          sequence: 0,
+          stepIndex: 0,
+          turnId: "turn_1",
+        }),
+      ],
+      asked,
+    );
+    expect(callStatus(answered, "research")).toBe("running");
+  });
+
+  it("completes only the sign-in attempt a completion names", () => {
+    const required = (attemptId: string, turnId: string) =>
       createAuthorizationRequiredEvent({
+        attemptId,
         description: "Connect GitHub",
         name: "github",
         sequence: 0,
@@ -121,22 +200,20 @@ describe("reduceSessionProjection", () => {
         webhookUrl: "https://agent.example.com/callback",
       });
     const state = fold([
-      required("turn_1"),
-      required("turn_2"),
+      required("attempt_alice", "turn_1"),
+      createTurnWaitingEvent({ sequence: 0, turnId: "turn_1" }),
+      required("attempt_bob", "turn_2"),
       createAuthorizationCompletedEvent({
+        attemptId: "attempt_alice",
         name: "github",
         outcome: "authorized",
         sequence: 0,
         stepIndex: 0,
-        turnId: "turn_2",
+        turnId: "turn_1",
       }),
     ]);
 
-    expect(
-      Object.values(state.authorizations).map(({ status, turnId }) => ({ status, turnId })),
-    ).toEqual([
-      { status: "required", turnId: "turn_1" },
-      { status: "completed", turnId: "turn_2" },
-    ]);
+    expect(state.authorizations.attempt_alice?.status).toBe("completed");
+    expect(state.authorizations.attempt_bob?.status).toBe("required");
   });
 });

@@ -76,6 +76,7 @@ describe("SUBAGENT_ADAPTER authorization handlers", () => {
   it("forwards a required event through each nested subagent adapter hop", async () => {
     resumeHookMock.mockClear();
     const data = {
+      attemptId: "attempt_linear",
       authorization,
       description: "Authorization required for linear",
       name: "linear",
@@ -103,6 +104,7 @@ describe("SUBAGENT_ADAPTER authorization handlers", () => {
   it("forwards authorization.completed unchanged via resumeHook", async () => {
     resumeHookMock.mockClear();
     const data = {
+      attemptId: "attempt_linear",
       authorization,
       name: "linear",
       outcome: "authorized" as const,
@@ -128,6 +130,7 @@ describe("SUBAGENT_ADAPTER authorization handlers", () => {
 
     await SUBAGENT_AUTHORIZATION_REQUIRED(
       {
+        attemptId: "attempt_linear",
         description: "Authorization required for linear",
         name: "linear",
         sequence: 0,
@@ -317,6 +320,7 @@ describe("SUBAGENT_ADAPTER forward failure logging", () => {
     await expect(
       SUBAGENT_AUTHORIZATION_REQUIRED(
         {
+          attemptId: "attempt_linear",
           authorization,
           description: "Authorization required for linear",
           name: "linear",
