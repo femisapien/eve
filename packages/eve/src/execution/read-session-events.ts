@@ -1,11 +1,18 @@
+import { readMessageStreamVersion } from "#client/stream-version.js";
+import { loadContext } from "#context/container.js";
+import { resolveRemoteAgentStreamHeaders } from "#execution/agent-sessions/remote.js";
 import { parseNdjsonStream } from "#execution/ndjson-stream.js";
 import { getRun } from "#internal/workflow/runtime.js";
-import type { MessageStreamEvent } from "#protocol/message.js";
+import { EVE_STREAM_TAIL_INDEX_HEADER, type MessageStreamEvent } from "#protocol/message.js";
 import {
+  normalizeMessageStreamEvent,
   normalizePersistedMessageStreamEvent,
   type MessageStreamEventForVersion,
   type MessageStreamVersion,
 } from "#protocol/message-version.js";
+import { createEveSessionStreamRoutePath } from "#protocol/routes.js";
+import { BundleKey } from "#runtime/sessions/runtime-context-keys.js";
+import { createRemoteAgentRouteUrl } from "#subagents/remote-route-url.js";
 
 const READ_TIMEOUT_MS = 5_000;
 
@@ -17,12 +24,33 @@ export interface SessionEventsPage {
   readonly caughtUp: boolean;
 }
 
+/** Where a remote agent's session runs, as its `agent.started` recorded it. */
+export interface RemoteSessionBinding {
+  readonly name: string;
+  readonly url: string;
+  /** Keys the authored credential functions for the remote agent. */
+  readonly resolverId?: string;
+}
+
 /**
- * Reads at most `limit` events of a local session's stream from `startIndex`,
- * never past the tail it saw at the start, so reading a parked session never
- * waits for events it hasn't written.
+ * Reads at most `limit` events of a session's stream from `startIndex`, never
+ * past the tail it saw at the start, so reading a parked session never waits
+ * for events it hasn't written. A remote session is read from its own
+ * deployment with the remote agent's credentials, which needs the running
+ * session's context.
  */
 export async function readSessionEvents(input: {
+  readonly limit: number;
+  readonly remote?: RemoteSessionBinding | undefined;
+  readonly sessionId: string;
+  readonly startIndex: number;
+}): Promise<SessionEventsPage> {
+  return input.remote === undefined
+    ? await readLocalSessionEvents(input)
+    : await readRemoteSessionEvents({ ...input, remote: input.remote });
+}
+
+async function readLocalSessionEvents(input: {
   readonly limit: number;
   readonly sessionId: string;
   readonly startIndex: number;
@@ -35,17 +63,89 @@ export async function readSessionEvents(input: {
   } finally {
     await probe.cancel().catch(() => {});
   }
-  const last = Math.min(tailIndex, input.startIndex + input.limit - 1);
-  if (last < input.startIndex) {
+  if (tailIndex < input.startIndex) {
     return { caughtUp: true, events: [], nextIndex: input.startIndex };
   }
-  const reader = parseNdjsonStream<MessageStreamEvent>(
-    () => run.getReadable({ startIndex: input.startIndex }),
-    (value) =>
-      normalizePersistedMessageStreamEvent(
-        value as MessageStreamEventForVersion<MessageStreamVersion>,
+  return await readPage(
+    input,
+    tailIndex,
+    parseNdjsonStream<MessageStreamEvent>(
+      () => run.getReadable({ startIndex: input.startIndex }),
+      (value) =>
+        normalizePersistedMessageStreamEvent(
+          value as MessageStreamEventForVersion<MessageStreamVersion>,
+        ),
+    ),
+  );
+}
+
+async function readRemoteSessionEvents(input: {
+  readonly limit: number;
+  readonly remote: RemoteSessionBinding;
+  readonly sessionId: string;
+  readonly startIndex: number;
+}): Promise<SessionEventsPage> {
+  const headers =
+    input.remote.resolverId === undefined
+      ? {}
+      : await resolveRemoteAgentStreamHeaders({
+          bundle: loadContext().require(BundleKey),
+          ...input.remote,
+        });
+  const url = new URL(
+    createRemoteAgentRouteUrl(input.remote.url, createEveSessionStreamRoutePath(input.sessionId)),
+  );
+  url.searchParams.set("startIndex", String(input.startIndex));
+  // The receiver ends the stream at the tail it reports, so the read never waits on a live session.
+  url.searchParams.set("includeTailIndex", "1");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), READ_TIMEOUT_MS);
+  try {
+    const response = await fetch(url, {
+      cache: "no-store",
+      headers,
+      redirect: "error",
+      signal: controller.signal,
+    });
+    if (!response.ok || response.body === null) {
+      await response.body?.cancel().catch(() => {});
+      throw new Error(
+        `Remote agent "${input.remote.name}" session stream read failed with HTTP ${response.status}.`,
+      );
+    }
+    const tailIndex = Number(response.headers.get(EVE_STREAM_TAIL_INDEX_HEADER));
+    if (!Number.isInteger(tailIndex)) {
+      await response.body.cancel().catch(() => {});
+      throw new Error(
+        `Remote agent "${input.remote.name}" session stream did not report its tail index.`,
+      );
+    }
+    const version = readMessageStreamVersion(response.headers);
+    const body = response.body;
+    return await readPage(
+      input,
+      tailIndex,
+      parseNdjsonStream<MessageStreamEvent>(
+        () => body,
+        (value) =>
+          normalizeMessageStreamEvent(
+            version,
+            value as MessageStreamEventForVersion<MessageStreamVersion>,
+          ),
       ),
-  ).getReader();
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function readPage(
+  input: { readonly limit: number; readonly startIndex: number },
+  tailIndex: number,
+  stream: ReadableStream<MessageStreamEvent>,
+): Promise<SessionEventsPage> {
+  const last = Math.min(tailIndex, input.startIndex + input.limit - 1);
+  const reader = stream.getReader();
   const events: MessageStreamEvent[] = [];
   try {
     while (input.startIndex + events.length <= last) {
