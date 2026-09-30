@@ -182,13 +182,18 @@ status onto their own vocabulary, so the three rows in
 
 `pnpm guard:invariants` enforces invariants 1 and 2. The check fails if code outside the machine
 imports turn-state writers or lifecycle event constructors, or if code outside the commit path
-writes the stored projection:
+writes the stored projection. It also keeps transitions pure, so a transition decides only from
+its view and its input:
 
 ```js
 // scripts/guard-invariants.mjs (sketch)
 forbidImports({
   from: ["#harness/session-machine/state.js", "#harness/session-machine/events.js"],
   outside: "packages/eve/src/harness/session-machine/",
+});
+forbidInFile("packages/eve/src/harness/session-machine/transitions.ts", {
+  imports: ["#execution/*", "#runtime/*", "node:*"], // no I/O
+  calls: ["Date.now", "new Date", "randomUUID"], // time and IDs arrive in the input
 });
 ```
 
@@ -242,7 +247,8 @@ interface Transition {
 
 Every durable step has the same shape. `step` loads the view and hands it to a callback, which
 runs the step's effects, such as tools, model calls, or run commands, and returns a transition.
-`commit` does the rest:
+The callback passes the effects' results into the transition, and effects must be safe to repeat,
+because a step that fails is retried from the start. `commit` does the rest:
 
 ```ts
 // harness/session-machine/commit.ts (sketch)
@@ -287,9 +293,9 @@ await publishFromSessionStep(step, {
 });
 ```
 
-Four pieces of state are cleared, and none of it reaches the stream. Each reader decides for itself what
-happened to the running call and to the relayed question, which is the third row of the table
-above. With the machine:
+Four pieces of state are cleared, and none of it reaches the stream. Each reader decides for
+itself what happened to the running call and to the relayed question, which is the third row of
+the table above. With the machine:
 
 ```ts
 // execution/settle-cancelled-turn-step.ts
@@ -393,25 +399,25 @@ from each open turn to its root instead.
 
 ### What the stream states
 
-Each fact the session knew but the stream left unstated becomes a field or value. PR 1 reports
-withdrawals with events and values v26 already has. The stream version moves to 27 in PR 3, the
-first PR that changes what an event means.
+Each fact the session knew but the stream left unstated becomes a new field or value. No existing
+field changes meaning unless a new field marks it, so a reader can tell from each event which
+rules its writer followed; see [Compatibility](#compatibility).
 
-| Fact                                        | Readers guessed                                                      | Now                                                                                      | PR  |
-| ------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | --- |
-| Withdrawals                                 | a cancelled turn or a finished run dropped relayed requests silently | `input.resolved` `cancelled`, `authorization.completed` `failed`, before the owner ends  | 1   |
-| Which code wrote an event                   | the serving deployment's `x-eve-stream-version` header               | `meta.streamVersion` on every event                                                      | 3   |
-| Which calls a sign-in stops                 | every unsettled call in a closed turn with an open sign-in           | `authorization.required.callIds`; each settles `cancelled` with `AUTHORIZATION_REQUIRED` | 3   |
-| Which attempt a completion closes           | `attemptId`, else the approval candidate, else the latest attempt    | `attemptId` required on both events                                                      | 3   |
-| When a sign-in callback completes           | the completion could follow the resumed turn's start                 | it precedes that turn, at the asking turn's coordinates                                  | 3   |
-| Which call a relayed request serves         | the parent adopted the child's call and guessed its status           | relayed `input.requested.callId`, with the served call's coordinates and `taskId`        | 3   |
-| Which turn a turn continues                 | settlements buffered between turns                                   | `turn.started.continuesTurnId`                                                           | 4   |
-| Which turn runs an approved call            | the open turn, or else the next                                      | `input.resolved` resolutions carry `resumeTurnId`                                        | 4   |
-| Calls eve stops                             | no result; readers inferred from the turn's status                   | `action.result` status `cancelled`, with `TURN_CANCELLED` or `CONTEXT_CLEARED`           | 4   |
-| Policy denials                              | `failed` with `TOOL_EXECUTION_DENIED`                                | `rejected`                                                                               | 4   |
-| Approval policy events' coordinates         | they named the turn about to start                                   | they name the step that asked                                                            | 4   |
-| Which delivery an answer's events belong to | the IDs of the message that started the parked turn                  | the answer's own delivery ID                                                             | 5   |
-| Which parent call a child's turn serves     | counting the child's user messages                                   | `task.started.deliveryId` for agent calls; the child stamps it                           | 5   |
+| Fact                                    | Readers guessed                                                      | Now                                                                                      | PR  |
+| --------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- | --- |
+| Withdrawals                             | a cancelled turn or a finished run dropped relayed requests silently | `input.resolved` `cancelled`, `authorization.completed` `failed`, before the owner ends  | 1   |
+| Which calls a sign-in stops             | every unsettled call in a closed turn with an open sign-in           | `authorization.required.callIds`; each settles `cancelled` with `AUTHORIZATION_REQUIRED` | 3   |
+| Which attempt a completion closes       | `attemptId`, else the approval candidate, else the latest attempt    | `attemptId` required on both events                                                      | 3   |
+| When a sign-in callback completes       | the completion could follow the resumed turn's start                 | it precedes that turn, at the asking turn's coordinates                                  | 3   |
+| Which call a relayed request serves     | the parent adopted the child's call and guessed its status           | relayed `input.requested.callId`, with the served call's coordinates and `taskId`        | 3   |
+| Which turn a turn continues             | settlements buffered between turns                                   | `turn.started.continuesTurnId`                                                           | 4   |
+| Which turn runs an approved call        | the open turn, or else the next                                      | every approved resolution in `input.resolved` carries `resumeTurnId`                     | 4   |
+| Calls eve stops                         | no result; readers inferred from the turn's status                   | `action.result` status `cancelled`, with `TURN_CANCELLED` or `CONTEXT_CLEARED`           | 4   |
+| Policy denials                          | `failed` with `TOOL_EXECUTION_DENIED`                                | `rejected`                                                                               | 4   |
+| Approval policy events' coordinates     | they named the turn about to start                                   | they name the step that asked                                                            | 4   |
+| Which deliveries a boundary finishes    | an answer's read ended at the first boundary                         | `session.waiting` and `turn.waiting` carry `processedDeliveryIds`, `[]` when none        | 5   |
+| Which answer an event belongs to        | the IDs of the message that started the parked turn                  | `meta.answerDeliveryIds`; `meta.deliveryIds` keeps its meaning                           | 5   |
+| Which parent call a child's turn serves | counting the child's user messages                                   | `task.started.deliveryId` for agent calls; the child stamps it                           | 5   |
 
 With delivery attribution, overlapping answers each reach their own boundary:
 
@@ -422,9 +428,9 @@ sequenceDiagram
   participant S as session
   A->>S: answer A (delivery a)
   B->>S: answer B (delivery b)
-  S-->>A: approval.settled, session.waiting, stamped [a]
-  S-->>B: approval.settled, turn.started ... turn.completed, session.waiting, stamped [b]
-  Note over A,S: Before, both answers carried the parked turn's message ID,<br/>so respond(B) could stop at A's boundary.
+  S-->>A: approval.settled, session.waiting (processed [a])
+  S-->>B: approval.settled, turn.started ... turn.completed, session.waiting (processed [b])
+  Note over A,S: Before, respond(B) ended at the first boundary,<br/>which could be A's.
 ```
 
 ### Clients and eve's other readers
@@ -534,9 +540,10 @@ and output) and writes `state` from the call's status:
 ones. A call interrupted because the reader's stream stopped remains a read-time judgment, passed
 as `streaming`.
 
-**Reads and store status.** `respond()` and `send()` resolve when their delivery reaches a
-boundary stamped with its ID. `EveAgentStore` status is a check over the same facts. Only sends
-not yet accepted, HTTP errors, and aborts stay local:
+**Reads and store status.** `respond()` and `send()` resolve at the first boundary whose
+`processedDeliveryIds` lists their delivery. A boundary without the field comes from an older
+writer, so they end there, as today. `EveAgentStore` status is a check over the same facts. Only
+sends not yet accepted, HTTP errors, and aborts stay local:
 
 ```ts
 function storeStatus(conversation: ConversationState, sends: LocalSends): EveAgentStoreStatus {
@@ -634,17 +641,81 @@ Sessions aren't ported to the new state. This follows existing practice:
 PRs 1–4 change durable state, so each bumps `SESSION_CHECKPOINT_VERSION`, as does any later PR
 that changes it.
 
-Streams need one addition. `x-eve-stream-version` reports the serving deployment's version, but
-the events come from shared storage, and an older owner may have written them. Reading by that
-header would misread old sessions: a `respond()` that filters by its answer's delivery ID would
-wait forever on events a v26 owner wrote. PR 3 stamps each event's `meta.streamVersion`.
-Everything that depends on the version keys off the event instead of the header, including the
-`respond()` filter and the projection's guesses for older writers. Those guesses stay until eve
-sets a floor for the writer versions it reads.
+### Older writers
 
-Clients from before v27 reject v27 streams with an unsupported-version error. PRs 3–5 change
-the stream's meaning and should ship in one release. If they span releases, each release that
-changes a meaning bumps the version.
+A new reader can't tell which code wrote an event from the response it arrived in:
+
+- `x-eve-stream-version` is the serving deployment's own constant (`createSessionStreamResponse`).
+- The events come from the session's stream in shared storage (`getRun(sessionId).getReadable()`),
+  written by the owner, which runs on the deployment that started it. Because incompatible
+  handoffs are refused, the newest deployment routinely serves streams an older owner writes.
+- After a compatible handoff, the successor owner writes to the same stream, so one stream can
+  have two writers.
+- The serving deployment creates the delivery ID that `send()` and `respond()` return. The owner
+  stamps the events.
+
+A `respond()` that trusted the header and filtered by its answer's ID would skip every event a v26
+owner wrote and wait until the session ended. eve already handles shape changes per event:
+`normalizePersistedMessageStreamEvent` recognizes events from before v25 by their shape. Changes
+in meaning follow the same idea. Each change identifies itself on the event it affects:
+
+1. **No existing field or value changes meaning on its own.** A new rule gets a new field, or a
+   new field on the same event marks it, as a relayed request's `callId` marks its new
+   coordinates.
+2. **A new field is optional only if readers use its presence alone.** If readers must treat its
+   absence as meaningful, new writers always write it, empty if need be, such as
+   `processedDeliveryIds: []`. Then absence means an older writer and nothing else.
+3. **`meta` holds facts the writer stamps on events, and readers use them only when present.**
+   Anything whose absence means something goes in the event's `data`, where the type can require
+   it. Channel adapters also see events before they're stamped, so they read `data` but not
+   `meta`.
+
+Readers keep a fallback for each fact an older writer leaves out:
+
+| Fact                                     | From an older writer | Fallback                                                |
+| ---------------------------------------- | -------------------- | ------------------------------------------------------- |
+| Withdrawals                              | none                 | requests stay open, as today                            |
+| `authorization.required.callIds`         | absent               | every unsettled call in the turn the sign-in closes     |
+| `attemptId`                              | absent               | the approval candidate, else the latest attempt         |
+| Relayed `input.requested.callId`         | absent               | the child's call and coordinates, as today              |
+| `resumeTurnId` on an approved resolution | absent               | the open turn, else the next                            |
+| Calls eve stops                          | no result            | the turn's status: `cancelled` for a cancelled turn     |
+| Policy denials                           | `failed`             | `failed` with `TOOL_EXECUTION_DENIED` reads as a denial |
+| `processedDeliveryIds`                   | absent               | the first boundary ends a read, as today                |
+| `meta.answerDeliveryIds`                 | absent               | a read keeps every event, as today                      |
+| `task.started.deliveryId`                | absent               | `agentCallTurns` counts the child's user messages       |
+
+Each PR that adds a fact adds its fallback, with a test that reads an older writer's events. The
+drafts don't have these yet. In #4044, `callStatus` shows an approved call that's still running
+as awaiting approval when `input.resolved` has no `resumeTurnId`, which no v26 writer includes.
+The fallbacks stay until eve decides when to stop reading older writers.
+
+The header still protects older clients. PR 3 adds values they would misread, such as a
+`cancelled` result, so it moves the header to 27, and older clients reject the stream instead of
+rendering it wrong. No reader uses the header to decide what an event means. If PRs 3–5 span
+releases, a release needs a new header version only if it adds values an older client would
+misread.
+
+## Performance
+
+The plan stores about the same state, shaped differently: today's records hold the same pending
+requests, calls, and runs that the stored projection and private records will. What needs care:
+
+- **Stored projection size.** Every session step copies and diffs the whole durable state
+  (`withSessionStateDelta`), so the server's projection must stay proportional to open work.
+  Pruning keeps open work, one link from each open turn to its root, and what task cards need
+  until their final update. PR 2 adds a test that folds a long generated session and asserts the
+  stored projection stays under a fixed size.
+- **Step count.** `commit` runs inside the steps that already exist, so no durable steps are
+  added. PR 1 compares step counts for a fixed scenario before and after.
+- **Client folds and selectors.** The client keeps the full history, but only lifecycle events
+  touch the projection; text deltas don't. Selectors run on every render, so the fold indexes
+  inputs by `callId`, and selectors memoize on the maps they read, which keep their identity
+  between text deltas. Writing `part.state` uses a call-to-message index, so a `turn.cancelled`
+  updates its calls without rescanning the transcript. The fold reports which calls an event
+  changed, so ACP and task cards don't compare every call on every event.
+- **Stream size.** A few events per cancel or clear, one field per boundary, and one `meta` field
+  on the events an answer produces.
 
 ## Testing
 
@@ -668,8 +739,10 @@ changes a meaning bumps the version.
   | `unasked-sign-in`   | a call settled for a sign-in is named by an `authorization.required`        | 3   |
   | `own-coordinates`   | events name only turns and calls this stream announced                      | 3   |
   | `unsettled-call`    | a completed turn leaves no call without an outcome                          | 4   |
-  | `delivery-boundary` | every accepted delivery reaches a boundary stamped with its ID              | 5   |
+  | `delivery-boundary` | every accepted delivery is listed by a boundary's `processedDeliveryIds`    | 5   |
 
+- **Older writers:** each fallback has a unit test over an older writer's events, such as a
+  `respond()` over boundaries without `processedDeliveryIds`.
 - **End-to-end evals** cover approvals (partial, separate, stale, and policy-settled answers),
   sign-ins, relayed questions, task and workflow calls, cancellation, and `respond()` with
   overlapping answers. TUI smoke tests cover `eve dev`.
@@ -682,7 +755,8 @@ removing the clear withdrawals fails 40%, and removing the sign-in ask beside an
 ## Implementation plan
 
 Seven PRs, each of which builds, passes CI, and carries its own tests, docs, and changeset. They
-land in order, except that PRs 5 and 6 are independent of each other.
+land in order, except that PRs 5 and 6 are independent of each other. Each PR that adds a stream
+fact also adds its fallback for older writers.
 
 ```mermaid
 flowchart LR
@@ -702,13 +776,13 @@ Sizes are rough net estimates for production code in `packages/eve/src`.
 | --- | ----------------------------- | -------------------- | ------------ |
 | 1   | Session machine               | server               | −700 to −800 |
 | 2   | One stored projection         | server, client       | 0 to +100    |
-| 3   | Sign-ins and relayed requests | stream (v27), server | −150 to −240 |
+| 3   | Sign-ins and relayed requests | stream (v27), server | −190 to −280 |
 | 4   | Tasks and turn outcomes       | stream, server       | −50 to −200  |
 | 5   | Delivery attribution          | stream, client       | −180 to +50  |
 | 6   | Readers on the projection     | client, evals, ACP   | −60 to −220  |
 | 7   | Web template                  | template             | template     |
 
-In total, production code in `packages/eve/src` should shrink by roughly 800–1,650 lines. Tests
+In total, production code in `packages/eve/src` should shrink by roughly 850–1,700 lines. Tests
 should shrink by about 3,000, mostly suites written against the replaced records. These are
 estimates, not measurements. PR 3 is the best calibration point: after the session machine, it
 is the largest deletion, and it exercises the whole derived-record pattern.
@@ -745,9 +819,8 @@ old paths.
 
 ### 3. Sign-ins and relayed requests
 
-- Stamps `meta.streamVersion` on every event. Readers treat its absence as 26 or older.
 - Sign-ins: `authorization.required.callIds`, `attemptId` required on both events, a stopped
-  call settles `cancelled` with `AUTHORIZATION_REQUIRED` (stream v27), and a callback's
+  call settles `cancelled` with `AUTHORIZATION_REQUIRED` (header v27), and a callback's
   completion precedes the turn it resumes. Pending sign-ins become projection plus private
   attempts, and supersession emits `failed`.
 - Relayed requests: a relayed `input.requested` names the served call in `callId` and uses its
@@ -762,19 +835,21 @@ old paths.
 
 - The task table splits three ways: lifecycle comes from the projection, unread results move into
   `TurnState`, and runs become private records.
-- `turn.started.continuesTurnId`, and `resumeTurnId` on approved resolutions.
+- `turn.started.continuesTurnId`, and `resumeTurnId` on every approved resolution.
 - `cancelled` with `TURN_CANCELLED` or `CONTEXT_CLEARED` for calls eve stops, `rejected` for a
   policy's denials, and approval policy events at the step that asked.
-- The projection drops its guesses for v27 writers. Adds the `unsettled-call` rule.
+- Adds the `unsettled-call` rule.
 
 ### 5. Delivery attribution
 
-- An answer's events carry its own delivery ID, including answers forwarded to a child session or
-  a workflow run. An accepted delivery that the session ignores still gets a stamped boundary.
+- `session.waiting` and `turn.waiting` carry `processedDeliveryIds`, always, and an answer's
+  events carry `meta.answerDeliveryIds`, including answers forwarded to a child session or a
+  workflow run. The next boundary lists an accepted delivery that the session ignores.
 - `task.started.deliveryId` for agent calls, carried by the remote-agent protocol. The projection
   records each turn's delivery IDs, and `agentCallTurns` stops counting.
-- `ClientSession` reads end at their delivery's boundary for v27 writers, and `TurnSegment` goes.
-  `EveAgentStore` status is derived, and its helpers and follow-up counters go.
+- `ClientSession` reads end at the boundary that lists their delivery, or at the first boundary
+  from an older writer, and `TurnSegment` goes. `EveAgentStore` status is derived, and its helpers
+  and follow-up counters go.
 - Adds the `delivery-boundary` rule.
 
 ### 6. Readers on the projection
@@ -792,18 +867,29 @@ old paths.
 - Folds activity under each stretch of an answer, and shows requests inline where they arrived.
 - Builds on the public selectors, with no copied helpers.
 
-## Longer term: a decider
+## Alternatives considered
 
-In this design, effects stay inline. A step runs its effects, such as response policies, tools,
-and model calls, and then returns a transition. A decider goes one step further:
-`decide(view, input)` returns events and effects, `evolve(view, event)` returns the next view,
-and a runtime executes the effects. Turn state would change only by applying events, and the
-projection would be `evolve` restricted to public facts.
+**A decider.** `decide(view, input)` would return events and effects as data,
+`evolve(view, event)` would be the only way state changes, and a runtime would run the effects.
+Every decision would be pure, including timing and duplicate answers, and `state-agreement`
+would hold by construction.
 
-The cost is in the pending-work path, which interleaves decisions with user code: response
-policies, connection authorization, approved tool runs, and sandbox staging. The plan above is a
-subset of this shape, so none of it is wasted. After PR 1, approval coordination is the slice to
-prototype before deciding.
+It isn't worth the cost. The pending-work path interleaves decisions with user code: response
+policies, connection authorization, approved tool runs, and sandbox staging. A decider splits
+each decision at every call into user code. That takes internal events that are saved but never
+streamed, and more durable steps unless effects are batched. A streaming model call also has to
+publish content outside `decide`. The design above keeps effects inline. Its risks are an effect
+without a matching event and a transition that reads more than its input. The guards and the
+checker cover those, and effects must be safe to repeat in either design.
+
+**Stamping each event with its writer's version.** A `meta.streamVersion` on every event would
+tell readers which rules an event follows. Every reader rule would then branch on version
+numbers, each change in meaning would need its own number, and readers outside eve would need
+the table. Additive fields put the evidence on the event the rule reads.
+
+**Routing reads to the owner's deployment.** The header would then match the writer, but routing
+needs deployment pinning, which not every environment has, and a stream can still have two
+writers after a handoff.
 
 ## Out of scope
 
@@ -820,10 +906,18 @@ prototype before deciding.
   responses. Can the projection answer both?
 - The model's `[Tasks]` note lists idle, resumable tasks. Should it read the projection or the
   private task runs?
-- What boundary should an ignored delivery get: an existing event, or a new one?
+- The next boundary lists an ignored delivery. While a turn runs, that's the turn's end. Should
+  an ignored answer get an earlier boundary?
+- `continuesTurnId` is absent on a fresh turn from any writer. Is the older-writer guess,
+  buffering settlements between turns, harmless on new streams, or should every `turn.started`
+  carry the field?
+- PR 4 changes what approval policy events' coordinates mean, and nothing on those events marks
+  the change. If any reader places them by their coordinates, a new field should mark it or carry
+  the new coordinates.
 - `TaskCardStatus` has no `rejected` or `interrupted`. Should it gain them, or should task cards
   map them onto its current values?
-- Which writer versions should clients stop reading, and when?
+- When can readers drop their fallbacks for older writers? Parked sessions have no natural end
+  (#3817), so this is a policy decision.
 - Instrumentation scope records (`instrumentationInputScopes`, `instrumentationActionScopes`) are
   keyed by requests and calls. Are they dropped when their owners close?
 
