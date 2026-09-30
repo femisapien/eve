@@ -42,6 +42,7 @@ const firstTurn: UnstampedMessageStreamEvent[] = [
   {
     type: "authorization.required",
     data: {
+      attemptId: "attempt_stub-mcp",
       authorization: {
         url: "https://example.com/authorize/stub-mcp",
         userCode: "STUB-1234",
@@ -70,6 +71,7 @@ const firstCallbackTurn: UnstampedMessageStreamEvent[] = [
   {
     type: "authorization.completed",
     data: {
+      attemptId: "attempt_stub-mcp",
       name: "stub-mcp",
       outcome: "authorized",
       sequence: next(),
@@ -98,6 +100,7 @@ const secondTurn: UnstampedMessageStreamEvent[] = [
   {
     type: "authorization.required",
     data: {
+      attemptId: "attempt_other-mcp",
       authorization: {
         url: "https://example.com/authorize/other-mcp",
       },
@@ -124,6 +127,7 @@ const secondCallbackTurn: UnstampedMessageStreamEvent[] = [
   {
     type: "authorization.completed",
     data: {
+      attemptId: "attempt_other-mcp",
       name: "other-mcp",
       outcome: "failed",
       reason: "access_denied",
