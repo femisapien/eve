@@ -1,10 +1,10 @@
 import type { CompiledAgentManifest, CompiledToolDefinition } from "#compiler/manifest.js";
-import type { AgentSourceOwner } from "#compiler/source-graph.js";
 import {
   createCompiledSkillFileSource,
   readSkillFile,
   type SkillFileSource,
 } from "#channel/skill-files.js";
+import { isInvocableCompiledTool } from "#channel/tool-eligibility.js";
 import type { RuntimeCompiledArtifactsSource } from "#runtime/compiled-artifacts-source.js";
 import { loadCompiledManifest } from "#runtime/loaders/manifest.js";
 import type { JsonObject } from "#shared/json.js";
@@ -17,7 +17,7 @@ export interface AgentToolDescription {
   readonly outputSchema?: JsonObject;
   /** The tool declares an approval policy. */
   readonly approval: boolean;
-  /** The tool can run outside a turn. */
+  /** The tool can run outside a turn; see `isInvocableCompiledTool` in `channel/tool-eligibility.ts`. */
   readonly invocable: boolean;
 }
 
@@ -85,7 +85,7 @@ export async function describeCompiledAgent(
 ): Promise<AgentDescription> {
   const tools = [...manifest.tools]
     .sort((left, right) => compareNames(left.name, right.name))
-    .map((tool) => describeTool(tool, toolOwner(manifest, tool)));
+    .map((tool) => describeTool(manifest, tool));
   const skills = await Promise.all(
     [...manifest.skills]
       .sort((left, right) => compareNames(left.name, right.name))
@@ -106,44 +106,21 @@ export async function describeCompiledAgent(
   return description;
 }
 
-/**
- * Whether a compiled tool can run outside a turn: it has an `execute`, no
- * special handling (`dispatch`, `workflow-tool`, `provider-tool`, or any
- * handling added later), and is not framework-provided. Framework tools such
- * as `bash` and `load_skill` depend on the turn's sandbox or harness. An
- * application tool that overrides a framework tool name is owned by the
- * application and stays invocable.
- *
- * There is no background-tool marker in the compiled registry. A background
- * tool is excluded only when one of these rules already covers it.
- */
-export function isInvocableCompiledTool(
-  tool: Pick<CompiledToolDefinition, "behavior" | "hasExecute">,
-  owner: AgentSourceOwner,
-): boolean {
-  return tool.hasExecute && tool.behavior?.handling === undefined && owner.kind !== "framework";
-}
-
-function describeTool(tool: CompiledToolDefinition, owner: AgentSourceOwner): AgentToolDescription {
+function describeTool(
+  manifest: CompiledAgentManifest,
+  tool: CompiledToolDefinition,
+): AgentToolDescription {
   const description: { -readonly [K in keyof AgentToolDescription]: AgentToolDescription[K] } = {
     name: tool.name,
     description: tool.description,
     inputSchema: tool.inputSchema ?? {},
     approval: tool.requiresApproval,
-    invocable: isInvocableCompiledTool(tool, owner),
+    invocable: isInvocableCompiledTool(manifest, tool),
   };
   if (tool.outputSchema !== undefined) {
     description.outputSchema = tool.outputSchema;
   }
   return description;
-}
-
-function toolOwner(manifest: CompiledAgentManifest, tool: CompiledToolDefinition) {
-  const owner = manifest.bindings[tool.sourceId]?.owner;
-  if (owner === undefined) {
-    throw new Error(`Compiled tool "${tool.name}" has no source binding.`);
-  }
-  return owner;
 }
 
 function compareNames(left: string, right: string): number {

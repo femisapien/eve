@@ -2,6 +2,7 @@ import { join, relative, resolve } from "node:path";
 
 import { lowerSkillMarkdown } from "#internal/helpers/markdown.js";
 import { toErrorMessage } from "#shared/errors.js";
+import { isSkillEntryFileName } from "#shared/skill-entry-file.js";
 import { createDiscoverErrorDiagnostic, type DiscoverDiagnostic } from "#discover/diagnostics.js";
 import {
   classifySkillPackageEntry,
@@ -212,7 +213,7 @@ async function discoverPackagedSkill(input: {
 }> {
   const entries = await readSortedDirectoryEntries(input.source, input.skillRootPath);
   const skillFileName = entries.find(
-    (entry) => entry.isFile() && entry.name.toLowerCase() === "skill.md",
+    (entry) => entry.isFile() && isSkillEntryFileName(entry.name),
   )?.name;
   const skillFilePath = join(input.skillRootPath, skillFileName ?? "SKILL.md");
   const logicalPath = normalizeLogicalPath(

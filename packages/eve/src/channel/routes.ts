@@ -39,10 +39,14 @@ export interface RouteHandlerArgs<TState = undefined> {
    */
   describe(): Promise<AgentDescription>;
   /**
-   * Reads one file of a compiled skill, `SKILL.md` by default. `path` is
-   * relative to the skill root. Text files return a string, other files
-   * return bytes. Throws for unknown skills or files, paths that leave the
-   * skill, and files over 512 KiB.
+   * Reads one file of a compiled skill. `path` is relative to the skill root.
+   * Without a path, or with `SKILL.md`, it reads the skill's entry file under
+   * whatever case it was authored with (`skill.md`, `Skill.MD`, …). Text
+   * files return a string, other files return bytes. Throws for unknown
+   * skills or files, paths that leave the skill, symlinks, and files over
+   * 512 KiB. Bundled deployments embed at most 8 MiB of skill files in total;
+   * files past that budget stay listed in `describe()` but throw
+   * `unavailable` here, and the build warns about them.
    */
   readSkill(skill: string, path?: string): Promise<string | Uint8Array>;
 }

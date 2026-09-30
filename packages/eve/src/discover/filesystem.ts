@@ -1,6 +1,8 @@
 import type { Dirent } from "node:fs";
 import { sep } from "node:path";
 
+import { isSkillEntryFileName } from "#shared/skill-entry-file.js";
+
 /**
  * Supported authored JavaScript and TypeScript module file extensions.
  */
@@ -323,7 +325,7 @@ export function classifySkillPackageEntry(
   entryType: DirectoryEntryType,
 ): SkillPackageEntryKind {
   if (entryType === "file") {
-    if (name.toLowerCase() === "skill.md") {
+    if (isSkillEntryFileName(name)) {
       return "skill-markdown";
     }
 
