@@ -313,6 +313,22 @@ describe("run assertions", () => {
     expect(outcome.message).toContain("Subagent recursion stopped");
   });
 
+  it("noFailedActions passes a call eve cancelled", async () => {
+    const failed = failedSubagentResult({ callId: "call-a", output: null, subagentName: "agent" });
+    const cancelled = {
+      ...failed,
+      data: {
+        ...(failed as Extract<UnstampedMessageStreamEvent, { type: "action.result" }>).data,
+        error: { code: "TURN_CANCELLED", message: "The turn was cancelled." },
+        status: "cancelled",
+      },
+    } as UnstampedMessageStreamEvent;
+
+    const outcome = await Run.noFailedActions().evaluate(makeResult({ events: [cancelled] }));
+
+    expect(outcome.score).toBe(1);
+  });
+
   it("matches typed event counts and ordered event groups", async () => {
     const called = {
       type: "task.started",

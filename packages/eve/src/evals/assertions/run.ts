@@ -197,7 +197,8 @@ export function maxToolCalls(max: number): RunAssertion {
 }
 
 /**
- * Asserts no action result (tool, subagent, or skill) reported a failure.
+ * Asserts no action result (tool, subagent, or skill) reported a failure. A
+ * call eve cancelled did not fail, although its result carries an error.
  */
 export function noFailedActions(): RunAssertion {
   return {
@@ -206,6 +207,7 @@ export function noFailedActions(): RunAssertion {
       const failed = result.events.filter(
         (evt): evt is Extract<MessageStreamEvent, { type: "action.result" }> =>
           evt.type === "action.result" &&
+          evt.data.status !== "cancelled" &&
           (evt.data.status === "failed" || evt.data.result.isError === true),
       );
       if (failed.length === 0) return PASS;
