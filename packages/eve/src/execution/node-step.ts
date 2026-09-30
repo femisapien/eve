@@ -5,7 +5,7 @@ import { dispatchDynamicModelEvent } from "#context/dynamic-model-lifecycle.js";
 import { preparePersistedStepDynamicToolMetadata } from "#context/dynamic-tool-lifecycle.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import type { ExecutionInstrumentation } from "#instrumentation/runtime.js";
-import { LOAD_SKILL_TOOL_NAME } from "#runtime/skills/fragment-context.js";
+import { isFrameworkLoadSkillTool } from "#runtime/skills/fragment-context.js";
 import { createToolLoopHarness } from "#harness/tool-loop.js";
 import type { HandleEventFn, HarnessToolMap, StepFn } from "#harness/types.js";
 import { resolveInstalledPackageInfo } from "#internal/application/package.js";
@@ -268,10 +268,7 @@ function createRegisteredHarnessToolDefinition(input: {
       rawExecute,
       scope: def.name,
     }),
-    frameworkAction:
-      def.owner.kind === "framework" && def.name === LOAD_SKILL_TOOL_NAME
-        ? "load-skill"
-        : undefined,
+    frameworkAction: isFrameworkLoadSkillTool(def) ? "load-skill" : undefined,
     inputSchema: def.inputSchema ?? UNSPECIFIED_INPUT_SCHEMA,
     name: def.name,
     approval: def.approval,

@@ -6,6 +6,7 @@ import type { InputResponse } from "#shared/input.js";
 import type { Session } from "#channel/session.js";
 import type { JsonObject } from "#shared/json.js";
 import type { ChannelMethod } from "#public/definitions/channel.js";
+import type { AgentDescription } from "#channel/agent-description.js";
 
 type WebSocketHeaders = Headers | readonly (readonly [string, string])[] | Record<string, string>;
 
@@ -32,6 +33,18 @@ export interface RouteHandlerArgs<TState = undefined> {
   waitUntil: (task: Promise<unknown>) => void;
   /** Best-effort client IP reported by the host, or `null` when unavailable. */
   requestIp: string | null;
+  /**
+   * Describes the agent's compiled tools and skills for callers, sorted by
+   * name. Carries none of the inspection detail of `GET /eve/v1/info`.
+   */
+  describe(): Promise<AgentDescription>;
+  /**
+   * Reads one file of a compiled skill, `SKILL.md` by default. `path` is
+   * relative to the skill root. Text files return a string, other files
+   * return bytes. Throws for unknown skills or files, paths that leave the
+   * skill, and files over 512 KiB.
+   */
+  readSkill(skill: string, path?: string): Promise<string | Uint8Array>;
 }
 
 export interface SendPayload {
