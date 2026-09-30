@@ -7,7 +7,6 @@ import {
 } from "#channel/skill-files.js";
 import type { RuntimeCompiledArtifactsSource } from "#runtime/compiled-artifacts-source.js";
 import { loadCompiledManifest } from "#runtime/loaders/manifest.js";
-import { isFrameworkLoadSkillTool } from "#runtime/skills/fragment-context.js";
 import type { JsonObject } from "#shared/json.js";
 
 /** One compiled tool, as the agent offers it to callers. */
@@ -110,20 +109,19 @@ export async function describeCompiledAgent(
 /**
  * Whether a compiled tool can run outside a turn: it has an `execute`, no
  * special handling (`dispatch`, `workflow-tool`, `provider-tool`, or any
- * handling added later), and is not a framework action such as `load_skill`.
+ * handling added later), and is not framework-provided. Framework tools such
+ * as `bash` and `load_skill` depend on the turn's sandbox or harness. An
+ * application tool that overrides a framework tool name is owned by the
+ * application and stays invocable.
  *
  * There is no background-tool marker in the compiled registry. A background
  * tool is excluded only when one of these rules already covers it.
  */
 export function isInvocableCompiledTool(
-  tool: Pick<CompiledToolDefinition, "behavior" | "hasExecute" | "name">,
+  tool: Pick<CompiledToolDefinition, "behavior" | "hasExecute">,
   owner: AgentSourceOwner,
 ): boolean {
-  return (
-    tool.hasExecute &&
-    tool.behavior?.handling === undefined &&
-    !isFrameworkLoadSkillTool({ name: tool.name, owner })
-  );
+  return tool.hasExecute && tool.behavior?.handling === undefined && owner.kind !== "framework";
 }
 
 function describeTool(tool: CompiledToolDefinition, owner: AgentSourceOwner): AgentToolDescription {

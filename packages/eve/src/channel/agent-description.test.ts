@@ -88,36 +88,39 @@ describe("describeCompiledAgent", () => {
       outputSchema: { type: "string" },
     });
     expect(byName.get("lookup")).toMatchObject({ approval: false });
-    expect(byName.get("load_skill")).toMatchObject({ invocable: false });
-    expect(byName.get("agent")).toMatchObject({ invocable: false });
+    for (const name of ["agent", "bash", "load_skill", "read_file", "write_file"]) {
+      expect(byName.get(name)).toMatchObject({ invocable: false });
+    }
   });
 });
 
 describe("isInvocableCompiledTool", () => {
   const application: AgentSourceOwner = { kind: "application" };
   const framework: AgentSourceOwner = { feature: "eve:defaults", kind: "framework" };
+  const extension: AgentSourceOwner = {
+    kind: "extension",
+    mountId: "/extensions/tools",
+    namespace: "tools",
+    packageName: "@acme/tools",
+  };
   const withHandling = (handling: CompiledToolBehavior["handling"]): CompiledToolBehavior => ({
     availability: [],
     handling,
   });
 
   it.each([
-    ["execute present", { hasExecute: true, name: "t" }, application, true],
-    ["execute absent", { hasExecute: false, name: "t" }, application, false],
+    ["execute present", { hasExecute: true }, application, true],
+    ["execute absent", { hasExecute: false }, application, false],
     [
       "behavior without handling",
-      { behavior: { availability: [] }, hasExecute: true, name: "t" },
+      { behavior: { availability: [] }, hasExecute: true },
       application,
       true,
     ],
     [
       "dispatch handling",
-      {
-        behavior: withHandling({ action: "self-agent", kind: "dispatch" }),
-        hasExecute: true,
-        name: "t",
-      },
-      framework,
+      { behavior: withHandling({ action: "self-agent", kind: "dispatch" }), hasExecute: true },
+      application,
       false,
     ],
     [
@@ -125,28 +128,18 @@ describe("isInvocableCompiledTool", () => {
       {
         behavior: withHandling({ entryPoint: "execute", kind: "workflow-tool", workflowId: "w" }),
         hasExecute: true,
-        name: "t",
       },
       application,
       false,
     ],
     [
       "provider-tool handling",
-      {
-        behavior: withHandling({ kind: "provider-tool", provider: "exa" }),
-        hasExecute: true,
-        name: "t",
-      },
-      framework,
+      { behavior: withHandling({ kind: "provider-tool", provider: "exa" }), hasExecute: true },
+      application,
       false,
     ],
-    ["framework load_skill action", { hasExecute: true, name: "load_skill" }, framework, false],
-    [
-      "application tool named load_skill",
-      { hasExecute: true, name: "load_skill" },
-      application,
-      true,
-    ],
+    ["framework tool with execute", { hasExecute: true }, framework, false],
+    ["extension tool with execute", { hasExecute: true }, extension, true],
   ] as const)("%s", (_label, tool, owner, expected) => {
     expect(isInvocableCompiledTool(tool, owner)).toBe(expected);
   });

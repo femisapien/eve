@@ -1,14 +1,35 @@
+import { Buffer } from "node:buffer";
 import { lstat, readdir, readFile } from "node:fs/promises";
 
 import type { CompiledWorkspaceResourceRoot } from "#compiler/manifest.js";
 import type { RuntimeCompiledArtifactsSource } from "#runtime/compiled-artifacts-source.js";
 import { resolveRuntimeCompilerArtifactPaths } from "#runtime/loaders/artifact-paths.js";
+import { readBundledCompiledArtifacts } from "#runtime/loaders/bundled-artifacts.js";
 
 /** File `readSkill` returns when the caller names no path. */
 export const DEFAULT_SKILL_FILE = "SKILL.md";
 
 /** Largest skill file `readSkill` returns. */
 export const MAX_SKILL_FILE_BYTES = 512 * 1024;
+
+/** Largest total of skill file bytes a bundled deployment embeds. */
+export const MAX_BUNDLED_SKILL_FILES_BYTES = 8 * 1024 * 1024;
+
+/**
+ * One skill file embedded in bundled compiled artifacts. `content` is absent
+ * when the file is over {@link MAX_SKILL_FILE_BYTES} or did not fit in
+ * {@link MAX_BUNDLED_SKILL_FILES_BYTES}; the file is still listed.
+ */
+export interface BundledSkillFile {
+  readonly content?: string;
+  readonly encoding?: "base64" | "utf8";
+  readonly size: number;
+}
+
+/** Skill files of the root agent keyed by skill name, then by skill-relative path. */
+export type BundledSkillFiles = Readonly<
+  Record<string, Readonly<Record<string, BundledSkillFile>>>
+>;
 
 export type SkillReadErrorCode =
   | "invalid-path"
@@ -43,16 +64,17 @@ export interface SkillFileSource {
  * Selects the skill file source for the active compiled artifacts.
  *
  * Skill files are materialized under the node's workspace resource root by
- * `compiler/workspace-resources.ts` and stripped from the manifest. Bundled
- * deployments do not ship that tree beside the server bundle, so they cannot
- * list or read skill files yet.
+ * `compiler/workspace-resources.ts` and stripped from the manifest. Disk
+ * artifacts read that tree directly. Bundled artifacts carry a lazily loaded
+ * copy of the root agent's skill files, written beside the bootstrap.
  */
 export function createCompiledSkillFileSource(input: {
   readonly compiledArtifactsSource: RuntimeCompiledArtifactsSource;
   readonly workspaceResourceRoot: CompiledWorkspaceResourceRoot;
 }): SkillFileSource {
   if (input.compiledArtifactsSource.kind !== "disk") {
-    return unavailableSkillFileSource;
+    const load = readBundledCompiledArtifacts()?.skillFiles;
+    return load === undefined ? unavailableSkillFileSource : createBundledSkillFileSource(load);
   }
   const { compileDirectoryPath } = resolveRuntimeCompilerArtifactPaths(
     input.compiledArtifactsSource.appRoot,
@@ -60,6 +82,46 @@ export function createCompiledSkillFileSource(input: {
   return createDiskSkillFileSource(
     `${compileDirectoryPath}/${input.workspaceResourceRoot.logicalPath}/skills`,
   );
+}
+
+/** Reads skill files embedded in bundled compiled artifacts. */
+export function createBundledSkillFileSource(
+  load: () => Promise<BundledSkillFiles>,
+): SkillFileSource {
+  let loaded: Promise<BundledSkillFiles> | undefined;
+  const skillFiles = async (skill: string) => {
+    loaded ??= load();
+    const files = await loaded;
+    return Object.hasOwn(files, skill) ? files[skill] : undefined;
+  };
+  const file = async (skill: string, path: string) => {
+    const files = await skillFiles(skill);
+    const entry = files !== undefined && Object.hasOwn(files, path) ? files[path] : undefined;
+    if (entry === undefined) {
+      throw new SkillReadError("unknown-file", `Skill "${skill}" has no file "${path}".`);
+    }
+    return entry;
+  };
+  return {
+    async listFiles(skill) {
+      return Object.keys((await skillFiles(skill)) ?? {}).sort(comparePaths);
+    },
+    async fileSize(skill, path) {
+      return (await file(skill, path)).size;
+    },
+    async readFile(skill, path) {
+      const entry = await file(skill, path);
+      if (entry.content === undefined) {
+        throw new SkillReadError(
+          "unavailable",
+          `Skill "${skill}" file "${path}" is not embedded in this deployment: its skill files exceed the ${MAX_BUNDLED_SKILL_FILES_BYTES}-byte bundle limit.`,
+        );
+      }
+      return entry.encoding === "base64"
+        ? new Uint8Array(Buffer.from(entry.content, "base64"))
+        : new TextEncoder().encode(entry.content);
+    },
+  };
 }
 
 /** Reads skill files from a materialized `skills/<name>/` tree. */
@@ -88,7 +150,7 @@ const unavailableSkillFileSource: SkillFileSource = {
 async function rejectUnavailable(): Promise<never> {
   throw new SkillReadError(
     "unavailable",
-    "Skill files are not available in bundled deployments: the compiled workspace resource tree is not shipped with the server bundle.",
+    "Skill files are not available: the installed compiled artifacts carry no skill files.",
   );
 }
 
@@ -158,10 +220,11 @@ function tooLarge(skill: string, path: string, size: number): SkillReadError {
   );
 }
 
-function decodeText(bytes: Uint8Array): string | undefined {
+/** Decodes UTF-8 text without NUL bytes; returns `undefined` for anything else. */
+export function decodeText(bytes: Uint8Array): string | undefined {
   if (bytes.includes(0)) return undefined;
   try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);
   } catch {
     return undefined;
   }

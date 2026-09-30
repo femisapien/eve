@@ -1,3 +1,4 @@
+import type { BundledSkillFiles } from "#channel/skill-files.js";
 import type { CompileMetadata } from "#compiler/artifacts.js";
 import type { CompiledAgentManifest } from "#compiler/manifest.js";
 import type { CompiledModuleMap } from "#compiler/module-map.js";
@@ -18,6 +19,8 @@ export interface BundledCompiledArtifacts {
   metadata?: CompileMetadata;
   moduleMap: CompiledModuleMap;
   sandboxPreparedArtifacts?: SandboxPreparedArtifactsManifest;
+  /** Loads the root agent's skill files, kept out of the bootstrap until `readSkill` or `describe` needs them. */
+  skillFiles?: () => Promise<BundledSkillFiles>;
 }
 
 /**
@@ -40,6 +43,7 @@ export function installBundledCompiledArtifacts(input: BundledCompiledArtifacts)
     metadata: input.metadata,
     moduleMap: input.moduleMap,
     sandboxPreparedArtifacts: input.sandboxPreparedArtifacts,
+    skillFiles: input.skillFiles,
   });
 }
 

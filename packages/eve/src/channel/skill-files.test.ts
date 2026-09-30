@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  createBundledSkillFileSource,
   MAX_SKILL_FILE_BYTES,
   readSkillFile,
   SkillReadError,
@@ -122,5 +123,44 @@ describe("readSkillFile", () => {
     );
     const error = await readError(readSkillFile({ skill: "big", skills: ["big"], source: grown }));
     expect(error.code).toBe("too-large");
+  });
+});
+
+describe("createBundledSkillFileSource", () => {
+  const bundled = createBundledSkillFileSource(async () => ({
+    research: {
+      "SKILL.md": { content: "# Research\n", encoding: "utf8", size: 11 },
+      "assets/logo.png": { content: "iVBORwD/", encoding: "base64", size: 6 },
+      "data/huge.csv": { size: MAX_SKILL_FILE_BYTES + 1 },
+      "references/omitted.md": { size: 10 },
+      "references/deep/api.md": { content: "nested\n", encoding: "utf8", size: 7 },
+    },
+  }));
+  const read = (path?: string) =>
+    readSkillFile({ path, skill: "research", skills, source: bundled });
+
+  it("lists embedded files sorted", async () => {
+    await expect(bundled.listFiles("research")).resolves.toEqual([
+      "SKILL.md",
+      "assets/logo.png",
+      "data/huge.csv",
+      "references/deep/api.md",
+      "references/omitted.md",
+    ]);
+    await expect(bundled.listFiles("missing")).resolves.toEqual([]);
+    await expect(bundled.listFiles("constructor")).resolves.toEqual([]);
+  });
+
+  it("reads text and binary files", async () => {
+    await expect(read()).resolves.toBe("# Research\n");
+    await expect(read("references/deep/api.md")).resolves.toBe("nested\n");
+    const logo = await read("assets/logo.png");
+    expect([...(logo as Uint8Array)]).toEqual([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff]);
+  });
+
+  it("enforces the cap and reports files left out of the bundle", async () => {
+    expect((await readError(read("data/huge.csv"))).code).toBe("too-large");
+    expect((await readError(read("references/omitted.md"))).code).toBe("unavailable");
+    expect((await readError(read("nope.md"))).code).toBe("unknown-file");
   });
 });
