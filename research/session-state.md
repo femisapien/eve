@@ -120,6 +120,27 @@ Besides the disagreements above, these cause user-visible bugs:
 - An answer's events carry the delivery IDs of the message that started the parked turn, so
   `respond(B)` can stop at a sibling answer's boundary.
 
+### Recent fixes in the same area
+
+As of 2026-09-30, these PRs fix symptoms of the same problem one at a time. Each is right to
+land now, and the plan keeps its tests as regressions. After the plan, each kind of bug has one
+place it could come from:
+
+| PR                                    | Status               | What went wrong                                                                                                                     | Where the plan covers it                                                                                      |
+| ------------------------------------- | -------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------- |
+| #4083, #4084 (for #4079, repro #4081) | open                 | A task or workflow run that ended, or a cancelled turn, dropped its relayed questions without `input.resolved`                      | PR 1: `finishRun` and `cancel` emit every withdrawal. #4083 changes the cancellation code shown below         |
+| #3953                                 | merged               | A `serve` tool's `ctx.reply()` left its pending questions open                                                                      | PR 1: the same withdrawal path                                                                                |
+| #3762 (repro #3759)                   | merged; repro open   | A rejected approval answer parked without `session.waiting`, so the client waited for a boundary                                    | PR 1: a partial answer returns the session to waiting. PR 5: a boundary lists every accepted delivery         |
+| #4027 (repro #4026)                   | open                 | When one delivery approved two batches, only the first call ran                                                                     | PR 1: `TurnState` replaces the pending batches and the deferred step input                                    |
+| #3716 (repro #3714)                   | open                 | With several approval batches pending, a text answer such as "approve" was deferred                                                 | PR 1: the same                                                                                                |
+| #3892 (for #3891)                     | open repro           | A step that also called a blocking workflow skipped the approval response policy                                                    | PR 1: one `decide` transition for every approval. It ports the #3494 adversarial suite, where the repro lives |
+| #3983                                 | merged               | A workflow call could dispatch while its approval was open                                                                          | PR 1: calls dispatch only once ready                                                                          |
+| #3903, #3901, #3987 (for #3899)       | merged, open, closed | On resume, memory or instructions moved the approval off the last message the AI SDK reads, so the approved call was skipped        | PR 1: eve runs approved calls itself instead of replaying approvals through the AI SDK                        |
+| #3941                                 | open                 | A parent kept one batch of routes per child, so the answer to a subagent's earlier request never arrived                            | PR 3: private routes keyed by `requestId`                                                                     |
+| #4001                                 | merged               | `agent.started` was published by a side step whose state changes were discarded                                                     | PR 1: only a transition's events are published, through `commit`                                              |
+| #3789                                 | merged               | Relayed events skipped the parent's hooks                                                                                           | PR 1: `commit` publishes its own and relayed events the same way                                              |
+| #3980                                 | merged               | Channel activity counted a local agent's turn as its caller's, so the caller looked done early; a remote agent's row stayed running | PR 2 and PR 5: task cards read the projection, and agent calls match turns by delivery ID                     |
+
 ## Design
 
 ### Four kinds of state
