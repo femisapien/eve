@@ -377,14 +377,18 @@ function resolveInputs<S extends SessionProjection>(
   let changed = false;
   for (const resolution of resolutions) {
     const current = inputs[resolution.requestId];
-    if (current === undefined || current.status === "settled") continue;
-    const next: Mutable<SessionInput> = {
-      ...current,
-      outcome: resolution.outcome,
-      status: "settled",
-    };
-    if (resolution.response !== undefined) next.response = resolution.response;
-    if (resolution.resumeTurnId !== undefined) next.resumeTurnId = resolution.resumeTurnId;
+    if (current === undefined) continue;
+    const next: Mutable<SessionInput> = { ...current };
+    // A policy can settle one approval of a batch first; the batch still names the turn it resumes.
+    if (current.status !== "settled") {
+      next.outcome = resolution.outcome;
+      next.status = "settled";
+      if (resolution.response !== undefined) next.response = resolution.response;
+    }
+    if (resolution.resumeTurnId !== undefined && current.resumeTurnId === undefined) {
+      next.resumeTurnId = resolution.resumeTurnId;
+    }
+    if (next.status === current.status && next.resumeTurnId === current.resumeTurnId) continue;
     inputs[resolution.requestId] = next;
     changed = true;
   }

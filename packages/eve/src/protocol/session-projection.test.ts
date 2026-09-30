@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   createActionResultEvent,
   createActionsRequestedEvent,
+  createApprovalSettledEvent,
   createAuthorizationCompletedEvent,
   createAuthorizationRequiredEvent,
   createInputRequestedEvent,
@@ -78,6 +79,25 @@ describe("reduceSessionProjection", () => {
         "deploy",
       ),
     ).toBe("interrupted");
+  });
+
+  it("keeps the turn a batch names for an approval a policy settled first", () => {
+    const state = fold([
+      ...askToDeploy("turn_1"),
+      createTurnCompletedEvent({ sequence: 0, turnId: "turn_1" }),
+      createApprovalSettledEvent({
+        outcome: "approved",
+        requestId: "approve",
+        responderPrincipalId: "bob",
+        sequence: 0,
+        stepIndex: 0,
+        turnId: "turn_1",
+      }),
+      answer({ outcome: "approved", resumeTurnId: "turn_2" }),
+    ]);
+
+    expect(state.inputs.approve?.resumeTurnId).toBe("turn_2");
+    expect(callStatus(state, "deploy")).toBe("running");
   });
 
   it("groups a turn under the root of the turn it says it continues", () => {
