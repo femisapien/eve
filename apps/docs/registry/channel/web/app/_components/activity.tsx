@@ -184,11 +184,11 @@ function StatusIcon({ status }: { readonly status: ToolCallStatus }) {
       return <CircleDashedIcon className={className} />;
     case "awaiting-input":
       return <CircleDotIcon className={className} />;
-    case "done":
+    case "completed":
       return <CheckIcon className={className} />;
     case "failed":
       return <XIcon className={className} />;
-    case "denied":
+    case "rejected":
       return <BanIcon className={className} />;
     case "cancelled":
     case "interrupted":
@@ -199,10 +199,10 @@ function StatusIcon({ status }: { readonly status: ToolCallStatus }) {
 const STATUS_TEXT: Record<ToolCallStatus, string | undefined> = {
   "awaiting-input": "waiting for you",
   cancelled: "cancelled",
-  denied: "denied",
-  done: undefined,
+  completed: undefined,
   failed: "failed",
   interrupted: "interrupted",
+  rejected: "denied",
   running: undefined,
 };
 

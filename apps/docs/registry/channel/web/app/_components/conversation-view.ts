@@ -9,6 +9,7 @@ import {
   type EveMessagePart,
   type ToolCallState,
   type ToolCallStatus,
+  signInState,
   toolCallState,
 } from "eve/react";
 
@@ -21,8 +22,6 @@ export interface ViewContext {
   readonly busy: boolean;
   /** Calls that started a subagent, by call ID. */
   readonly agentCalls: ReadonlyMap<string, AgentCall>;
-  /** Tool calls a followed subagent already shows, which eve also projects into this session. */
-  readonly childToolIds: ReadonlySet<string>;
 }
 
 export interface AgentCall {
@@ -39,12 +38,7 @@ export function viewContext(conversation: ConversationState, busy: boolean): Vie
     for (const call of Object.values(task.calls))
       agentCalls.set(call.callId, { agent, call, task });
   }
-  return {
-    agentCalls,
-    busy,
-    childToolIds: followedAgentToolCallIds(conversation),
-    conversation,
-  };
+  return { agentCalls, busy, conversation };
 }
 
 // ---------------------------------------------------------------------------
@@ -92,7 +86,6 @@ export type MessageBlock =
  */
 export function messageBlocks(message: EveMessage, context: ViewContext): MessageBlock[] {
   const blocks: MessageBlock[] = [];
-  const turnId = message.metadata?.turnId;
   for (const [index, part] of message.parts.entries()) {
     if (part.type === "text") {
       if (part.text.trim().length === 0) continue;
@@ -107,7 +100,7 @@ export function messageBlocks(message: EveMessage, context: ViewContext): Messag
       else blocks.push({ key: `requests:${request.key}`, kind: "requests", requests: [request] });
       continue;
     }
-    const item = activityItem(part, index, turnId, context);
+    const item = activityItem(part, index, context);
     if (item === undefined) continue;
     if (last?.kind === "activity") last.items.push(item);
     else blocks.push({ items: [item], key: `activity:${item.key}`, kind: "activity" });
@@ -120,32 +113,42 @@ function pendingRequest(
   conversation: ConversationState,
 ): PendingRequest | undefined {
   if (part.type === "authorization") {
-    if (part.state !== "required") return undefined;
-    const key = `auth:${part.attemptId ?? `${part.turnId}:${part.stepIndex}:${part.name}`}`;
-    return { key, kind: "auth", part };
+    if (signInState(conversation, part).status !== "required") return undefined;
+    return { key: `auth:${part.attemptId}`, kind: "auth", part };
   }
   if (part.type !== "dynamic-tool") return undefined;
   const requestId = part.toolMetadata?.eve?.inputRequest?.requestId;
   const input = requestId === undefined ? undefined : conversation.inputs[requestId];
   if (input === undefined || !isPending(input)) return undefined;
-  const task = input.taskId === undefined ? undefined : conversation.tasks[input.taskId];
-  const from =
-    task === undefined ? undefined : (agentToolSession(conversation, task)?.name ?? task.name);
-  return { from, input, key: `input:${input.request.requestId}`, kind: "input" };
+  return { from: askedBy(conversation, input), input, key: `input:${requestId}`, kind: "input" };
 }
 
 /**
- * A root tool approval ends its turn, and nothing runs until every approval that turn asked for
- * is answered and the next turn starts. An answered approval stays with its batch until then.
- * Any other request is done once it settles.
+ * An approval stays with its batch until the batch names the turn that runs it; any other
+ * request is done once it settles.
  */
 function isPending(input: ConversationInput): boolean {
   if (input.status !== "settled") return true;
   return (
     input.request.kind === "tool-approval" &&
-    input.taskId === undefined &&
+    input.outcome === "approved" &&
+    input.callId === input.request.action.callId &&
     input.resumeTurnId === undefined
   );
+}
+
+/** The subagent or task whose call a passed-up request waits on, when this session didn't ask. */
+function askedBy(conversation: ConversationState, input: ConversationInput): string | undefined {
+  const { callId } = input;
+  if (callId === undefined || callId === input.request.action.callId) return undefined;
+  const task = Object.values(conversation.tasks).find((entry) => entry.calls[callId] !== undefined);
+  return task === undefined ? undefined : (agentToolSession(conversation, task)?.name ?? task.name);
+}
+
+/** A subagent's call this session shows only because its task passed up an approval for it. */
+function isPassedUp(conversation: ConversationState, requestId: string | undefined): boolean {
+  const input = requestId === undefined ? undefined : conversation.inputs[requestId];
+  return input?.callId !== undefined && input.callId !== input.request.action.callId;
 }
 
 /** A subagent's work for one call, prose included, with the same rules as the root. */
@@ -159,7 +162,7 @@ export function agentActivity(call: AgentCall): ActivityItem[] | undefined {
     const turnId = message.metadata?.turnId;
     if (message.role !== "assistant" || turnId === undefined || !turnIds.has(turnId)) return [];
     return message.parts.flatMap((part, index) => {
-      if (part.type !== "text") return activityItem(part, index, turnId, context) ?? [];
+      if (part.type !== "text") return activityItem(part, index, context) ?? [];
       const text = part.text.trim();
       return text.length === 0 ? [] : [{ key: `text:${part.id ?? index}`, kind: "text", text }];
     });
@@ -169,7 +172,6 @@ export function agentActivity(call: AgentCall): ActivityItem[] | undefined {
 function activityItem(
   part: EveMessagePart,
   index: number,
-  turnId: string | undefined,
   context: ViewContext,
 ): ActivityItem | undefined {
   switch (part.type) {
@@ -181,29 +183,24 @@ function activityItem(
     }
     case "authorization":
       return {
-        key: `auth:${part.attemptId ?? `${part.turnId}:${part.stepIndex}:${part.name}`}`,
+        key: `auth:${part.attemptId}`,
         kind: "auth",
         part,
-        state: authorizationState(part),
+        state: authorizationState(context.conversation, part),
       };
     case "dynamic-tool": {
       const callId = part.toolCallId;
       const request = part.toolMetadata?.eve?.inputRequest;
-      if (request?.kind === "session-limit" || context.childToolIds.has(callId)) return undefined;
-      // A request a subagent passed up shows under that subagent's row, and in the dock.
-      if (
-        request !== undefined &&
-        context.conversation.inputs[request.requestId]?.taskId !== undefined
-      ) {
-        return undefined;
-      }
+      if (request?.kind === "session-limit") return undefined;
+      // A subagent's call shows in its own session; here its passed-up request shows where it arrived.
+      if (isPassedUp(context.conversation, request?.requestId)) return undefined;
       return {
         agent: context.agentCalls.get(callId),
         input: part.input,
         key: `tool:${callId}`,
         kind: "tool",
         name: part.toolMetadata?.eve?.name ?? part.toolName,
-        state: toolCallState(context.conversation, part, { streaming: context.busy, turnId }),
+        state: toolCallState(context.conversation, part, { streaming: context.busy }),
       };
     }
     default:
@@ -211,20 +208,25 @@ function activityItem(
   }
 }
 
-function authorizationState(part: EveAuthorizationPart): ToolCallState {
-  if (part.state === "required") return { status: "awaiting-input" };
-  switch (part.outcome) {
+function authorizationState(
+  conversation: ConversationState,
+  part: EveAuthorizationPart,
+): ToolCallState {
+  const signIn = signInState(conversation, part);
+  if (signIn.status === "required") return { status: "awaiting-input" };
+  const reason = part.state === "completed" ? part.reason : undefined;
+  switch (signIn.outcome) {
     case "authorized":
-      return { status: "done" };
+      return { status: "completed" };
     case "declined":
-      return { errorText: part.reason, status: "denied" };
+      return { errorText: reason, status: "rejected" };
     default:
-      return { errorText: part.reason ?? part.outcome, status: "failed" };
+      return { errorText: reason ?? signIn.outcome, status: "failed" };
   }
 }
 
 export function itemStatus(item: ActivityItem): ToolCallStatus {
-  return item.kind === "tool" || item.kind === "auth" ? item.state.status : "done";
+  return item.kind === "tool" || item.kind === "auth" ? item.state.status : "completed";
 }
 
 /** The chosen option's label, or the typed text, once a request has an answer. */
@@ -274,20 +276,6 @@ function agentCallTurns(
     if (owner !== undefined) turns.get(owner)?.push(turnId);
   }
   return turns;
-}
-
-/** eve also projects a followed session's tool calls into its parent, which shows them nested. */
-function followedAgentToolCallIds(conversation: ConversationState): ReadonlySet<string> {
-  const ids = new Set<string>();
-  for (const agent of Object.values(conversation.agents)) {
-    if (agent.observation.status === "not-followed") continue;
-    for (const message of agent.observation.conversation?.messages ?? []) {
-      for (const part of message.parts) {
-        if (part.type === "dynamic-tool") ids.add(part.toolCallId);
-      }
-    }
-  }
-  return ids;
 }
 
 // ---------------------------------------------------------------------------
