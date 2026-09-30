@@ -99,12 +99,14 @@ describe("contentFilteringProcessor", () => {
     expect(downstream.ended).toEqual([]);
   });
 
-  it("reports the content policy visible to each destination", () => {
+  it("narrows chat content flags without removing Gateway join metadata", () => {
     const downstream = recordingProcessor();
     const original = span({
       "agent.trace.content.input": true,
       "agent.trace.content.output": true,
       "gen_ai.input.messages": "what the user said",
+      "gen_ai.generation.id": "gen_call",
+      "vercel.ai_gateway.transcript.enabled": true,
     });
 
     contentFilteringProcessor(downstream, {
@@ -114,11 +116,15 @@ describe("contentFilteringProcessor", () => {
     expect((downstream.ended[0] as { attributes: unknown }).attributes).toEqual({
       "agent.trace.content.input": false,
       "agent.trace.content.output": true,
+      "gen_ai.generation.id": "gen_call",
+      "vercel.ai_gateway.transcript.enabled": true,
     });
     expect((original as { attributes: unknown }).attributes).toEqual({
       "agent.trace.content.input": true,
       "agent.trace.content.output": true,
       "gen_ai.input.messages": "what the user said",
+      "gen_ai.generation.id": "gen_call",
+      "vercel.ai_gateway.transcript.enabled": true,
     });
   });
 

@@ -370,6 +370,7 @@ export function createAgentOtelInstrumentation(
       {
         attributes: {
           "gen_ai.agent.name": event.scope.functionId,
+          "agent.trace.content.input": recordInputs && event.input !== undefined,
           "gen_ai.operation.name": "chat",
           "gen_ai.provider.name": event.model.provider,
           "gen_ai.request.model": event.model.modelId,
@@ -406,6 +407,12 @@ export function createAgentOtelInstrumentation(
     const state = takeSpanState(modelSpans, event.scope, event.idempotencyKey);
     if (state === undefined) return;
     if (event.type === "model.call.failed") {
+      if (typeof event.error === "object" && event.error !== null) {
+        const generationId = (event.error as Readonly<Record<string, unknown>>)["generationId"];
+        if (typeof generationId === "string" && generationId.length > 0) {
+          state.span.setAttribute("gen_ai.generation.id", generationId);
+        }
+      }
       recordError(state.span, event.error);
     } else {
       await recordTurnUsage(event);
@@ -419,6 +426,16 @@ export function createAgentOtelInstrumentation(
       state.span.setAttribute("gen_ai.response.finish_reasons", [event.finishReason]);
       const attempt = steps.get(event.scope);
       if (attempt !== undefined) setAgentUsage(attempt.span, event.usage);
+      state.span.setAttribute(
+        "agent.trace.content.output",
+        recordOutputs && event.content !== undefined,
+      );
+      if (event.gateway?.generationId !== undefined) {
+        state.span.setAttribute("gen_ai.generation.id", event.gateway.generationId);
+      }
+      if (event.gateway?.transcriptsEnabled === true) {
+        state.span.setAttribute("vercel.ai_gateway.transcript.enabled", true);
+      }
       if (recordOutputs) {
         state.span.setAttribute("ai.response.finish_reason", event.finishReason);
         const content = event.content;

@@ -146,6 +146,22 @@ lineage and trace-content policy. See [Remote agents](../guides/remote-agents#pr
 Use `gen_ai.conversation.id` to find the traces for one conversation in your
 destination's span-search surface.
 
+### Chat span metadata
+
+Each `chat <model>` span includes content-recording flags. Gateway calls also
+include identifiers and transcript capture metadata when Gateway supplies them:
+
+| Attribute                              | Meaning                                                                                                                                              |
+| -------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `gen_ai.generation.id`                 | Gateway generation id from the completed call's metadata or, when available, a failed call's error. The `agent.step` span retains its existing copy. |
+| `vercel.ai_gateway.transcript.enabled` | `true` only when Gateway reports that transcript capture started. Absent otherwise; asynchronous storage may still be pending.                       |
+| `agent.trace.content.input`            | Set at call start; `true` when eve records the call's input.                                                                                         |
+| `agent.trace.content.output`           | Set on completed calls; `true` when eve records the call's output.                                                                                   |
+
+Gateway metadata remains available when content capture is disabled. Destination
+redaction sets the corresponding content-recording flag to `false`. These
+attributes do not enable Gateway capture or remove content from spans.
+
 ## Local traces
 
 `eve dev` records local traces by default. Omitting
