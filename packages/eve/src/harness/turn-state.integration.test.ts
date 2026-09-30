@@ -177,6 +177,23 @@ describe("turn state (real AI SDK)", () => {
     expect(readTurnState(resumed.session.state).steps).toEqual([]);
   });
 
+  it("runs an approved call with the messages the model reads", async () => {
+    const deploy = inlineTool("deploy");
+    // A history projector, as compaction is, changes what the model and the call read.
+    const fixture = setup([deploy], [calls("deploy")], {
+      historyProjector: ({ messages }) =>
+        messages.map((message) =>
+          message.role === "user" ? { ...message, content: "Alice's request." } : message,
+        ),
+    });
+    const parked = await fixture.step(fixture.session, { message: "Deploy Alice's release." });
+    await fixture.step(parked.session, answer(parked.session, "approve"));
+
+    const messages = JSON.stringify(deploy.execute.mock.calls[0]?.at(1));
+    expect(messages).toContain("Alice's request.");
+    expect(messages).not.toContain("Deploy Alice's release.");
+  });
+
   it("settles a denial without running the call, and reports it rejected", async () => {
     const deploy = inlineTool("deploy");
     const fixture = setup([deploy], [calls("deploy")]);

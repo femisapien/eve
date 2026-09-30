@@ -1096,7 +1096,8 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
         coordinates: eventCoordinates(turnState),
         emit,
         turnState,
-        messages: session.history,
+        // What the model reads, as a call the AI SDK runs sees in `ctx.messages`.
+        messages: projectHistory(session.history, session.state),
         replayIdentity: config.toolReplayIdentity,
         toolsFor: prepareOriginTools,
       });
