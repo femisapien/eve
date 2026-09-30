@@ -1302,7 +1302,9 @@
               "connect",
               "sanity",
               "sanity",
-              "sanity"
+              "sanity",
+              "--connection-method",
+              "mcp"
             ]
           },
           "requires": ">=0.29.0"

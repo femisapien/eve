@@ -71,7 +71,7 @@ describe("Neon connection setup", () => {
 });
 
 describe("Sanity connection setup", () => {
-  it("uses Sanity's hosted MCP server and native Connect service with user OAuth", () => {
+  it("selects MCP registration for Sanity's hosted server with user OAuth", () => {
     const integration = getIntegration("sanity")!;
     const setup = buildConnectionSetup(integration);
 
@@ -79,7 +79,7 @@ describe("Sanity connection setup", () => {
     expect(setup.variants["mcp:user"]).toContain('url: "https://mcp.sanity.io"');
     expect(setup.variants["mcp:user"]).toContain('auth: connect("sanity/sanity")');
     expect(setup.configureVariants["mcp:user"]).toContain(
-      "vercel connect create sanity --name sanity",
+      "vercel connect create sanity --name sanity --connection-method mcp",
     );
   });
 });
