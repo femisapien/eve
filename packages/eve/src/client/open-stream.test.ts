@@ -208,7 +208,8 @@ describe("followStreamIterable", () => {
       "fetch",
       vi.fn(async (input: Parameters<typeof fetch>[0]) => {
         const labeled = new URL(String(input)).searchParams.get("startIndex") === "-2";
-        const records = labeled ? [event(40), event(41)] : [event(), event()];
+        // Four events carry the local cursor from -3 past zero.
+        const records = labeled ? [event(40), event(41)] : [event(), event(), event(), event()];
         return new Response(`${records.map((record) => JSON.stringify(record)).join("\n")}\n`, {
           headers: { [EVE_STREAM_VERSION_HEADER]: EVE_MESSAGE_STREAM_VERSION },
         });
@@ -228,7 +229,7 @@ describe("followStreamIterable", () => {
     };
 
     expect(await read(-2)).toEqual([40, 41]);
-    expect(await read(-3)).toEqual([undefined, undefined]);
+    expect(await read(-3)).toEqual([undefined, undefined, undefined, undefined]);
   });
 
   it("renews an explicitly ended lease without charging the idle budget", async () => {

@@ -202,7 +202,7 @@ export async function* followStreamIterable(
         // Older servers omit `meta.index`; from an absolute cursor the client's
         // count is the same position.
         const event =
-          received.meta?.index === undefined && startIndex >= 0
+          received.meta?.index === undefined && input.startIndex >= 0
             ? withMessageStreamEventIndex(received, startIndex)
             : received;
         startIndex += 1;
