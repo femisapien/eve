@@ -1,7 +1,6 @@
 import type { ModelMessage } from "ai";
 
 import {
-  clearPendingAuthorization,
   getPendingAuthorization,
   setPendingAuthorization,
   type AuthorizationChallenge,
@@ -90,16 +89,4 @@ export function dropClosedRecords<T extends HarnessSessionBase>(
     const input = projection.inputs[requestId];
     return input === undefined || input.status === "settled";
   });
-}
-
-const APPROVAL_STATE_KEY = "eve.runtime.hitl.approvalState";
-
-/**
- * Drops what a cleared context owned beside `TurnState`: sign-in attempts and responders'
- * approval progress. `clear` reported each close; relay routes for live tasks stay.
- */
-export function discardClearedRecords<T extends HarnessSessionBase>(session: T): T {
-  const { [APPROVAL_STATE_KEY]: _approvals, ...state } =
-    clearPendingAuthorization(session.state) ?? {};
-  return { ...session, state: Object.keys(state).length > 0 ? state : undefined };
 }

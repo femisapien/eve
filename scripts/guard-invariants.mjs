@@ -131,7 +131,11 @@
  *             a turn, request, sign-in, task, or call outcome is a transition
  *             that returns its events, so nothing changes without readers
  *             hearing it. The model step's streamed content (its calls and
- *             their inline results) is built where it streams.
+ *             their inline results) is built where it streams. The
+ *             human-in-the-loop lifecycle in `session-machine/human-input/`
+ *             is reached only through its `index.ts` and its request
+ *             vocabulary (`approval-prompt`, `budget-request`), so replacing
+ *             it changes one seam.
  *
  * Baselines for rules with pre-existing violations live in
  * `guard-invariants-baseline.json`. Counts and allowlists in that file
@@ -523,6 +527,9 @@ const STREAM_CONTENT_FILES = new Set([
   "packages/eve/src/harness/stream-actions.ts",
 ]);
 const MACHINE_PRIVATE_IMPORT_RE = /["']#harness\/session-machine\/(?:state|events)\.js["']/;
+const HUMAN_INPUT_DIR = `${SESSION_MACHINE_DIR}human-input/`;
+const HUMAN_INPUT_PRIVATE_IMPORT_RE =
+  /["']#harness\/session-machine\/human-input\/(?!(?:index|approval-prompt|budget-request)\.js["'])/;
 
 /**
  * @param {string} posix
@@ -530,8 +537,24 @@ const MACHINE_PRIVATE_IMPORT_RE = /["']#harness\/session-machine\/(?:state|event
  * @param {Violation[]} violations
  */
 function checkRule49(posix, lines, violations) {
-  if (!posix.startsWith("packages/eve/src/") || posix.startsWith(SESSION_MACHINE_DIR)) return;
+  if (!posix.startsWith("packages/eve/src/")) return;
   if (posix.endsWith(".test.ts") || posix.includes("/test/")) return;
+  if (
+    !posix.startsWith(HUMAN_INPUT_DIR) &&
+    !posix.startsWith("packages/eve/src/internal/testing/")
+  ) {
+    lines.forEach((line, idx) => {
+      if (!HUMAN_INPUT_PRIVATE_IMPORT_RE.test(line)) return;
+      violations.push({
+        rule: 49,
+        file: posix,
+        line: idx + 1,
+        message:
+          "imports the human-in-the-loop lifecycle's internals. Reach it through `#harness/session-machine/human-input/index.js`, the one seam the rest of eve meets it at.",
+      });
+    });
+  }
+  if (posix.startsWith(SESSION_MACHINE_DIR)) return;
   if (posix.startsWith("packages/eve/src/protocol/")) return;
   if (posix.startsWith("packages/eve/src/internal/testing/")) return;
   lines.forEach((line, idx) => {

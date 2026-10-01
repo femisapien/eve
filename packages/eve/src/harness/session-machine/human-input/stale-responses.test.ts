@@ -5,7 +5,7 @@ import type { InputRequest } from "#shared/input.js";
 import {
   convertStaleResponsesToUserMessage,
   dropStaleSessionLimitContinuationResponses,
-} from "#harness/stale-input-responses.js";
+} from "#harness/session-machine/human-input/stale-responses.js";
 
 /** Requests the session still knows, closed ones included. */
 const knownApproval = new Map<string, InputRequest>([

@@ -1,9 +1,9 @@
 import type { ModelMessage } from "ai";
 
-import type { getApprovalAuditState } from "#harness/approval-candidates.js";
+import type { getApprovalAuditState } from "#harness/session-machine/human-input/candidates.js";
 import { supersededChallenges, type AuthorizationChallenge } from "#harness/authorization.js";
 import { authorizationEventFields } from "#harness/authorization-event-fields.js";
-import { renderPendingApprovalsSnippet } from "#harness/hitl/approval-prompt.js";
+import { renderPendingApprovalsSnippet } from "#harness/session-machine/human-input/approval-prompt.js";
 import { isApprovalRequest } from "#harness/input-request-class.js";
 import {
   resolveApprovalOutcome,
@@ -12,7 +12,7 @@ import {
   type ResolvedInputBatch,
 } from "#harness/input-request-resolution.js";
 import { coalesceTurnInputs, createFrameworkUserMessage } from "#harness/messages.js";
-import { resolveSessionLimitContinuation } from "#harness/session-limit-continuation.js";
+import { resolveSessionLimitContinuation } from "#harness/session-machine/human-input/budget-request.js";
 import type { StepInput } from "#harness/types.js";
 import { readClientContext } from "#internal/client-context.js";
 import {
@@ -35,7 +35,7 @@ import {
 } from "#protocol/session-projection.js";
 import type { RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
 import type { InputRequest } from "#shared/input.js";
-import type { Transition } from "./commit.js";
+import type { Transition } from "../commit.js";
 import {
   canonicalize,
   compactInput,
@@ -45,7 +45,7 @@ import {
   withoutResponses,
   type ResolvedStepInput,
 } from "./delivery.js";
-import type { StepCoordinates, SuspendedStep, TurnState } from "./state.js";
+import type { StepCoordinates, SuspendedStep, TurnState } from "../view.js";
 import { withoutCalls } from "#harness/inline-tool-authorization.js";
 import {
   finishTurn,
@@ -53,25 +53,26 @@ import {
   settle,
   stepCallIds,
   stopForSignIn,
+  suspend,
   withResult,
-} from "./transitions.js";
-import { activeTurnId, turnPosition, type SessionView } from "./view.js";
+} from "../transitions.js";
+import { turnPosition, type SessionView } from "../view.js";
 
 // The session's human-in-the-loop transitions. A model step parks on the approvals its calls
-// need (`parkStep`), a delivery answers them (`answer`), an exhausted budget asks to continue
+// need (`parkOnApprovals`), a delivery answers them (`answer`), an exhausted budget asks to continue
 // (`requestLimit`), and a sign-in stops the calls that need it (`requireSignIn`). Every approval
 // rule lives in these four; the rest of the machine sees only calls with and without results.
 
 // ---------------------------------------------------------------------------
-// parkStep
+// parkOnApprovals
 // ---------------------------------------------------------------------------
 
 /**
- * A model response made calls that can't all settle in this step: some need approval, others
- * run on the runtime. The response waits in a suspended step. Asking for approval ends the turn
- * unless the runtime still runs calls for it; the session serves other turns meanwhile.
+ * A model response made calls that need a person's approval. The response waits in a suspended
+ * step, beside any runtime calls it made. Asking ends the turn unless the runtime still runs calls
+ * for it; the session serves other turns meanwhile.
  */
-export function parkStep(
+export function parkOnApprovals(
   view: SessionView,
   input: {
     readonly event: StepCoordinates;
@@ -82,27 +83,21 @@ export function parkStep(
     readonly requester?: SuspendedStep["requester"];
   },
 ): Transition {
-  const response = withoutApprovalParts(input.messages);
   // Every anonymous caller shares one synthetic identity, so an anonymous requester can't be told
   // apart from another anonymous responder: record none.
   const requester = input.requester?.principalType === "anonymous" ? null : input.requester;
-  const step = (messages: readonly ModelMessage[]): SuspendedStep => ({
+  // Results of work resumed in this step stay ahead of the notice; the rest waits for approval.
+  const pendingStart = input.messages.findIndex((message) => message.role !== "tool");
+  const committed = pendingStart === -1 ? input.messages : input.messages.slice(0, pendingStart);
+  const snippet = renderPendingApprovalsSnippet(input.requests);
+  const turn = suspend(view.turn, {
     event: input.event,
-    messages,
+    messages: input.messages.slice(committed.length),
     requester,
     requests: input.requests,
     responseAuthRequiredRequestIds: input.responseAuthRequiredRequestIds,
     tasks: input.tasks,
   });
-  if (input.requests.length === 0) {
-    return { events: [], turn: suspend(view.turn, step(response)) };
-  }
-
-  // Results of work resumed in this step stay ahead of the notice; the rest waits for approval.
-  const pendingStart = response.findIndex((message) => message.role !== "tool");
-  const committed = pendingStart === -1 ? response : response.slice(0, pendingStart);
-  const snippet = renderPendingApprovalsSnippet(input.requests);
-  const turn = suspend(view.turn, step(response.slice(committed.length)));
   const events: UnstampedMessageStreamEvent[] = [
     createInputRequestedEvent({ requests: input.requests, ...input.event }),
   ];
@@ -117,20 +112,31 @@ export function parkStep(
   };
 }
 
-function suspend(turn: TurnState, step: SuspendedStep): TurnState {
-  return { ...turn, suspended: [...turn.suspended, step] };
-}
-
-/** eve runs approved calls itself, so the SDK's approval parts never reach history. */
-function withoutApprovalParts(messages: readonly ModelMessage[]): ModelMessage[] {
-  return messages.flatMap((message): ModelMessage[] => {
-    if (message.role !== "assistant" && message.role !== "tool") return [message];
-    if (!Array.isArray(message.content)) return [message];
-    const content = message.content.filter(
-      (part) => part.type !== "tool-approval-request" && part.type !== "tool-approval-response",
-    );
-    return content.length === 0 ? [] : [{ ...message, content } as ModelMessage];
+/**
+ * Approved workflow and agent calls join the runs their steps wait on. The turn's own input
+ * waits with the last of them, so the model reads it after their results.
+ */
+export function dispatch(
+  view: SessionView,
+  input: {
+    readonly tasks: readonly RuntimeWorkflowTaskRequest[];
+    readonly following?: readonly ModelMessage[];
+  },
+): Transition {
+  let last = -1;
+  const suspended = view.turn.suspended.map((step, index) => {
+    const calls = stepCallIds(step);
+    const tasks = input.tasks.filter((task) => calls.has(task.callId));
+    if (tasks.length === 0) return step;
+    last = index;
+    return { ...step, tasks: [...step.tasks, ...tasks] };
   });
+  const following = input.following ?? [];
+  if (last >= 0 && following.length > 0) {
+    const step = suspended[last]!;
+    suspended[last] = { ...step, messages: [...step.messages, ...following] };
+  }
+  return { events: [], turn: { ...view.turn, suspended } };
 }
 
 // ---------------------------------------------------------------------------
@@ -293,7 +299,7 @@ export function answer(
         },
       ],
     };
-    events.push(resolvedEvent(batch, position));
+    events.push(resolvedEvent(batch));
     const leftover = leftoverFor(answerable);
     if (leftover.length > 0) queue({ inputResponses: leftover });
     return done({
@@ -362,7 +368,7 @@ export function answer(
     });
     return { ...step, messages, requests: [] };
   });
-  events.push(...batches.map((batch) => resolvedEvent(batch, position)), ...rejected);
+  events.push(...batches.map(resolvedEvent), ...rejected);
   turn = { ...turn, grants: [...grants], suspended };
   return done({
     consumedMessage: resolved?.messageConsumed,
@@ -373,17 +379,13 @@ export function answer(
 }
 
 /** The `input.resolved` for a batch, at the coordinates of the step that asked. */
-function resolvedEvent(
-  batch: ResolvedInputBatch,
-  position: ReturnType<typeof turnPosition>,
-): UnstampedMessageStreamEvent {
+function resolvedEvent(batch: ResolvedInputBatch): UnstampedMessageStreamEvent {
   return createInputResolvedEvent({
     resolutions: batch.inputs.map((resolved) => {
       const resolution = {
         kind: resolved.request.kind,
         outcome: resolved.outcome,
         requestId: resolved.request.requestId,
-        ...(resolved.outcome === "approved" && { resumeTurnId: activeTurnId(position) }),
       };
       return resolved.response === undefined
         ? resolution

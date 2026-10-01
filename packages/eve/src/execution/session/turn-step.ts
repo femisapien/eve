@@ -4,12 +4,7 @@ import { setEveAttributes } from "#runtime/attributes/emit.js";
 import { defaultDeliverResult } from "#channel/adapter.js";
 import { contextStorage } from "#context/container.js";
 import { runStep } from "#context/run-step.js";
-import {
-  drainDynamicInstructionUserMessages,
-  prepareDynamicInstructionPreamble,
-} from "#context/dynamic-instruction-lifecycle.js";
 import { refreshDynamicSessionSubagentsForRuntimeRevision } from "#context/dynamic-subagent-lifecycle.js";
-import { drainMemoryCommit, prepareMemoryPreamble } from "#context/memory-lifecycle.js";
 import {
   rebindMissingCompiledDynamicToolCallbacks,
   refreshDynamicSessionToolsForRuntimeRevision,
@@ -36,12 +31,7 @@ import * as agentTraceState from "#tracing/agent-trace-context-store.js";
 import { matchAuthorizationCallbacks } from "#execution/authorization-callback-match.js";
 import { isTurnCancellation, throwIfTurnAborted } from "#harness/turn-cancellation.js";
 import { setChannelContext } from "#execution/channel-context.js";
-import {
-  activeTurnId,
-  isBetweenTurns,
-  queuedInput,
-  turnPosition,
-} from "#harness/session-machine/view.js";
+import { activeTurnId, isBetweenTurns, turnPosition } from "#harness/session-machine/view.js";
 import {
   currentProjection,
   enterSessionProjection,
@@ -52,16 +42,12 @@ import {
   dropClosedRecords,
   sessionView,
 } from "#harness/session-machine/commit.js";
-import { completeSignIn, idle } from "#harness/session-machine/transitions.js";
+import { idle } from "#harness/session-machine/transitions.js";
 import {
   sessionStartedForResolvers,
   turnStartedForResolvers,
 } from "#harness/session-machine/resolver-events.js";
-import {
-  coalesceTurnInputs,
-  createTurnInputMessages,
-  validateHarnessModelMessages,
-} from "#harness/messages.js";
+import { coalesceTurnInputs, validateHarnessModelMessages } from "#harness/messages.js";
 import type { HarnessSession, StepInput, StepResult } from "#harness/types.js";
 import type {
   DurableStepResult,
@@ -90,7 +76,6 @@ import {
   readDurableSession,
 } from "#execution/durable-session-store.js";
 import { buildRuntimeIdentity, createExecutionNodeStep } from "#execution/node-step.js";
-import { prepareWorkflowPreambleTrace } from "#execution/workflow-trace-context.js";
 import { resolveEffectiveAgentRuntime } from "#execution/effective-agent-config.js";
 import { reconcileSessionContinuationToken } from "#execution/reconcile-session-continuation-token.js";
 import { hydrateDurableSession, refreshSessionFromTurnAgent } from "#execution/session.js";
@@ -102,6 +87,7 @@ import {
   createCancelledModelCallBatchResult,
   type CompletedModelCallCheckpoint,
 } from "#execution/cancelled-model-call-batch.js";
+import type { AuthorizationChallenge } from "#harness/authorization.js";
 
 function channelDeliveryErrorCode(error: unknown): string {
   if (typeof error === "object" && error !== null && "code" in error) {
@@ -442,6 +428,7 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
     const runHarnessStep = async (
       lifecycleSession: HarnessSession,
       stepInput: StepInput | undefined,
+      signInCompletions: readonly AuthorizationChallenge[] | undefined,
     ): Promise<StepResult> => {
       const refreshedSession = refreshSessionFromTurnAgent({
         compactionOverrides: {
@@ -461,6 +448,7 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
         createRuntime: createWorkflowRuntime,
         handleEvent,
         prepareApprovalTurn: (event) => dynamicConnections.dispatch(turnStartedForResolvers(event)),
+        signInCompletions,
         historyProjector: history.projector,
         historyView: history.prepare(modelSession),
         instrumentation,
@@ -501,66 +489,12 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
                 ? undefined
                 : { sequence: connectionState.sequence, turnId: activeTurnId(connectionState) },
             );
-            if (firstCall && completedAuths) {
-              // A completion precedes the turn it resumes, at the coordinates of the turn that
-              // asked; a connection's sign-in resumes that turn when nothing else has.
-              const resumes =
-                completedAuths.some(({ challenge }) => challenge.candidateId === undefined) &&
-                isBetweenTurns(currentProjection(ctx));
-              const queued = queuedInput(schemaSession.state);
-              const turnInput = createTurnInputMessages(
-                queued === undefined
-                  ? (stepInput ?? {})
-                  : stepInput === undefined
-                    ? queued
-                    : coalesceTurnInputs(queued, stepInput),
-              );
-              if (resumes) {
-                prepareDynamicInstructionPreamble(ctx, history.messages(schemaSession));
-                prepareMemoryPreamble(ctx, {
-                  history: schemaSession.history,
-                  input: turnInput,
-                  projector: history.projector,
-                  state: schemaSession.state,
-                });
-              }
-              try {
-                const traceContext = resumes
-                  ? await prepareWorkflowPreambleTrace({
-                      emissionState: turnPosition(currentProjection(ctx)),
-                      instrumentation,
-                    })
-                  : undefined;
-                schemaSession = await applyTransition(
-                  schemaSession,
-                  completeSignIn(sessionView(currentProjection(ctx), schemaSession.state), {
-                    completions: completedAuths.map(({ challenge }) => challenge),
-                    resume: resumes ? { runtime: runtimeIdentity, trace: traceContext } : undefined,
-                  }),
-                  handleEvent,
-                  history.projector({
-                    messages: [...schemaSession.history, ...turnInput],
-                    state: schemaSession.state,
-                  }),
-                );
-              } finally {
-                if (resumes) {
-                  const instructionMessages = drainDynamicInstructionUserMessages(ctx);
-                  const memoryCommit = drainMemoryCommit(ctx);
-                  schemaSession = {
-                    ...schemaSession,
-                    history: validateHarnessModelMessages([
-                      ...schemaSession.history,
-                      ...(memoryCommit?.recalledMessages ?? []),
-                      ...instructionMessages,
-                    ]),
-                    state: memoryCommit?.state ?? schemaSession.state,
-                  };
-                }
-              }
-            }
-
-            return runHarnessStep(schemaSession, stepInput);
+            // A sign-in completes before the turn it resumes, in the first call only.
+            const completions =
+              firstCall && completedAuths !== undefined
+                ? completedAuths.map(({ challenge }) => challenge)
+                : undefined;
+            return runHarnessStep(schemaSession, stepInput, completions);
           });
           // The waiting boundary may reach the client before this step returns.
           // Its settled result wins over a cancellation of that completed turn.

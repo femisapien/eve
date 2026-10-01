@@ -5,13 +5,13 @@ import { coalesceTurnInputs } from "#harness/messages.js";
 import {
   convertStaleResponsesToUserMessage,
   dropStaleSessionLimitContinuationResponses,
-} from "#harness/stale-input-responses.js";
+} from "#harness/session-machine/human-input/stale-responses.js";
 import type { StepInput } from "#harness/types.js";
 import { attachClientContext, readClientContext } from "#internal/client-context.js";
 import type { InputResponse } from "#shared/input.js";
-import type { SuspendedStep } from "./state.js";
-import { ownOpenRequestIds } from "./transitions.js";
-import type { SessionView } from "./view.js";
+import type { SuspendedStep } from "../state.js";
+import { ownOpenRequestIds } from "../transitions.js";
+import type { SessionView } from "../view.js";
 
 // How a delivery reaches `answer`: queued input joins it, stale answers turn into text, and a
 // plain-text answer becomes the response it stands for.

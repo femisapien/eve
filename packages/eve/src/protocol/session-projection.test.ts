@@ -4,7 +4,6 @@ import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import {
   callStatus,
   foldSession,
-  hasOpenWork,
   initialSessionProjection,
   pruneSessionProjection,
   turnCoordinates,
@@ -117,7 +116,6 @@ describe("foldSession", () => {
       },
     ]);
     expect(callStatus(asked, "call_1")).toBe("awaiting-input");
-    expect(hasOpenWork(asked)).toBe(true);
     const denied = foldSession(asked, {
       type: "input.resolved",
       data: {
@@ -126,7 +124,6 @@ describe("foldSession", () => {
       },
     });
     expect(callStatus(denied, "call_1")).toBe("rejected");
-    expect(hasOpenWork(denied)).toBe(false);
     expect(pruneSessionProjection(denied)).toMatchObject({ calls: {}, inputs: {}, turns: {} });
   });
 });

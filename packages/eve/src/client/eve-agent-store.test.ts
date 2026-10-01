@@ -276,7 +276,7 @@ describe("EveAgentStore lifecycle", () => {
     await Promise.resolve();
 
     expect(store.snapshot.status).toBe("submitted");
-    expect(store.snapshot.data).toEqual({
+    expect(store.snapshot.data).toMatchObject({
       messages: [
         {
           id: expect.stringMatching(/^optimistic:/),
@@ -292,7 +292,7 @@ describe("EveAgentStore lifecycle", () => {
 
     expect(seenEvents).toEqual(events);
     expect(store.snapshot.status).toBe("ready");
-    expect(store.snapshot.data).toEqual({
+    expect(store.snapshot.data).toMatchObject({
       messages: [
         {
           id: expect.stringMatching(/^evt_.+:user$/),

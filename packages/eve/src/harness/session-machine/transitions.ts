@@ -44,7 +44,7 @@ import {
   type SessionInput,
   type SessionProjection,
 } from "#protocol/session-projection.js";
-import type { RuntimeActionResult, RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
+import type { RuntimeActionResult } from "#shared/action-types.js";
 import type { JsonObject, JsonValue } from "#shared/json.js";
 import type { Transition } from "./commit.js";
 import { callStopped, inputWithdrawn, signInWithdrawn, type StopReason } from "./events.js";
@@ -90,14 +90,12 @@ function at(projection: SessionProjection) {
 
 /**
  * Input arrives: the session starts once, a turn opens unless one is open (steering joins it),
- * and a message is received. A turn opened by answers or a sign-in alone continues the turn
- * whose work it resumes.
+ * and a message is received.
  */
 export function receive(
   view: SessionView,
   input: {
     readonly message?: string | UserContent;
-    readonly continuesTurnId?: string | null;
     readonly runtime?: RuntimeIdentity;
     readonly trace?: RuntimeTraceContext;
   },
@@ -111,7 +109,6 @@ export function receive(
   if (position.turnId === "") {
     events.push(
       createTurnStartedEvent({
-        continuesTurnId: input.continuesTurnId ?? null,
         sequence: position.sequence,
         trace: input.trace,
         turnId,
@@ -245,30 +242,18 @@ export function settle(view: SessionView, input: { readonly results: readonly Se
 }
 
 /**
- * Approved workflow and agent calls join the runs their steps wait on. The turn's own input
- * waits with the last of them, so the model reads it after their results.
+ * A model response made calls the runtime runs. The response waits in a suspended step until
+ * every call it made has a result, so a call never reaches the model without its result.
  */
-export function dispatch(
+export function suspendStep(
   view: SessionView,
-  input: {
-    readonly tasks: readonly RuntimeWorkflowTaskRequest[];
-    readonly following?: readonly ModelMessage[];
-  },
+  step: Pick<SuspendedStep, "event" | "messages" | "tasks">,
 ): Transition {
-  let last = -1;
-  const suspended = view.turn.suspended.map((step, index) => {
-    const calls = stepCallIds(step);
-    const tasks = input.tasks.filter((task) => calls.has(task.callId));
-    if (tasks.length === 0) return step;
-    last = index;
-    return { ...step, tasks: [...step.tasks, ...tasks] };
-  });
-  const following = input.following ?? [];
-  if (last >= 0 && following.length > 0) {
-    const step = suspended[last]!;
-    suspended[last] = { ...step, messages: [...step.messages, ...following] };
-  }
-  return { events: [], turn: { ...view.turn, suspended } };
+  return { events: [], turn: suspend(view.turn, { ...step, requests: [] }) };
+}
+
+export function suspend(turn: TurnState, step: SuspendedStep): TurnState {
+  return { ...turn, suspended: [...turn.suspended, step] };
 }
 
 /** The ids of the calls a step's response made, except provider-executed ones. */
@@ -502,45 +487,28 @@ export function runSignIn(
 // Sign-ins
 // ---------------------------------------------------------------------------
 
-/**
- * Sign-in callbacks arrived. Each completion is reported at the coordinates of the turn that
- * asked, before the turn it resumes opens; `resume` opens that turn when nothing else has.
- */
+/** Sign-in callbacks arrived: each completion is reported at the coordinates of the turn that asked. */
 export function completeSignIn(
   view: SessionView,
-  input: {
-    readonly completions: readonly AuthorizationChallenge[];
-    readonly resume?: {
-      readonly runtime?: RuntimeIdentity;
-      readonly trace?: RuntimeTraceContext;
-    };
-  },
+  input: { readonly completions: readonly AuthorizationChallenge[] },
 ): Transition {
   const position = at(view.projection);
-  const asked = (challenge: AuthorizationChallenge) =>
-    challenge.attemptId === undefined
-      ? undefined
-      : view.projection.authorizations[challenge.attemptId];
-  const events: UnstampedMessageStreamEvent[] = input.completions.map((challenge) => {
-    const attempt = asked(challenge);
-    return createAuthorizationCompletedEvent({
-      ...authorizationEventFields(challenge),
-      outcome: "authorized",
-      sequence: attempt?.sequence ?? position.sequence,
-      stepIndex: attempt?.stepIndex ?? position.stepIndex,
-      turnId: attempt?.turnId ?? position.turnId,
-    });
-  });
-  if (input.resume !== undefined && view.projection.activeTurnId === undefined) {
-    const signIn = input.completions.find((challenge) => challenge.candidateId === undefined);
-    const opened = receive(view, {
-      continuesTurnId: signIn === undefined ? null : (asked(signIn)?.turnId ?? null),
-      runtime: input.resume.runtime,
-      trace: input.resume.trace,
-    });
-    events.push(...opened.events);
-  }
-  return unchanged(view, events);
+  return unchanged(
+    view,
+    input.completions.map((challenge) => {
+      const attempt =
+        challenge.attemptId === undefined
+          ? undefined
+          : view.projection.authorizations[challenge.attemptId];
+      return createAuthorizationCompletedEvent({
+        ...authorizationEventFields(challenge),
+        outcome: "authorized",
+        sequence: attempt?.sequence ?? position.sequence,
+        stepIndex: attempt?.stepIndex ?? position.stepIndex,
+        turnId: attempt?.turnId ?? position.turnId,
+      });
+    }),
+  );
 }
 
 /** A sign-in stops the calls that need it: each settles `cancelled` until the sign-in completes. */

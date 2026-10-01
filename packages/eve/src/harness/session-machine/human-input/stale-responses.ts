@@ -1,7 +1,7 @@
 import type { UserContent } from "ai";
 
 import { appendUserContent, normalizeUserContent } from "#harness/messages.js";
-import { isSessionLimitContinuationRequestId } from "#harness/session-limit-continuation.js";
+import { isSessionLimitContinuationRequestId } from "#harness/session-machine/human-input/budget-request.js";
 import type { StepInput } from "#harness/types.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
 

@@ -195,11 +195,6 @@ export interface SessionStartedStreamEvent {
  */
 export interface TurnStartedStreamEvent {
   data: {
-    /**
-     * The earlier turn whose parked work this turn resumes, such as the turn that asked for the
-     * approvals or the sign-in it continues; `null` for a fresh turn. Absent from older writers.
-     */
-    continuesTurnId?: string | null;
     sequence: number;
     trace?: RuntimeTraceContext;
     turnId: string;
@@ -331,8 +326,6 @@ export interface InputResolution {
   readonly outcome: InputResolutionOutcome;
   readonly requestId: string;
   readonly response?: InputResponse;
-  /** The turn that runs an approved call: the open turn, or the one the approval opens. */
-  readonly resumeTurnId?: string;
 }
 
 /**
@@ -958,7 +951,6 @@ export function createSessionStartedEvent(input?: {
  * Creates the `turn.started` event for one prepared runtime turn.
  */
 export function createTurnStartedEvent(input: {
-  readonly continuesTurnId?: string | null;
   readonly sequence: number;
   readonly trace?: RuntimeTraceContext;
   readonly turnId: string;
@@ -967,7 +959,6 @@ export function createTurnStartedEvent(input: {
     sequence: input.sequence,
     turnId: input.turnId,
   };
-  if (input.continuesTurnId !== undefined) data.continuesTurnId = input.continuesTurnId;
 
   if (input.trace !== undefined) {
     data.trace = input.trace;

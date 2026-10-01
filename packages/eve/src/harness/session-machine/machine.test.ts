@@ -15,16 +15,16 @@ import {
   type SessionProjection,
 } from "#protocol/session-projection.js";
 import type { InputRequest } from "#shared/input.js";
-import { createSessionLimitContinuationRequest } from "#harness/session-limit-continuation.js";
+import { createSessionLimitContinuationRequest } from "#harness/session-machine/human-input/budget-request.js";
 import {
   answer,
   grantedApprovalKeys,
-  parkStep,
+  parkOnApprovals as parkOnApprovalsTransition,
   requestLimit,
   requireSignIn,
   type ResponsePolicyPass,
-} from "./approvals.js";
-import { deliver } from "./delivery.js";
+} from "./human-input/approvals.js";
+import { deliver } from "./human-input/delivery.js";
 import { applyTransition, sessionView, type Transition } from "./commit.js";
 import {
   cancel,
@@ -33,6 +33,7 @@ import {
   receive,
   relay,
   settle,
+  suspendStep,
   startStep,
   type SettledCall,
 } from "./transitions.js";
@@ -108,11 +109,6 @@ function callMessage(...callIds: string[]): ModelMessage {
         toolName: "deploy",
         type: "tool-call" as const,
       },
-      {
-        approvalId: `approval-${callId}`,
-        toolCallId: callId,
-        type: "tool-approval-request" as const,
-      },
     ]),
     role: "assistant",
   };
@@ -170,7 +166,7 @@ async function parkOnApprovals(machine: Machine, ...callIds: string[]) {
     }),
   );
   return machine.apply(
-    parkStep(machine.view(), {
+    park(machine.view(), {
       event: {
         sequence: position.sequence,
         stepIndex: position.stepIndex,
@@ -200,9 +196,8 @@ describe("session machine", () => {
     ]);
     expect(machine.projection.activeTurnId).toBeUndefined();
     expect(callStatus(machine.projection, "call-1")).toBe("awaiting-input");
-    // The response waits outside history, without the SDK's approval parts.
-    const [step] = suspendedSteps(machine.session.state);
-    expect(JSON.stringify(step?.messages)).not.toContain("tool-approval");
+    // The response waits outside history until its calls have results.
+    expect(suspendedSteps(machine.session.state)).toHaveLength(1);
     expect(machine.session.history.map((message) => message.content)).toEqual([
       expect.stringContaining("[Pending approvals]"),
     ]);
@@ -215,17 +210,14 @@ describe("session machine", () => {
     expect(machine.eventsSince(before)).toEqual([
       expect.objectContaining({
         data: expect.objectContaining({
-          resolutions: [expect.objectContaining({ outcome: "approved", resumeTurnId: "turn_1" })],
+          resolutions: [expect.objectContaining({ outcome: "approved" })],
           turnId: "turn_0",
         }),
         type: "input.resolved",
       }),
     ]);
 
-    await machine.apply(
-      receive(machine.view(), { continuesTurnId: decision.resolved[0]?.event.turnId }),
-    );
-    expect(machine.projection.turns.turn_1?.continuesTurnId).toBe("turn_0");
+    await machine.apply(receive(machine.view(), {}));
 
     // eve ran the approved call: its result completes the step, which commits to history.
     await machine.apply(settle(machine.view(), { results: [result("call-1", "deployed")] }));
@@ -301,7 +293,7 @@ describe("session machine", () => {
       turnId: position.turnId,
     };
     await machine.apply(
-      parkStep(machine.view(), {
+      park(machine.view(), {
         event,
         messages: [
           {
@@ -353,7 +345,7 @@ describe("session machine", () => {
     await respond(machine, {
       inputResponses: [{ optionId: "approve", requestId: "approval-call-1" }],
     });
-    await machine.apply(receive(machine.view(), { continuesTurnId: "turn_0" }));
+    await machine.apply(receive(machine.view(), {}));
     await machine.apply(settle(machine.view(), { results: [result("call-1")] }));
     const results = machine.session.history.flatMap((message) =>
       message.role === "tool"
@@ -378,7 +370,7 @@ describe("session machine", () => {
       }),
     );
     await machine.apply(
-      parkStep(machine.view(), {
+      park(machine.view(), {
         event: {
           sequence: position.sequence,
           stepIndex: position.stepIndex,
@@ -462,7 +454,8 @@ describe("session machine", () => {
     expect(machine.projection.activeTurnId).toBeUndefined();
 
     const before = machine.events.length;
-    await machine.apply(completeSignIn(machine.view(), { completions: [challenge], resume: {} }));
+    await machine.apply(completeSignIn(machine.view(), { completions: [challenge] }));
+    await machine.apply(receive(machine.view(), {}));
     expect(
       machine
         .eventsSince(before)
@@ -474,7 +467,6 @@ describe("session machine", () => {
       ["authorization.completed", "turn_0"],
       ["turn.started", "turn_1"],
     ]);
-    expect(machine.projection.turns.turn_1?.continuesTurnId).toBe("turn_0");
   });
 
   it("relays a child's question under the call it serves and holds the open turn", async () => {
@@ -654,7 +646,7 @@ describe("receive", () => {
     expect(machine.eventsSince(0)).toEqual([
       { data: { trace }, type: "session.started" },
       {
-        data: { continuesTurnId: null, sequence: 0, trace, turnId: "turn_0" },
+        data: { sequence: 0, trace, turnId: "turn_0" },
         type: "turn.started",
       },
       expect.objectContaining({
@@ -674,3 +666,12 @@ describe("receive", () => {
     expect(machine.events.slice(before)).toEqual(["message.received"]);
   });
 });
+
+function park(
+  view: Parameters<typeof parkOnApprovalsTransition>[0],
+  input: Parameters<typeof parkOnApprovalsTransition>[1],
+): Transition {
+  return input.requests.length === 0
+    ? suspendStep(view, input)
+    : parkOnApprovalsTransition(view, input);
+}

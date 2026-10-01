@@ -6,13 +6,13 @@ import { SessionKey } from "#context/keys.js";
 import {
   getApprovalAuditState,
   markApprovalCandidateAuthorizationRequired,
-} from "#harness/approval-candidates.js";
+} from "#harness/session-machine/human-input/candidates.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 
 import type { SessionAuthContext } from "#channel/types.js";
-import { settleDirectApprovalResponse } from "#harness/approval-candidates.js";
-import { coordinateApprovalDelivery } from "#harness/approval-delivery-coordinator.js";
-import { approvingSteps } from "#harness/session-machine/approvals.js";
+import { settleDirectApprovalResponse } from "#harness/session-machine/human-input/candidates.js";
+import { coordinateApprovalDelivery } from "#harness/session-machine/human-input/coordinator.js";
+import { approvingSteps } from "#harness/session-machine/human-input/approvals.js";
 import { sessionView } from "#harness/session-machine/commit.js";
 import { storedProjection } from "#harness/session-machine/view.js";
 import { parkedSteps, withParkedStep } from "#internal/testing/session-machine.js";

@@ -6,7 +6,7 @@ import type {
 import { defaultMessageReducer } from "#client/message-reducer.js";
 import type { EveAgentReducer, EveAgentReducerEvent } from "#client/reducer.js";
 import type { MessageStreamEvent } from "#protocol/message.js";
-import { foldSession, initialSessionProjection } from "#protocol/session-projection.js";
+import { initialSessionProjection } from "#protocol/session-projection.js";
 
 /**
  * Transport facts about followed agent sessions. Only the canonical conversation receives them;
@@ -46,7 +46,7 @@ function observedConversation(observation: AgentObservation): ConversationState 
   return observation.status === "not-followed" ? undefined : observation.conversation;
 }
 
-/** Applies lifecycle identity and closure to an already projected message state. */
+/** Records the agent sessions the conversation's runs open, and the answers this client sent. */
 function reduceConversationLifecycle(
   state: ConversationState,
   event: EveAgentReducerEvent,
@@ -76,7 +76,7 @@ function reduceConversationLifecycle(
       return { ...state, inputs };
     }
     default:
-      return foldSession(state, event);
+      return state;
   }
 }
 
@@ -119,10 +119,11 @@ export function reduceConversation(
           ? { status: "unavailable" }
           : { status: "unavailable", conversation };
       });
-    default: {
-      const projected = messageReducer.reduce(state, event);
-      return reduceConversationLifecycle({ ...state, ...projected }, event);
-    }
+    default:
+      return reduceConversationLifecycle(
+        { ...state, ...messageReducer.reduce(state, event) },
+        event,
+      );
   }
 }
 

@@ -28,7 +28,12 @@ import {
   recordPublishedEvent,
   saveSessionProjection,
 } from "#harness/session-machine/current.js";
-import { activeTurnId, turnPosition } from "#harness/session-machine/view.js";
+import {
+  activeTurnId,
+  boundaryCompletesDeliveries,
+  owesDeliveryBoundary,
+  turnPosition,
+} from "#harness/session-machine/view.js";
 import { validateHarnessModelMessages, type HarnessModelMessage } from "#harness/messages.js";
 import type { HandleEventFn, HarnessSession, HarnessSessionBase } from "#harness/types.js";
 import { bindSessionInstrumentation } from "#instrumentation/runtime.js";
@@ -39,12 +44,7 @@ import {
   type MessageStreamEvent,
   type UnstampedMessageStreamEvent,
 } from "#protocol/message.js";
-import {
-  openInputs,
-  openSignIns,
-  type SessionProjection,
-  type SessionTurn,
-} from "#protocol/session-projection.js";
+import { type SessionProjection } from "#protocol/session-projection.js";
 import { BundleKey, ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
 
 const log = createLogger("execution.publish-session-events");
@@ -427,53 +427,29 @@ function openSessionEventWriter(input: {
   };
 }
 
-/**
- * Lists on a boundary the accepted deliveries whose response it completes. A turn that waits on
- * its tasks hasn't answered yet, and neither has a session waiting on a sign-in callback the
- * last turn asked for, since the callback resumes that work; otherwise every pending delivery is
- * complete.
- */
+/** Lists on a boundary the accepted deliveries whose response it completes. */
 function withProcessedDeliveries(
   ctx: ContextContainer,
   event: UnstampedMessageStreamEvent,
 ): UnstampedMessageStreamEvent {
   if (event.type !== "session.waiting" && event.type !== "turn.waiting") return event;
-  const projection = readSessionProjection(ctx);
-  const holds =
-    event.type === "turn.waiting"
-      ? openInputs(projection).length === 0 && openSignIns(projection).length === 0
-      : awaitsSignInCallback(projection);
+  const completes = boundaryCompletesDeliveries(readSessionProjection(ctx), event.type);
   const pending = ctx.get(PendingBoundaryDeliveryIdsKey) ?? [];
-  if (!holds) ctx.delete(PendingBoundaryDeliveryIdsKey);
+  if (completes) ctx.delete(PendingBoundaryDeliveryIdsKey);
   return {
     ...event,
-    data: { ...event.data, processedDeliveryIds: holds ? [] : pending },
+    data: { ...event.data, processedDeliveryIds: completes ? pending : [] },
   } as UnstampedMessageStreamEvent;
 }
 
-/** The last turn asked for a sign-in whose callback resumes its work. */
-function awaitsSignInCallback(projection: SessionProjection): boolean {
-  const lastTurn = Object.values(projection.turns).reduce<SessionTurn | undefined>(
-    (latest, turn) => (latest === undefined || turn.sequence > latest.sequence ? turn : latest),
-    undefined,
-  );
-  return openSignIns(projection).some(
-    (attempt) => attempt.awaitsCallback === true && attempt.turnId === lastTurn?.turnId,
-  );
-}
-
 /**
- * Whether a step that ends between turns still owes accepted deliveries a boundary: it
- * consumed them, an ignored message or an answer that left the session waiting, without
- * publishing one. Every accepted delivery reaches a boundary that lists it.
+ * Whether a step that ends between turns still owes accepted deliveries a boundary: it consumed
+ * them, an ignored message or an answer that left the session waiting, without publishing one.
  */
 export function deliveriesAwaitBoundary(ctx: ContextContainer): boolean {
-  const projection = readSessionProjection(ctx);
   return (
     (ctx.get(PendingBoundaryDeliveryIdsKey)?.length ?? 0) > 0 &&
-    projection.activeTurnId === undefined &&
-    projection.ended !== true &&
-    !awaitsSignInCallback(projection)
+    owesDeliveryBoundary(readSessionProjection(ctx))
   );
 }
 

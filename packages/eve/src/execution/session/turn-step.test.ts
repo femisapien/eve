@@ -60,7 +60,6 @@ import {
 } from "#execution/durable-session-store.js";
 import { buildRuntimeIdentity, createExecutionNodeStep } from "#execution/node-step.js";
 import { defineTool } from "#tools/definition.js";
-import { defineMemory } from "#public/memory/index.js";
 import { defineState } from "#public/definitions/state.js";
 import { stampDurableDynamicCallback } from "#tools/durable-callbacks.js";
 import { runProxySubagentEventStep } from "#subagents/event-proxy-step.js";
@@ -2500,192 +2499,98 @@ describe("turnStep", () => {
     ]);
   });
 
-  it.each([
-    [false, "none"],
-    [true, "none"],
-    [false, "current"],
-    [true, "current"],
-    [false, "deferred"],
-    [true, "deferred"],
-  ] as const)("auth resume (%s, %s)", async (withMemory, inputKind) => {
-    const challenge = {
-      attemptId: "attempt-statuspage",
-      challenge: {
-        instructions: "Sign in to continue",
-        url: "https://idp.example/authorize",
-      },
-      hookUrl: "https://app.example/eve/v1/connections/statuspage/callback/sess-test:auth",
-      name: "statuspage",
-      principal: { type: "app" } as const,
-      resume: { nonce: "n1" },
-    };
-    const hidden = {
-      content: "HIDE_FROM_AUTH_CONTINUATION",
-      kind: "user" as const,
-      role: "user" as const,
-    };
-    mockIdentityHistoryViewProjector.mockImplementation(({ messages }) =>
-      messages.filter((message) => message !== hidden),
-    );
-    const instructionHandler = vi.fn(
-      (_event: unknown, _context: { readonly messages: readonly ModelMessage[] }) => null,
-    );
-    const toolHandler = vi.fn(
-      (_event: unknown, _context: { readonly messages: readonly ModelMessage[] }) => null,
-    );
-    const recall = vi.fn(async () => ({
-      messages: [{ content: "Recalled context", id: "item" }],
-    }));
-    const memories = withMemory
-      ? [
-          {
-            ...defineMemory({
-              namespace: "test",
-              scope: "alice",
-              provider: { recall: { "turn.started": recall } },
-            }),
-            logicalPath: "memory/profile.ts",
-            slot: "profile",
-            sourceId: "memory/profile.ts",
-            sourceKind: "module",
-            visibility: "scope",
-          },
-        ]
-      : [];
-    const session = createStubSession({
-      history: [{ content: "visible", kind: "user", role: "user" }, hidden],
-      state: setPendingAuthorization({ retained: "yes" }, { challenges: [challenge] }),
-    });
-    const turnInput = {
-      context: ["Current context"],
-      message: "Alice follows up after signing in.",
-    };
-    installSessionStoreMocks([
-      inputKind === "deferred" ? withQueuedInput(session, turnInput) : session,
-    ]);
-    vi.mocked(getCompiledRuntimeAgentBundle).mockResolvedValue({
-      adapterRegistry: {
-        adaptersByKind: new Map([[threadContextAdapter.kind, threadContextAdapter]]),
-      },
-      compiledArtifactsSource: {} as never,
-      graph: {
-        nodesByNodeId: new Map(),
-        root: {
-          agent: { memories, connections: [] },
-          sandboxRegistry: { sandbox: null },
-          turnAgent: TestTurnAgent,
+  it.each(["none", "current", "deferred"] as const)(
+    "hands a completed sign-in to the harness (%s input)",
+    async (inputKind) => {
+      const challenge = {
+        attemptId: "attempt-statuspage",
+        challenge: {
+          instructions: "Sign in to continue",
+          url: "https://idp.example/authorize",
         },
-      },
-      moduleMap: { nodes: {} },
-      hookRegistry: createRuntimeHookRegistry([]),
-      resolvedAgent: {
-        config: {},
-        dynamicToolResolvers: [
-          {
-            eventNames: ["turn.started"],
-            events: { "turn.started": toolHandler },
-            logicalPath: "tools/auth.ts",
-            slug: "auth",
-            sourceId: "tools/auth.ts",
-            sourceKind: "module",
-          },
-        ],
-        dynamicInstructionsResolvers: [
-          {
-            eventNames: ["session.started", "turn.started"],
-            events: {
-              "session.started": instructionHandler,
-              "turn.started": instructionHandler,
-            },
-            logicalPath: "agent/instructions/auth.ts",
-            slug: "auth",
-            sourceId: "test:auth",
-            sourceKind: "module",
-          },
-        ],
-      },
-      subagentRegistry: {},
-      toolRegistry: {},
-      turnAgent: TestTurnAgent,
-    } as never);
-
-    let observedPendingAuth: unknown;
-    let observedStepInput: unknown = "not-called";
-    vi.mocked(createExecutionNodeStep).mockImplementation(() => {
-      return async (session, stepInput): Promise<StepResult> => {
-        observedPendingAuth = getPendingAuthorization(session.state);
-        observedStepInput = stepInput;
-        return { next: null, session };
+        hookUrl: "https://app.example/eve/v1/connections/statuspage/callback/sess-test:auth",
+        name: "statuspage",
+        principal: { type: "app" } as const,
+        resume: { nonce: "n1" },
       };
-    });
-
-    const result = await turnStep({
-      history: session.history,
-      input: {
-        kind: "deliver",
-        payloads: [
-          ...(inputKind === "current" ? [turnInput] : []),
-          {
-            authorizationCallback: {
-              attemptId: "attempt-statuspage",
-              callback: { code: "oauth-code" },
-              connectionName: "statuspage",
-            },
-          },
-        ],
-      },
-      sessionWritable: createTestWritable(),
-      serializedContext: createSerializedContext(),
-      sessionState: createStubSessionState(),
-    });
-
-    expect(observedPendingAuth).toBeUndefined();
-    expect(observedStepInput).toEqual(
-      inputKind === "current" ? { message: `thread=unset; user=${turnInput.message}` } : undefined,
-    );
-    expect(result).toMatchObject({
-      action: "park",
-      hasPendingAuthorization: false,
-    });
-    if (result.action === "park") {
-      expect(result.authorizationAttemptIds).toBeUndefined();
-    }
-    const persistedSession = vi.mocked(createDurableSessionValues).mock.calls.at(-1)?.[0];
-    expect(persistedSession?.state?.retained).toBe("yes");
-    expect(getPendingAuthorization(persistedSession?.state)).toBeUndefined();
-    expect(instructionHandler).toHaveBeenCalledTimes(2);
-    for (const call of instructionHandler.mock.calls) {
-      expect(call[1]).toMatchObject({
-        messages: [{ content: "visible", kind: "user", role: "user" }],
+      const session = createStubSession({
+        history: [{ content: "visible", kind: "user", role: "user" }],
+        state: setPendingAuthorization({ retained: "yes" }, { challenges: [challenge] }),
       });
-    }
-    expect(persistedSession?.history).toContain(hidden);
-    const expectedInput =
-      inputKind === "none"
-        ? []
-        : inputKind === "current"
-          ? [{ content: `thread=unset; user=${turnInput.message}`, kind: "user", role: "user" }]
-          : [
-              { content: "Current context", kind: "context.instruction", role: "user" },
-              { content: "Alice follows up after signing in.", kind: "user", role: "user" },
-            ];
-    expect(toolHandler).toHaveBeenCalledOnce();
-    expect(toolHandler.mock.calls[0]?.[1].messages).toEqual([
-      { content: "visible", kind: "user", role: "user" },
-      ...(withMemory ? [{ content: "Recalled context", kind: "memory.load", role: "user" }] : []),
-      ...expectedInput,
-    ]);
-    if (withMemory) {
-      expect(recall).toHaveBeenCalledOnce();
-      expect(recall).toHaveBeenCalledWith(
-        expect.objectContaining({ turn: expect.objectContaining({ input: expectedInput }) }),
+      const turnInput = {
+        context: ["Current context"],
+        message: "Alice follows up after signing in.",
+      };
+      installSessionStoreMocks([
+        inputKind === "deferred" ? withQueuedInput(session, turnInput) : session,
+      ]);
+      vi.mocked(getCompiledRuntimeAgentBundle).mockResolvedValue({
+        adapterRegistry: {
+          adaptersByKind: new Map([[threadContextAdapter.kind, threadContextAdapter]]),
+        },
+        compiledArtifactsSource: {} as never,
+        graph: {
+          nodesByNodeId: new Map(),
+          root: {
+            agent: { connections: [] },
+            sandboxRegistry: { sandbox: null },
+            turnAgent: TestTurnAgent,
+          },
+        },
+        moduleMap: { nodes: {} },
+        hookRegistry: createRuntimeHookRegistry([]),
+        resolvedAgent: { config: {} },
+        subagentRegistry: {},
+        toolRegistry: {},
+        turnAgent: TestTurnAgent,
+      } as never);
+
+      let observedPendingAuth: unknown;
+      let observedStepInput: unknown = "not-called";
+      vi.mocked(createExecutionNodeStep).mockImplementation(() => {
+        return async (session, stepInput): Promise<StepResult> => {
+          observedPendingAuth = getPendingAuthorization(session.state);
+          observedStepInput = stepInput;
+          return { next: null, session };
+        };
+      });
+
+      const result = await turnStep({
+        history: session.history,
+        input: {
+          kind: "deliver",
+          payloads: [
+            ...(inputKind === "current" ? [turnInput] : []),
+            {
+              authorizationCallback: {
+                attemptId: "attempt-statuspage",
+                callback: { code: "oauth-code" },
+                connectionName: "statuspage",
+              },
+            },
+          ],
+        },
+        sessionWritable: createTestWritable(),
+        serializedContext: createSerializedContext(),
+        sessionState: createStubSessionState(),
+      });
+
+      expect(observedPendingAuth).toBeUndefined();
+      expect(observedStepInput).toEqual(
+        inputKind === "current"
+          ? { message: `thread=unset; user=${turnInput.message}` }
+          : undefined,
       );
-      expect(
-        persistedSession?.history.some((message) => message.content === "Recalled context"),
-      ).toBe(true);
-      expect(persistedSession?.state?.["eve.memory"]).toBeDefined();
-    }
-  });
+      expect(result).toMatchObject({ action: "park", hasPendingAuthorization: false });
+      // The harness completes the sign-in and opens the turn it resumes.
+      expect(vi.mocked(createExecutionNodeStep).mock.calls.at(-1)?.[0].signInCompletions).toEqual([
+        expect.objectContaining({ attemptId: "attempt-statuspage", name: "statuspage" }),
+      ]);
+      const persistedSession = vi.mocked(createDurableSessionValues).mock.calls.at(-1)?.[0];
+      expect(persistedSession?.state?.retained).toBe("yes");
+      expect(getPendingAuthorization(persistedSession?.state)).toBeUndefined();
+    },
+  );
 });
 
 describe("emitTerminalSessionFailureStep", () => {

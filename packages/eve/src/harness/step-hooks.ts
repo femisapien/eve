@@ -128,7 +128,7 @@ interface StepHooks {
    * have been emitted before proceeding to post-step handling.
    *
    * Resolves once per hooks instance: a retried model call must rebuild
-   * hooks via a fresh `runOneModelCall` attempt. Re-running a call against
+   * hooks via a fresh `ModelCaller.call` attempt. Re-running a call against
    * hooks whose `stepResult` already resolved reads the previous attempt's
    * result, not the retry's.
    *

@@ -70,29 +70,6 @@ export function mergeToolMetadata(
   };
 }
 
-/**
- * Derives the approved-approval descriptor a resolved tool result carries
- * forward, or `undefined` when the tool part never had an approval.
- */
-export function approvedApproval(part: EveDynamicToolPart | undefined):
-  | {
-      readonly id: string;
-      readonly approved: true;
-      readonly reason?: string;
-      readonly isAutomatic?: boolean;
-    }
-  | undefined {
-  if (!part?.approval?.id) {
-    return undefined;
-  }
-  return {
-    approved: true,
-    id: part.approval.id,
-    isAutomatic: part.approval.isAutomatic,
-    reason: part.approval.reason,
-  };
-}
-
 /** Maps a runtime action request onto its normalized tool descriptor. */
 export function normalizeActionRequest(action: RuntimeActionRequest): ActionDescriptor {
   const name = actionRequestName(action);

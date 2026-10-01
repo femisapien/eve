@@ -14,9 +14,9 @@ import { isAsyncIterable } from "#shared/async-iterable.js";
 import { toError } from "#shared/errors.js";
 import type { InputRequest } from "#shared/input.js";
 import { parseJsonObject } from "#shared/json.js";
-import type { Publish } from "./commit.js";
-import type { SettledCall } from "./transitions.js";
-import type { TurnPosition } from "./view.js";
+import type { Publish } from "../commit.js";
+import type { SettledCall } from "../transitions.js";
+import type { TurnPosition } from "../view.js";
 
 /**
  * Runs approved local calls before the model reads their results. Like the calls a model step

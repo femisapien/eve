@@ -60,6 +60,7 @@ import {
   requestAuthorization,
 } from "#harness/authorization.js";
 import { sessionView } from "#harness/session-machine/commit.js";
+import { createAuthorizationRequiredEvent } from "#protocol/message.js";
 import { ownOpenRequestIds } from "#harness/session-machine/transitions.js";
 import { queuedInput, runtimeWait, storedProjection } from "#harness/session-machine/view.js";
 import {
@@ -67,12 +68,14 @@ import {
   parkedSteps,
   positionOf,
   withOpenTurn,
+  withPublished,
   withParkedStep,
 } from "#internal/testing/session-machine.js";
 import { PendingSkillAnnouncementKey } from "#context/dynamic-skill-lifecycle.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
 import { stashToolInterrupt } from "#harness/tool-interrupts.js";
-import { appendMissingToolResultMessages, createToolLoopHarness } from "#harness/tool-loop.js";
+import { appendMissingToolResultMessages } from "#harness/step/after-model.js";
+import { createToolLoopHarness } from "#harness/tool-loop.js";
 import { createTask, writeTaskTable } from "#execution/tasks/table.js";
 import { SessionLimitDeclinedError, TurnCancelledError } from "#harness/turn-cancellation.js";
 import {
@@ -6277,6 +6280,57 @@ describe("createToolLoopHarness", () => {
     ]);
   });
 
+  it("completes a connection's sign-in, then resumes its work in a turn of its own", async () => {
+    setupMockAgent({
+      finishReason: "stop",
+      response: { messages: [{ content: "Signed in; continuing.", role: "assistant" }] },
+      text: "Signed in; continuing.",
+      toolCalls: [],
+      toolResults: [],
+    });
+    const challenge = {
+      attemptId: "attempt-statuspage",
+      challenge: { url: "https://idp.example/authorize" },
+      hookUrl: "https://app.example/eve/v1/connections/statuspage/callback",
+      name: "statuspage",
+    };
+    // Alice's turn asked Bob's status page connection to sign in, then ended.
+    const session = withPublished(createTestSession(), [
+      { data: {}, type: "session.started" },
+      { data: { sequence: 0, turnId: "turn_0" }, type: "turn.started" },
+      createAuthorizationRequiredEvent({
+        attemptId: challenge.attemptId,
+        description: "Sign in to statuspage",
+        name: challenge.name,
+        sequence: 0,
+        stepIndex: 0,
+        turnId: "turn_0",
+        webhookUrl: challenge.hookUrl,
+      }),
+      { data: { sequence: 0, turnId: "turn_0" }, type: "turn.completed" },
+      { data: {}, type: "session.waiting" },
+    ] as UnstampedMessageStreamEvent[]);
+    const { emit, events } = createEventCollector();
+    const runStep = createToolLoopHarness(
+      createTestConfig(emit, { signInCompletions: [challenge] as never }),
+    );
+
+    await runStep(session, undefined);
+
+    expect(
+      events
+        .slice(0, 3)
+        .map((event) => [
+          event.type,
+          "data" in event && "turnId" in event.data && event.data.turnId,
+        ]),
+    ).toEqual([
+      ["authorization.completed", "turn_0"],
+      ["turn.started", "turn_1"],
+      ["step.started", "turn_1"],
+    ]);
+  });
+
   describe("authorization signal detection", () => {
     function createAuthSignals() {
       const full = requestAuthorization([
@@ -7750,9 +7804,15 @@ describe("createToolLoopHarness", () => {
     const result = await runStep(session, { message: "Delete the temp directory." });
 
     expect(typeof result.next).toBe("function");
+    // eve decides approvals itself, so history keeps the call and its result, not the SDK's parts.
     expect(result.session.history).toEqual([
       { content: "Delete the temp directory.", kind: "user" as const, role: "user" },
-      ...responseMessages,
+      ...responseMessages.map((message) => ({
+        ...message,
+        content: message.content.filter(
+          (part) => part.type !== "tool-approval-request" && part.type !== "tool-approval-response",
+        ),
+      })),
     ]);
     expect(events.filter((event) => event.type === "input.requested")).toEqual([]);
     expect(events.filter((event) => event.type === "actions.requested")).toHaveLength(1);

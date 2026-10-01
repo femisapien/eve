@@ -13,7 +13,7 @@ import type { SessionStateMap } from "#harness/types.js";
 import type { InputResolution } from "#protocol/message.js";
 import type { InputResponse } from "#shared/input.js";
 import { resolveTextToResponse } from "#channel/resolve-text.js";
-import { SESSION_LIMIT_STOP_OPTION_ID } from "#harness/session-limit-continuation.js";
+import { SESSION_LIMIT_STOP_OPTION_ID } from "#harness/session-machine/human-input/budget-request.js";
 
 /**
  * The routes a relayed batch leaves behind, under the coordinates this session announced for

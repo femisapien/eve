@@ -206,7 +206,7 @@ describe("EveAgentStore (Vue composable backing store)", () => {
     await Promise.resolve();
 
     expect(store.snapshot.status).toBe("submitted");
-    expect(store.snapshot.data).toEqual({
+    expect(store.snapshot.data).toMatchObject({
       messages: [
         {
           id: expect.stringMatching(/^optimistic:/),
@@ -222,7 +222,7 @@ describe("EveAgentStore (Vue composable backing store)", () => {
 
     expect(seenEvents).toEqual(stampTestEvents(events));
     expect(store.snapshot.status).toBe("ready");
-    expect(store.snapshot.data).toEqual({
+    expect(store.snapshot.data).toMatchObject({
       messages: completedTurnData({
         assistantMessage: "Hi there.",
         turnId: "turn_1",

@@ -6,8 +6,11 @@ import type { SessionStateMap, StepInput } from "#harness/types.js";
 import type { RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
 import {
   initialSessionProjection,
+  openInputs,
+  openSignIns,
   turnCoordinates,
   type SessionProjection,
+  type SessionTurn,
 } from "#protocol/session-projection.js";
 import {
   readTurnState,
@@ -149,4 +152,38 @@ export function servedCallCoordinates(
   const sequence = projection.turns[call.turnId]?.sequence;
   if (sequence === undefined) return undefined;
   return { sequence, stepIndex: call.stepIndex, turnId: call.turnId };
+}
+
+/**
+ * Whether a waiting boundary completes the responses of the deliveries the session accepted. A
+ * turn waiting on its own tasks hasn't answered yet; one waiting on a person has. Between turns,
+ * the session hasn't answered while a sign-in the last turn asked for will resume that work.
+ */
+export function boundaryCompletesDeliveries(
+  projection: SessionProjection,
+  boundary: "session.waiting" | "turn.waiting",
+): boolean {
+  return boundary === "turn.waiting"
+    ? openInputs(projection).length > 0 || openSignIns(projection).length > 0
+    : !awaitsSignInCallback(projection);
+}
+
+/** Whether a step that ends between turns owes the deliveries it accepted a waiting boundary. */
+export function owesDeliveryBoundary(projection: SessionProjection): boolean {
+  return (
+    projection.activeTurnId === undefined &&
+    projection.ended !== true &&
+    !awaitsSignInCallback(projection)
+  );
+}
+
+/** The last turn asked for a sign-in whose callback resumes its work. */
+function awaitsSignInCallback(projection: SessionProjection): boolean {
+  const lastTurn = Object.values(projection.turns).reduce<SessionTurn | undefined>(
+    (latest, turn) => (latest === undefined || turn.sequence > latest.sequence ? turn : latest),
+    undefined,
+  );
+  return openSignIns(projection).some(
+    (attempt) => attempt.awaitsCallback === true && attempt.turnId === lastTurn?.turnId,
+  );
 }

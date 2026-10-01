@@ -1,7 +1,12 @@
 import type { ModelMessage } from "ai";
 
 import { contextStorage } from "#context/container.js";
-import { grantedApprovalKeys, parkStep } from "#harness/session-machine/approvals.js";
+import {
+  grantedApprovalKeys,
+  parkOnApprovals,
+} from "#harness/session-machine/human-input/approvals.js";
+import { suspendStep } from "#harness/session-machine/transitions.js";
+import { withoutApprovalParts } from "#harness/step/after-model.js";
 import { sessionView } from "#harness/session-machine/commit.js";
 import { readTurnState, writeTurnState } from "#harness/session-machine/state.js";
 import {
@@ -82,14 +87,22 @@ export function withParkedStep(
 ): HarnessSession {
   const event = step.event ?? { sequence: 1, stepIndex: 0, turnId: "turn-1" };
   const opened = withOpenTurn(session, event);
-  const transition = parkStep(sessionView(storedProjection(opened.state), opened.state), {
+  const view = sessionView(storedProjection(opened.state), opened.state);
+  // A response parks without the SDK's approval parts, as the step normalizes it.
+  const parkedStep = {
     event,
-    messages: step.messages ?? [],
-    requester: step.requester,
-    requests: step.requests ?? [],
-    responseAuthRequiredRequestIds: step.responseAuthRequiredRequestIds,
+    messages: withoutApprovalParts(step.messages ?? []),
     tasks: step.tasks ?? [],
-  });
+  };
+  const transition =
+    (step.requests ?? []).length === 0
+      ? suspendStep(view, parkedStep)
+      : parkOnApprovals(view, {
+          ...parkedStep,
+          requester: step.requester,
+          requests: step.requests ?? [],
+          responseAuthRequiredRequestIds: step.responseAuthRequiredRequestIds,
+        });
   const parked = writeTurnState(
     {
       ...opened,

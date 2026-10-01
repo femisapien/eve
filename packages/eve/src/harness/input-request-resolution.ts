@@ -16,28 +16,6 @@ export interface ResolvedInputBatch {
   }[];
 }
 
-export function buildResolvedInputBatch(
-  batch: {
-    readonly event?: PendingInputBatchEvent;
-    readonly requests: readonly InputRequest[];
-  },
-  responses: readonly InputResponse[],
-): ResolvedInputBatch | undefined {
-  if (batch.event === undefined) return undefined;
-  const responseMap = new Map(responses.map((response) => [response.requestId, response]));
-  return {
-    event: batch.event,
-    inputs: batch.requests.map((request) => {
-      const response = responseMap.get(request.requestId);
-      return {
-        outcome: resolveInputOutcome(request.kind, response),
-        request,
-        response,
-      };
-    }),
-  };
-}
-
 /**
  * One request's terminal outcome once its batch resolves: an approval's
  * decision, or whether a question received a response.
