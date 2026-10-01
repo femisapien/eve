@@ -12,8 +12,6 @@ import {
 import type { Dirent } from "node:fs";
 import { dirname, join, relative } from "node:path";
 
-import { SERVER_OUTPUT_SKILLS_DIRECTORY } from "#channel/skill-files.js";
-
 import {
   EVE_SHARED_SERVER_FUNCTION_PATH,
   EVE_WORKFLOW_FLOW_ROUTE_PATH,
@@ -65,11 +63,7 @@ export async function materializeVercelWorkflowFunctionOutput(outputDir: string)
     force: true,
     recursive: true,
   });
-  // The flow function serves only the workflow queue route, never channel
-  // routes, so it does not carry the skill files `readSkill` serves.
-  const serverOutputSkillsPath = join(rootServerFunctionPath, SERVER_OUTPUT_SKILLS_DIRECTORY);
   await cp(rootServerFunctionPath, stagingPath, {
-    filter: (source) => source !== serverOutputSkillsPath,
     recursive: true,
     verbatimSymlinks: true,
   });

@@ -20,7 +20,8 @@ import {
 import { createProductionNitroArtifactsConfig } from "#internal/nitro/host/artifacts-config.js";
 import { createCompiledSandboxProviderPrunePlugin } from "#internal/nitro/host/compiled-sandbox-provider-prune-plugin.js";
 import { createDevelopmentRuntimePrunePlugin } from "#internal/nitro/host/development-runtime-prune-plugin.js";
-import { createServerOutputSkillFilesPlugin } from "#internal/nitro/host/server-output-skill-files-plugin.js";
+import { prepareSkillServerAssets } from "#internal/nitro/host/skill-server-assets.js";
+import { createLogger } from "#internal/logging.js";
 import { createExtensionScopePlugin } from "#internal/bundler/extension-scope-plugin.js";
 import { extensionOverridePaths } from "#compiler/extension-mount-bindings.js";
 import { createExtensionMountPlugin } from "#internal/bundler/extension-mount-plugin.js";
@@ -596,16 +597,8 @@ function createApplicationNitroBundlerConfiguration(
     preparedHost.compileResult.manifest,
     ...preparedHost.compileResult.manifest.subagents.map((subagent) => subagent.agent),
   ].flatMap((node) => node.extensionMounts);
-  const { manifest } = preparedHost.compileResult;
   const nitroBundlerPlugins = [
     options.development ? null : createDevelopmentRuntimePrunePlugin(),
-    // Dev reads skill files from the compile directory directly.
-    options.development
-      ? null
-      : createServerOutputSkillFilesPlugin({
-          skills: manifest.skills.map((skill) => skill.name),
-          skillsRoot: `${preparedHost.compileResult.paths.compileDirectoryPath}/${manifest.workspaceResourceRoot.logicalPath}/skills`,
-        }),
     compiledSandboxProviderPrunePlugin,
     createOptionalEngineDependencyPlugin(unconfiguredOptionalEnginePackages),
     createExtensionExternalDependencyPlugin(extensionMounts),
@@ -811,6 +804,24 @@ export async function createProductionApplicationNitro(
   );
 
   await prepareEveVersionedCacheDirectory(options.buildDir);
+  // Production reads skill files through Nitro server assets; dev reads the
+  // compile directory directly (see `createCompiledSkillFileSource`).
+  const { manifest } = preparedHost.compileResult;
+  const skillServerAssets = await prepareSkillServerAssets({
+    indexDirectory: join(options.buildDir, "eve-skill-index"),
+    skills: manifest.skills.map((skill) => skill.name),
+    skillsRoot: join(
+      preparedHost.compileResult.paths.compileDirectoryPath,
+      manifest.workspaceResourceRoot.logicalPath,
+      "skills",
+    ),
+  });
+  if (skillServerAssets.unaddressable.length > 0) {
+    createLogger("eve:build").warn(
+      'Skipped skill files whose paths contain "?" or "\\"; Nitro server assets cannot ship them.',
+      { files: skillServerAssets.unaddressable.join(", ") },
+    );
+  }
   const nitro = await createNitro({
     _cli: { command: "build" },
     buildDir: options.buildDir,
@@ -828,6 +839,7 @@ export async function createProductionApplicationNitro(
     rolldownConfig: bundler.nitroRolldownConfig,
     rollupConfig: bundler.nitroRollupConfig,
     rootDir: preparedHost.appRoot,
+    serverAssets: skillServerAssets.serverAssets,
     serverDir: false,
     traceDeps: bundler.tracedAppDependencies,
     traceOpts: { nft: { paths: bundler.tracedAppDependencyPaths } },
@@ -839,6 +851,12 @@ export async function createProductionApplicationNitro(
     }),
   });
   await writeEveVersionedCacheMetadata(options.buildDir);
+  // Nitro always appends a `server` asset for `<rootDir>/assets`. eve reads
+  // only its own bases, and reading storage would otherwise start bundling
+  // an app's `assets/` directory.
+  nitro.options.serverAssets = nitro.options.serverAssets.filter(
+    (asset) => asset.baseName !== "server",
+  );
 
   configureSharedApplicationNitro(nitro, preparedHost);
   configureNitroStepPlugins(nitro, join(preparedHost.workflowBuildDir, "steps.mjs"));
