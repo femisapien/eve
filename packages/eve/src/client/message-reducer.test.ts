@@ -19,6 +19,7 @@ import {
   createReasoningCompletedEvent,
   createResultCompletedEvent,
   createStepStartedEvent,
+  createTaskSettledEvent,
   createTurnCancelledEvent,
   createTurnCompletedEvent,
   createTurnFailedEvent,
