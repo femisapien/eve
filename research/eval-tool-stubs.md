@@ -127,8 +127,14 @@ model calls schedules_read
   tool, or a connection tool without a stub fails the turn with
   `TOOL_STUB_MISSING` and an error that names the set and the tool. Its real
   `execute` does not run. eve's default tools, such as `bash`, `web_fetch`,
-  and `load_skill`, run as usual. In a subagent, the missing stub fails the
-  subagent's turn, and the parent receives a failed subagent result.
+  and `load_skill`, run as usual. A missing stub in a subagent fails the
+  subagent's turn and the root session's turn.
+- **Tools outside the model step are stubbed by name.** A set can stub a
+  workflow tool, a local subagent, or a remote agent by its model-visible
+  name; the stub answers the whole call after any approval. Without a stub,
+  workflow tools and local subagents run for real and the agent sessions they
+  open share the set and its state. A remote agent without a stub fails the
+  turn.
 - **Connection tools are stubbed by their visible names.** The model reaches
   connection tools through `connection_search` and `connection_execute`, so a
   set stubs those names and branches on the input.
@@ -149,15 +155,13 @@ model calls schedules_read
 ## Scope
 
 In scope: tools in `agent/tools/`, eve's default tools when a set stubs them,
-dynamic tools, and connection tools.
+dynamic tools, connection tools, and, by name, workflow tools, local
+subagents, and remote agents.
 
 Out of scope:
 
-- workflow tools, including `ask_question` and workflow tools in
-  `agent/tools/`, and agent tools, which run outside the model step. They run
-  for real in a stubbed session;
 - provider-executed tools, such as a provider's built-in web search;
-- remote agents and deployed targets reached with `eve eval --url`;
+- deployed targets reached with `eve eval --url`;
 - matching rules on tool arguments, and recording real results for replay.
   A stub is a function, so it can branch on its input.
 
