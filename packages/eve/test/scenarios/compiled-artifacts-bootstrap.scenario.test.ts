@@ -4,7 +4,6 @@ import { pathToFileURL } from "node:url";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { createAgentDescriptionRouteArgs } from "../../src/channel/agent-description.js";
 import { compileAgent } from "../../src/compiler/compile-agent.js";
 import { writeCompiledArtifactsFiles } from "../../src/internal/application/compiled-artifacts.js";
 import { resolvePackageSourceFilePath } from "../../src/internal/application/package.js";
@@ -69,65 +68,6 @@ describe("writeCompiledArtifactsFiles", () => {
           compiledArtifactsSource: createBundledRuntimeCompiledArtifactsSource(),
         }),
       ).resolves.toEqual(compileResult.metadata);
-    });
-  });
-
-  it("embeds skill files that describe() and readSkill() read from bundled artifacts", async () => {
-    const { agentRoot, appRoot } = await createAppRoot("eve-compiled-artifacts-skills-", {
-      packageName: "compiled-artifacts-skills-test-agent",
-    });
-    const outDir = join(appRoot, ".workflow-build");
-    const skillRoot = join(agentRoot, "skills", "research");
-
-    await writeFile(join(agentRoot, "agent.ts"), 'export default { model: "openai/gpt-5.4" };\n');
-    await writeFile(join(agentRoot, "instructions.md"), "You are a precise assistant.\n");
-    await mkdir(join(skillRoot, "references"), { recursive: true });
-    // A case-variant entry file and names that collide with Object.prototype
-    // members must all survive generate -> import.
-    await writeFile(
-      join(skillRoot, "skill.MD"),
-      "---\nname: research\ndescription: Research carefully.\n---\n\n# Research\n",
-    );
-    await writeFile(join(skillRoot, "references", "api.md"), "nested\n");
-    await writeFile(join(skillRoot, "__proto__"), "proto\n");
-    await writeFile(join(skillRoot, "constructor"), "ctor\n");
-
-    const compileResult = await compileAgent({ startPath: appRoot });
-    const generatedArtifacts = await writeCompiledArtifactsFiles({
-      compileResult,
-      defaultWorkflowWorld: "local",
-      outDir,
-    });
-    const bootstrapSource = await readFile(generatedArtifacts.bootstrapPath, "utf8");
-    expect(bootstrapSource).not.toContain("nested");
-    const skillFilesSource = await readFile(
-      join(outDir, "compiled-artifacts-skill-files.mjs"),
-      "utf8",
-    );
-    expect(skillFilesSource).toContain("export default JSON.parse(");
-
-    await withRuntimeSession(createRuntimeSession("compiled-artifacts-skills"), async () => {
-      await import(pathToFileURL(generatedArtifacts.bootstrapPath).href);
-      const args = createAgentDescriptionRouteArgs(() =>
-        createBundledRuntimeCompiledArtifactsSource(),
-      );
-
-      const description = await args.describe();
-      expect(description.skills).toEqual([
-        {
-          description: "Research carefully.",
-          files: ["__proto__", "constructor", "references/api.md", "skill.MD"],
-          name: "research",
-        },
-      ]);
-      await expect(args.readSkill("research")).resolves.toContain("# Research");
-      await expect(args.readSkill("research", "SKILL.md")).resolves.toContain("# Research");
-      await expect(args.readSkill("research", "references/api.md")).resolves.toBe("nested\n");
-      await expect(args.readSkill("research", "__proto__")).resolves.toBe("proto\n");
-      await expect(args.readSkill("research", "constructor")).resolves.toBe("ctor\n");
-      await expect(args.readSkill("research", "toString")).rejects.toMatchObject({
-        code: "unknown-file",
-      });
     });
   });
 

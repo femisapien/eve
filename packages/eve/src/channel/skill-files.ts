@@ -1,42 +1,15 @@
-import { Buffer } from "node:buffer";
 import { constants } from "node:fs";
 import { lstat, open, readdir, realpath } from "node:fs/promises";
 import nodePath from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { CompiledWorkspaceResourceRoot } from "#compiler/manifest.js";
 import type { RuntimeCompiledArtifactsSource } from "#runtime/compiled-artifacts-source.js";
 import { resolveRuntimeCompilerArtifactPaths } from "#runtime/loaders/artifact-paths.js";
-import { readBundledCompiledArtifacts } from "#runtime/loaders/bundled-artifacts.js";
 import { isSkillEntryFileName, SKILL_ENTRY_FILE_NAME } from "#shared/skill-entry-file.js";
 
 /** Largest skill file `readSkill` returns. */
 export const MAX_SKILL_FILE_BYTES = 512 * 1024;
-
-/** Largest total of skill file bytes a bundled deployment embeds. */
-export const MAX_BUNDLED_SKILL_FILES_BYTES = 8 * 1024 * 1024;
-
-/**
- * One skill file embedded in bundled compiled artifacts. `content` is absent
- * when the file is over {@link MAX_SKILL_FILE_BYTES} or did not fit in
- * {@link MAX_BUNDLED_SKILL_FILES_BYTES}; the file is still listed.
- */
-export interface BundledSkillFile {
-  readonly content?: string;
-  readonly encoding?: "base64" | "utf8";
-  readonly size: number;
-}
-
-/**
- * Skill files of the root agent as `[skill, [[path, file], …]]` entries.
- *
- * Entries rather than objects keyed by name, so a skill or file named
- * `__proto__` or `constructor` round-trips through the generated module and
- * never collides with `Object.prototype`.
- */
-export type BundledSkillFiles = readonly (readonly [
-  skill: string,
-  files: readonly (readonly [path: string, file: BundledSkillFile])[],
-])[];
 
 export type SkillReadErrorCode =
   | "invalid-path"
@@ -68,20 +41,39 @@ export interface SkillFileSource {
 }
 
 /**
+ * Directory of the server build output, relative to the server entry, that
+ * holds a copy of the root agent's materialized `skills/` tree.
+ */
+export const SERVER_OUTPUT_SKILLS_DIRECTORY = "_eve-skills";
+
+/**
+ * Global that the server entry chunk of a production build sets to the
+ * `file:` URL of {@link SERVER_OUTPUT_SKILLS_DIRECTORY}. The entry is the
+ * only module whose location in the output is fixed, so it is the anchor;
+ * neither the working directory nor the app root is known on a deployed host.
+ */
+export const SERVER_OUTPUT_SKILLS_URL_GLOBAL = "__eveServerOutputSkillsUrl";
+
+/**
  * Selects the skill file source for the active compiled artifacts.
  *
  * Skill files are materialized under the node's workspace resource root by
  * `compiler/workspace-resources.ts` and stripped from the manifest. Disk
- * artifacts read that tree directly. Bundled artifacts carry a lazily loaded
- * copy of the root agent's skill files, written beside the bootstrap.
+ * artifacts read that tree directly. Production builds copy the root agent's
+ * tree into the server output, and bundled artifacts read that copy, so both
+ * go through {@link createDiskSkillFileSource}.
  */
 export function createCompiledSkillFileSource(input: {
   readonly compiledArtifactsSource: RuntimeCompiledArtifactsSource;
   readonly workspaceResourceRoot: CompiledWorkspaceResourceRoot;
 }): SkillFileSource {
   if (input.compiledArtifactsSource.kind !== "disk") {
-    const load = readBundledCompiledArtifacts()?.skillFiles;
-    return load === undefined ? unavailableSkillFileSource : createBundledSkillFileSource(load);
+    const url = (globalThis as { [SERVER_OUTPUT_SKILLS_URL_GLOBAL]?: unknown })[
+      SERVER_OUTPUT_SKILLS_URL_GLOBAL
+    ];
+    return typeof url === "string"
+      ? createDiskSkillFileSource(fileURLToPath(url))
+      : unavailableSkillFileSource;
   }
   const { compileDirectoryPath } = resolveRuntimeCompilerArtifactPaths(
     input.compiledArtifactsSource.appRoot,
@@ -91,68 +83,6 @@ export function createCompiledSkillFileSource(input: {
   );
 }
 
-/** Reads skill files embedded in bundled compiled artifacts. */
-export function createBundledSkillFileSource(
-  load: () => Promise<BundledSkillFiles>,
-): SkillFileSource {
-  let loaded: Promise<ReadonlyMap<string, ReadonlyMap<string, BundledSkillFile>>> | undefined;
-  const skillFiles = async (skill: string) => {
-    loaded ??= load().then(
-      (entries) => new Map(entries.map(([name, files]) => [name, new Map(files)])),
-    );
-    return (await loaded).get(skill);
-  };
-  const file = async (skill: string, path: string) => {
-    const entry = (await skillFiles(skill))?.get(path);
-    if (entry === undefined) {
-      throw new SkillReadError("unknown-file", `Skill "${skill}" has no file "${path}".`);
-    }
-    return entry;
-  };
-  return {
-    async listFiles(skill) {
-      return [...((await skillFiles(skill))?.keys() ?? [])].sort(comparePaths);
-    },
-    async fileSize(skill, path) {
-      return (await file(skill, path)).size;
-    },
-    async readFile(skill, path) {
-      const entry = await file(skill, path);
-      if (entry.content === undefined) {
-        throw new SkillReadError(
-          "unavailable",
-          `Skill "${skill}" file "${path}" is not embedded in this deployment: its skill files exceed the ${MAX_BUNDLED_SKILL_FILES_BYTES}-byte bundle limit.`,
-        );
-      }
-      return entry.encoding === "base64"
-        ? new Uint8Array(Buffer.from(entry.content, "base64"))
-        : new TextEncoder().encode(entry.content);
-    },
-  };
-}
-
-/**
- * Reads skill files from a materialized `skills/<name>/` tree.
- *
- * Only regular files reached through real directories are served:
- *
- * - A skill root (`skills/<name>`) that is a symlink lists no files and
- *   cannot be read.
- * - Listing skips symlinks and does not descend into symlinked directories.
- * - Before opening, every path component under the skill root is checked with
- *   `lstat`: directories must be real directories and the leaf a regular file.
- * - The leaf is opened with `O_NOFOLLOW` where the platform defines it, the
- *   open handle must be a regular file, and the `realpath` of the target must
- *   stay under the `realpath` of the skill root.
- *
- * Boundary: these checks cover every symlink present in the tree when a read
- * starts. They are not atomic. A process that can write to the compile
- * directory and swaps a checked directory for a symlink between the checks
- * and the open could redirect one read; the containment check narrows that
- * to the instant between `realpath` and `open`. The compile directory is
- * build output owned by the app, so such a writer can already change what
- * is served.
- */
 /**
  * Whether `target` lies strictly inside `root`, using the platform's path
  * rules: `realpath` returns backslash-separated, drive-lettered paths on
@@ -171,6 +101,28 @@ export function isStrictlyContainedPath(
   return first !== "..";
 }
 
+/**
+ * Reads skill files from a materialized `skills/<name>/` tree.
+ *
+ * Only regular files reached through real directories are served:
+ *
+ * - A skill root (`skills/<name>`) that is a symlink lists no files and
+ *   cannot be read.
+ * - Listing skips symlinks and does not descend into symlinked directories.
+ * - Before opening, every path component under the skill root is checked with
+ *   `lstat`: directories must be real directories and the leaf a regular file.
+ * - The leaf is opened with `O_NOFOLLOW` where the platform defines it, the
+ *   open handle must be a regular file, and the `realpath` of the target must
+ *   stay under the `realpath` of the skill root.
+ *
+ * Boundary: these checks cover every symlink present in the tree when a read
+ * starts. They are not atomic. A process that can write to the tree and
+ * swaps a checked directory for a symlink between the checks and the open
+ * could redirect one read; the containment check narrows that to the instant
+ * between `realpath` and `open`. The tree is build output owned by the app
+ * (the compile directory or the server output), so such a writer can already
+ * change what is served.
+ */
 export function createDiskSkillFileSource(skillsRoot: string): SkillFileSource {
   const openFile = async (skill: string, path: string) => {
     const skillRoot = `${skillsRoot}/${skill}`;
@@ -260,7 +212,7 @@ const unavailableSkillFileSource: SkillFileSource = {
 async function rejectUnavailable(): Promise<never> {
   throw new SkillReadError(
     "unavailable",
-    "Skill files are not available: the installed compiled artifacts carry no skill files.",
+    "Skill files are not available: this server was not built by `eve build`, so it carries no skill files.",
   );
 }
 
@@ -339,7 +291,7 @@ function tooLarge(skill: string, path: string, size: number): SkillReadError {
 }
 
 /** Decodes UTF-8 text without NUL bytes; returns `undefined` for anything else. */
-export function decodeText(bytes: Uint8Array): string | undefined {
+function decodeText(bytes: Uint8Array): string | undefined {
   if (bytes.includes(0)) return undefined;
   try {
     return new TextDecoder("utf-8", { fatal: true, ignoreBOM: true }).decode(bytes);

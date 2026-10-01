@@ -10,12 +10,6 @@ import {
   resolvePackageSourceFilePath,
 } from "#internal/application/package.js";
 import { buildPackageUserAgent } from "#internal/user-agent.js";
-import {
-  collectBundledSkillFiles,
-  serializeBundledSkillFilesModule,
-} from "#internal/application/bundled-skill-files.js";
-import { createLogger } from "#internal/logging.js";
-import { MAX_BUNDLED_SKILL_FILES_BYTES } from "#channel/skill-files.js";
 import type { AgentWorkflowWorldDefinition } from "#shared/agent-definition.js";
 import {
   sandboxPreparedArtifactsManifestSchema,
@@ -83,7 +77,6 @@ export async function writeCompiledArtifactsFiles(input: {
   const moduleMapPath = join(input.outDir, "compiled-artifacts-module-map.mjs");
   const instrumentationPluginPath = join(input.outDir, "compiled-artifacts-instrumentation.mjs");
   const workflowWorldPluginPath = join(input.outDir, "compiled-artifacts-workflow-world.mjs");
-  const skillFilesPath = join(input.outDir, "compiled-artifacts-skill-files.mjs");
   const sandboxPreparedArtifacts = sandboxPreparedArtifactsManifestSchema.parse(
     JSON.parse(await readFile(input.compileResult.paths.sandboxPreparedArtifactsPath, "utf8")),
   );
@@ -95,17 +88,6 @@ export async function writeCompiledArtifactsFiles(input: {
 
   await mkdir(input.outDir, { recursive: true });
   await writeFile(moduleMapPath, prepared.moduleMapCode);
-  const skillFiles = await collectBundledSkillFiles({
-    compileDirectoryPath: input.compileResult.paths.compileDirectoryPath,
-    manifest: input.compileResult.manifest,
-  });
-  if (skillFiles.omitted.length > 0) {
-    createLogger("eve:build").warn(
-      `Skill files exceed the ${MAX_BUNDLED_SKILL_FILES_BYTES}-byte bundle limit; readSkill cannot return these files in this deployment.`,
-      { files: skillFiles.omitted.join(", ") },
-    );
-  }
-  await writeFile(skillFilesPath, serializeBundledSkillFilesModule(skillFiles.files));
   await writeFile(
     bootstrapPath,
     createCompiledArtifactsBootstrapSource({
@@ -114,7 +96,6 @@ export async function writeCompiledArtifactsFiles(input: {
       metadata: input.compileResult.metadata,
       moduleMapImportPath: moduleMapPath,
       sandboxPreparedArtifacts,
-      skillFilesImportPath: skillFilesPath,
     }),
   );
   await writeFile(
@@ -280,7 +261,6 @@ export function createCompiledArtifactsBootstrapSource(input: {
   metadata: CompileMetadata;
   moduleMapImportPath: string;
   sandboxPreparedArtifacts: SandboxPreparedArtifactsManifest;
-  skillFilesImportPath: string;
 }): string {
   const agentName = input.compileResult.manifest.config.name;
 
@@ -298,9 +278,6 @@ export function createCompiledArtifactsBootstrapSource(input: {
     "",
     `const sandboxPreparedArtifacts = ${JSON.stringify(input.sandboxPreparedArtifacts, null, 2)};`,
     "",
-    "// Skill files load on first use so the bootstrap stays small.",
-    `const skillFiles = () => import(${stringifyEsmImportSpecifier(input.skillFilesImportPath)}).then((module) => module.default);`,
-    "",
     "export { moduleMap };",
     "",
     "export function installCompiledArtifactsBootstrap() {",
@@ -309,7 +286,6 @@ export function createCompiledArtifactsBootstrapSource(input: {
     "    metadata,",
     "    moduleMap,",
     "    sandboxPreparedArtifacts,",
-    "    skillFiles,",
     "  });",
     "}",
     "",

@@ -44,9 +44,8 @@ export interface RouteHandlerArgs<TState = undefined> {
    * whatever case it was authored with (`skill.md`, `Skill.MD`, …). Text
    * files return a string, other files return bytes. Throws for unknown
    * skills or files, paths that leave the skill, symlinks, and files over
-   * 512 KiB. Bundled deployments embed at most 8 MiB of skill files in total;
-   * files past that budget stay listed in `describe()` but throw
-   * `unavailable` here, and the build warns about them.
+   * 512 KiB. Production builds ship the skill files as plain server output
+   * files, so they count toward the deployed function's size limit.
    */
   readSkill(skill: string, path?: string): Promise<string | Uint8Array>;
 }
