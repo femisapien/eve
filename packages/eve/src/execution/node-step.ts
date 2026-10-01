@@ -267,6 +267,7 @@ function createRegisteredHarnessToolDefinition(input: {
     execute: resolveAuthoredExecute({
       rawExecute,
       scope: def.name,
+      withoutStub: def.owner.kind === "framework" ? "run" : "fail",
     }),
     frameworkAction:
       def.owner.kind === "framework" && def.name === LOAD_SKILL_TOOL_NAME
@@ -293,11 +294,12 @@ function createRegisteredHarnessToolDefinition(input: {
 function resolveAuthoredExecute(input: {
   readonly rawExecute: ResolvedToolDefinition["execute"];
   readonly scope: string;
+  readonly withoutStub: "fail" | "run";
 }): HarnessToolDefinition["execute"] {
-  const { rawExecute, scope } = input;
+  const { rawExecute, scope, withoutStub } = input;
   if (rawExecute === undefined) {
     return undefined;
   }
   const authored = rawExecute as (toolInput: unknown, ctx: unknown) => unknown;
-  return createToolExecuteWithAuth({ execute: authored, scope });
+  return createToolExecuteWithAuth({ execute: authored, scope, withoutStub });
 }

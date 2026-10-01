@@ -1,4 +1,7 @@
 import { buildBaseToolContext } from "#context/build-base-tool-context.js";
+import { loadContext } from "#context/container.js";
+import { ToolStubsKey } from "#context/keys.js";
+import { executeToolStub } from "#execution/tool-stubs.js";
 import type { SessionAuthContext } from "#channel/types.js";
 import type { ApprovalResponseAuth } from "#approval/definition.js";
 import type { ToolAuthOptions, ToolContext, ToolExecuteOptions } from "#tools/definition.js";
@@ -8,6 +11,12 @@ import { handleAuthorizationError } from "#runtime/connections/scoped-authorizat
 type ToolExecuteWithAuthInput<TInput> = {
   readonly scope: string;
   readonly execute: (toolInput: TInput, ctx: ToolContext) => unknown;
+  /**
+   * What a stubbed eval session does when its stub set has no stub for this
+   * tool. eve's built-in tools pass `"run"`. Authored, dynamic, and connection
+   * tools default to `"fail"`, which fails the turn.
+   */
+  readonly withoutStub?: "fail" | "run";
 };
 
 /** Supplies the shared auth capability to one authored tool execution. */
@@ -21,7 +30,14 @@ export function createToolExecuteWithAuth<TInput>(input: ToolExecuteWithAuthInpu
       requireAuth: auth.requireAuth,
     };
     return auth.run(() => {
-      return input.execute(toolInput, ctx);
+      const toolStubs = loadContext().get(ToolStubsKey);
+      if (toolStubs === undefined) return input.execute(toolInput, ctx);
+      return executeToolStub({
+        ctx,
+        runReal: input.withoutStub === "run" ? () => input.execute(toolInput, ctx) : undefined,
+        selection: toolStubs,
+        toolInput,
+      });
     });
   };
 }
