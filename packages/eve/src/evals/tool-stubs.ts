@@ -5,9 +5,14 @@ import { pathToFileURL } from "node:url";
 
 import type { ToolStubsSelection } from "#channel/types.js";
 import { contextStorage } from "#context/container.js";
-import { ToolStubsKey } from "#context/keys.js";
+import { ParentSessionKey, ToolStubsKey } from "#context/keys.js";
+import { createToolExecuteWithAuth } from "#execution/tool-auth.js";
+import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import type { ToolStubsDefinition } from "#evals/define-tool-stubs.js";
-import { TurnFailingToolError } from "#harness/turn-failing-tool-error.js";
+import {
+  recordTurnFailingToolError,
+  TurnFailingToolError,
+} from "#harness/turn-failing-tool-error.js";
 import { resolveEveEvaluationToolStubsDirectory } from "#internal/application/dev-environment.js";
 import { resolvePackageSourceFilePath } from "#internal/application/package.js";
 import type { ToolContext } from "#tools/definition.js";
@@ -33,12 +38,15 @@ interface ToolStubsProcessState {
    * subagents' state. Worlds live as long as the `eve eval` server.
    */
   readonly worlds: Map<string, { readonly state: unknown }>;
+  /** A missing stub a subagent hit, by world id, until the root session's next step. */
+  readonly subagentFailures: Map<string, TurnFailingToolError>;
 }
 
 // Shared on globalThis so every copy of eve loaded into the eval server sees the same worlds.
 const processState = ((globalThis as Record<symbol, unknown>)[Symbol.for("eve.toolStubs")] ??= {
   loaded: new Map(),
   sets: new Map(),
+  subagentFailures: new Map(),
   worlds: new Map(),
 }) as ToolStubsProcessState;
 
@@ -67,34 +75,89 @@ export function withToolStubs<TInput>(
   return (toolInput, ctx) => {
     const selection = contextStorage.getStore()?.get(ToolStubsKey);
     if (selection === undefined) return execute(toolInput, ctx);
-    const run = (loaded: LoadedToolStubSet) =>
-      runToolStub({ ctx, execute, loaded, selection, toolInput, withoutStub });
-    // The set loaded at session create, so the result normally passes through unwrapped.
-    const loaded = processState.loaded.get(toolStubSetKey(selection.set));
-    return loaded === undefined ? loadToolStubSet(selection.set).then(run) : run(loaded);
+    const runReal = withoutStub === "run" ? () => execute(toolInput, ctx) : undefined;
+    return runSelectedStub({ ctx, runReal, selection, toolInput });
   };
 }
 
-function runToolStub<TInput>(input: {
+/**
+ * Runs the selected set's stub for one call. Without a stub, `runReal` runs
+ * the real tool, and its absence fails the turn.
+ */
+function runSelectedStub(input: {
   readonly ctx: ToolContext;
-  readonly execute: ToolExecute<TInput>;
-  readonly loaded: LoadedToolStubSet;
+  readonly runReal: (() => unknown) | undefined;
   readonly selection: ToolStubsSelection;
-  readonly toolInput: TInput;
-  readonly withoutStub: "fail" | "run";
+  readonly toolInput: unknown;
 }): unknown {
-  const { ctx, loaded, selection } = input;
+  // The set loaded at session create, so the result normally passes through unwrapped.
+  const loaded = processState.loaded.get(toolStubSetKey(input.selection.set));
+  return loaded === undefined
+    ? loadToolStubSet(input.selection.set).then((set) => runToolStub(set, input))
+    : runToolStub(loaded, input);
+}
+
+function runToolStub(
+  loaded: LoadedToolStubSet,
+  input: Parameters<typeof runSelectedStub>[0],
+): unknown {
+  const { ctx, selection } = input;
   const stub = loaded.definition.tools[ctx.toolName];
   if (stub !== undefined) {
     return stub(input.toolInput, { ...ctx, state: readWorldState(selection, loaded) });
   }
-  if (input.withoutStub === "run") return input.execute(input.toolInput, ctx);
-  throw new TurnFailingToolError({
+  if (input.runReal !== undefined) return input.runReal();
+  const failure = new TurnFailingToolError({
     code: "TOOL_STUB_MISSING",
     message:
       `Stub set "${selection.set}" has no stub for tool "${ctx.toolName}", so the real tool did not run. ` +
       `Add tools.${ctx.toolName} to ${loaded.displayPath}.`,
   });
+  if (contextStorage.getStore()?.get(ParentSessionKey) !== undefined) {
+    processState.subagentFailures.set(selection.worldId, failure);
+  }
+  throw failure;
+}
+
+/**
+ * Prepares a tool that runs outside the model step (a workflow tool, a
+ * subagent, or a remote agent) for a stubbed session. When the stub set
+ * stubs the tool by name, the stub answers the call in the model step. A
+ * remote agent without a stub fails the turn, because it cannot use the
+ * session's stubs; other tools run as usual.
+ */
+export function withDispatchToolStubs(definition: HarnessToolDefinition): HarnessToolDefinition {
+  const selection = contextStorage.getStore()?.get(ToolStubsKey);
+  if (selection === undefined) return definition;
+  const loaded = processState.loaded.get(toolStubSetKey(selection.set));
+  const handling = definition.behavior?.handling;
+  const remote = handling?.kind === "dispatch" && handling.target.kind === "remote-agent-call";
+  if (loaded?.definition.tools[definition.name] === undefined && !remote) return definition;
+  return {
+    ...definition,
+    behavior: definition.behavior && { ...definition.behavior, handling: undefined },
+    execute: createToolExecuteWithAuth({
+      execute: (toolInput, ctx) =>
+        runSelectedStub({ ctx, runReal: undefined, selection, toolInput }),
+      scope: definition.name,
+    }),
+    executeInput: undefined,
+    workflowId: undefined,
+  };
+}
+
+/**
+ * Fails a root session's turn when one of its subagents called a tool the
+ * stub set does not stub. Runs before each harness step.
+ */
+export function recordSubagentToolStubFailure(): void {
+  const ctx = contextStorage.getStore();
+  const selection = ctx?.get(ToolStubsKey);
+  if (selection === undefined || ctx?.get(ParentSessionKey) !== undefined) return;
+  const failure = processState.subagentFailures.get(selection.worldId);
+  if (failure === undefined) return;
+  processState.subagentFailures.delete(selection.worldId);
+  recordTurnFailingToolError(failure);
 }
 
 function readWorldState(selection: ToolStubsSelection, loaded: LoadedToolStubSet): unknown {

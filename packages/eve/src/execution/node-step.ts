@@ -24,7 +24,11 @@ import { workflowIdForHandling } from "#runtime/subagents/workflow-reference.js"
 import { findRegisteredRuntimeTool } from "#runtime/tools/registry.js";
 import type { ResolvedToolDefinition } from "#runtime/types.js";
 import { createToolExecuteWithAuth } from "#execution/tool-auth.js";
-import { withToolStubs } from "#evals/tool-stubs.js";
+import {
+  recordSubagentToolStubFailure,
+  withDispatchToolStubs,
+  withToolStubs,
+} from "#evals/tool-stubs.js";
 import {
   createPreparedWorkflowToolHarnessDefinition,
   createWorkflowToolHarnessDefinition,
@@ -119,6 +123,7 @@ export function createExecutionNodeStep(input: CreateExecutionNodeStepInput): St
     tools,
   });
   return async (session, stepInput) => {
+    recordSubagentToolStubFailure();
     try {
       return await step(session, stepInput);
     } finally {
@@ -215,17 +220,19 @@ function resolveHarnessToolDefinition(input: {
 
   if (workflowId !== undefined) {
     if (registeredTool === null) {
-      return createPreparedWorkflowToolHarnessDefinition(input.tool);
+      return withDispatchToolStubs(createPreparedWorkflowToolHarnessDefinition(input.tool));
     }
-    return createWorkflowToolHarnessDefinition({
-      executeInput: registeredTool.definition.executeInput,
-      definition: createRegisteredHarnessToolDefinition({
-        behavior: input.tool.behavior,
-        definition: registeredTool.definition,
-        rootOnly: input.tool.rootOnly,
+    return withDispatchToolStubs(
+      createWorkflowToolHarnessDefinition({
+        executeInput: registeredTool.definition.executeInput,
+        definition: createRegisteredHarnessToolDefinition({
+          behavior: input.tool.behavior,
+          definition: registeredTool.definition,
+          rootOnly: input.tool.rootOnly,
+        }),
+        workflowId,
       }),
-      workflowId,
-    });
+    );
   }
 
   if (registeredTool === null) {

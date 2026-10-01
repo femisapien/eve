@@ -6,12 +6,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { ToolStubsSelection } from "#channel/types.js";
 import { contextStorage, loadContext } from "#context/container.js";
-import { ToolStubsKey } from "#context/keys.js";
+import { ParentSessionKey, ToolStubsKey } from "#context/keys.js";
 import { createToolExecuteWithAuth } from "#execution/tool-auth.js";
-import { selectToolStubs, withToolStubs } from "#evals/tool-stubs.js";
+import {
+  recordSubagentToolStubFailure,
+  selectToolStubs,
+  withDispatchToolStubs,
+  withToolStubs,
+} from "#evals/tool-stubs.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import { getPendingInputBatches } from "#harness/pending-input-batches.js";
 import { createToolLoopHarness } from "#harness/tool-loop.js";
+import { readTurnFailingToolError } from "#harness/turn-failing-tool-error.js";
 import type { HarnessSession } from "#harness/types.js";
 import {
   EVE_EVALUATION_ENV_FLAG,
@@ -379,6 +385,151 @@ describe("tool stubs in the tool loop", () => {
 
     expect(await fixture.readSchedules()).toEqual({
       schedules: [{ id: "sched_1", name: "Weekly commit activity" }],
+    });
+  });
+});
+
+describe("tools that run outside the model step in a stubbed session", () => {
+  const RELEASES = `
+import { defineToolStubs } from "eve/evals";
+
+export default defineToolStubs({
+  tools: {
+    deploy_release: (input) => ({ deployed: input.version }),
+  },
+});
+`;
+
+  function dispatchTool(
+    name: string,
+    target: NonNullable<NonNullable<HarnessToolDefinition["behavior"]>["handling"]>,
+    approval?: HarnessToolDefinition["approval"],
+  ): HarnessToolDefinition {
+    return {
+      approval,
+      behavior: { availability: [], handling: target },
+      description: `${name} test tool.`,
+      inputSchema: jsonSchema({ type: "object" }),
+      name,
+      workflowId: `workflow//./agent/tools/${name}//execute`,
+    };
+  }
+
+  function inStubbedSession<T>(
+    selection: ToolStubsSelection,
+    fn: () => T,
+    parent?: { readonly rootSessionId: string },
+  ): T {
+    const ctx = createApprovalContext();
+    ctx.set(ToolStubsKey, selection);
+    if (parent !== undefined) {
+      ctx.set(ParentSessionKey, {
+        callId: "call-parent",
+        rootSessionId: parent.rootSessionId,
+        sessionId: parent.rootSessionId,
+        turn: { id: "turn-parent", sequence: 1 },
+      });
+    }
+    return contextStorage.run(ctx, fn);
+  }
+
+  it("answers a workflow tool from its stub in the model step, keeping its approval", async () => {
+    await useStubsDirectory({ "evals/stubs/releases.ts": RELEASES });
+    const selection = await selectToolStubs("releases");
+    const approval = always();
+    const workflowTool = dispatchTool(
+      "deploy_release",
+      {
+        kind: "dispatch",
+        target: { entryPoint: "execute", kind: "workflow-tool-call", workflowId: "deploy" },
+      },
+      approval,
+    );
+
+    const result = await inStubbedSession(selection, async () => {
+      const stubbed = withDispatchToolStubs(workflowTool);
+      return {
+        approval: stubbed.approval,
+        output: await stubbed.execute!(
+          { version: "1.2.0" },
+          { messages: [], toolCallId: "call-1" },
+        ),
+        workflowId: stubbed.workflowId,
+      };
+    });
+
+    expect(result).toEqual({ approval, output: { deployed: "1.2.0" }, workflowId: undefined });
+  });
+
+  it("fails the turn for a remote agent the set does not stub", async () => {
+    await useStubsDirectory({ "evals/stubs/releases.ts": RELEASES });
+    const selection = await selectToolStubs("releases");
+    const remoteAgent = dispatchTool("billing", {
+      kind: "dispatch",
+      target: {
+        kind: "remote-agent-call",
+        nodeId: "subagents/billing",
+        remoteAgentName: "billing",
+      },
+    });
+
+    const call = inStubbedSession(selection, async () =>
+      withDispatchToolStubs(remoteAgent).execute!(
+        { message: "Refund Bob." },
+        {
+          messages: [],
+          toolCallId: "call-1",
+        },
+      ),
+    );
+
+    await expect(call).rejects.toMatchObject({
+      code: "TOOL_STUB_MISSING",
+      message:
+        'Stub set "releases" has no stub for tool "billing", so the real tool did not run. ' +
+        "Add tools.billing to evals/stubs/releases.ts.",
+    });
+  });
+
+  it("keeps a local subagent the set does not stub as a subagent call", async () => {
+    await useStubsDirectory({ "evals/stubs/releases.ts": RELEASES });
+    const selection = await selectToolStubs("releases");
+    const subagent = dispatchTool("researcher", {
+      kind: "dispatch",
+      target: { kind: "subagent-call", nodeId: "subagents/researcher", subagentName: "researcher" },
+    });
+
+    const prepared = inStubbedSession(selection, () => withDispatchToolStubs(subagent));
+
+    expect(prepared).toBe(subagent);
+  });
+
+  it("fails the root session's next step when a subagent calls a tool without a stub", async () => {
+    await useStubsDirectory({ "evals/stubs/two-workflows.ts": TWO_WORKFLOWS });
+    const selection = await selectToolStubs("two-workflows");
+    const deleteSchedule = createToolExecuteWithAuth({
+      execute: withToolStubs(() => ({ real: true }), "fail"),
+      scope: "schedules_delete",
+    });
+
+    const childCall = inStubbedSession(
+      selection,
+      async () => deleteSchedule({ id: "sched_1" }, { messages: [], toolCallId: "call-child" }),
+      { rootSessionId: "session_root" },
+    );
+    await expect(childCall).rejects.toMatchObject({ code: "TOOL_STUB_MISSING" });
+    const rootSteps = inStubbedSession(selection, () => {
+      recordSubagentToolStubFailure();
+      return readTurnFailingToolError()?.code;
+    });
+    const laterRootStep = inStubbedSession(selection, () => {
+      recordSubagentToolStubFailure();
+      return readTurnFailingToolError()?.code;
+    });
+
+    expect({ laterRootStep, rootSteps }).toEqual({
+      laterRootStep: undefined,
+      rootSteps: "TOOL_STUB_MISSING",
     });
   });
 });
