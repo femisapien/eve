@@ -1,6 +1,6 @@
 ---
 issue: TBD
-status: proposed
+status: implemented
 last_updated: "2026-10-01"
 ---
 
@@ -13,10 +13,10 @@ what named tools return. The model still sees each real tool's name,
 description, input schema, and approval policy, and still decides on its own
 whether to call it. Only the tool's `execute` changes.
 
-Stub sets are code in `evals/stubs/`. They keep per-session state, so a stubbed
-`create_issue` followed by a stubbed `list_issues` stays consistent. eve
-compiles them only into the local server that `eve eval` starts, so a deployed
-agent never contains stub code.
+Stub sets are code in `evals/stubs/`. They keep state for a session and its
+subagents, so a stubbed `create_issue` followed by a stubbed `list_issues`
+stays consistent. Only the local server that `eve eval` starts loads them, so a
+deployed agent never contains stub code.
 
 ## Problem
 
@@ -83,66 +83,79 @@ export default defineEval({
 `t.session({ stubs })` accepts the same option. Later messages and approval
 responses in that session use the set without repeating it.
 
-A stub receives the tool input and a context with `state`, `toolName`, and
-the session fields an authored tool's `ctx` already has. It returns the same
-shape as the real `execute`. `state()` returns the starting state for each
-session and must be JSON-serializable.
+A stub receives the tool input and the context an authored tool's `execute`
+receives, plus `state`. It returns the same shape as the real `execute`.
+`state()` returns the starting state for each root session.
 
 ## Semantics
 
 ```text
 eve eval
-  ├─ compiles agent/ and evals/stubs/ into the local server
-  └─ starts it with EVE_EVALUATION=1
+  └─ starts the local server with EVE_EVALUATION=1 and the evals/stubs/ path
 
 t.send(message, { stubs: "two-workflows" })
   └─ session create carries `stubs`
-       └─ eve channel accepts it only when EVE_EVALUATION=1,
-          stores the set name and state() with the session
+       └─ eve channel accepts it only on that server, loads the set,
+          and stores { set, worldId } with the session
 
 model calls schedules_read
   └─ approval policy                       (unchanged)
-       └─ before execute: session has a stub set?
-            ├─ stub for this tool     → run the stub
-            ├─ no stub for this tool  → fail the turn (authored and connection tools)
+       └─ execute: session has a stub set?
+            ├─ stub for this tool     → run the stub with the world's state
+            ├─ no stub for this tool  → fail the turn (agent/tools/, dynamic, connection tools)
+            │                           run for real (eve's default tools)
             └─ no stub set            → run the real tool
        └─ toModelOutput, durable history   (unchanged)
 ```
 
 - **Only the local eval server accepts stubs.** It is the server `eve eval`
-  starts, which already runs with `EVE_EVALUATION=1`. A session create with
-  `stubs` anywhere else fails with an error that names the cause, including
-  under `eve eval --url`. This covers local runs and CI jobs that run
-  `eve eval`.
+  starts, which runs with `EVE_EVALUATION=1` and knows the app's
+  `evals/stubs/` directory. A session create with `stubs` anywhere else fails
+  with an error that names the cause, including under `eve eval --url`.
+  Deployed builds never load stub sets or the module loader that imports them.
+- **`stubs` is a create-only field.** The session create body accepts it, also
+  for a session created without a message. A later message or approval
+  response that carries it fails.
 - **Approval runs first.** A stub replaces `execute`, so approval policies,
   pending approval cards, and denials behave as they do in production. A denied
   call never reaches the stub.
 - **Results take the real path.** A stub's return value goes through the same
   normalization and `toModelOutput` as a real result and lands in durable
   session history. Resuming a parked turn does not run the stub again.
-- **State is durable session data.** eve saves it with the session after each
-  step, so it survives approval pauses, later turns, and retries.
-- **Missing stubs fail closed.** In a stubbed session, an authored or
-  connection tool without a stub fails the turn with an error that names the
-  set and the tool. Its real `execute` does not run. eve's built-in tools,
-  such as `ask_question`, `load_skill`, and `todo`, run as usual.
+- **Missing stubs fail the turn.** In a stubbed session, a tool from
+  `agent/tools/` (including opt-in framework tools added there), a dynamic
+  tool, or a connection tool without a stub fails the turn with
+  `TOOL_STUB_MISSING` and an error that names the set and the tool. Its real
+  `execute` does not run. eve's default tools, such as `bash`, `web_fetch`,
+  and `load_skill`, run as usual.
+- **Connection tools are stubbed by their visible names.** The model reaches
+  connection tools through `connection_search` and `connection_execute`, so a
+  set stubs those names and branches on the input.
 - **Unknown sets fail at session create.** The error lists the sets eve found
   in `evals/stubs/`.
-- **Subagents inherit the set.** A child session uses the parent's stub set
-  and starts from the parent's state at the moment it starts.
+- **One state per session tree.** Session create starts a world, and the set's
+  `state()` seeds it on first use. Local subagents carry the same world id, so
+  the parent and every subagent read and write one state object. The world
+  lives in the eval server's memory: it survives approval pauses and later
+  turns, is lost if the server restarts, and a retried workflow step can apply
+  a stub's change twice.
+- **One set per session.** A set describes one starting world, so eve never
+  merges sets. Shared stubs can be imported into a set file.
 - **The model sees nothing.** `stubs` is never sent to the model, and the
-  real tool definitions are unchanged.
+  real tool definitions are unchanged. Events and traces do not mark stubbed
+  calls.
 
 ## Scope
 
-In scope: authored tools in `agent/tools/`, dynamic tools, and connection
-tools.
+In scope: tools in `agent/tools/`, eve's default tools when a set stubs them,
+dynamic tools, and connection tools.
 
-Out of scope for this proposal:
+Out of scope:
 
-- workflow tools and agent tools, which run outside the model step;
+- workflow tools, including `ask_question`, and agent tools, which run outside
+  the model step;
 - provider-executed tools, such as a provider's built-in web search;
-- deployed targets reached with `eve eval --url`;
+- remote agents and deployed targets reached with `eve eval --url`;
 - matching rules on tool arguments, and recording real results for replay.
   A stub is a function, so it can branch on its input.
 
@@ -173,10 +186,4 @@ Out of scope for this proposal:
 ## Open questions
 
 - **Typed stub inputs.** Can `defineToolStubs` type each stub's `input` from
-  the real tool's input schema?
-- **State across subagents.** Should a child's state changes flow back to the
-  parent, or is a snapshot at child start enough?
-- **Built-in tools that reach the network.** Should `web_fetch` and
-  `web_search` fail closed in a stubbed session, or stay available?
-- **Observability.** Should `action.result` events and traces mark a stubbed
-  call?
+  the real tool's input schema? Stub inputs are untyped today.
