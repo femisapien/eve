@@ -1,25 +1,24 @@
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { MAX_SKILL_FILE_BYTES, skillFileStorageKey } from "#channel/skill-files.js";
-import {
-  prepareSkillServerAssets,
-  SkillServerAssetKeyCollisionError,
-} from "./skill-server-assets.js";
+import { MAX_SKILL_FILE_BYTES } from "#channel/skill-files.js";
+import { prepareSkillServerAssets } from "./skill-server-assets.js";
+
+const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
 
 describe("prepareSkillServerAssets", () => {
   let root: string;
   let skillsRoot: string;
-  let indexDirectory: string;
+  let stagingDirectory: string;
 
   beforeEach(async () => {
     root = await mkdtemp(join(tmpdir(), "eve-skill-server-assets-"));
     skillsRoot = join(root, "skills");
-    indexDirectory = join(root, "index");
+    stagingDirectory = join(root, "staging");
     await mkdir(join(skillsRoot, "research", "references"), { recursive: true });
   });
 
@@ -27,98 +26,86 @@ describe("prepareSkillServerAssets", () => {
     await rm(root, { force: true, recursive: true });
   });
 
-  it("indexes real paths with storage keys and digests, and ignores what does not ship", async () => {
-    const png = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]);
-    await writeFile(join(skillsRoot, "research", "SKILL.md"), "# Research\n");
-    await writeFile(join(skillsRoot, "research", "references", "x.md"), "x\n");
-    await writeFile(join(skillsRoot, "research", "logo.png"), png);
+  it("stages every shipped file as a content-addressed .bin asset and indexes its real path", async () => {
+    const files: Record<string, Buffer> = {
+      "SKILL.md": Buffer.from("# Research\n"),
+      "references/x.md": Buffer.from("x\n"),
+      "references/copy.md": Buffer.from("x\n"),
+      "empty.md": Buffer.alloc(0),
+      "b64.txt": Buffer.from("base64:SGVsbG8="),
+      "latin1.md": Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a]),
+      "logo.png": Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff]),
+      ".hidden": Buffer.from("dot\n"),
+      "what?.md": Buffer.from("q\n"),
+      "references:x.md": Buffer.from("colon\n"),
+    };
+    for (const [path, bytes] of Object.entries(files)) {
+      await writeFile(join(skillsRoot, "research", path), bytes);
+    }
     await writeFile(
       join(skillsRoot, "research", "huge.bin"),
       Buffer.alloc(MAX_SKILL_FILE_BYTES + 1),
     );
-    await writeFile(join(skillsRoot, "research", ".hidden"), "dot\n");
-    await writeFile(join(skillsRoot, "research", "what?.md"), "q\n");
     await writeFile(join(root, "secret.txt"), "outside\n");
     await symlink(join(root, "secret.txt"), join(skillsRoot, "research", "linked.txt"));
-    await symlink(join(root), join(skillsRoot, "research", "linked-dir"));
+    await symlink(root, join(skillsRoot, "research", "linked-dir"));
     await mkdir(join(skillsRoot, "unlisted"));
     await writeFile(join(skillsRoot, "unlisted", "SKILL.md"), "# Unlisted\n");
+    // A previous build's staged files must not leak into this one.
+    await mkdir(join(stagingDirectory, "files"), { recursive: true });
+    await writeFile(join(stagingDirectory, "files", "stale.bin"), "stale");
 
-    const assets = await prepareSkillServerAssets({
-      indexDirectory,
+    const serverAssets = await prepareSkillServerAssets({
+      stagingDirectory,
       skills: ["research"],
       skillsRoot,
     });
 
-    const index = JSON.parse(await readFile(join(indexDirectory, "skills.json"), "utf8"));
-    const digest = (bytes: Uint8Array) => createHash("sha256").update(bytes).digest("hex");
-    expect(index).toEqual({
-      version: 1,
-      skills: [
-        [
-          "research",
-          [
-            ["SKILL.md", 11, "research:SKILL.md", digest(Buffer.from("# Research\n"))],
-            ["huge.bin", MAX_SKILL_FILE_BYTES + 1, null, null],
-            ["logo.png", png.byteLength, "research:logo.png", digest(png)],
-            ["references/x.md", 2, "research:references:x.md", digest(Buffer.from("x\n"))],
-          ],
-        ],
-      ],
-    });
-    expect(assets.unaddressable).toEqual(["research/what?.md"]);
-    expect(assets.serverAssets).toEqual([
-      { baseName: "eve-skill-index", dir: indexDirectory },
-      {
-        baseName: "eve-skills",
-        dir: skillsRoot,
-        ignore: expect.arrayContaining([
-          "research/huge.bin",
-          "research/.hidden",
-          "research/what\\?.md",
-          "unlisted/SKILL.md",
-          "research/linked.txt",
-          "research/linked-dir",
-          "research/linked-dir/**",
-        ]),
-      },
+    expect(serverAssets).toEqual([
+      { baseName: "eve-skill-index", dir: join(stagingDirectory, "index") },
+      { baseName: "eve-skills", dir: join(stagingDirectory, "files") },
     ]);
-  });
-
-  it("fails the build when two real paths normalize to the same storage key", async () => {
-    await writeFile(join(skillsRoot, "research", "references:x.md"), "colon\n");
-    await writeFile(join(skillsRoot, "research", "references", "x.md"), "nested\n");
-
-    await expect(
-      prepareSkillServerAssets({ indexDirectory, skills: ["research"], skillsRoot }),
-    ).rejects.toThrow(
-      new SkillServerAssetKeyCollisionError("research:references:x.md", [
-        "research/references/x.md",
-        "research/references:x.md",
-      ]),
+    const index = JSON.parse(
+      await readFile(join(stagingDirectory, "index", "skills.json"), "utf8"),
+    ) as { skills: [string, [string, number, string | null, string | null][]][] };
+    const entries = index.skills[0]?.[1] ?? [];
+    expect(index.skills.map(([skill]) => skill)).toEqual(["research"]);
+    expect(entries.map(([path]) => path)).toEqual(
+      [...Object.keys(files), "huge.bin"].sort((left, right) =>
+        left < right ? -1 : left > right ? 1 : 0,
+      ),
+    );
+    expect(entries.find(([path]) => path === "huge.bin")).toEqual([
+      "huge.bin",
+      MAX_SKILL_FILE_BYTES + 1,
+      null,
+      null,
+    ]);
+    for (const [path, bytes] of Object.entries(files)) {
+      const sha256 = digest(bytes);
+      expect(entries.find(([indexed]) => indexed === path)).toEqual([
+        path,
+        bytes.byteLength,
+        `${sha256}.bin`,
+        sha256,
+      ]);
+      const staged = await readFile(join(stagingDirectory, "files", `${sha256}.bin`));
+      expect(staged.equals(bytes)).toBe(true);
+    }
+    // Identical files share one asset; nothing else is staged.
+    expect((await readdir(join(stagingDirectory, "files"))).sort()).toEqual(
+      [...new Set(Object.values(files).map((bytes) => `${digest(bytes)}.bin`))].sort(),
     );
   });
 
-  it("registers only the index when the agent has no skills tree", async () => {
+  it("stages an empty index when the agent has no skills tree", async () => {
     await rm(skillsRoot, { force: true, recursive: true });
 
-    const assets = await prepareSkillServerAssets({ indexDirectory, skills: [], skillsRoot });
+    await prepareSkillServerAssets({ stagingDirectory, skills: [], skillsRoot });
 
-    expect(assets.serverAssets).toEqual([{ baseName: "eve-skill-index", dir: indexDirectory }]);
-    expect(JSON.parse(await readFile(join(indexDirectory, "skills.json"), "utf8"))).toEqual({
-      version: 1,
-      skills: [],
-    });
-  });
-});
-
-describe("skillFileStorageKey", () => {
-  it("normalizes like unstorage", () => {
-    expect(skillFileStorageKey("research", "references/deep/api.md")).toBe(
-      "research:references:deep:api.md",
-    );
-    expect(skillFileStorageKey("research", "a::b")).toBe("research:a:b");
-    expect(skillFileStorageKey("research", "a?b")).toBe("research:a");
-    expect(skillFileStorageKey("Research", "SKILL.md")).toBe("Research:SKILL.md");
+    expect(
+      JSON.parse(await readFile(join(stagingDirectory, "index", "skills.json"), "utf8")),
+    ).toEqual({ version: 1, skills: [] });
+    expect(await readdir(join(stagingDirectory, "files"))).toEqual([]);
   });
 });

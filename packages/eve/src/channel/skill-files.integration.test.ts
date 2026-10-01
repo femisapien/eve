@@ -11,8 +11,12 @@ import {
   readSkillFile,
 } from "#channel/skill-files.js";
 
-function indexEntry(path: string, key: string, bytes: Uint8Array) {
-  return [path, bytes.byteLength, key, createHash("sha256").update(bytes).digest("hex")];
+function sha256(bytes: Uint8Array): string {
+  return createHash("sha256").update(bytes).digest("hex");
+}
+
+function indexEntry(path: string, bytes: Uint8Array) {
+  return [path, bytes.byteLength, `${sha256(bytes)}.bin`, sha256(bytes)];
 }
 
 describe("createDiskSkillFileSource", () => {
@@ -130,7 +134,9 @@ describe("createDiskSkillFileSource", () => {
 
   it("reads bundled deployments from Nitro server assets through the build index", async () => {
     const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff, 0x80]);
-    const markdown = "# Bundled\n";
+    const markdown = new TextEncoder().encode("# Bundled\n");
+    const empty = new Uint8Array(0);
+    const tamperedIndexed = new TextEncoder().encode("a");
     const items = new Map<string, unknown>([
       [
         "eve-skill-index:skills.json",
@@ -140,19 +146,22 @@ describe("createDiskSkillFileSource", () => {
             [
               "research",
               [
-                indexEntry("SKILL.md", "research:SKILL.md", new TextEncoder().encode(markdown)),
-                indexEntry("assets/logo.png", "research:assets:logo.png", png),
+                indexEntry("SKILL.md", markdown),
+                indexEntry("assets/logo.png", png),
+                indexEntry("empty.md", empty),
                 ["huge.bin", 600 * 1024, null, null],
-                indexEntry("tampered.md", "research:tampered.md", new TextEncoder().encode("a")),
+                indexEntry("tampered.md", tamperedIndexed),
+                indexEntry("text-typed.md", markdown),
               ],
             ],
           ],
         }),
       ],
-      // Nitro inlines text-typed assets as strings and binary ones as bytes.
-      ["eve-skills:research:SKILL.md", markdown],
-      ["eve-skills:research:assets:logo.png", png],
-      ["eve-skills:research:tampered.md", "b"],
+      // `eve build` stages every file as `<sha256>.bin`, which Nitro inlines as bytes.
+      [`eve-skills:${sha256(markdown)}.bin`, markdown],
+      [`eve-skills:${sha256(png)}.bin`, png],
+      [`eve-skills:${sha256(empty)}.bin`, empty],
+      [`eve-skills:${sha256(tamperedIndexed)}.bin`, new TextEncoder().encode("b")],
     ]);
     const opened: string[] = [];
     const source = createCompiledSkillFileSource({
@@ -169,14 +178,21 @@ describe("createDiskSkillFileSource", () => {
     await expect(source.listFiles("research")).resolves.toEqual([
       "SKILL.md",
       "assets/logo.png",
+      "empty.md",
       "huge.bin",
       "tampered.md",
+      "text-typed.md",
     ]);
     await expect(source.listFiles("__proto__")).resolves.toEqual([]);
-    await expect(read()).resolves.toBe(markdown);
+    await expect(read()).resolves.toBe("# Bundled\n");
+    await expect(read("empty.md")).resolves.toBe("");
     await expect(read("assets/logo.png")).resolves.toEqual(png);
     await expect(read("huge.bin")).rejects.toMatchObject({ code: "too-large" });
     await expect(read("tampered.md")).rejects.toMatchObject({ code: "unavailable" });
+    // A string is what Nitro returns for a text-typed asset name; a byte-exact
+    // build never produces one.
+    items.set(`eve-skills:${sha256(markdown)}.bin`, "# Bundled\n");
+    await expect(read("text-typed.md")).rejects.toMatchObject({ code: "unavailable" });
     await expect(read("missing.md")).rejects.toMatchObject({ code: "unknown-file" });
     expect(new Set(opened)).toEqual(new Set(["eve-skill-index", "eve-skills"]));
   });

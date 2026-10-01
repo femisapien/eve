@@ -232,27 +232,18 @@ describe("dispatchChannelRequest", () => {
 
     const skillMarkdown = "---\nname: research\ndescription: Research skill.\n---\n";
     const skillBytes = new TextEncoder().encode(skillMarkdown);
+    const skillDigest = createHash("sha256").update(skillBytes).digest("hex");
     serverAssetItems.set(
       "assets:eve-skill-index:skills.json",
       JSON.stringify({
         version: 1,
         skills: [
-          [
-            "research",
-            [
-              [
-                "SKILL.md",
-                skillBytes.byteLength,
-                "research:SKILL.md",
-                createHash("sha256").update(skillBytes).digest("hex"),
-              ],
-            ],
-          ],
+          ["research", [["SKILL.md", skillBytes.byteLength, `${skillDigest}.bin`, skillDigest]]],
         ],
       }),
     );
-    // Nitro inlines text-typed assets as strings.
-    serverAssetItems.set("assets:eve-skills:research:SKILL.md", skillMarkdown);
+    // `eve build` stages files as `<sha256>.bin`, which Nitro inlines as bytes.
+    serverAssetItems.set(`assets:eve-skills:${skillDigest}.bin`, skillBytes);
     const response = await withBundledCompiledArtifacts({ manifest, moduleMap }, () =>
       dispatchChannelRequest(createEvent({ url: "https://eve.test/mcp" }), "GET /mcp", {
         kind: "production",

@@ -7,11 +7,21 @@ import { useScenarioApp } from "#internal/testing/scenario-app.js";
 import { buildApplication } from "./build-application.js";
 import { startProductionServer } from "./start-production-server.js";
 
-/** A 1x1 PNG; its bytes include NUL and non-UTF-8 sequences. */
-const PNG = Buffer.from(
-  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
-  "base64",
-);
+/**
+ * Files Nitro would alter if it inlined them under their own names: a PNG
+ * (NUL and non-UTF-8 bytes), an empty text file (dropped by Nitro's
+ * `r.default || r`), text starting with `base64:` (decoded by unstorage), and
+ * a text-typed file that is not valid UTF-8.
+ */
+const BYTE_EXACT_FILES: Record<string, Buffer> = {
+  "assets/logo.png": Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+    "base64",
+  ),
+  "references/empty.md": Buffer.alloc(0),
+  "references/b64.txt": Buffer.from("base64:SGVsbG8="),
+  "references/latin1.md": Buffer.from([0x63, 0x61, 0x66, 0xe9, 0x0a]),
+};
 
 describe("skill files in production server assets", () => {
   const scenarioApp = useScenarioApp();
@@ -40,19 +50,24 @@ describe("skill files in production server assets", () => {
           '        lower: await readSkill("lower", "SKILL.md"),',
           "      }),",
           "    ),",
-          '    GET("/logo", async (_request, { readSkill }) => {',
-          '      const bytes = await readSkill("research", "assets/logo.png");',
-          "      return new Response(bytes, {",
-          '        headers: { "x-kind": typeof bytes === "string" ? "string" : "bytes" },',
-          "      });",
+          '    GET("/file", async (request, { readSkill }) => {',
+          '      const path = new URL(request.url).searchParams.get("path") ?? "";',
+          '      const value = await readSkill("research", path);',
+          "      return new Response(",
+          '        typeof value === "string" ? new TextEncoder().encode(value) : value,',
+          '        { headers: { "x-kind": typeof value === "string" ? "string" : "bytes" } },',
+          "      );",
           "    }),",
           "  ],",
           "});",
         ].join("\n"),
       },
     });
-    await mkdir(join(appRoot, "agent/skills/research/assets"), { recursive: true });
-    await writeFile(join(appRoot, "agent/skills/research/assets/logo.png"), PNG);
+    const skillRoot = join(appRoot, "agent/skills/research");
+    await mkdir(join(skillRoot, "assets"), { recursive: true });
+    for (const [path, bytes] of Object.entries(BYTE_EXACT_FILES)) {
+      await writeFile(join(skillRoot, path), bytes);
+    }
 
     await buildApplication(appRoot, { skipSandboxPrewarm: true });
     // The server function carries no plain copy of the tree: Nitro inlines
@@ -61,7 +76,7 @@ describe("skill files in production server assets", () => {
       await readdir(join(appRoot, ".output", "server"), { recursive: true })
     ).map(String);
     expect(serverFiles.filter((path) => /\.(png|md|MD)$/.test(path))).toEqual([]);
-    expect(serverFiles).toEqual(expect.arrayContaining([join("_virtual", "logo.png.mjs")]));
+    expect(serverFiles.filter((path) => path.endsWith(".bin.mjs"))).toHaveLength(7);
     await expect(access(join(appRoot, ".output", "server", "_eve-skills"))).rejects.toMatchObject({
       code: "ENOENT",
     });
@@ -78,15 +93,25 @@ describe("skill files in production server assets", () => {
           { description: "Lower-case entry.", files: ["skill.MD"], name: "lower" },
           {
             description: "Research carefully.",
-            files: ["SKILL.md", "assets/logo.png", "references/deep/api.md"],
+            files: [
+              "SKILL.md",
+              "assets/logo.png",
+              "references/b64.txt",
+              "references/deep/api.md",
+              "references/empty.md",
+              "references/latin1.md",
+            ],
             name: "research",
           },
         ],
       });
-      const logo = await fetch(new URL("/logo", server.url));
-      expect(logo.status).toBe(200);
+      for (const [path, bytes] of Object.entries(BYTE_EXACT_FILES)) {
+        const file = await fetch(new URL(`/file?path=${encodeURIComponent(path)}`, server.url));
+        expect({ path, status: file.status }).toEqual({ path, status: 200 });
+        expect(Buffer.from(await file.arrayBuffer()).equals(bytes), path).toBe(true);
+      }
+      const logo = await fetch(new URL("/file?path=assets/logo.png", server.url));
       expect(logo.headers.get("x-kind")).toBe("bytes");
-      expect(Buffer.from(await logo.arrayBuffer()).equals(PNG)).toBe(true);
     } finally {
       await server.close();
     }

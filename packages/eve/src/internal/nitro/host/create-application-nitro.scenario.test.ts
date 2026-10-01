@@ -515,11 +515,13 @@ describe("application Nitro creation", () => {
     const options = createProductionOptions(preparedHost);
     await createProductionApplicationNitro(preparedHost, options);
 
+    const stagingDirectory = join(options.buildDir, "eve-skill-assets");
     expect(createNitroMock.mock.calls[0]?.[0].serverAssets).toEqual([
-      { baseName: "eve-skill-index", dir: join(options.buildDir, "eve-skill-index") },
+      { baseName: "eve-skill-index", dir: join(stagingDirectory, "index") },
+      { baseName: "eve-skills", dir: join(stagingDirectory, "files") },
     ]);
     expect(
-      JSON.parse(await readFile(join(options.buildDir, "eve-skill-index", "skills.json"), "utf8")),
+      JSON.parse(await readFile(join(stagingDirectory, "index", "skills.json"), "utf8")),
     ).toEqual({ version: 1, skills: [] });
     expect(nitroStub.nitro.options.serverAssets).toEqual([
       { baseName: "eve-skill-index", dir: "/index" },
