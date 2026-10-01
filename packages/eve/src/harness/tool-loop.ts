@@ -199,7 +199,10 @@ import {
 } from "#harness/model-call-error.js";
 import { summarizeKnownError, type SemanticErrorSummary } from "#harness/semantic-errors/index.js";
 import { isTurnCancellation, throwIfTurnAborted } from "#harness/turn-cancellation.js";
-import { findTurnFailingToolError } from "#harness/turn-failing-tool-error.js";
+import {
+  readTurnFailingToolError,
+  type TurnFailingToolError,
+} from "#harness/turn-failing-tool-error.js";
 import type { JsonObject, JsonValue } from "#shared/json.js";
 import { extractWorkflowStreamWriteErrorDetails } from "#harness/workflow-stream-error.js";
 import { getAdvertisedTools } from "#harness/advertised-tools.js";
@@ -1781,12 +1784,23 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       return limitResult;
     }
 
+    const failTurnForTool = (error: TurnFailingToolError) =>
+      failTurn({
+        emissionState,
+        emit,
+        failure: { code: error.code, message: error.message },
+        output: error.message,
+        session,
+      });
+
     let result: HarnessStepResult;
     try {
       result = await runOneModelCall({
         suppressStepStartedEmission: true,
       });
     } catch (error) {
+      const turnFailure = readTurnFailingToolError();
+      if (turnFailure !== undefined) return await failTurnForTool(turnFailure);
       throwIfCompactionFailed();
       throwIfTurnAborted(config.abortSignal);
 
@@ -1988,17 +2002,8 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       "$eve.tool_count": config.tools.size,
     });
 
-    const turnFailure = findTurnFailingToolError(result.content);
-    if (turnFailure !== undefined) {
-      if (!emit) throw turnFailure;
-      return await failTurn({
-        emissionState,
-        emit,
-        failure: { code: turnFailure.code, message: turnFailure.message },
-        output: turnFailure.message,
-        session,
-      });
-    }
+    const turnFailure = readTurnFailingToolError();
+    if (turnFailure !== undefined) return await failTurnForTool(turnFailure);
 
     // --- Handle result ------------------------------------------------------
 

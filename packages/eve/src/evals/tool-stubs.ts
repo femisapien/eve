@@ -4,6 +4,8 @@ import { join, relative } from "node:path";
 import { pathToFileURL } from "node:url";
 
 import type { ToolStubsSelection } from "#channel/types.js";
+import { contextStorage } from "#context/container.js";
+import { ToolStubsKey } from "#context/keys.js";
 import type { ToolStubsDefinition } from "#evals/define-tool-stubs.js";
 import { TurnFailingToolError } from "#harness/turn-failing-tool-error.js";
 import { resolveEveEvaluationToolStubsDirectory } from "#internal/application/dev-environment.js";
@@ -22,14 +24,20 @@ interface LoadedToolStubSet {
 }
 
 interface ToolStubsProcessState {
-  /** Loaded stub sets by file path without the extension. */
+  /** Stub set loads by file path without the extension. */
   readonly sets: Map<string, Promise<LoadedToolStubSet>>;
-  /** Stub state by world id. One world holds a root session's and its subagents' state. */
+  /** Stub sets whose load finished, by the same key. */
+  readonly loaded: Map<string, LoadedToolStubSet>;
+  /**
+   * Stub state by world id. One world holds a root session's and its
+   * subagents' state. Worlds live as long as the `eve eval` server.
+   */
   readonly worlds: Map<string, { readonly state: unknown }>;
 }
 
 // Shared on globalThis so every copy of eve loaded into the eval server sees the same worlds.
 const processState = ((globalThis as Record<symbol, unknown>)[Symbol.for("eve.toolStubs")] ??= {
+  loaded: new Map(),
   sets: new Map(),
   worlds: new Map(),
 }) as ToolStubsProcessState;
@@ -44,29 +52,49 @@ export async function selectToolStubs(set: string): Promise<ToolStubsSelection> 
   return { set, worldId: randomUUID() };
 }
 
+type ToolExecute<TInput> = (toolInput: TInput, ctx: ToolContext) => unknown;
+
 /**
- * Runs the selected set's stub for one tool call. When the set has no stub
- * for the tool, `runReal` runs the real tool, and its absence fails the turn.
+ * Wraps one tool's `execute` for stubbed eval sessions. A session with a stub
+ * set runs the set's stub for the tool. Without a stub, `withoutStub: "run"`
+ * runs the real tool, and `"fail"` fails the turn. Sessions without a stub set
+ * run the real tool.
  */
-export async function executeToolStub(input: {
+export function withToolStubs<TInput>(
+  execute: ToolExecute<TInput>,
+  withoutStub: "fail" | "run",
+): ToolExecute<TInput> {
+  return (toolInput, ctx) => {
+    const selection = contextStorage.getStore()?.get(ToolStubsKey);
+    if (selection === undefined) return execute(toolInput, ctx);
+    const run = (loaded: LoadedToolStubSet) =>
+      runToolStub({ ctx, execute, loaded, selection, toolInput, withoutStub });
+    // The set loaded at session create, so the result normally passes through unwrapped.
+    const loaded = processState.loaded.get(toolStubSetKey(selection.set));
+    return loaded === undefined ? loadToolStubSet(selection.set).then(run) : run(loaded);
+  };
+}
+
+function runToolStub<TInput>(input: {
   readonly ctx: ToolContext;
-  readonly runReal: (() => unknown) | undefined;
+  readonly execute: ToolExecute<TInput>;
+  readonly loaded: LoadedToolStubSet;
   readonly selection: ToolStubsSelection;
-  readonly toolInput: unknown;
-}): Promise<unknown> {
-  const { ctx, selection } = input;
-  const loaded = await loadToolStubSet(selection.set);
+  readonly toolInput: TInput;
+  readonly withoutStub: "fail" | "run";
+}): unknown {
+  const { ctx, loaded, selection } = input;
   const stub = loaded.definition.tools[ctx.toolName];
-  if (stub === undefined) {
-    if (input.runReal !== undefined) return await input.runReal();
-    throw new TurnFailingToolError({
-      code: "TOOL_STUB_MISSING",
-      message:
-        `Stub set "${selection.set}" has no stub for tool "${ctx.toolName}", so the real tool did not run. ` +
-        `Add tools.${ctx.toolName} to ${loaded.displayPath}.`,
-    });
+  if (stub !== undefined) {
+    return stub(input.toolInput, { ...ctx, state: readWorldState(selection, loaded) });
   }
-  return await stub(input.toolInput, { ...ctx, state: readWorldState(selection, loaded) });
+  if (input.withoutStub === "run") return input.execute(input.toolInput, ctx);
+  throw new TurnFailingToolError({
+    code: "TOOL_STUB_MISSING",
+    message:
+      `Stub set "${selection.set}" has no stub for tool "${ctx.toolName}", so the real tool did not run. ` +
+      `Add tools.${ctx.toolName} to ${loaded.displayPath}.`,
+  });
 }
 
 function readWorldState(selection: ToolStubsSelection, loaded: LoadedToolStubSet): unknown {
@@ -88,15 +116,22 @@ function loadToolStubSet(set: string): Promise<LoadedToolStubSet> {
       ),
     );
   }
-  const key = join(directory, set);
+  const key = toolStubSetKey(set);
   let loading = processState.sets.get(key);
   if (loading === undefined) {
     loading = importToolStubSet(directory, set);
     processState.sets.set(key, loading);
-    // A failed load is not cached, so fixing the file fixes the next session.
-    loading.catch(() => processState.sets.delete(key));
+    loading.then(
+      (loaded) => processState.loaded.set(key, loaded),
+      // A failed load is not cached, so fixing the file fixes the next session.
+      () => processState.sets.delete(key),
+    );
   }
   return loading;
+}
+
+function toolStubSetKey(set: string): string {
+  return join(resolveEveEvaluationToolStubsDirectory() ?? "", set);
 }
 
 async function importToolStubSet(directory: string, set: string): Promise<LoadedToolStubSet> {

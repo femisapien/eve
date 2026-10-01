@@ -9,7 +9,7 @@ import type {
 import type { Session } from "#channel/session.js";
 import { resolveForwardedPrincipal } from "#channel/forwarded-principal.js";
 import { handleConnectionCallbackRequest } from "#execution/connections/callback-route.js";
-import { selectToolStubs, ToolStubsSelectionError } from "#execution/tool-stubs.js";
+import { selectToolStubs, ToolStubsSelectionError } from "#evals/tool-stubs.js";
 import { handleSessionCallbackRequest } from "#subagents/callback-route.js";
 import {
   handleWorkflowWebhookRequest,

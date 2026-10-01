@@ -468,7 +468,7 @@ function createMessageBody(
     body.turnPolicy = input.turnPolicy;
   }
   if (input.clientContext !== undefined) body.clientContext = input.clientContext;
-  if (requireMessage && input.stubs !== undefined) body.stubs = input.stubs;
+  if (input.stubs !== undefined) body.stubs = input.stubs;
   const outputSchema = serializeOutputSchema(input.outputSchema);
   if (outputSchema !== undefined) body.outputSchema = outputSchema;
 

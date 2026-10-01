@@ -24,6 +24,7 @@ import { workflowIdForHandling } from "#runtime/subagents/workflow-reference.js"
 import { findRegisteredRuntimeTool } from "#runtime/tools/registry.js";
 import type { ResolvedToolDefinition } from "#runtime/types.js";
 import { createToolExecuteWithAuth } from "#execution/tool-auth.js";
+import { withToolStubs } from "#evals/tool-stubs.js";
 import {
   createPreparedWorkflowToolHarnessDefinition,
   createWorkflowToolHarnessDefinition,
@@ -301,5 +302,5 @@ function resolveAuthoredExecute(input: {
     return undefined;
   }
   const authored = rawExecute as (toolInput: unknown, ctx: unknown) => unknown;
-  return createToolExecuteWithAuth({ execute: authored, scope, withoutStub });
+  return createToolExecuteWithAuth({ execute: withToolStubs(authored, withoutStub), scope });
 }

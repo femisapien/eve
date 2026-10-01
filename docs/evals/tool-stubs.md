@@ -5,7 +5,7 @@ description: "Replace what an agent's tools return during eve eval, while the mo
 
 A stub set replaces what named tools return in an eval session. The model still sees each real tool's name, description, input schema, and approval policy, and decides on its own whether to call it. Only the tool's `execute` changes: a call runs the stub instead, so an eval can exercise the full tool loop without credentials, live data, or side effects.
 
-Stub sets work only on the agent server that `eve eval` starts, locally or in CI. `eve eval --url` targets and deployed agents reject them, and deployed builds never contain stub code.
+Stub sets work only on the agent server that `eve eval` starts, locally or in CI. `eve eval --url` targets and deployed agents reject them, and deployed agents never load stub set files or the loader that imports them.
 
 ## Write a stub set
 
@@ -30,7 +30,8 @@ export default defineToolStubs({
 ```
 
 - `tools` maps model-visible tool names to stubs. A stub receives the tool input and a context, and returns a result in the shape the real `execute` returns. The context is the tool context an authored tool receives (`toolName`, `callId`, `session`, and the rest), plus `state`.
-- `state` returns the starting state when an eval creates a session with this set. Stubs read and change it in place, so a stubbed create followed by a stubbed list returns what was just created.
+- `state` returns the starting state for a session that selects this set; eve calls it on the session's first stub call. Stubs read and change the state in place, so a stubbed create followed by a stubbed list returns what was just created.
+- Stub inputs are untyped (`any`): the stub set and the tools it stubs live in different modules, so the input type is not inferred from the real tool's schema.
 
 A stub's return value goes through the same normalization and `toModelOutput` as a real result, and lands in session history like one.
 
@@ -62,13 +63,13 @@ Later messages and approval responses in that session use the same set. The sess
 ## How a stubbed session runs tools
 
 - **Approvals run first.** A tool with an approval policy still pauses the turn for approval. The stub runs only after the eval approves the call, and a denied call never reaches the stub. Resuming a parked turn does not run the stub again.
-- **Missing stubs fail the turn.** When the model calls a tool from `agent/tools/`, a dynamic tool, or a connection tool that the set does not stub, the turn fails with `TOOL_STUB_MISSING` and an error that names the set and the tool. The real `execute` does not run. This includes opt-in framework tools added with `eve add tool/...`, such as `glob`, `grep`, and `no_reply`, because they are files in `agent/tools/`.
+- **Missing stubs fail the turn.** When the model calls a tool from `agent/tools/`, a dynamic tool, or a connection tool that the set does not stub, the turn fails with `TOOL_STUB_MISSING` and an error that names the set and the tool. The real `execute` does not run, including for a call the eval approved. This includes opt-in framework tools added with `eve add tool/...`, such as `glob`, `grep`, and `no_reply`, because they are files in `agent/tools/`. In a subagent, the missing stub fails the subagent's turn, and the parent receives it as a failed subagent result.
 - **eve's default tools run as usual.** `bash`, `read_file`, `write_file`, `web_fetch`, `load_skill`, and the other tools eve adds by default run for real unless the set stubs them by name.
 - **Connection tools are stubbed by their visible names.** The model reaches MCP and OpenAPI tools through `connection_search` and `connection_execute`, so a set that needs them stubs those two names and branches on the input, such as `input.tool === "linear:create_issue"`.
 - **Subagents share the state.** A local subagent uses its parent's stub set and reads and writes the same `state` object, so a schedule a subagent creates is visible to the parent's next read.
 - **State lives in the eval server.** It survives approval pauses and later turns in the same `eve eval` run. It is not durable session data: it is lost if the server restarts, and a retried workflow step can apply a stub's change twice.
 
-Workflow tools, including `ask_question`, provider-executed tools such as `web_search`, and remote agents are not stubbed and run as usual.
+Workflow tools (`defineWorkflowTool`, including `ask_question`), provider-executed tools such as `web_search`, and remote agents are not stubbed: they run for real in a stubbed session, even when they live in `agent/tools/`.
 
 ## Errors at session create
 

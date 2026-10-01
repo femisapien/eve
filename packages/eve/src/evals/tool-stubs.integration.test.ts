@@ -8,7 +8,7 @@ import type { ToolStubsSelection } from "#channel/types.js";
 import { contextStorage, loadContext } from "#context/container.js";
 import { ToolStubsKey } from "#context/keys.js";
 import { createToolExecuteWithAuth } from "#execution/tool-auth.js";
-import { selectToolStubs } from "#execution/tool-stubs.js";
+import { selectToolStubs, withToolStubs } from "#evals/tool-stubs.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import { getPendingInputBatches } from "#harness/pending-input-batches.js";
 import { createToolLoopHarness } from "#harness/tool-loop.js";
@@ -223,10 +223,10 @@ describe("tool stubs in the tool loop", () => {
       approval,
       description: `${name} test tool.`,
       execute: createToolExecuteWithAuth({
-        execute: () => {
+        execute: withToolStubs(() => {
           realCalls.push(name);
           return { real: name };
-        },
+        }, "fail"),
         scope: name,
       }),
       inputSchema: jsonSchema({ type: "object" }),
@@ -306,6 +306,29 @@ describe("tool stubs in the tool loop", () => {
     expect(fixture.events.slice(-3)).toMatchObject([
       { data: { code: "TOOL_STUB_MISSING", message }, type: "step.failed" },
       { data: { code: "TOOL_STUB_MISSING", message }, type: "turn.failed" },
+      { type: "session.waiting" },
+    ]);
+    expect(fixture.model.doStreamCalls).toHaveLength(1);
+    expect(realCalls).toEqual([]);
+  });
+
+  it("fails the turn before the next model call when an approved call has no stub", async () => {
+    await useStubsDirectory({ "evals/stubs/two-workflows.ts": TWO_WORKFLOWS });
+    const fixture = setup(
+      loopTool("schedules_delete", always()),
+      await selectToolStubs("two-workflows"),
+    );
+
+    const parked = await fixture.step(fixture.session, { message: "Delete Alice's workflow." });
+    const result = await fixture.step(parked.session, {
+      inputResponses: [
+        { optionId: "approve", requestId: pendingRequest(parked.session).requestId },
+      ],
+    });
+
+    expect(result.settledTurn).toMatchObject({ isError: true });
+    expect(fixture.events.slice(-2)).toMatchObject([
+      { data: { code: "TOOL_STUB_MISSING" }, type: "turn.failed" },
       { type: "session.waiting" },
     ]);
     expect(fixture.model.doStreamCalls).toHaveLength(1);

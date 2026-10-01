@@ -1,3 +1,6 @@
+import { contextStorage, type ContextContainer } from "#context/container.js";
+import { ContextKey } from "#context/key.js";
+
 const TURN_FAILING_TOOL_ERROR_NAME = "TurnFailingToolError";
 
 /**
@@ -16,14 +19,20 @@ export class TurnFailingToolError extends Error {
   }
 }
 
-/** Returns the first error in a step's tool errors that fails the turn. */
-export function findTurnFailingToolError(
-  content: readonly { readonly type: string; readonly error?: unknown }[] | undefined,
-): TurnFailingToolError | undefined {
-  for (const part of content ?? []) {
-    if (part.type === "tool-error" && isTurnFailingToolError(part.error)) return part.error;
-  }
-  return undefined;
+// Virtual: the AI SDK turns a thrown execute error into a tool result, so the
+// harness keeps the error here and reads it back before the next model call.
+const TurnFailingToolErrorKey = new ContextKey<TurnFailingToolError>("eve.turnFailingToolError");
+
+/** Records `error` for the current step when it is a {@link TurnFailingToolError}. */
+export function recordTurnFailingToolError(error: unknown): void {
+  const ctx = contextStorage.getStore();
+  if (ctx === undefined || !isTurnFailingToolError(error)) return;
+  (ctx as ContextContainer).setVirtualContext(TurnFailingToolErrorKey, error);
+}
+
+/** Returns the error a tool threw in this step to fail the turn, if any. */
+export function readTurnFailingToolError(): TurnFailingToolError | undefined {
+  return contextStorage.getStore()?.get(TurnFailingToolErrorKey);
 }
 
 // Matched by name so the check holds across separately bundled copies of eve.
