@@ -1,6 +1,11 @@
 import {
   createMcpHandler,
   McpServer,
+  type CacheableResultMethod,
+  type CacheHint,
+  type McpJsonObject,
+  type McpRequestHandlerExtra,
+  type McpServerOptions,
   type McpToolAnnotations,
   type StandardSchemaWithJSON,
 } from "#compiled/@modelcontextprotocol/server/index.js";
@@ -70,9 +75,32 @@ export class McpToolOperationError extends Error {
 /** Only `conflict` is retryable: the caller re-reads state and tries again. */
 const RETRYABLE_CODES: ReadonlySet<McpToolOperationErrorCode> = new Set(["conflict"]);
 
-export interface McpServerTool {
+export interface McpServerTool<TAuth = SessionAuthContext | null> {
   readonly name: string;
-  register(server: McpServer, auth: SessionAuthContext | null): void;
+  register(server: McpServer, auth: TAuth): void;
+}
+
+/** The request a {@link McpServerFeature} registers its handlers for. */
+export interface McpServerFeatureContext<TAuth> {
+  /** Whatever `authenticate` resolved for this request. */
+  readonly auth: TAuth;
+  /** `modern` for MCP 2026-07-28 requests, `legacy` for the stateless 2025 fallback. */
+  readonly era: "legacy" | "modern";
+}
+
+/**
+ * A slice of the MCP surface (tools, skills, ...) plugged into the server.
+ * Every request builds a fresh server, so `register` runs once per request,
+ * after `capabilities` are merged and before the SDK dispatches.
+ */
+export interface McpServerFeature<TAuth = SessionAuthContext | null> {
+  /**
+   * Capabilities this feature serves. Merged one level deep into the
+   * server's own (so `extensions` entries from several features combine).
+   * Declaring a capability obliges `register` to set its handlers.
+   */
+  readonly capabilities?: McpJsonObject;
+  register(server: McpServer, context: McpServerFeatureContext<TAuth>): void;
 }
 
 type InferSchemaOutput<TSchema> =
@@ -82,13 +110,14 @@ type InferSchemaOutput<TSchema> =
 export function defineMcpTool<
   const TInputSchema extends StandardSchemaWithJSON<unknown, unknown>,
   TStructured extends Readonly<Record<string, unknown>> = Readonly<Record<string, unknown>>,
+  TAuth = SessionAuthContext | null,
 >(input: {
   readonly definition: McpToolDefinition<TInputSchema>;
   call(
     value: InferSchemaOutput<TInputSchema>,
-    context: { readonly auth: SessionAuthContext | null; readonly signal: AbortSignal },
+    context: { readonly auth: TAuth; readonly signal: AbortSignal },
   ): Promise<McpCallToolResult<TStructured>>;
-}): McpServerTool {
+}): McpServerTool<TAuth> {
   return {
     name: input.definition.name,
     register(server, auth) {
@@ -118,14 +147,39 @@ export function defineMcpTool<
   };
 }
 
-interface McpStreamableHttpServerOptions {
+interface McpStreamableHttpServerOptions<TAuth> {
   readonly name: string;
   readonly version: string;
   /** Server-level usage guidance returned from `initialize` and `server/discover`. */
   readonly instructions?: string;
-  readonly tools: readonly McpServerTool[];
-  authenticate(request: Request): Promise<SessionAuthContext | null | Response>;
+  /**
+   * Tools registered through the SDK's Standard Schema path. When set, the
+   * server declares `tools` even if the list is empty.
+   */
+  readonly tools?: readonly McpServerTool<TAuth>[];
+  /** Handler sets plugged in after the base server is built. */
+  readonly features?: readonly McpServerFeature<TAuth>[];
+  /** Verifies an echoed `requestState`; any throw answers the SDK's `-32602`. */
+  readonly requestState?: {
+    readonly verify: (state: string, ctx: McpRequestHandlerExtra) => unknown;
+  };
+  /** `ttlMs` / `cacheScope` for the cacheable 2026-07-28 results the SDK builds. */
+  readonly cacheHints?: Partial<Record<CacheableResultMethod, CacheHint>>;
+  /**
+   * `ack-then-close` ends a `subscriptions/listen` stream right after its
+   * `notifications/subscriptions/acknowledged` event, without a completion
+   * result. Defaults to the SDK's open stream.
+   */
+  readonly listen?: "ack-then-close" | "stream";
+  authenticate(request: Request): Promise<TAuth | Response>;
 }
+
+/**
+ * Upper bound on open `subscriptions/listen` streams per handler. Every
+ * request builds its own handler, so this caps one request; with
+ * `listen: "ack-then-close"` no stream outlives its ack anyway.
+ */
+const MCP_MAX_SUBSCRIPTIONS_PER_HANDLER = 1;
 
 /**
  * Creates a dual-era, stateless MCP HTTP request handler.
@@ -133,18 +187,29 @@ interface McpStreamableHttpServerOptions {
  * Current clients use MCP 2026-07-28's per-request envelope. Older clients
  * fall back to the SDK's stateless 2025 Streamable HTTP implementation.
  */
-export function createMcpStreamableHttpServer(
-  options: McpStreamableHttpServerOptions,
+export function createMcpStreamableHttpServer<TAuth = SessionAuthContext | null>(
+  options: McpStreamableHttpServerOptions<TAuth>,
 ): (request: Request) => Promise<Response> {
-  const tools = new Map(options.tools.map((tool) => [tool.name, tool]));
-  if (tools.size !== options.tools.length) throw new Error("MCP tool names must be unique.");
+  const tools =
+    options.tools === undefined
+      ? undefined
+      : new Map(options.tools.map((tool) => [tool.name, tool]));
+  if (tools !== undefined && tools.size !== options.tools?.length) {
+    throw new Error("MCP tool names must be unique.");
+  }
 
   return async (request) => {
     const auth = await options.authenticate(request);
     if (auth instanceof Response) return auth;
 
-    const handler = createMcpHandler(() => createServer(options, tools, auth), {
+    const handler = createMcpHandler(({ era }) => createServer(options, tools, auth, era), {
       legacy: "stateless",
+      maxSubscriptions: MCP_MAX_SUBSCRIPTIONS_PER_HANDLER,
+      onerror(error) {
+        // requestState rejections and transport faults: the client already
+        // got its error response; the reason is only useful when debugging.
+        log.debug("MCP handler error", { error: error.message });
+      },
     });
     if (request.method.toUpperCase() !== "POST") return await handler.fetch(request);
 
@@ -159,8 +224,96 @@ export function createMcpStreamableHttpServer(
     const preflightFailure = await preflightModernRequest(request, parsedBody);
     if (preflightFailure !== undefined) return preflightFailure;
 
-    return await handler.fetch(request, { parsedBody });
+    const response = await handler.fetch(request, { parsedBody });
+    if (options.listen === "ack-then-close" && isListenRequest(parsedBody)) {
+      return closeAfterListenAck(response);
+    }
+    return response;
   };
+}
+
+function isListenRequest(body: unknown): boolean {
+  return isPlainRecord(body) && body.method === "subscriptions/listen";
+}
+
+const LISTEN_ACK_METHOD = "notifications/subscriptions/acknowledged";
+
+/**
+ * Passes a `subscriptions/listen` SSE stream through until the event carrying
+ * the acknowledgement, then ends it. Cancelling the SDK's stream tears the
+ * subscription down without the graceful completion result, so the client
+ * sees the ack and then a closed stream. Non-SSE responses (errors) pass
+ * through untouched.
+ */
+export function closeAfterListenAck(response: Response): Response {
+  const contentType = response.headers.get("content-type") ?? "";
+  if (response.body === null || !contentType.includes("text/event-stream")) return response;
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let pending: Uint8Array = new Uint8Array(0);
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      // A pull that enqueues nothing is not called again, so read until a
+      // whole event is ready or the source ends.
+      while (true) {
+        const chunk = await reader.read();
+        if (chunk.done) {
+          if (pending.byteLength > 0) controller.enqueue(new Uint8Array(pending));
+          controller.close();
+          return;
+        }
+        pending = concatBytes(pending, chunk.value);
+        let forwarded = false;
+        let boundary = findEventBoundary(pending);
+        while (boundary !== -1) {
+          const event = new Uint8Array(pending.subarray(0, boundary));
+          pending = pending.slice(boundary);
+          controller.enqueue(event);
+          forwarded = true;
+          if (decoder.decode(event).includes(LISTEN_ACK_METHOD)) {
+            controller.close();
+            await reader.cancel().catch(() => {});
+            return;
+          }
+          boundary = findEventBoundary(pending);
+        }
+        if (forwarded) return;
+      }
+    },
+    async cancel(reason) {
+      await reader.cancel(reason).catch(() => {});
+    },
+  });
+  return new Response(body, {
+    headers: response.headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
+
+/** Index just past the first SSE event terminator (a blank line), or -1. */
+function findEventBoundary(bytes: Uint8Array): number {
+  for (let index = 0; index < bytes.byteLength - 1; index += 1) {
+    if (bytes[index] === 0x0a && bytes[index + 1] === 0x0a) return index + 2;
+    if (
+      bytes[index] === 0x0d &&
+      bytes[index + 1] === 0x0a &&
+      bytes[index + 2] === 0x0d &&
+      bytes[index + 3] === 0x0a
+    ) {
+      return index + 4;
+    }
+  }
+  return -1;
+}
+
+function concatBytes(left: Uint8Array, right: Uint8Array): Uint8Array {
+  if (left.byteLength === 0) return right;
+  const joined = new Uint8Array(left.byteLength + right.byteLength);
+  joined.set(left, 0);
+  joined.set(right, left.byteLength);
+  return joined;
 }
 
 /**
@@ -330,30 +483,42 @@ function readJsonRpcRequestId(body: unknown): string | number | null {
   return typeof id === "string" || typeof id === "number" ? id : null;
 }
 
-function createServer(
-  options: Pick<McpStreamableHttpServerOptions, "instructions" | "name" | "version">,
-  tools: ReadonlyMap<string, McpServerTool>,
-  auth: SessionAuthContext | null,
+function createServer<TAuth>(
+  options: Pick<
+    McpStreamableHttpServerOptions<TAuth>,
+    "cacheHints" | "features" | "instructions" | "name" | "requestState" | "version"
+  >,
+  tools: ReadonlyMap<string, McpServerTool<TAuth>> | undefined,
+  auth: TAuth,
+  era: "legacy" | "modern",
 ): McpServer {
-  const serverOptions: { capabilities: Record<string, unknown>; instructions?: string } = {
-    capabilities: { tools: { listChanged: false } },
-  };
+  const serverOptions: { -readonly [K in keyof McpServerOptions]: McpServerOptions[K] } = {};
+  // `tools` in the constructor makes McpServer install its own list/call
+  // handlers, which only the Standard Schema path wants.
+  if (tools !== undefined) serverOptions.capabilities = { tools: { listChanged: false } };
   if (options.instructions !== undefined) serverOptions.instructions = options.instructions;
+  if (options.requestState !== undefined) serverOptions.requestState = options.requestState;
+  if (options.cacheHints !== undefined) serverOptions.cacheHints = options.cacheHints;
   const server = new McpServer({ name: options.name, version: options.version }, serverOptions);
 
-  for (const tool of tools.values()) tool.register(server, auth);
+  for (const tool of tools?.values() ?? []) tool.register(server, auth);
+  for (const feature of options.features ?? []) {
+    if (feature.capabilities !== undefined)
+      server.server.registerCapabilities(feature.capabilities);
+  }
+  for (const feature of options.features ?? []) feature.register(server, { auth, era });
 
   return server;
 }
 
-async function callTool<TInput, TStructured extends Readonly<Record<string, unknown>>>(
+async function callTool<TInput, TStructured extends Readonly<Record<string, unknown>>, TAuth>(
   call: (
     input: TInput,
-    context: { readonly auth: SessionAuthContext | null; readonly signal: AbortSignal },
+    context: { readonly auth: TAuth; readonly signal: AbortSignal },
   ) => Promise<McpCallToolResult<TStructured>>,
   input: TInput,
   signal: AbortSignal,
-  auth: SessionAuthContext | null,
+  auth: TAuth,
 ): Promise<McpCallToolResult<TStructured>> {
   try {
     return await call(input, { auth, signal });
