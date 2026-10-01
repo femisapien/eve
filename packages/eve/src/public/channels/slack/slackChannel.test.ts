@@ -52,6 +52,8 @@ import {
   type SlackEventContext,
 } from "#public/channels/slack/slackChannel.js";
 import type { SessionContext } from "#public/definitions/callback-context.js";
+import { upsertProxyInputRequests } from "#harness/proxy-input-requests.js";
+import { routeDeliverPayload } from "#subagents/hitl-proxy.js";
 import { type InputResponse, parseInputResponses } from "#shared/input.js";
 
 function slackRespondTypeChecks(
@@ -2887,7 +2889,53 @@ describe("slackChannel() inbound mention pipeline", () => {
     );
   });
 
-  it("keeps Slack attribution in the message and authored context separate", async () => {
+  it.each([
+    { text: "Saturday", response: { optionId: "sat", requestId: "ask-day" } },
+    { text: "Next weekend", response: { text: "Next weekend", requestId: "ask-day" } },
+  ])("answers a pending question with only the Slack reply: $text", async ({ text, response }) => {
+    const channel = slackChannel({
+      credentials: { botToken: "xoxb-test" },
+      onDirectMessage: () => ({ auth: null }),
+    });
+    const { body } = buildDirectMessageBody({ text });
+    const { send } = await firePost(channel, buildSignedRequest({ body }));
+    expect(send).toHaveBeenCalledTimes(1);
+    const [, { message, context, state }] = send.mock.calls[0]!;
+    const session = upsertProxyInputRequests({
+      session: {
+        agent: { modelReference: { id: "test-model" }, system: "", tools: [] },
+        compaction: { recentWindowSize: 10, threshold: 100_000 },
+        continuationToken: "parent-token",
+        history: [],
+        sessionId: "parent-session",
+        state: undefined,
+      },
+      forChildContinuationToken: "ask-token",
+      entries: [
+        [
+          "ask-day",
+          {
+            childContinuationToken: "ask-token",
+            event: { sequence: 0, stepIndex: 0, turnId: "turn-0" },
+            kind: "question",
+            workflowAsk: {
+              control: "ask-control",
+              question: { allowFreeform: true, options: [{ id: "sat", label: "Saturday" }] },
+            },
+          },
+        ],
+      ],
+    });
+    const routed = routeDeliverPayload({
+      payload: { message, context, state },
+      resolveMessage: true,
+      state: session.state,
+    });
+    expect(routed.forChildren[0]?.payload.inputResponses).toEqual([response]);
+    expect(routed.forSelf).toBeUndefined();
+  });
+
+  it("keeps the person's text separate from attributed and authored context", async () => {
     const channel = slackChannel({
       credentials: { botToken: "xoxb-test" },
       onAppMention: () => ({ auth: null, context: ["prior thread context"] }),
@@ -2899,13 +2947,13 @@ describe("slackChannel() inbound mention pipeline", () => {
     expect(send).toHaveBeenCalledTimes(1);
     const [, input] = send.mock.calls[0]!;
     const { context, message } = input as { context: readonly string[]; message: string };
-    expect(context).toEqual(["prior thread context"]);
-    expect(message).toContain("<slack_message>");
-    expect(message).toContain("sender_id: U01");
-    expect(message).toContain("<content>\nhello\n</content>");
+    expect(message).toBe("hello");
+    expect(context).toEqual(["prior thread context", expect.stringContaining("<slack_message>")]);
+    expect(context[1]).toContain("sender_id: U01");
+    expect(context[1]).toContain("<content>\nhello\n</content>");
   });
 
-  it("attributes the inbound message without adding a separate context entry", async () => {
+  it("attributes the inbound message in context without authored context", async () => {
     const channel = slackChannel({
       credentials: { botToken: "xoxb-test" },
       onAppMention: () => ({ auth: null }),
@@ -2917,9 +2965,9 @@ describe("slackChannel() inbound mention pipeline", () => {
     expect(send).toHaveBeenCalledTimes(1);
     const [, input] = send.mock.calls[0]!;
     const { context, message } = input as { context?: readonly string[]; message: string };
-    expect(context).toBeUndefined();
-    expect(message).toContain("sender_id: U01");
-    expect(message).toContain("message_ts:");
+    expect(message).toBe("hello");
+    expect(context).toEqual([expect.stringContaining("sender_id: U01")]);
+    expect(context?.[0]).toContain("message_ts:");
     expect(input.title).toBe("hello");
   });
 
@@ -2945,8 +2993,12 @@ describe("slackChannel() inbound mention pipeline", () => {
 
     expect(send).toHaveBeenCalledTimes(1);
     expect(onAppMention.mock.calls[0]![1].text).toBe("<@U_BOT> Could you investigate?");
-    const [, { message }] = send.mock.calls[0]! as [string, { message: string }];
-    expect(message).toContain(
+    const [, { context, message }] = send.mock.calls[0]! as [
+      string,
+      { context: string[]; message: string },
+    ];
+    expect(message).toBe("<@U_BOT> Could you investigate?");
+    expect(context[0]).toContain(
       [
         "<slack_message>",
         "sender_type: user",
@@ -2986,9 +3038,13 @@ describe("slackChannel() inbound mention pipeline", () => {
     const { send } = await firePost(channel, buildSignedRequest({ body }));
 
     expect(send).toHaveBeenCalledTimes(1);
-    const [, { message }] = send.mock.calls[0]! as [string, { message: string }];
-    expect(message).toContain("bot_user_id: U_BOT");
-    expect(message).toContain("is_mentioned: false");
+    const [, { context, message }] = send.mock.calls[0]! as [
+      string,
+      { context: string[]; message: string },
+    ];
+    expect(message).toBe("Could you investigate?");
+    expect(context[0]).toContain("bot_user_id: U_BOT");
+    expect(context[0]).toContain("is_mentioned: false");
   });
 
   it("uses the run title returned by onAppMention for a public channel", async () => {
@@ -3004,7 +3060,7 @@ describe("slackChannel() inbound mention pipeline", () => {
     const [, input] = send.mock.calls[0]!;
     expect(input.title).toBe("Run");
     expect(input.state).toMatchObject({ audience: "public" });
-    expect(input.message).toContain("<content>\npublic message text\n</content>");
+    expect(input.message).toBe("public message text");
   });
 
   it("uses an opaque run title for private channel mentions", async () => {
@@ -3038,7 +3094,7 @@ describe("slackChannel() inbound mention pipeline", () => {
     expect(input.title).toBe("Private message");
     expect(input.state).toMatchObject({ audience: "private" });
     expect(input.title).not.toContain("sensitive message");
-    expect(input.message).toContain("<content>\nsensitive message\n</content>");
+    expect(input.message).toBe("sensitive message");
   });
 
   it("uses only this app's reply as the incremental thread context boundary", async () => {
@@ -3115,13 +3171,17 @@ describe("slackChannel() inbound mention pipeline", () => {
 
     const { send } = await firePost(channel, buildSignedRequest({ body }));
 
-    const [, { message }] = send.mock.calls[0]! as [string, { message: string }];
-    expect(message).toContain("<slack_thread_context>");
-    expect(message).toContain("sender_id: U_BACKEND");
-    expect(message).toContain("sender_id: U_OTHER_BOT");
-    expect(message).toContain("sender_id: U_FRONTEND");
-    expect(message).toContain("sender_id: U_CURRENT");
-    expect(message).not.toContain("sender_id: U_ROOT");
+    const [, { context, message }] = send.mock.calls[0]! as [
+      string,
+      { context: string[]; message: string },
+    ];
+    expect(message).toBe("Summarize ownership.");
+    expect(context[0]).toContain("<slack_thread_context>");
+    expect(context[0]).toContain("sender_id: U_BACKEND");
+    expect(context[0]).toContain("sender_id: U_OTHER_BOT");
+    expect(context[0]).toContain("sender_id: U_FRONTEND");
+    expect(context[0]).toContain("sender_id: U_CURRENT");
+    expect(context[0]).not.toContain("sender_id: U_ROOT");
     expect(
       fetchMock.mock.calls.filter(([request]) => String(request).includes("conversations.replies")),
     ).toHaveLength(1);
@@ -3875,7 +3935,7 @@ describe("slackChannel() inbound direct message pipeline", () => {
     const [, options] = send.mock.calls[0]!;
     expect(options.title).toBe("Private message");
     expect(options.title).not.toContain("sensitive message");
-    expect(options.message).toContain("<content>\nsensitive message\n</content>");
+    expect(options.message).toBe("sensitive message");
   });
 
   it("does not dispatch when onDirectMessage resolves to null", async () => {

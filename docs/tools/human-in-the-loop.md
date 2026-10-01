@@ -217,6 +217,8 @@ Approvals and questions share one protocol:
 
 For `ctx.ask()` questions from tools, a follow-up message answers the question only when exactly one question is pending. The message must match an option, or the question must allow free text. Otherwise the message follows the session's `turnPolicy`. A steering message, the default, aborts the `ctx.abortSignal` of each `execute` workflow tool call the turn waits on, so a question such a call asked, such as `ask_question`'s, is withdrawn and resolves as `cancelled`. The model reads the message once those calls settle. Questions from subagents need a structured response.
 
+When a plain-text message answers a question, eve consumes its `message`, `context`, and channel `state` together. The context is not added to history, and the channel state is not applied. This prevents metadata accompanying an answer from steering the waiting turn or starting another turn in a parked session. The answer still reaches the asking tool with the authenticated responder's identity.
+
 Each request includes a `kind` discriminator: `tool-approval`, `question`, or
 `session-limit`. Clients should use `kind` to choose behavior and presentation.
 `requestId` identifies the request to answer, and `action.callId` identifies the

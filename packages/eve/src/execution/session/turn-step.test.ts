@@ -96,6 +96,10 @@ function turnStep(
   return runSessionStateStep({ history: [], ...input, input: payload }, runTurnStep);
 }
 import { routeProxiedDeliverStep } from "#execution/proxied-deliver-step.js";
+import { nextTurnDelivery } from "#execution/session/next-input.js";
+import { SessionInputQueue } from "#execution/session/input-queue.js";
+import { SessionStateCursor } from "#execution/session/state-cursor.js";
+import type { SessionInbox } from "#execution/session-inbox/inbox.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
 import { runSessionStateStep } from "#internal/testing/session-state-step.js";
 
@@ -406,6 +410,68 @@ describe("routeProxiedDeliverStep", () => {
     ]);
   });
 
+  it("keeps a parked session idle after routing an answer with channel metadata", async () => {
+    const session = upsertProxyInputRequests({
+      entries: [
+        [
+          "ask-day",
+          {
+            workflowAsk: {
+              control: "control",
+              question: { options: [{ id: "sat", label: "Saturday" }] },
+            },
+            childContinuationToken: "ask-day",
+            event: REQUEST_EVENT,
+            kind: "question",
+          },
+        ],
+      ],
+      forChildContinuationToken: "ask-day",
+      session: createStubSession(),
+    });
+    installSessionStoreMocks([session]);
+    const inbox: SessionInbox = {
+      claimedTokens: [],
+      claimSessionHook: vi.fn(),
+      claimSessionHooks: vi.fn(),
+      next: vi.fn(async () => undefined),
+      drain: () => [],
+      hasPending: () => false,
+      whenPending: () => new Promise<void>(() => {}),
+      onInterrupt: () => () => {},
+      onDelivery: () => () => {},
+      restore() {},
+    };
+    const queue = new SessionInputQueue();
+    queue.enqueueDelivery({
+      kind: "deliver",
+      payloads: [
+        {
+          message: "Saturday",
+          context: ["Alice replied"],
+          state: { triggeringUserId: "alice" },
+        },
+      ],
+    });
+    const cursor = new SessionStateCursor({
+      history: [],
+      inbox,
+      serializedContext: createSerializedContext(),
+      sessionWritable: createTestWritable(),
+      sessionState: createStubSessionState({ hasProxyInputRequests: true }),
+    });
+
+    await expect(
+      nextTurnDelivery({ inbox, cursor, queue, hasWorkingTasks: () => false }),
+    ).resolves.toEqual({ kind: "closed" });
+    expect(resumeHookMock).toHaveBeenCalledExactlyOnceWith("control", {
+      kind: "answer",
+      requestId: "ask-day",
+      response: { optionId: "sat", status: "answered", text: undefined },
+    });
+    expect(queue.pendingCount).toBe(0);
+  });
+
   it("answers a root question once when one delivery carries several messages", async () => {
     const session = upsertProxyInputRequests({
       entries: [
@@ -429,7 +495,18 @@ describe("routeProxiedDeliverStep", () => {
       serializedContext: createSerializedContext(),
       delivery: {
         kind: "deliver",
-        payloads: [{ message: "Use the canary pool." }, { message: "Also check the logs." }],
+        payloads: [
+          {
+            message: "Use the canary pool.",
+            context: ["Alice replied"],
+            state: { userId: "alice" },
+          },
+          {
+            message: "Also check the logs.",
+            context: ["Alice followed up"],
+            state: { userId: "alice" },
+          },
+        ],
       },
       sessionWritable: createTestWritable(),
       sessionState: createStubSessionState({ hasProxyInputRequests: true }),
@@ -443,7 +520,15 @@ describe("routeProxiedDeliverStep", () => {
     });
     expect(result).toMatchObject({
       kind: "continue",
-      remainder: { payloads: [{ message: "Also check the logs." }] },
+      remainder: {
+        payloads: [
+          {
+            message: "Also check the logs.",
+            context: ["Alice followed up"],
+            state: { userId: "alice" },
+          },
+        ],
+      },
     });
   });
 

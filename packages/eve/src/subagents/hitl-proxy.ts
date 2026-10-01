@@ -129,8 +129,8 @@ interface ChildResponseBucket {
  *
  * With `resolveMessage`, a plain-text message is also resolved against pending
  * `ctx.ask()` questions: when exactly one question is pending, a matching option or
- * permitted free text answers it and consumes the message. Otherwise the
- * message stays with the parent.
+ * permitted free text answers it and consumes the message and its channel context
+ * and state. Otherwise the message stays with the parent.
  */
 export function routeDeliverPayload(input: {
   readonly allowRoute?: (requestId: string, route: ProxyInputRequest) => boolean;
@@ -244,16 +244,16 @@ export function routeDeliverPayload(input: {
     },
   );
 
-  // Preserve every non-`inputResponses` field on the original payload
-  // and restore un-routed responses. `undefined` when the resulting
-  // payload has no actionable signal.
+  // A consumed answer's context and channel state belong to that message;
+  // leaving them behind would steer or start a parent turn without user input.
+  // Preserve unrelated fields and restore un-routed responses.
   const remainder: Record<string, unknown> = {};
 
   for (const [key, value] of Object.entries(input.payload)) {
     if (key === "inputResponses" || value === undefined) {
       continue;
     }
-    if (key === "message" && message.consumed) continue;
+    if (message.consumed && (key === "message" || key === "context" || key === "state")) continue;
 
     remainder[key] = value;
   }

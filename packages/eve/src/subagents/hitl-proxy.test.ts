@@ -292,7 +292,11 @@ describe("routeDeliverPayload message resolution", () => {
 
   it("answers the only pending question with a matching option label", () => {
     const routed = routeDeliverPayload({
-      payload: { message: "production" },
+      payload: {
+        message: "production",
+        context: ["The reply came from Alice."],
+        state: { triggeringUserId: "alice" },
+      },
       resolveMessage: true,
       state: askSession([["ask-1", {}]]).state,
     });
@@ -309,7 +313,11 @@ describe("routeDeliverPayload message resolution", () => {
 
   it("answers the only pending question with free text when it allows it", () => {
     const routed = routeDeliverPayload({
-      payload: { message: "Use the canary pool" },
+      payload: {
+        message: "Use the canary pool",
+        context: ["The reply came from Alice."],
+        state: { triggeringUserId: "alice" },
+      },
       resolveMessage: true,
       state: askSession([["ask-1", { allowFreeform: true }]]).state,
     });
@@ -320,17 +328,40 @@ describe("routeDeliverPayload message resolution", () => {
     ]);
   });
 
-  it("keeps a message for the turn when several questions are pending", () => {
+  it("preserves unrelated fields when consuming an answer's channel metadata", () => {
     const routed = routeDeliverPayload({
-      payload: { message: "Actually, check the logs first." },
+      payload: {
+        message: "production",
+        context: ["Alice replied"],
+        state: { triggeringUserId: "alice" },
+        outputSchema: { type: "object" },
+      },
       resolveMessage: true,
-      state: askSession([
-        ["ask-1", {}],
-        ["ask-2", {}],
-      ]).state,
+      state: askSession([["ask-1", {}]]).state,
     });
 
-    expect(routed.forSelf).toEqual({ message: "Actually, check the logs first." });
+    expect(routed.forSelf).toEqual({ outputSchema: { type: "object" } });
+    expect(routed.forChildren[0]?.payload.inputResponses).toEqual([
+      { optionId: "2", requestId: "ask-1" },
+    ]);
+  });
+
+  it.each([
+    { name: "several questions are pending", questions: ["ask-1", "ask-2"] },
+    { name: "the reply does not match an option", questions: ["ask-1"] },
+  ])("keeps the message and channel metadata when $name", ({ questions }) => {
+    const payload = {
+      message: "Actually, check the logs first.",
+      context: ["The reply came from Alice."],
+      state: { triggeringUserId: "alice" },
+    };
+    const routed = routeDeliverPayload({
+      payload,
+      resolveMessage: true,
+      state: askSession(questions.map((requestId) => [requestId, {}])).state,
+    });
+
+    expect(routed.forSelf).toEqual(payload);
     expect(routed.forChildren).toEqual([]);
   });
 
@@ -386,12 +417,18 @@ describe("routeDeliverPayload message resolution", () => {
       payload: {
         inputResponses: [{ optionId: "1", requestId: "ask-1" }],
         message: "production",
+        context: ["Alice replied"],
+        state: { triggeringUserId: "alice" },
       },
       resolveMessage: true,
       state: askSession([["ask-1", {}]]).state,
     });
 
-    expect(routed.forSelf).toEqual({ message: "production" });
+    expect(routed.forSelf).toEqual({
+      message: "production",
+      context: ["Alice replied"],
+      state: { triggeringUserId: "alice" },
+    });
     expect(routed.forChildren[0]?.payload.inputResponses).toEqual([
       { optionId: "1", requestId: "ask-1" },
     ]);
