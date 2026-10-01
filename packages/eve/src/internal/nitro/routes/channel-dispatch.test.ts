@@ -39,6 +39,7 @@ import {
 import { resolveNitroChannelRuntimeBundle } from "#internal/nitro/routes/runtime-stack.js";
 import { compileFromMemory } from "#internal/testing/compile-from-memory.js";
 import { withBundledCompiledArtifacts } from "#runtime/loaders/bundled-artifacts.js";
+import { SERVER_OUTPUT_SKILLS_URL_GLOBAL } from "#channel/skill-files.js";
 
 vi.mock("#internal/nitro/routes/runtime-stack.js", () => ({
   resolveNitroChannelRuntimeBundle: vi.fn(),
@@ -179,13 +180,14 @@ describe("dispatchChannelRequest", () => {
     ]);
   });
 
-  it("hands route handlers describe() and readSkill() backed by the bundled artifacts", async () => {
+  it("hands route handlers describe() and readSkill() for bundled artifacts", async () => {
     const compiled = await compileFromMemory({
       model: "openai/gpt-5.4",
       name: "wired-agent",
       skills: [{ description: "Research skill.", name: "research" }],
     });
-    // Materialization strips skill files from the manifest; bundled artifacts carry them instead.
+    // Materialization strips skill files from the manifest; production builds
+    // ship them as server output files, located through the entry-chunk stamp.
     const manifest = {
       ...compiled.manifest,
       skills: compiled.manifest.skills.map(({ files: _files, ...skill }) => skill),
@@ -197,10 +199,10 @@ describe("dispatchChannelRequest", () => {
         {
           handler: async (_request, args) => {
             const description = await args.describe();
+            const skillError = await args.readSkill("research").catch((error: unknown) => error);
             return Response.json({
               name: description.name,
-              reference: await args.readSkill("research", "references/api.md"),
-              skill: await args.readSkill("research"),
+              skillError: (skillError as { code?: string }).code,
               skills: description.skills,
               tools: description.tools.length,
             });
@@ -218,38 +220,22 @@ describe("dispatchChannelRequest", () => {
       runtime,
     });
 
-    const response = await withBundledCompiledArtifacts(
-      {
-        manifest,
-        moduleMap,
-        skillFiles: async () => [
-          [
-            "research",
-            [
-              ["SKILL.md", { content: "# Research\n", encoding: "utf8", size: 11 }],
-              ["references/api.md", { content: "nested\n", encoding: "utf8", size: 7 }],
-            ],
-          ],
-        ],
-      },
-      () =>
-        dispatchChannelRequest(createEvent({ url: "https://eve.test/mcp" }), "GET /mcp", {
-          kind: "production",
-          sandboxScope: "test",
-        }),
+    // No tree exists at the stamped URL, so the skill is listed without files.
+    vi.stubGlobal(
+      SERVER_OUTPUT_SKILLS_URL_GLOBAL,
+      "file:///eve-test-missing-server-output/_eve-skills/",
     );
+    const response = await withBundledCompiledArtifacts({ manifest, moduleMap }, () =>
+      dispatchChannelRequest(createEvent({ url: "https://eve.test/mcp" }), "GET /mcp", {
+        kind: "production",
+        sandboxScope: "test",
+      }),
+    ).finally(() => vi.unstubAllGlobals());
 
     await expect(response.json()).resolves.toEqual({
       name: "wired-agent",
-      reference: "nested\n",
-      skill: "# Research\n",
-      skills: [
-        {
-          description: "Research skill.",
-          files: ["SKILL.md", "references/api.md"],
-          name: "research",
-        },
-      ],
+      skillError: "unknown-file",
+      skills: [{ description: "Research skill.", files: [], name: "research" }],
       tools: expect.any(Number),
     });
   });

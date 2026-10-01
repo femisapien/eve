@@ -69,7 +69,7 @@ Each route receives these operation surfaces:
 - `params`, `waitUntil`, and `requestIp` provide request metadata and lifetime control.
 - `describe()` returns the agent's name, description, and compiled tools and skills, sorted by name. It carries no paths, config, or other inspection detail, so a channel can publish it to its callers.
 - `readSkill(skill, path?)` reads one file of a compiled skill. With no path, or with `SKILL.md`, it reads the skill's entry file in whatever case it was authored (`skill.md`, `Skill.MD`, and so on); other paths must match exactly. Text files return a string and other files return bytes. It rejects unknown skills and files, paths that leave the skill, symlinks, and files over 512 KiB.
-  - In bundled deployments (`eve build`, including Vercel), the build embeds up to 8 MiB of skill files in total, filling skills in name order and files in path order. Files past that budget still appear in `describe()`, but `readSkill` throws an `unavailable` error for them, and the build logs a warning naming each skipped file. Dev servers read skill files from disk and have no total budget.
+  - Production builds (`eve build`, including Vercel) copy the root agent's compiled skill files into the server output as plain files, inside the server function and never as public static assets, and `readSkill` reads them the same way the dev server does. They count toward the deployed function's size limit.
 
 Event handlers receive `(eventData, channel, ctx)`. `ctx.session.id` identifies
 the exact session, while `channel.continuation` exposes the current address and

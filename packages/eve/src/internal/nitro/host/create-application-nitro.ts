@@ -20,6 +20,7 @@ import {
 import { createProductionNitroArtifactsConfig } from "#internal/nitro/host/artifacts-config.js";
 import { createCompiledSandboxProviderPrunePlugin } from "#internal/nitro/host/compiled-sandbox-provider-prune-plugin.js";
 import { createDevelopmentRuntimePrunePlugin } from "#internal/nitro/host/development-runtime-prune-plugin.js";
+import { createServerOutputSkillFilesPlugin } from "#internal/nitro/host/server-output-skill-files-plugin.js";
 import { createExtensionScopePlugin } from "#internal/bundler/extension-scope-plugin.js";
 import { extensionOverridePaths } from "#compiler/extension-mount-bindings.js";
 import { createExtensionMountPlugin } from "#internal/bundler/extension-mount-plugin.js";
@@ -595,8 +596,16 @@ function createApplicationNitroBundlerConfiguration(
     preparedHost.compileResult.manifest,
     ...preparedHost.compileResult.manifest.subagents.map((subagent) => subagent.agent),
   ].flatMap((node) => node.extensionMounts);
+  const { manifest } = preparedHost.compileResult;
   const nitroBundlerPlugins = [
     options.development ? null : createDevelopmentRuntimePrunePlugin(),
+    // Dev reads skill files from the compile directory directly.
+    options.development
+      ? null
+      : createServerOutputSkillFilesPlugin({
+          skills: manifest.skills.map((skill) => skill.name),
+          skillsRoot: `${preparedHost.compileResult.paths.compileDirectoryPath}/${manifest.workspaceResourceRoot.logicalPath}/skills`,
+        }),
     compiledSandboxProviderPrunePlugin,
     createOptionalEngineDependencyPlugin(unconfiguredOptionalEnginePackages),
     createExtensionExternalDependencyPlugin(extensionMounts),
