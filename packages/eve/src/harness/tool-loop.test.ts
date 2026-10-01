@@ -8542,7 +8542,7 @@ describe("createToolLoopHarness", () => {
       createTestConfig(
         async (event) => {
           if (event.type === "step.started") {
-            turnContexts.push(buildResolveContext(ctx, []).session.turn.context);
+            turnContexts.push(buildResolveContext(ctx, []).turn.context);
           }
         },
         {
@@ -11614,7 +11614,7 @@ describe("createToolLoopHarness", () => {
             visibleContexts.push({
               event: event.type,
               session: buildResolveContext(ctx, []).session.context,
-              turn: buildResolveContext(ctx, []).session.turn.context,
+              turn: buildResolveContext(ctx, []).turn.context,
             });
           }
         }),

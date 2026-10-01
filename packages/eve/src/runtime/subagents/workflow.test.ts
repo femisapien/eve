@@ -78,6 +78,7 @@ const input: WorkflowBodyInput = {
     sent: 0,
   },
   runId: "run",
+  turn: {},
   session: { auth: alice, context: {}, id: "session", turn: { id: "turn", sequence: 1 } },
   stepIndex: 0,
   toolName: "reviewer",

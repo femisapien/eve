@@ -41,12 +41,12 @@ export function buildResolveContext(
     session: {
       id: sessionId,
       context: ctx.get(SessionContextKey) ?? {},
-      turn: { context: ctx.get(TurnContextKey) },
       auth: {
         current: currentAuth,
         initiator: initiatorAuth,
       },
     },
+    turn: { context: ctx.get(TurnContextKey) },
     channel: {
       kind: channelAdapter !== undefined ? getAdapterKind(channelAdapter) : undefined,
       continuationToken,

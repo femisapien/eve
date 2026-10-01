@@ -32,14 +32,14 @@ export async function deployServiceWorkflow(input: DeployInput, ctx: WorkflowToo
     plan,
     sessionId: ctx.session.id,
     context: ctx.session.context,
-    turnContext: ctx.session.turn.context,
+    turnContext: ctx.turn.context,
     stepTurnContext: await readTurnContextStep(ctx),
   };
 }
 
 async function readTurnContextStep(ctx: WorkflowToolContext) {
   "use step";
-  return ctx.session.turn.context;
+  return ctx.turn.context;
 }
 
 export async function authorizedDeployWorkflow(input: DeployInput, ctx: WorkflowToolContext) {

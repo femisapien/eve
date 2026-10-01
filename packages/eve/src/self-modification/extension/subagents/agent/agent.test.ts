@@ -14,7 +14,8 @@ const context: DynamicResolveContext = {
   channel: {},
   messages: [],
   model: null,
-  session: { context: {}, auth: { current: null, initiator: null }, id: "session", turn: {} },
+  session: { context: {}, auth: { current: null, initiator: null }, id: "session" },
+  turn: {},
 };
 
 const savedEnvironment = { ...process.env };

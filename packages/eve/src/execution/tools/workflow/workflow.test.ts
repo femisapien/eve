@@ -67,6 +67,7 @@ const input = {
   callId: "call-1",
   entry: { entryPoint: "execute" as const },
   input: {},
+  turn: {},
   session: {
     context: {},
     auth: { current: null, initiator: null },

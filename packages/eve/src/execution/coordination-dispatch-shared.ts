@@ -80,7 +80,7 @@ export interface PreparedCoordinationDispatch<PlanEntry = RuntimeWorkflowTaskReq
   /** Lineage of the session running this dispatch, when it is itself a delegated child. */
   readonly parentSession: SessionParent | undefined;
   readonly sessionContext: JsonObject;
-  /** The dispatching turn's `clientContext`, which workflow runs expose as `ctx.session.turn.context`. */
+  /** The dispatching turn's `clientContext`, which workflow runs expose as `ctx.turn.context`. */
   readonly turnContext: ClientContextValue | undefined;
   readonly sandboxSessionId: string;
   readonly serializedContext: Record<string, unknown>;

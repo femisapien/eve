@@ -2,7 +2,7 @@
   "kind": "eve-extension-capability-contract",
   "capability": "connection",
   "epoch": 37,
-  "sha256": "3dfcdc19b49b35aa5c67bc3baa2090576345ada5e255709ccd7d50ca1d86c75a",
+  "sha256": "acdcc9b7854916830df57060b5746b356a62806b06bb13eb0b3033940ac88cc3",
   "exports": [
     "ConnectionAuthorizationFailedError",
     "ConnectionAuthorizationRequiredError",

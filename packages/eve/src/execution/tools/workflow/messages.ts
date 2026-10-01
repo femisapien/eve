@@ -175,7 +175,7 @@ export interface WorkflowToolRunCall extends Pick<
   readonly executeInput?: JsonValue;
   /** The call's input, without the `taskId` that named the task. */
   readonly input: JsonObject;
-  /** The calling turn's `clientContext`, which the run exposes as `ctx.session.turn.context`. */
+  /** The calling turn's `clientContext`, which the run exposes as `ctx.turn.context`. */
   readonly turnContext?: ClientContextValue;
 }
 

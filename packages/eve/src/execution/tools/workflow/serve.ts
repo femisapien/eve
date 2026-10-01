@@ -56,6 +56,8 @@ interface ServedCall {
   readonly from: WorkflowToolRunRef;
   /** The run's session in the call's turn, with the auth the call was admitted with. */
   readonly session: SessionContext["session"];
+  /** The call's turn context. */
+  readonly turn: SessionContext["turn"];
 }
 
 interface PendingReceive {
@@ -130,7 +132,7 @@ class WorkflowServeCalls implements WorkflowBodyControl {
       input: this.runRef.input,
       sequence: this.runRef.sequence,
       stepIndex: this.runRef.stepIndex,
-      turnContext: input.session.turn.context,
+      turnContext: input.turn.context,
       turnId: this.runRef.turnId,
     });
     this.waiting = [this.first];
@@ -153,7 +155,8 @@ class WorkflowServeCalls implements WorkflowBodyControl {
   /**
    * The call the body serves now: the latest call it received. Steps,
    * questions, sign-ins, and `agent.started` belong to this call, so they
-   * carry its `callId` and turn; `ctx.session` is its view of the session,
+   * carry its `callId` and turn; `ctx.session` and `ctx.turn` are its view of
+   * the session and turn,
    * `ctx.agents` lists the agents it may open, a session opened now is its
    * child, and a message sent now carries its auth.
    */
@@ -303,8 +306,9 @@ class WorkflowServeCalls implements WorkflowBodyControl {
       session: {
         ...this.runSession,
         auth: call.auth,
-        turn: { context: call.turnContext, id: call.turnId, sequence: call.sequence },
+        turn: { id: call.turnId, sequence: call.sequence },
       },
+      turn: { context: call.turnContext },
     };
   }
 
@@ -415,6 +419,9 @@ function createServeContext(
     },
     get session() {
       return calls.current.session;
+    },
+    get turn() {
+      return calls.current.turn;
     },
     reply: (output) => calls.reply(output),
   };

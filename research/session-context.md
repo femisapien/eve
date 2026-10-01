@@ -14,7 +14,7 @@ Expose `useEveAgent({ sessionContext: { surface: "docs" } })` across frontend bi
 - Capture it before initialization and persist it across workflow steps and turns.
 - Keep it fixed for that session. Reject replacement on follow-up POSTs; reconnects retain it, while a hook reset reuses its captured creation options for a new session.
 - Keep child sessions independent; context is not inherited automatically.
-- Expose the current turn's `clientContext`, as sent, as `ctx.session.turn.context`, just as creation context is `ctx.session.context`. Turns without it expose `undefined`.
+- Expose the current turn's `clientContext`, as sent, as `ctx.turn.context`, alongside creation context at `ctx.session.context`. Turns without it expose `undefined`.
 - Carry turn context across steps of that turn and into workflow tools launched by it, then discard it at turn completion.
 - Keep application context separate from authenticated identity. Session context stays out of model prompts; `clientContext` retains its existing model context messages. No agent schema, type registry, or generated application types are introduced.
 

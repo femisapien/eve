@@ -6,7 +6,7 @@ import { getTurnClientContextState } from "#harness/turn-client-context.js";
 import type { HarnessSession } from "#harness/types.js";
 import type { ClientContextValue } from "#internal/client-context.js";
 
-/** The active turn's `clientContext`, exposed as `ctx.session.turn.context`. */
+/** The active turn's `clientContext`, exposed as `ctx.turn.context`. */
 export const TurnContextKey = new ContextKey<ClientContextValue | undefined>("eve.turnContext");
 
 export function restoreTurnContext(

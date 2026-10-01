@@ -22,7 +22,8 @@ import { serializeOutputSchema, type ToolSchema } from "#tools/schema.js";
 
 vi.mock("#context/build-callback-context.js", () => ({
   buildCallbackContext: () => ({
-    session: { context: {}, id: "test", auth: { current: null, initiator: null }, turn: {} },
+    session: { context: {}, id: "test", auth: { current: null, initiator: null } },
+    turn: {},
   }),
 }));
 
@@ -416,6 +417,7 @@ function createApprovalContext(input: {
     approvedTools: new Set(),
     callId: "call_1",
     getSandbox: vi.fn(),
+    turn: {},
     session: {
       context: {},
       auth: { current: null, initiator: null },

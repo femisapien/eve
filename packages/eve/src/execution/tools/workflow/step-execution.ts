@@ -38,7 +38,7 @@ export function withWorkflowStepAuthorization(execute: (...args: never[]) => unk
     context.set(SessionIdKey, input.session.id);
     context.set(SessionContextKey, input.session.context ?? {});
     context.setVirtualContext(SessionKey, { ...input.session, sessionId: input.session.id });
-    context.setVirtualContext(TurnContextKey, input.session.turn.context);
+    context.setVirtualContext(TurnContextKey, input.turn.context);
     context.set(CallbackBaseUrlKey, resolveWorkflowCallbackBaseUrl(input.baseUrl));
     context.setVirtualContext(AuthorizationHookKey, input.token);
     context.setVirtualContext(PendingAuthorizationResultKey, input.authorizationResults);

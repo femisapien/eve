@@ -103,8 +103,8 @@ describe("dynamic runtime model resolution", () => {
           context: {},
           auth: { current: null, initiator: null },
           id: "session-1",
-          turn: {},
         },
+        turn: {},
       },
     );
 

@@ -25,9 +25,10 @@ export function buildCallbackContext(): SessionContext {
       id: session.sessionId,
       auth: session.auth,
       context: ctx.get(SessionContextKey) ?? {},
-      turn: { ...session.turn, context: ctx.get(TurnContextKey) },
+      turn: session.turn,
       parent: session.parent,
     },
+    turn: { context: ctx.get(TurnContextKey) },
 
     getSandbox(environment?: SandboxEnvironmentIdentity): Promise<RuntimeSandboxSession> {
       const access = ctx.get(SandboxKey);

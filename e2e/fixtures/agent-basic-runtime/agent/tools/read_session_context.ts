@@ -9,7 +9,7 @@ export default defineDynamic({
             description: "Read the application and turn context for this chat.",
             inputSchema: z.object({}),
             execute: (_, ctx) =>
-              JSON.stringify({ session: ctx.session.context, turn: ctx.session.turn.context }),
+              JSON.stringify({ session: ctx.session.context, turn: ctx.turn.context }),
           })
         : null,
   },

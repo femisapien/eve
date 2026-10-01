@@ -168,8 +168,8 @@ describe("memory provider tools", () => {
             context: {},
             auth: { current: null, initiator: null },
             id: "session_1",
-            turn: {},
           },
+          turn: {},
         }),
     );
 
