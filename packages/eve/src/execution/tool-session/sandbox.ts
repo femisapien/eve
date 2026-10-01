@@ -107,9 +107,32 @@ function isSandboxLeased(name: string): boolean {
   return sandboxLeases.has(name);
 }
 
+// Per-name lock that serializes, in this process, a call taking its lease with
+// the sweep's delete of that name: a call admitted first holds the lease the
+// delete checks last, and a call arriving mid-delete waits and then finds no
+// sandbox, so it creates a fresh one instead of resuming one being deleted.
+const sandboxNameLocks = new Map<string, Promise<void>>();
+
+async function withSandboxNameLock<T>(name: string, fn: () => Promise<T> | T): Promise<T> {
+  const previous = sandboxNameLocks.get(name) ?? Promise.resolve();
+  let unlock!: () => void;
+  const held = new Promise<void>((resolve) => {
+    unlock = resolve;
+  });
+  const tail = previous.then(() => held);
+  sandboxNameLocks.set(name, tail);
+  await previous;
+  try {
+    return await fn();
+  } finally {
+    unlock();
+    if (sandboxNameLocks.get(name) === tail) sandboxNameLocks.delete(name);
+  }
+}
+
 interface NamedStartHooks {
   /** Takes this call's lease on a named sandbox before it is looked up. */
-  readonly lease: (name: string) => void;
+  readonly lease: (name: string) => Promise<void>;
   readonly onState: (state: OpenedState) => void;
 }
 
@@ -118,43 +141,46 @@ interface NamedStartHooks {
  * because a provider's get-then-create is not atomic, so a create that fails
  * with a name conflict looks the name up again and reuses the winner.
  *
- * A provider without named lookup gets a sandbox private to this call: its
- * session id carries `isolatedSessionId`, so no other call derives the same
- * sandbox, and the call deletes it when it ends. A keyed session there fails
- * with {@link ToolSessionSandboxPersistenceError} instead.
+ * A one-off call's sandbox is private to the invocation: its name, or on a
+ * provider without named lookup its session id, derives from
+ * `isolatedSessionId`, never the logical session id that signed retries share.
+ * So concurrent retries with one nonce never share a sandbox that the first to
+ * finish deletes, and each is tracked for shutdown under its own identity. A
+ * keyed session on a provider without named lookup fails with
+ * {@link ToolSessionSandboxPersistenceError}.
  */
 export const startNamedToolSessionSandbox =
   (
     hooks: NamedStartHooks,
-    fallback: { readonly isolatedSessionId: string; readonly lifetime: ToolSessionSandboxLifetime },
+    identity: { readonly isolatedSessionId: string; readonly lifetime: ToolSessionSandboxLifetime },
   ): SandboxStartOverride =>
   async ({ artifact, context, options, provider }) => {
+    const oneOff = identity.lifetime === "one-off";
+    const trackingId = oneOff ? identity.isolatedSessionId : undefined;
     const named = getNamedSandboxSessions(provider.implementation);
     if (named === undefined) {
-      if (fallback.lifetime === "keyed") {
-        throw new ToolSessionSandboxPersistenceError(provider.providerName);
-      }
+      if (!oneOff) throw new ToolSessionSandboxPersistenceError(provider.providerName);
       const isolated = {
         ...context,
-        session: { ...context.session, id: fallback.isolatedSessionId },
+        session: { ...context.session, id: identity.isolatedSessionId },
       };
       const started = await provider.implementation.start(isolated, options, artifact);
       hooks.onState("created");
-      return { created: true, handle: withCallScopedLifetime(started.handle) };
+      return { created: true, handle: withCallScopedLifetime(started.handle), trackingId };
     }
     const name = toolSessionSandboxName({
       artifact,
       providerName: provider.providerName,
-      sessionId: context.session.id,
+      sessionId: oneOff ? identity.isolatedSessionId : context.session.id,
     });
-    hooks.lease(name);
+    await hooks.lease(name);
     const address = { name, tag: TOOL_SESSION_SANDBOX_TAG };
     const found = await named.find(context, artifact, address);
-    if (found !== null) return reuse(found, hooks.onState);
+    if (found !== null) return reuse(found, hooks.onState, trackingId);
     try {
       const handle = await named.create(context, options, artifact, address);
       hooks.onState("created");
-      return { created: true, handle };
+      return { created: true, handle, trackingId };
     } catch (error) {
       if (!isSandboxNameConflictError(error)) throw error;
       const winner = await named.find(context, artifact, address);
@@ -164,13 +190,17 @@ export const startNamedToolSessionSandbox =
           { cause: error },
         );
       }
-      return reuse(winner, hooks.onState);
+      return reuse(winner, hooks.onState, trackingId);
     }
   };
 
-function reuse(found: SandboxProviderNamedSession, onState: (state: OpenedState) => void) {
+function reuse(
+  found: SandboxProviderNamedSession,
+  onState: (state: OpenedState) => void,
+  trackingId: string | undefined,
+) {
   onState(found.running ? "reused" : "resumed");
-  return { created: false, handle: found.handle };
+  return { created: false, handle: found.handle, trackingId };
 }
 
 // Marks a handle whose sandbox must be deleted when the call ends.
@@ -209,8 +239,14 @@ export async function createToolSessionSandbox(input: {
   let callScoped = false;
   let releaseLease: (() => void) | undefined;
   // The latest handle this call opened, kept so release can delete a stopped sandbox.
-  let latest: { readonly handle: SandboxProviderHandle; readonly providerName: string } | undefined;
-  // One isolated id per call, so reopening after stop() finds the same fallback sandbox.
+  let latest:
+    | {
+        readonly handle: SandboxProviderHandle;
+        readonly providerName: string;
+        readonly trackingId: string;
+      }
+    | undefined;
+  // One isolated id per invocation, so reopening after stop() finds the same private sandbox.
   const isolatedSessionId = `${input.sessionId}.call-${randomBytes(8).toString("hex")}`;
   const inner = await ensureSandboxAccess({
     compiledArtifactsSource: input.compiledArtifactsSource,
@@ -221,8 +257,11 @@ export async function createToolSessionSandbox(input: {
     startSandbox: async (start) => {
       const started = await startNamedToolSessionSandbox(
         {
-          lease: (name) => {
-            releaseLease ??= acquireSandboxLease(name);
+          lease: async (name) => {
+            if (releaseLease !== undefined) return;
+            await withSandboxNameLock(name, () => {
+              releaseLease ??= acquireSandboxLease(name);
+            });
           },
           onState: (value) => {
             state = value;
@@ -231,7 +270,11 @@ export async function createToolSessionSandbox(input: {
         { isolatedSessionId, lifetime: input.lifetime },
       )(start);
       callScoped = callScopedHandles.has(started.handle);
-      latest = { handle: started.handle, providerName: start.provider.providerName };
+      latest = {
+        handle: started.handle,
+        providerName: start.provider.providerName,
+        trackingId: started.trackingId ?? input.sessionId,
+      };
       return started;
     },
     state: null,
@@ -293,7 +336,7 @@ export async function createToolSessionSandbox(input: {
         untrackActiveSandboxHandle({
           handle: latest.handle,
           providerName: latest.providerName,
-          sessionId: input.sessionId,
+          sessionId: latest.trackingId,
         });
       } finally {
         releaseLease?.();
@@ -317,10 +360,15 @@ export interface ToolSessionSandboxSweepResult {
  * retention. Production builds schedule it weekly as the
  * `eve.tool-session-sandbox-sweep` Nitro task.
  *
- * Calls in this process hold a lease the sweep honors. Across instances the
- * provider's re-read just before deleting is the guard; a call that resumes a
- * 30-day-idle sandbox in the instant between that re-read and the delete can
- * still lose it, and then fails with the tool's own error, as after expiry.
+ * In this process, a per-name lock serializes each delete with calls taking
+ * their lease, and the provider checks the lease, running state and last use
+ * at its final lookup, right before the delete request, so an admitted call's
+ * sandbox is never deleted.
+ *
+ * Across instances this is NOT atomic: there is no lease the sweep can see,
+ * only the provider's final re-read. A call on another instance that resumes a
+ * 30-day-idle sandbox between that re-read and the delete request can still
+ * lose it, and then fails as it would after expiry.
  */
 export async function sweepToolSessionSandboxes(input: {
   readonly compiledArtifactsSource: RuntimeCompiledArtifactsSource;
@@ -356,10 +404,12 @@ export async function sweepToolSessionSandboxes(input: {
       // The listing may be stale by now: a call can have resumed the sandbox since.
       // The provider re-reads it right before deleting, and the lease is checked
       // again at that point, so a sandbox a call holds or has just used is kept.
-      const removed = await named.delete(
-        context,
-        { name: summary.name, tag: TOOL_SESSION_SANDBOX_TAG },
-        { idleBefore: cutoff, inUse: () => isSandboxLeased(summary.name) },
+      const removed = await withSandboxNameLock(summary.name, () =>
+        named.delete(
+          context,
+          { name: summary.name, tag: TOOL_SESSION_SANDBOX_TAG },
+          { idleBefore: cutoff, inUse: () => isSandboxLeased(summary.name) },
+        ),
       );
       if (removed) deleted.push(summary.name);
     } catch (error) {
