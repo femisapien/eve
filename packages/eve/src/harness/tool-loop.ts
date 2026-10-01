@@ -198,6 +198,7 @@ import {
 } from "#harness/model-call-error.js";
 import { summarizeKnownError, type SemanticErrorSummary } from "#harness/semantic-errors/index.js";
 import { isTurnCancellation, throwIfTurnAborted } from "#harness/turn-cancellation.js";
+import { isTurnFailingToolError, readTurnFailure } from "#harness/tool-turn-failure.js";
 import type { JsonObject, JsonValue } from "#shared/json.js";
 import { extractWorkflowStreamWriteErrorDetails } from "#harness/workflow-stream-error.js";
 import { getAdvertisedTools } from "#harness/advertised-tools.js";
@@ -279,8 +280,13 @@ function logToolExecutionError(event: {
   readonly toolOutput: { readonly type: string; readonly error?: unknown };
 }): void {
   // A tool unwinding because its turn was cancelled is the expected outcome
-  // of a user action, not a failure worth an error log.
-  if (event.toolOutput.type !== "tool-error" || isTurnCancellation(event.toolOutput.error)) {
+  // of a user action, not a failure worth an error log. A turn-failing tool
+  // error is logged once, where the tool loop fails the turn.
+  if (
+    event.toolOutput.type !== "tool-error" ||
+    isTurnCancellation(event.toolOutput.error) ||
+    isTurnFailingToolError(event.toolOutput.error)
+  ) {
     return;
   }
   logError(log, "tool execution failed", event.toolOutput.error, {
@@ -1991,6 +1997,27 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       "$eve.cost_usd": nextTurnUsage.sawCost ? nextTurnUsage.costUsd : undefined,
       "$eve.tool_count": config.tools.size,
     });
+
+    // A turn-failing tool error ends the turn here, before a later model call
+    // can read the tool error and work around it.
+    const turnFailure = ctx === undefined ? undefined : readTurnFailure(ctx);
+    if (turnFailure !== undefined && emit) {
+      log.warn("a tool failed the turn", {
+        code: turnFailure.code,
+        sessionId: session.sessionId,
+        turnId: emissionState.turnId,
+      });
+      emissionState = await emitRecoverableFailedTurn(emit, emissionState, {
+        code: turnFailure.code,
+        continuationToken: session.continuationToken,
+        message: turnFailure.message,
+      });
+      return {
+        next: null,
+        session: setHarnessEmissionState({ ...session, outputSchema: undefined }, emissionState),
+        settledTurn: { isError: true, output: turnFailure.message },
+      };
+    }
 
     // --- Handle result ------------------------------------------------------
 
