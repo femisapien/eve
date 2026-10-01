@@ -123,6 +123,47 @@ describe("createMcpInputRequiredFetch + runMcpRequestScope", () => {
     expect(outcome).toMatchObject({ requestState: "s1", status: "input_required" });
   });
 
+  it("keeps a multiline SSE event whole when a CRLF is split across chunks", async () => {
+    // The JSON spans two `data:` lines; the chunk boundary falls inside the
+    // CRLF between them, so a scanner that ends the line on the CR alone reads
+    // the LF as a blank line and flushes half an event.
+    const [head, tail] = JSON.stringify(inputRequiredMessage()).split(/(?<=,)/u, 2) as [
+      string,
+      string,
+    ];
+    const rest = JSON.stringify(inputRequiredMessage()).slice(head.length + tail.length);
+    const chunks = [`data: ${head}\r`, `\ndata: ${tail}${rest}\r\n\r\n`];
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const chunk of chunks) controller.enqueue(encoder.encode(chunk));
+        controller.close();
+      },
+    });
+    const base = vi.fn(
+      async (..._args: FetchArgs) =>
+        new Response(stream, { headers: { "content-type": "text/event-stream" } }),
+    );
+    const fetcher = createMcpInputRequiredFetch(base);
+
+    const outcome = await runMcpRequestScope({ execute: () => sdkCall(fetcher, toolsCallBody()) });
+
+    expect(outcome).toMatchObject({ requestState: "s1", status: "input_required" });
+  });
+
+  it("keeps a lone CR as a line ending when it is the last byte of the stream", async () => {
+    const text = `data: ${JSON.stringify(inputRequiredMessage())}\r`;
+    const base = vi.fn(
+      async (..._args: FetchArgs) =>
+        new Response(text, { headers: { "content-type": "text/event-stream" } }),
+    );
+    const fetcher = createMcpInputRequiredFetch(base);
+
+    const outcome = await runMcpRequestScope({ execute: () => sdkCall(fetcher, toolsCallBody()) });
+
+    expect(outcome).toMatchObject({ requestState: "s1", status: "input_required" });
+  });
+
   it("returns a normal completed result", async () => {
     const completed = { id: 1, jsonrpc: "2.0", result: { content: [], isError: false } };
     const base = vi.fn(async (..._args: FetchArgs) => jsonResponse(completed));
@@ -303,6 +344,23 @@ describe("parseInputRequiredResult", () => {
     expect(typeof parseInputRequiredResult({ inputRequests: [] })).toBe("string");
   });
 
+  it("keeps a request id named __proto__ as an ordinary entry", () => {
+    const result = JSON.parse(
+      `{"inputRequests":{"__proto__":${JSON.stringify(INPUT_REQUESTS.approve)}},"requestState":"s"}`,
+    ) as Record<string, unknown>;
+
+    const parsed = parseInputRequiredResult(result);
+
+    expect(typeof parsed).toBe("object");
+    const requests = (parsed as { inputRequests: Record<string, unknown> }).inputRequests;
+    expect(Object.keys(requests)).toEqual(["__proto__"]);
+    expect(Object.getPrototypeOf(requests)).toBeNull();
+    expect(planMcpInput(parsed as never)).toMatchObject({
+      approve: { ["__proto__"]: { action: "accept", content: { confirm: true } } },
+      kind: "approval",
+    });
+  });
+
   it("accepts requestState alone", () => {
     expect(parseInputRequiredResult({ requestState: "s" })).toEqual({ requestState: "s" });
   });
@@ -360,6 +418,23 @@ describe("planMcpInput", () => {
         { message: "Sign in to Linear", url: "https://linear.example/a" },
       ],
     });
+  });
+
+  it("answers a sign-in request id named __proto__", () => {
+    const parsed = parseInputRequiredResult(
+      JSON.parse(
+        `{"inputRequests":{"__proto__":{"method":"elicitation/create","params":{"mode":"url","url":"https://idp.example.com/a"}}}}`,
+      ) as Record<string, unknown>,
+    );
+
+    const plan = planMcpInput(parsed as never);
+
+    expect(plan.kind).toBe("sign-in");
+    const approve = (plan as { approve: Record<string, unknown> }).approve;
+    expect(Object.keys(approve)).toEqual(["__proto__"]);
+    expect(JSON.parse(JSON.stringify(approve))).toEqual(
+      JSON.parse(`{"__proto__":{"action":"accept"}}`),
+    );
   });
 
   it("refuses a mix of a URL and a form elicitation", () => {
