@@ -252,7 +252,7 @@ return pendingRequests.map((request) => (
 ));
 ```
 
-For a question with `allowFreeform`, render a text input and send `{ requestId, text }`. The default reducer keeps each request pending until the server confirms its resolution through `input.resolved` or `approval.settled`. Disable input controls while the response is being processed; a refused approval attempt leaves the request answerable. Approved tools update again when eve streams their result.
+For a question with `allowFreeform`, render a text input and send `{ requestId, text }`. The default reducer keeps each request pending until the server confirms its resolution through `input.resolved`. Disable input controls while the response is being processed. An approved call runs as a task, so its result arrives with `task.settled`.
 
 ## Authorization prompts
 

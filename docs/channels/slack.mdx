@@ -643,7 +643,7 @@ export default slackChannel({
 });
 ```
 
-The callback receives the `InputRequest` and current `SessionContext`, so it can switch on `kind`, `action`, or presentation properties. Omit it to keep every request in the thread, or return `"direct-message"` unconditionally to make every request private. If eve cannot resolve the triggering Slack user for a direct message, it logs the undelivered request and posts no fallback, so private delivery fails closed. The existing `onInputResponse` or tool approval response policy still decides whether the person who clicks may respond.
+The callback receives the `InputRequest` and current `SessionContext`, so it can switch on `kind`, `action`, or presentation properties. Omit it to keep every request in the thread, or return `"direct-message"` unconditionally to make every request private. If eve cannot resolve the triggering Slack user for a direct message, it logs the undelivered request and posts no fallback, so private delivery fails closed. The existing `onInputResponse` still decides whether the person who clicks may respond.
 
 A renderer's `input.requested` handler can extend delivery and then hand the requests on to eve with `next()`. For example, an application can add non-sensitive context to the Slack thread before eve renders the actionable controls. The configured `approvalChannel` still sends sensitive reviews to a DM and keeps ordinary requests in the thread:
 

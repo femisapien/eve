@@ -58,16 +58,12 @@ must also set `instanceKey` to a stable, non-secret account or tenant identifier
 See [Dynamic capabilities](/docs/guides/dynamic-capabilities#dynamic-connections)
 for event scope, naming, conflicts, and durable recovery behavior.
 
-Tools from a `turn.started` connection can require approval, including an
-`approval.response` policy. When an approval resumes between turns, eve rebuilds
-the connection callbacks before checking the response policy, even in a fresh
-process. This restoration uses the pending request's turn coordinates and the
-current authenticated session context; it does not emit another public
-`turn.started` event. The response policy still receives the authenticated
-responder separately. When one delivery answers requests from different turns,
-eve restores each candidate's originating connection scope before its policy
-check, then prepares the complete batch selected for tool replay. Keep connection
-resolvers idempotent because restoration can run them again.
+A call to a connection resolved at runtime can't wait for a person's approval in
+this version of eve. When its approval policy asks for a person, the call is
+denied with a reason the model can read and does not run. Approval policies that
+allow or deny a call on their own still apply. Calls to connections declared in
+`agent/connections/` can wait for approval as described in
+[Human-in-the-loop](/docs/human-in-the-loop#approvals).
 
 Restoration uses current resolver results, not a historical connection snapshot.
 If the tool is absent from the persisted tool metadata, or its required response

@@ -17,6 +17,22 @@ function respond(request: MockModelRequest): MockModelResponse | string {
       ],
     };
   }
+  if (message.includes("Call the stock-price subagent exactly once")) {
+    const quote = taskResultOf(request, "stock-price");
+    if (quote !== undefined) return `The stock-price subagent returned: ${quote}`;
+    if (hasReceipt(request, "stock-price")) return waitForTasks();
+    return {
+      toolCalls: [
+        {
+          input: {
+            message:
+              'Call the get_stock_price tool exactly once with ticker "GOOG". After it returns, do not call any tool again; return the result.',
+          },
+          name: "stock-price",
+        },
+      ],
+    };
+  }
   return `Mock reply: ${message}`;
 }
 

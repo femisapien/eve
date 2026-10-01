@@ -2,7 +2,7 @@ import { defineEval } from "eve/evals";
 
 export default defineEval({
   description:
-    "A workflow body never starts when its approval policy denies the call or asks for a person.",
+    "A gated workflow call becomes a task whose body starts only after approval and never after a denial.",
   async test(t) {
     const review = await t.session();
     const denied = await review.send(
@@ -18,18 +18,38 @@ export default defineEval({
       status: "failed",
     });
 
-    const release = await t.session();
-    const unanswerable = await release.send(
-      "WORKFLOW-APPROVAL-START Alice asks Bob to review the API release before deployment.",
-    );
-    unanswerable.expectOk();
-    unanswerable.messageIncludes("WORKFLOW-APPROVAL-RESULT");
-    unanswerable.notEvent("input.requested");
-    unanswerable.notEvent("action.partial");
-    unanswerable.calledTool("gated_deploy", {
-      count: 1,
-      output: /needs a person's approval/u,
-      status: "failed",
-    });
+    for (const decision of ["approve", "cancel"] as const) {
+      const session = await t.session();
+      const asked = await session.send(
+        "WORKFLOW-APPROVAL-START Alice asks Bob to review the API release before deployment.",
+      );
+      asked.expectOk();
+      asked.event("task.started", { count: 1, data: { name: "gated_deploy" } });
+      session.requireInputRequest({ display: "confirmation", toolName: "gated_deploy" });
+      asked.notEvent("action.partial");
+
+      const answered = await session.respondAll(decision);
+      answered.expectOk();
+      if (decision === "approve") {
+        answered.event("input.resolved", {
+          count: 1,
+          data: { resolutions: [{ outcome: "approved" }] },
+        });
+        answered.event("task.settled", {
+          count: 1,
+          data: { name: "gated_deploy", output: { deployed: "api" }, status: "completed" },
+        });
+      } else {
+        answered.event("input.resolved", {
+          count: 1,
+          data: { resolutions: [{ outcome: "denied" }] },
+        });
+        answered.event("task.settled", {
+          count: 1,
+          data: { name: "gated_deploy", status: "failed" },
+        });
+        answered.notEvent("action.partial");
+      }
+    }
   },
 });
