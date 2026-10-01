@@ -82,7 +82,11 @@ describe("createChannelOperations", () => {
       runtime,
     });
 
-    await from("C1:T1").send("hello", { auth: null, state: { responder: "U_AUTHOR" } });
+    await from("C1:T1").send("Alice said: hello", {
+      answerText: "hello",
+      auth: null,
+      state: { responder: "U_AUTHOR" },
+    });
     await from("C1:T1").respond([{ optionId: "approve", requestId: "approval-1" }], {
       auth: null,
       state: { responder: "U_APPROVER" },
@@ -92,7 +96,11 @@ describe("createChannelOperations", () => {
       command: {
         auth: null,
         kind: "send",
-        payload: { message: "hello", state: { responder: "U_AUTHOR" } },
+        payload: {
+          message: "Alice said: hello",
+          answerText: "hello",
+          state: { responder: "U_AUTHOR" },
+        },
         requestId: undefined,
         turnPolicy: "steer",
       },

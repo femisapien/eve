@@ -2900,7 +2900,7 @@ describe("slackChannel() inbound mention pipeline", () => {
     const { body } = buildDirectMessageBody({ text });
     const { send } = await firePost(channel, buildSignedRequest({ body }));
     expect(send).toHaveBeenCalledTimes(1);
-    const [, { message, context, state }] = send.mock.calls[0]!;
+    const [, { message, answerText, context, state }] = send.mock.calls[0]!;
     const session = upsertProxyInputRequests({
       session: {
         agent: { modelReference: { id: "test-model" }, system: "", tools: [] },
@@ -2927,7 +2927,7 @@ describe("slackChannel() inbound mention pipeline", () => {
       ],
     });
     const routed = routeDeliverPayload({
-      payload: { message, context, state },
+      payload: { message, answerText, context, state },
       resolveMessage: true,
       state: session.state,
     });
@@ -2935,7 +2935,7 @@ describe("slackChannel() inbound mention pipeline", () => {
     expect(routed.forSelf).toBeUndefined();
   });
 
-  it("keeps the person's text separate from attributed and authored context", async () => {
+  it("keeps Slack attribution in the message and authored context separate", async () => {
     const channel = slackChannel({
       credentials: { botToken: "xoxb-test" },
       onAppMention: () => ({ auth: null, context: ["prior thread context"] }),
@@ -2947,13 +2947,13 @@ describe("slackChannel() inbound mention pipeline", () => {
     expect(send).toHaveBeenCalledTimes(1);
     const [, input] = send.mock.calls[0]!;
     const { context, message } = input as { context: readonly string[]; message: string };
-    expect(message).toBe("hello");
-    expect(context).toEqual(["prior thread context", expect.stringContaining("<slack_message>")]);
-    expect(context[1]).toContain("sender_id: U01");
-    expect(context[1]).toContain("<content>\nhello\n</content>");
+    expect(context).toEqual(["prior thread context"]);
+    expect(message).toContain("<slack_message>");
+    expect(message).toContain("sender_id: U01");
+    expect(message).toContain("<content>\nhello\n</content>");
   });
 
-  it("attributes the inbound message in context without authored context", async () => {
+  it("attributes the inbound message without adding a separate context entry", async () => {
     const channel = slackChannel({
       credentials: { botToken: "xoxb-test" },
       onAppMention: () => ({ auth: null }),
@@ -2965,9 +2965,9 @@ describe("slackChannel() inbound mention pipeline", () => {
     expect(send).toHaveBeenCalledTimes(1);
     const [, input] = send.mock.calls[0]!;
     const { context, message } = input as { context?: readonly string[]; message: string };
-    expect(message).toBe("hello");
-    expect(context).toEqual([expect.stringContaining("sender_id: U01")]);
-    expect(context?.[0]).toContain("message_ts:");
+    expect(context).toBeUndefined();
+    expect(message).toContain("sender_id: U01");
+    expect(message).toContain("message_ts:");
     expect(input.title).toBe("hello");
   });
 
@@ -2993,12 +2993,8 @@ describe("slackChannel() inbound mention pipeline", () => {
 
     expect(send).toHaveBeenCalledTimes(1);
     expect(onAppMention.mock.calls[0]![1].text).toBe("<@U_BOT> Could you investigate?");
-    const [, { context, message }] = send.mock.calls[0]! as [
-      string,
-      { context: string[]; message: string },
-    ];
-    expect(message).toBe("<@U_BOT> Could you investigate?");
-    expect(context[0]).toContain(
+    const [, { message }] = send.mock.calls[0]! as [string, { message: string }];
+    expect(message).toContain(
       [
         "<slack_message>",
         "sender_type: user",
@@ -3038,13 +3034,9 @@ describe("slackChannel() inbound mention pipeline", () => {
     const { send } = await firePost(channel, buildSignedRequest({ body }));
 
     expect(send).toHaveBeenCalledTimes(1);
-    const [, { context, message }] = send.mock.calls[0]! as [
-      string,
-      { context: string[]; message: string },
-    ];
-    expect(message).toBe("Could you investigate?");
-    expect(context[0]).toContain("bot_user_id: U_BOT");
-    expect(context[0]).toContain("is_mentioned: false");
+    const [, { message }] = send.mock.calls[0]! as [string, { message: string }];
+    expect(message).toContain("bot_user_id: U_BOT");
+    expect(message).toContain("is_mentioned: false");
   });
 
   it("uses the run title returned by onAppMention for a public channel", async () => {
@@ -3060,7 +3052,7 @@ describe("slackChannel() inbound mention pipeline", () => {
     const [, input] = send.mock.calls[0]!;
     expect(input.title).toBe("Run");
     expect(input.state).toMatchObject({ audience: "public" });
-    expect(input.message).toBe("public message text");
+    expect(input.message).toContain("<content>\npublic message text\n</content>");
   });
 
   it("uses an opaque run title for private channel mentions", async () => {
@@ -3094,7 +3086,7 @@ describe("slackChannel() inbound mention pipeline", () => {
     expect(input.title).toBe("Private message");
     expect(input.state).toMatchObject({ audience: "private" });
     expect(input.title).not.toContain("sensitive message");
-    expect(input.message).toBe("sensitive message");
+    expect(input.message).toContain("<content>\nsensitive message\n</content>");
   });
 
   it("uses only this app's reply as the incremental thread context boundary", async () => {
@@ -3171,17 +3163,13 @@ describe("slackChannel() inbound mention pipeline", () => {
 
     const { send } = await firePost(channel, buildSignedRequest({ body }));
 
-    const [, { context, message }] = send.mock.calls[0]! as [
-      string,
-      { context: string[]; message: string },
-    ];
-    expect(message).toBe("Summarize ownership.");
-    expect(context[0]).toContain("<slack_thread_context>");
-    expect(context[0]).toContain("sender_id: U_BACKEND");
-    expect(context[0]).toContain("sender_id: U_OTHER_BOT");
-    expect(context[0]).toContain("sender_id: U_FRONTEND");
-    expect(context[0]).toContain("sender_id: U_CURRENT");
-    expect(context[0]).not.toContain("sender_id: U_ROOT");
+    const [, { message }] = send.mock.calls[0]! as [string, { message: string }];
+    expect(message).toContain("<slack_thread_context>");
+    expect(message).toContain("sender_id: U_BACKEND");
+    expect(message).toContain("sender_id: U_OTHER_BOT");
+    expect(message).toContain("sender_id: U_FRONTEND");
+    expect(message).toContain("sender_id: U_CURRENT");
+    expect(message).not.toContain("sender_id: U_ROOT");
     expect(
       fetchMock.mock.calls.filter(([request]) => String(request).includes("conversations.replies")),
     ).toHaveLength(1);
@@ -3935,7 +3923,7 @@ describe("slackChannel() inbound direct message pipeline", () => {
     const [, options] = send.mock.calls[0]!;
     expect(options.title).toBe("Private message");
     expect(options.title).not.toContain("sensitive message");
-    expect(options.message).toBe("sensitive message");
+    expect(options.message).toContain("<content>\nsensitive message\n</content>");
   });
 
   it("does not dispatch when onDirectMessage resolves to null", async () => {

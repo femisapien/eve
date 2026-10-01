@@ -22,6 +22,8 @@ import {
 import type { JsonObject } from "#shared/json.js";
 
 interface BaseChannelSendOptions {
+  /** Plain reply text for pending questions when `message` includes channel formatting. */
+  readonly answerText?: string;
   readonly auth: SessionAuthContext | null;
   readonly callback?: SessionCallback;
   readonly context?: readonly string[];
@@ -96,6 +98,7 @@ export function createChannelOperations<TState = undefined>(input: {
           // from the payload, as they do for `respond()`.
           return await bound.deliver(
             {
+              answerText: options.answerText,
               context: options.context,
               message,
               outputSchema: options.outputSchema,

@@ -72,12 +72,12 @@ describe("ChannelAdapter helpers", () => {
     });
   });
 
-  it("defaultDeliverResult forwards context with message payloads", () => {
+  it("defaultDeliverResult keeps the model message and context without answer text", () => {
     const context = ["thread background"];
 
-    expect(defaultDeliverResult({ message: "hi", context })).toEqual({
+    expect(defaultDeliverResult({ message: "Alice said: hi", answerText: "hi", context })).toEqual({
       inputResponses: undefined,
-      message: "hi",
+      message: "Alice said: hi",
       context,
     });
   });

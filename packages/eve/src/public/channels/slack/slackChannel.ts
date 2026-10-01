@@ -1449,21 +1449,20 @@ async function deliverSlackMessage(input: {
       userName: message.author?.userName,
     };
     const attributedMessage = formatSlackInboundMessage(inboundContext, message);
-    // Core resolves plain-text HITL answers before the channel's deliver hook.
-    // Keep attribution in durable model context, not in the person's answer.
-    const turnMessage = buildSlackTurnMessage(message.text, fileParts);
-    const channelContext = [
-      ...(input.result.context ?? []),
+    const turnMessage = buildSlackTurnMessage(
       threadContext === undefined ? attributedMessage : `${threadContext}\n\n${attributedMessage}`,
-    ];
+      fileParts,
+    );
+
+    const channelContext = input.result.context ?? [];
     const title = input.isPrivateConversation
       ? PRIVATE_SLACK_RUN_TITLE
       : (input.result.title ?? message.markdown);
-    const sendOptions: SlackSendOptions = {
-      auth: input.result.auth,
-      context: channelContext,
-      title,
-    };
+    // Core resolves answers before deliver hooks, without parsing model envelopes.
+    const sendOptions: SlackSendOptions =
+      channelContext.length === 0
+        ? { answerText: message.text, auth: input.result.auth, title }
+        : { answerText: message.text, auth: input.result.auth, context: channelContext, title };
 
     await input.sessionOperations.send(turnMessage, sendOptions);
   } catch (error) {

@@ -253,7 +253,11 @@ export function routeDeliverPayload(input: {
     if (key === "inputResponses" || value === undefined) {
       continue;
     }
-    if (message.consumed && (key === "message" || key === "context" || key === "state")) continue;
+    if (
+      message.consumed &&
+      (key === "message" || key === "answerText" || key === "context" || key === "state")
+    )
+      continue;
 
     remainder[key] = value;
   }
@@ -318,9 +322,13 @@ function resolveMessageAgainstQuestions(input: {
   if (questions.length === 0) return none;
 
   const [only] = questions;
+  const text = input.payload.answerText ?? input.payload.message;
   const answer =
-    pending.length === 1 && only !== undefined && typeof input.payload.message === "string"
-      ? resolveTextToResponse(input.payload.message, only)
+    pending.length === 1 &&
+    only !== undefined &&
+    typeof input.payload.message === "string" &&
+    typeof text === "string"
+      ? resolveTextToResponse(text, only)
       : undefined;
   if (answer !== undefined) return { consumed: true, responses: [answer] };
   return none;

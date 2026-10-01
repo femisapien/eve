@@ -447,7 +447,8 @@ describe("routeProxiedDeliverStep", () => {
       kind: "deliver",
       payloads: [
         {
-          message: "Saturday",
+          message: "Alice said: Saturday",
+          answerText: "Saturday",
           context: ["Alice replied"],
           state: { triggeringUserId: "alice" },
         },

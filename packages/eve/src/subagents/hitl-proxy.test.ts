@@ -290,26 +290,30 @@ describe("routeDeliverPayload message resolution", () => {
     return session;
   }
 
-  it("answers the only pending question with a matching option label", () => {
-    const routed = routeDeliverPayload({
-      payload: {
-        message: "production",
-        context: ["The reply came from Alice."],
-        state: { triggeringUserId: "alice" },
-      },
-      resolveMessage: true,
-      state: askSession([["ask-1", {}]]).state,
-    });
+  it.each([undefined, "production"])(
+    "answers an option using plain reply text %j",
+    (answerText) => {
+      const routed = routeDeliverPayload({
+        payload: {
+          message: answerText === undefined ? "production" : "Alice said: production",
+          answerText,
+          context: ["The reply came from Alice."],
+          state: { triggeringUserId: "alice" },
+        },
+        resolveMessage: true,
+        state: askSession([["ask-1", {}]]).state,
+      });
 
-    expect(routed.forSelf).toBeUndefined();
-    expect(routed.forChildren).toMatchObject([
-      {
-        childContinuationToken: "hook-ask-1",
-        payload: { inputResponses: [{ optionId: "2", requestId: "ask-1" }] },
-        resolved: { resolutions: [{ outcome: "answered", requestId: "ask-1" }] },
-      },
-    ]);
-  });
+      expect(routed.forSelf).toBeUndefined();
+      expect(routed.forChildren).toMatchObject([
+        {
+          childContinuationToken: "hook-ask-1",
+          payload: { inputResponses: [{ optionId: "2", requestId: "ask-1" }] },
+          resolved: { resolutions: [{ outcome: "answered", requestId: "ask-1" }] },
+        },
+      ]);
+    },
+  );
 
   it("answers the only pending question with free text when it allows it", () => {
     const routed = routeDeliverPayload({
@@ -351,7 +355,8 @@ describe("routeDeliverPayload message resolution", () => {
     { name: "the reply does not match an option", questions: ["ask-1"] },
   ])("keeps the message and channel metadata when $name", ({ questions }) => {
     const payload = {
-      message: "Actually, check the logs first.",
+      message: "Alice said: Actually, check the logs first.",
+      answerText: "Actually, check the logs first.",
       context: ["The reply came from Alice."],
       state: { triggeringUserId: "alice" },
     };
@@ -363,6 +368,20 @@ describe("routeDeliverPayload message resolution", () => {
 
     expect(routed.forSelf).toEqual(payload);
     expect(routed.forChildren).toEqual([]);
+  });
+
+  it.each([
+    { message: undefined, answerText: "production" },
+    { message: [{ type: "text" as const, text: "production" }], answerText: "production" },
+    { message: "production", answerText: "" },
+  ])("does not consume missing, multipart, or empty replies: %j", (payload) => {
+    const routed = routeDeliverPayload({
+      payload,
+      resolveMessage: true,
+      state: askSession([["ask-1", { allowFreeform: true }]]).state,
+    });
+    expect(routed.forChildren).toEqual([]);
+    expect(routed.forSelf).toEqual(payload);
   });
 
   it("does not answer a question while a subagent question is also pending", () => {
@@ -417,6 +436,7 @@ describe("routeDeliverPayload message resolution", () => {
       payload: {
         inputResponses: [{ optionId: "1", requestId: "ask-1" }],
         message: "production",
+        answerText: "staging",
         context: ["Alice replied"],
         state: { triggeringUserId: "alice" },
       },
@@ -426,6 +446,7 @@ describe("routeDeliverPayload message resolution", () => {
 
     expect(routed.forSelf).toEqual({
       message: "production",
+      answerText: "staging",
       context: ["Alice replied"],
       state: { triggeringUserId: "alice" },
     });
