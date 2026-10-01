@@ -480,7 +480,7 @@ export function agentActivityEvent(
         return {
           id: action.callId,
           name,
-          title: (label ?? name).slice(0, MAX_ACTIVITY_TITLE_LENGTH),
+          title: (label ?? displayTitle(name)).slice(0, MAX_ACTIVITY_TITLE_LENGTH),
         };
       });
       return calls.length === 0 ? undefined : { calls, kind: "requested" };

@@ -457,7 +457,7 @@ export interface TaskActivityCall {
   id: string;
   /** The tool name. */
   name: string;
-  /** The tool's start label, or the name. */
+  /** The tool's start label, or the name's display title. */
   title: string;
   status: "working" | "completed" | "failed" | "cancelled";
 }

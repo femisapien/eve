@@ -137,7 +137,7 @@ describe("task activity", () => {
           status: "working",
           title: "Reading the INC-2291 postmortem",
         },
-        { id: "brief-1", name: "researcher", status: "working", title: "researcher" },
+        { id: "brief-1", name: "researcher", status: "working", title: "Researcher" },
       ],
       [],
       [],
@@ -149,7 +149,7 @@ describe("task activity", () => {
           title: "Reading the INC-2291 postmortem",
         },
       ],
-      [{ id: "brief-1", name: "researcher", status: "failed", title: "researcher" }],
+      [{ id: "brief-1", name: "researcher", status: "failed", title: "Researcher" }],
     ]);
   });
 
