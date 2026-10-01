@@ -100,7 +100,12 @@ export declare class Server {
   ): void;
   /** Spec methods validated by the SDK's own wire schemas. */
   setRequestHandler<Result>(
-    method: "resources/list" | "resources/read" | "resources/templates/list",
+    method:
+      | "resources/list"
+      | "resources/read"
+      | "resources/subscribe"
+      | "resources/templates/list"
+      | "resources/unsubscribe",
     handler: (
       request: { readonly params?: McpJsonObject },
       context: McpRequestHandlerExtra,
@@ -136,6 +141,18 @@ export declare class ProtocolError extends Error {
   constructor(code: number, message: string, data?: unknown);
   readonly code: number;
   readonly data?: unknown;
+}
+
+export declare const ProtocolErrorCode: {
+  readonly InternalError: -32603;
+  readonly InvalidParams: -32602;
+  readonly InvalidRequest: -32600;
+  readonly MethodNotFound: -32601;
+};
+
+/** A \`resources/read\` miss: code -32602 with data \`{ uri }\`. */
+export declare class ResourceNotFoundError extends ProtocolError {
+  constructor(uri: string, message?: string);
 }
 
 export interface RequestStateCodec<T = unknown> {
