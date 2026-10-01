@@ -15,6 +15,8 @@ import type {
 } from "#channel/invoke-tool.js";
 import { deriveToolSessionId, validateToolSessionKey } from "#execution/tool-session/id.js";
 import type { McpRequestPrincipals } from "#internal/mcp/forwarded-principal-header.js";
+import { createLogger } from "#internal/logging.js";
+import type { McpServerTool } from "#internal/mcp/streamable-http-server.js";
 import {
   hashToolArguments,
   type McpRequestStateCodec,
@@ -54,7 +56,15 @@ export interface McpToolsContext {
   readonly requestState: McpToolsRequestState;
   /** The agent's described tools, sorted by name. Non-invocable ones are dropped here. */
   readonly tools: readonly AgentToolDescription[];
+  /**
+   * Tools the channel itself serves, listed first. Their names are reserved:
+   * an agent tool with the same name is not published.
+   */
+  readonly reservedTools?: readonly McpServerTool<McpRequestPrincipals>[];
 }
+
+const log = createLogger("mcp.tools");
+const warnedShadowedTools = new Set<string>();
 
 /** Capabilities the tools adapter adds to `server/discover` and `initialize`. */
 export const MCP_TOOLS_CAPABILITIES = {
@@ -92,15 +102,35 @@ type McpToolErrorCode = "denied" | "input_unsupported" | "internal" | "invalid_i
  * `invokeTool`. Schemas pass through as compiled; nothing is converted.
  */
 export function registerMcpTools(server: McpServer, context: McpToolsContext): void {
-  const invocable = context.tools.filter((tool) => tool.invocable);
+  const reserved = new Map((context.reservedTools ?? []).map((tool) => [tool.name, tool]));
+  const invocable = context.tools.filter((tool) => {
+    if (!tool.invocable) return false;
+    if (!reserved.has(tool.name)) return true;
+    if (!warnedShadowedTools.has(tool.name)) {
+      warnedShadowedTools.add(tool.name);
+      log.warn(
+        `mcpChannel does not publish the tool "${tool.name}": the channel reserves that name.`,
+      );
+    }
+    return false;
+  });
   const byName = new Map(invocable.map((tool) => [tool.name, tool]));
   server.server.setRequestHandler("tools/list", () => ({
-    tools: invocable.map(toListedTool),
+    tools: [
+      ...[...reserved.values()].map((tool) => tool.raw.listed()),
+      ...invocable.map(toListedTool),
+    ],
   }));
-  server.server.setRequestHandler(
-    "tools/call",
-    async (request, ctx) => await callMcpTool(server, context, byName, request.params, ctx),
-  );
+  server.server.setRequestHandler("tools/call", async (request, ctx) => {
+    const own = reserved.get(request.params.name);
+    if (own === undefined) {
+      return await callMcpTool(server, context, byName, request.params, ctx);
+    }
+    return await own.raw.call(request.params.arguments, {
+      auth: context.principals,
+      signal: ctx.mcpReq.signal,
+    });
+  });
 }
 
 function toListedTool(tool: AgentToolDescription): McpJsonObject {

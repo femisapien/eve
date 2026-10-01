@@ -2,6 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 
 import type { SessionAuthContext } from "#channel/types.js";
 import type { RouteHandlerArgs } from "#channel/routes.js";
+import type { AgentDescription } from "#channel/agent-description.js";
+import type { InvokeToolFn } from "#channel/invoke-tool.js";
 import {
   attachAgentInfoRouteResponse,
   attachRouteChannelName,
@@ -484,29 +486,45 @@ describe("mcpChannel", () => {
   });
 });
 
-function routeArgs(createSession: () => Promise<never> = vi.fn()): RouteHandlerArgs {
+interface RouteArgsOverrides {
+  readonly createSession?: () => Promise<never>;
+  readonly description?: AgentDescription;
+  readonly invokeTool?: InvokeToolFn;
+}
+
+function routeArgs(overrides: RouteArgsOverrides | (() => Promise<never>) = {}): RouteHandlerArgs {
+  const options = typeof overrides === "function" ? { createSession: overrides } : overrides;
   const unavailable = () => {
     throw new Error("Route operation is unavailable in this test.");
+  };
+  const description = options.description ?? {
+    description: "Investigates tasks.",
+    name: "compiled-agent",
+    skills: [],
+    tools: [],
   };
   const args: RouteHandlerArgs = {
     ...mockAgentDescriptionRouteArgs(),
     attachSession: unavailable,
+    describe: async () => description,
     from: unavailable,
     params: {},
     requestIp: "127.0.0.1",
-    invokeTool: unusedInvokeTool,
+    invokeTool: options.invokeTool ?? unusedInvokeTool,
     resolveSession: vi.fn(),
     to: unavailable,
     waitUntil: vi.fn(),
   };
   return attachRouteChannelName(
-    attachAgentInfoRouteResponse(attachRouteSessionCreator(args, createSession), async () =>
-      Response.json({
-        agent: {
-          description: "Investigates tasks.",
-          name: "compiled-agent",
-        },
-      }),
+    attachAgentInfoRouteResponse(
+      attachRouteSessionCreator(args, options.createSession ?? vi.fn()),
+      async () =>
+        Response.json({
+          agent: {
+            description: "Investigates tasks.",
+            name: "compiled-agent",
+          },
+        }),
     ),
     "mcp",
   );
