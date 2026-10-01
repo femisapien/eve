@@ -27,7 +27,7 @@ export const EVE_STREAM_TAIL_INDEX_HEADER = "x-eve-stream-tail-index";
 export const EVE_STREAM_VERSION_HEADER = "x-eve-stream-version";
 export const EVE_MESSAGE_STREAM_CONTENT_TYPE = "application/x-ndjson; charset=utf-8";
 export const EVE_MESSAGE_STREAM_FORMAT = "ndjson";
-export const EVE_MESSAGE_STREAM_VERSION = "26";
+export const EVE_MESSAGE_STREAM_VERSION = "27";
 
 /** Version of transport control records understood by this eve release. */
 export const EVE_STREAM_CONTROL_VERSION = "1";
@@ -190,6 +190,11 @@ export interface SessionStartedStreamEvent {
  */
 export interface TurnStartedStreamEvent {
   data: {
+    /**
+     * The earlier turn whose parked work this turn resumes, such as the turn that asked for the
+     * approvals or the sign-in it continues; `null` for a fresh turn. Absent from older writers.
+     */
+    continuesTurnId?: string | null;
     sequence: number;
     trace?: RuntimeTraceContext;
     turnId: string;
@@ -321,6 +326,8 @@ export interface InputResolution {
   readonly outcome: InputResolutionOutcome;
   readonly requestId: string;
   readonly response?: InputResponse;
+  /** The turn that runs an approved call: the open turn, or the one the approval opens. */
+  readonly resumeTurnId?: string;
 }
 
 /**
@@ -690,6 +697,11 @@ export interface AuthorizationRequiredStreamEvent {
   data: {
     /** Stable identity of this exact authorization attempt. */
     attemptId?: string;
+    /**
+     * The calls this sign-in stopped. Each settled `cancelled` with `AUTHORIZATION_REQUIRED`
+     * just before, and the model calls it again once the sign-in completes.
+     */
+    callIds?: readonly string[];
     authorization?: ConnectionAuthorizationChallenge;
     candidateId?: string;
     description: string;
@@ -910,11 +922,13 @@ export function createSessionStartedEvent(input?: {
  * Creates the `turn.started` event for one prepared runtime turn.
  */
 export function createTurnStartedEvent(input: {
+  readonly continuesTurnId?: string | null;
   readonly sequence: number;
   readonly trace?: RuntimeTraceContext;
   readonly turnId: string;
 }): TurnStartedStreamEvent {
   const data: TurnStartedStreamEvent["data"] = {
+    continuesTurnId: input.continuesTurnId ?? null,
     sequence: input.sequence,
     turnId: input.turnId,
   };
@@ -1200,6 +1214,7 @@ export function createActionInputAppendedEvent(input: {
  */
 export function createAuthorizationRequiredEvent(input: {
   readonly attemptId?: string;
+  readonly callIds?: readonly string[];
   readonly authorization?: ConnectionAuthorizationChallenge;
   readonly candidateId?: string;
   readonly description: string;
@@ -1220,6 +1235,9 @@ export function createAuthorizationRequiredEvent(input: {
   };
   if (input.attemptId !== undefined) {
     data.attemptId = input.attemptId;
+  }
+  if (input.callIds !== undefined && input.callIds.length > 0) {
+    data.callIds = input.callIds;
   }
   if (input.authorization !== undefined) {
     data.authorization = input.authorization;
@@ -1857,6 +1875,11 @@ function normalizeActionResultOutcome(result: RuntimeActionResult): {
   readonly error?: ActionResultError;
   readonly status: ActionResultStatus;
 } {
+  const outputError = readActionResultOutputError(result.output);
+  // A policy's automatic denial is a denial, like a person's, not a failure.
+  if (outputError?.code === "TOOL_EXECUTION_DENIED") {
+    return { error: outputError, status: "rejected" };
+  }
   if (result.isError === true) {
     return {
       error: buildActionResultError(result),
@@ -1864,7 +1887,6 @@ function normalizeActionResultOutcome(result: RuntimeActionResult): {
     };
   }
 
-  const outputError = readActionResultOutputError(result.output);
   if (outputError !== undefined) {
     return {
       error: outputError,

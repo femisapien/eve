@@ -121,6 +121,20 @@ export function finishRun(
     .map(inputWithdrawn);
 }
 
+/** A sign-in stops the calls that need it: each settles `cancelled` until the sign-in completes. */
+export function stopForSignIn(
+  projection: SessionProjection,
+  callIds: readonly string[],
+): readonly UnstampedMessageStreamEvent[] {
+  const stopped = new Set(callIds);
+  return stoppedCalls(
+    projection,
+    (call) => stopped.has(call.callId),
+    turnCoordinates(projection).sequence,
+    "AUTHORIZATION_REQUIRED",
+  );
+}
+
 /** Calls the projection shows unsettled, other than task calls, which settle with their task. */
 function stoppedCalls(
   projection: SessionProjection,

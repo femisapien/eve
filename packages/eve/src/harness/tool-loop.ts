@@ -109,6 +109,7 @@ import {
   clear,
   ownOpenRequestIds,
   reportApprovalProgress,
+  stopForSignIn,
 } from "#harness/session-machine/transitions.js";
 import { extractToolApprovalInputRequests } from "#harness/input-extraction.js";
 import {
@@ -891,6 +892,9 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
                   kind: resolved.request.kind,
                   outcome: resolved.outcome,
                   requestId: resolved.request.requestId,
+                  ...(resolved.outcome === "approved" && {
+                    resumeTurnId: activeTurnId(emissionState),
+                  }),
                 };
                 if (resolved.response === undefined) return resolution;
                 return { ...resolution, response: resolved.response };
@@ -982,6 +986,10 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
           ),
           config.runtimeIdentity,
           traceContext,
+          // A turn opened by answers alone resumes the turn that asked.
+          effectiveStepInput?.message === undefined
+            ? (pending.resolvedInputs?.[0]?.event.turnId ?? null)
+            : null,
         );
       } catch (error) {
         instructionMessages = store === undefined ? [] : drainDynamicInstructionUserMessages(store);
@@ -2658,9 +2666,13 @@ async function handleStepResult(input: {
     toolResults: result.toolResults,
   });
   if (authorizationInterrupt) {
-    const { challenges, history: authorizationHistory } = authorizationInterrupt;
+    const { callIdsByName, challenges, history: authorizationHistory } = authorizationInterrupt;
 
     if (emit) {
+      // The calls that need the sign-in stop here; the model calls them again once it completes.
+      for (const event of stopForSignIn(currentProjection(), [...callIdsByName.values()].flat())) {
+        await emit(event);
+      }
       for (const superseded of getSupersededAuthorizationChallenges(
         baseSession.state,
         challenges,
@@ -2680,6 +2692,7 @@ async function handleStepResult(input: {
         await emit(
           createAuthorizationRequiredEvent({
             ...authorizationEventFields(ch),
+            callIds: callIdsByName.get(ch.name),
             description: ch.challenge.instructions ?? `Authorization required for ${ch.name}`,
             webhookUrl: ch.hookUrl,
             sequence: emissionState.sequence,

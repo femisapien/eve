@@ -27,22 +27,30 @@ export function resolveInlineAuthorizationInterrupt(input: {
 }):
   | {
       readonly challenges: AuthorizationSignal["challenges"];
+      /** The calls each sign-in stopped, by the challenge's connection name. */
+      readonly callIdsByName: ReadonlyMap<string, readonly string[]>;
       readonly history: ModelMessage[];
     }
   | undefined {
   const signals: AuthorizationSignal[] = [];
   const interruptedCallIds = new Set<string>();
+  const callIdsByName = new Map<string, string[]>();
 
   for (const toolResult of input.toolResults ?? []) {
     const signal = readAuthorizationSignal(toolResult);
     if (signal === undefined) continue;
     signals.push(signal);
     interruptedCallIds.add(toolResult.toolCallId);
+    for (const challenge of signal.challenges) {
+      const callIds = callIdsByName.get(challenge.name) ?? [];
+      callIdsByName.set(challenge.name, [...callIds, toolResult.toolCallId]);
+    }
   }
 
   if (signals.length === 0) return undefined;
 
   return {
+    callIdsByName,
     challenges: resolveActiveAuthorizationChallenges(
       signals.flatMap((signal) => signal.challenges),
     ),

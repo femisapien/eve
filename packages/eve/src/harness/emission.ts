@@ -73,6 +73,7 @@ export async function emitTurnPreamble(
   messages: readonly ModelMessage[],
   runtimeIdentity?: RuntimeIdentity,
   traceContext?: RuntimeTraceContext,
+  continuesTurnId: string | null = null,
 ): Promise<TurnPosition> {
   const steering = state.turnId !== "";
   const turnId = steering ? state.turnId : `turn_${state.sequence}`;
@@ -83,7 +84,12 @@ export async function emitTurnPreamble(
 
   if (!steering) {
     await emitFn(
-      createTurnStartedEvent({ sequence: state.sequence, trace: traceContext, turnId }),
+      createTurnStartedEvent({
+        continuesTurnId,
+        sequence: state.sequence,
+        trace: traceContext,
+        turnId,
+      }),
       messages,
     );
   }

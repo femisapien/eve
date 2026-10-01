@@ -469,6 +469,23 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
                 : { sequence: connectionState.sequence, turnId: activeTurnId(connectionState) },
             );
             if (firstCall && completedAuths) {
+              // A completion precedes the turn it resumes, at the coordinates of the turn that asked.
+              for (const { challenge } of completedAuths) {
+                const asked =
+                  challenge.attemptId === undefined
+                    ? undefined
+                    : currentProjection(ctx).authorizations[challenge.attemptId];
+                const at = turnPosition(currentProjection(ctx));
+                await handleEvent(
+                  createAuthorizationCompletedEvent({
+                    ...authorizationEventFields(challenge),
+                    outcome: "authorized",
+                    sequence: asked?.sequence ?? at.sequence,
+                    stepIndex: asked?.stepIndex ?? at.stepIndex,
+                    turnId: asked?.turnId ?? activeTurnId(at),
+                  }),
+                );
+              }
               let emissionState = turnPosition(currentProjection(ctx));
               const startsTurn = completedAuths.some(
                 ({ challenge }) => challenge.candidateId === undefined,
@@ -490,6 +507,14 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
                   instrumentation,
                 });
                 try {
+                  // The callback resumes the turn that asked for the sign-in.
+                  const signIn = completedAuths.find(
+                    ({ challenge }) => challenge.candidateId === undefined,
+                  );
+                  const askedIn =
+                    signIn?.challenge.attemptId === undefined
+                      ? undefined
+                      : currentProjection(ctx).authorizations[signIn.challenge.attemptId]?.turnId;
                   emissionState = await emitTurnPreamble(
                     handleEvent,
                     {},
@@ -500,6 +525,7 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
                     }),
                     runtimeIdentity,
                     traceContext,
+                    askedIn ?? null,
                   );
                 } finally {
                   instructionMessages = drainDynamicInstructionUserMessages(ctx);
@@ -514,17 +540,6 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
                     state: memoryCommit?.state ?? schemaSession.state,
                   };
                 }
-              }
-              for (const { challenge } of completedAuths) {
-                await handleEvent(
-                  createAuthorizationCompletedEvent({
-                    ...authorizationEventFields(challenge),
-                    outcome: "authorized",
-                    sequence: emissionState.sequence,
-                    stepIndex: emissionState.stepIndex,
-                    turnId: emissionState.turnId,
-                  }),
-                );
               }
             }
 

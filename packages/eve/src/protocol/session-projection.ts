@@ -26,6 +26,8 @@ export interface SessionTurn {
   readonly stepStarted?: true;
   /** The turn streamed assistant output, so steering can no longer restart it. */
   readonly outputStarted?: boolean;
+  /** The earlier turn whose parked work this turn resumes. */
+  readonly continuesTurnId?: string;
 }
 
 export interface SessionInput {
@@ -41,6 +43,8 @@ export interface SessionInput {
   readonly status: "open" | "responded" | "settled";
   readonly response?: InputResponse;
   readonly outcome?: string;
+  /** The turn that runs the call an approval approved. */
+  readonly resumeTurnId?: string;
 }
 
 /** One call that started or reached a task, settled by its `task.settled`. */
@@ -245,12 +249,16 @@ export function foldSession<S extends SessionProjection>(
     case "session.started":
       return state.started ? state : { ...state, started: true };
     case "turn.started": {
-      const { sequence, turnId } = typed.data;
+      const { continuesTurnId, sequence, turnId } = typed.data;
+      const turn: SessionTurn = { turnId, sequence, status: "active", stepIndex: 0 };
       return {
         ...state,
         activeTurnId: turnId,
         nextSequence: Math.max(state.nextSequence, sequence + 1),
-        turns: { ...state.turns, [turnId]: { turnId, sequence, status: "active", stepIndex: 0 } },
+        turns: {
+          ...state.turns,
+          [turnId]: typeof continuesTurnId === "string" ? { ...turn, continuesTurnId } : turn,
+        },
       };
     }
     case "step.started":
@@ -478,6 +486,7 @@ export function foldSession<S extends SessionProjection>(
           outcome: resolution.outcome,
         };
         if (response !== undefined) settled.response = response;
+        if (resolution.resumeTurnId !== undefined) settled.resumeTurnId = resolution.resumeTurnId;
         next = { ...next, inputs: { ...next.inputs, [resolution.requestId]: settled } };
         next = settleApprovalCall(next, current, resolution.outcome);
       }
