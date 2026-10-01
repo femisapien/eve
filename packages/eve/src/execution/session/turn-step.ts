@@ -4,12 +4,7 @@ import { setEveAttributes } from "#runtime/attributes/emit.js";
 import { defaultDeliverResult } from "#channel/adapter.js";
 import { contextStorage } from "#context/container.js";
 import { runStep } from "#context/run-step.js";
-import {
-  drainDynamicInstructionUserMessages,
-  prepareDynamicInstructionPreamble,
-} from "#context/dynamic-instruction-lifecycle.js";
 import { refreshDynamicSessionSubagentsForRuntimeRevision } from "#context/dynamic-subagent-lifecycle.js";
-import { drainMemoryCommit, prepareMemoryPreamble } from "#context/memory-lifecycle.js";
 import {
   rebindMissingCompiledDynamicToolCallbacks,
   refreshDynamicSessionToolsForRuntimeRevision,
@@ -29,26 +24,14 @@ import {
 } from "#context/keys.js";
 import { BundleKey, ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
-import {
-  emitTurnPreamble,
-  getHarnessEmissionState,
-  isHarnessBetweenTurns,
-  setHarnessEmissionState,
-} from "#harness/emission.js";
+import { getHarnessEmissionState, isHarnessBetweenTurns } from "#harness/emission.js";
 import { bindSessionInstrumentation } from "#instrumentation/runtime.js";
 import { RuntimeActionSettlementTimesKey } from "#harness/runtime-action-settlement-state.js";
 import * as agentTraceState from "#tracing/agent-trace-context-store.js";
-import { matchAuthorizationCallbacks } from "#execution/authorization-callback-match.js";
 import { isTurnCancellation, throwIfTurnAborted } from "#harness/turn-cancellation.js";
 import { setChannelContext } from "#execution/channel-context.js";
 import { activeTurnId } from "#harness/active-turn-id.js";
-import {
-  coalesceTurnInputs,
-  createTurnInputMessages,
-  validateHarnessModelMessages,
-  type UserModelMessage,
-} from "#harness/messages.js";
-import { consumeDeferredStepInput } from "#harness/pending-input-batches.js";
+import { coalesceTurnInputs } from "#harness/messages.js";
 import type { HarnessSession, StepInput, StepResult } from "#harness/types.js";
 import type {
   DurableStepResult,
@@ -60,23 +43,12 @@ import { withSessionStateDelta } from "#execution/session/state-delta.js";
 import { openSessionEventPublisher } from "#execution/publish-session-events.js";
 import { createTurnEventHandler } from "#execution/session/turn-event-handler.js";
 import { derivePendingState } from "#execution/session/pending-turn-state.js";
-import {
-  createAuthorizationCompletedEvent,
-  createSessionStartedEvent,
-  createTurnStartedEvent,
-} from "#protocol/message.js";
-import { authorizationEventFields } from "#harness/authorization-event-fields.js";
-import {
-  CallbackBaseUrlKey,
-  clearPendingAuthorization,
-  getPendingAuthorization,
-  PendingAuthorizationResultKey,
-} from "#harness/authorization.js";
+import { createSessionStartedEvent, createTurnStartedEvent } from "#protocol/message.js";
+import { CallbackBaseUrlKey } from "#harness/authorization.js";
 import { resolveWorkflowCallbackBaseUrl } from "#execution/workflow-callback-url.js";
 import { countRunUsage } from "#execution/agent-sessions/usage.js";
 import { createDurableSessionState, readDurableSession } from "#execution/durable-session-store.js";
 import { buildRuntimeIdentity, createExecutionNodeStep } from "#execution/node-step.js";
-import { prepareWorkflowPreambleTrace } from "#execution/workflow-trace-context.js";
 import { resolveEffectiveAgentRuntime } from "#execution/effective-agent-config.js";
 import { reconcileSessionContinuationToken } from "#execution/reconcile-session-continuation-token.js";
 import { hydrateDurableSession, refreshSessionFromTurnAgent } from "#execution/session.js";
@@ -131,27 +103,6 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
     }
   } catch {
     // Outside a workflow context (e.g. tests) — getHookUrl will return undefined.
-  }
-
-  const pendingAuth = getPendingAuthorization(durableSession.state);
-  let completedAuths: ReturnType<typeof matchAuthorizationCallbacks>["matches"] | undefined;
-  if (pendingAuth && delivery !== undefined) {
-    const { matches, remainingPayloads } = matchAuthorizationCallbacks(
-      pendingAuth,
-      delivery.payloads,
-    );
-    delivery = { ...delivery, payloads: remainingPayloads };
-    if (matches.length > 0) {
-      const matchedAttemptIds = matches.map((match) => match.result.attemptId);
-      const authResults = matches.map((match) => match.result);
-      ctx.set(PendingAuthorizationResultKey, authResults);
-      durableSession = {
-        ...durableSession,
-        state: clearPendingAuthorization(durableSession.state, matchedAttemptIds),
-      };
-      completedAuths = matches;
-      if (remainingPayloads.length === 0) delivery = undefined;
-    }
   }
 
   const previousAuth = ctx.get(AuthKey);
@@ -417,7 +368,6 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
         compactOnly: input.input?.control === "compact",
         createRuntime: createWorkflowRuntime,
         handleEvent,
-        prepareApprovalTurn: (event) => dynamicConnections.dispatch(createTurnStartedEvent(event)),
         historyProjector: history.projector,
         historyView: history.prepare(modelSession),
         instrumentation,
@@ -458,67 +408,6 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
                 ? undefined
                 : { sequence: connectionState.sequence, turnId: activeTurnId(connectionState) },
             );
-            if (firstCall && completedAuths) {
-              let emissionState = getHarnessEmissionState(schemaSession.state);
-              const startsTurn = completedAuths.some(
-                ({ challenge }) => challenge.candidateId === undefined,
-              );
-              if (startsTurn && isHarnessBetweenTurns(schemaSession)) {
-                const turnInput = createTurnInputMessages(
-                  consumeDeferredStepInput({ session: schemaSession, input: stepInput }).input,
-                );
-                prepareDynamicInstructionPreamble(ctx, history.messages(schemaSession));
-                prepareMemoryPreamble(ctx, {
-                  history: schemaSession.history,
-                  input: turnInput,
-                  projector: history.projector,
-                  state: schemaSession.state,
-                });
-                let instructionMessages: readonly UserModelMessage[] = [];
-                const traceContext = await prepareWorkflowPreambleTrace({
-                  emissionState,
-                  instrumentation,
-                });
-                try {
-                  emissionState = await emitTurnPreamble(
-                    handleEvent,
-                    {},
-                    emissionState,
-                    history.projector({
-                      messages: [...schemaSession.history, ...turnInput],
-                      state: schemaSession.state,
-                    }),
-                    runtimeIdentity,
-                    traceContext,
-                  );
-                } finally {
-                  instructionMessages = drainDynamicInstructionUserMessages(ctx);
-                  const memoryCommit = drainMemoryCommit(ctx);
-                  schemaSession = {
-                    ...schemaSession,
-                    history: validateHarnessModelMessages([
-                      ...schemaSession.history,
-                      ...(memoryCommit?.recalledMessages ?? []),
-                      ...instructionMessages,
-                    ]),
-                    state: memoryCommit?.state ?? schemaSession.state,
-                  };
-                }
-                schemaSession = setHarnessEmissionState(schemaSession, emissionState);
-              }
-              for (const { challenge } of completedAuths) {
-                await handleEvent(
-                  createAuthorizationCompletedEvent({
-                    ...authorizationEventFields(challenge),
-                    outcome: "authorized",
-                    sequence: emissionState.sequence,
-                    stepIndex: emissionState.stepIndex,
-                    turnId: emissionState.turnId,
-                  }),
-                );
-              }
-            }
-
             return runHarnessStep(schemaSession, stepInput);
           });
           // The waiting boundary may reach the client before this step returns.

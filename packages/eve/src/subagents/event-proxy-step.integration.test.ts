@@ -13,8 +13,8 @@ import {
 } from "#context/keys.js";
 import type { DurableSession } from "#execution/durable-session-store.js";
 import { openSessionEventPublisher } from "#execution/publish-session-events.js";
-import { createSessionLimitContinuationRequest } from "#harness/session-limit-continuation.js";
 import { getProxyInputRequests } from "#harness/proxy-input-requests.js";
+import type { InputRequest } from "#shared/input.js";
 import { createAuthorizationRequiredEvent, type MessageStreamEvent } from "#protocol/message.js";
 import type { HookContext } from "#public/definitions/hook.js";
 import { createRuntimeHookRegistry } from "#runtime/hooks/registry.js";
@@ -86,10 +86,22 @@ function fixture() {
       },
     },
   };
-  const request = createSessionLimitContinuationRequest({
-    sessionId: "child-session",
-    violation: { kind: "input", limit: 100, usedTokens: 101 },
-  });
+  const request: InputRequest = {
+    action: {
+      callId: "child-question-call",
+      input: { question: "Keep going with the report?" },
+      kind: "tool-call",
+      toolName: "ask_question",
+    },
+    allowFreeform: false,
+    kind: "question",
+    options: [
+      { id: "continue", label: "Continue" },
+      { id: "stop", label: "Stop" },
+    ],
+    prompt: "Keep going with the report?",
+    requestId: "child-session:question",
+  };
   const hookPayload: SubagentInputRequestHookPayload = {
     kind: "subagent-input-request",
     callId: "child-call",
@@ -162,7 +174,7 @@ describe("proxied stream hooks", () => {
           event: { sequence: 7, stepIndex: 2, turnId: "child-turn" },
           resolutions: [
             {
-              kind: "session-limit",
+              kind: "question",
               outcome: "answered",
               requestId: f.request.requestId,
               response: { requestId: f.request.requestId, optionId: "continue" },

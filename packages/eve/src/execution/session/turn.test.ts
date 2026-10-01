@@ -633,58 +633,6 @@ describe("SessionExecution checkpoints", () => {
     expect(queue.pendingCount).toBe(1);
   });
 
-  it.each([
-    { capabilities: undefined, parks: false, serializedContext: {} },
-    { capabilities: { requestInput: true }, parks: true, serializedContext: {} },
-    {
-      capabilities: undefined,
-      parks: true,
-      serializedContext: { "eve.sessionCallback": { callId: "call_1", token: "parent" } },
-    },
-  ])(
-    "parks on pending input only when someone can answer it: %o",
-    async ({ capabilities, parks, serializedContext }) => {
-      const inbox: SessionInbox = {
-        claimedTokens: [],
-        claimSessionHook: vi.fn(),
-        claimSessionHooks: vi.fn(),
-        drain: vi.fn(() => []),
-        hasPending: vi.fn(() => false),
-        whenPending: () => new Promise<void>(() => {}),
-        next: vi.fn(() => new Promise<never>(() => {})),
-        onDelivery: vi.fn(() => () => {}),
-        onInterrupt: vi.fn(() => () => {}),
-        restore: vi.fn(),
-      };
-      const execution = createExecution({
-        capabilities,
-        inbox,
-        serializedContext,
-        sessionState: state(""),
-      });
-      vi.mocked(turnStep)
-        .mockReset()
-        .mockImplementation(
-          turnStepWork(async (input) => ({
-            action: "park",
-            hasPendingAuthorization: false,
-            hasPendingInputBatch: true,
-            serializedContext: input.serializedContext,
-            sessionState: input.sessionState,
-          })),
-        );
-
-      const turn = execution.runTurn({
-        delivery: { kind: "deliver", payloads: [{ message: "Deploy the release." }] },
-      });
-      if (parks) {
-        await expect(turn).resolves.toMatchObject({ kind: "park" });
-      } else {
-        await expect(turn).rejects.toThrow("cannot request human input");
-      }
-    },
-  );
-
   it("preserves the completed turn when cancellation races its checkpoint", async () => {
     const settled = { output: "Done." };
     const followUp: DeliverHookPayload = {

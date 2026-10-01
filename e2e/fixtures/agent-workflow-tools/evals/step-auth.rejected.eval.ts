@@ -1,6 +1,6 @@
 import { defineEval } from "eve/evals";
 
-import { runRejectedStepAuth } from "./agent-probe.shared.ts";
+import { runRejectedStepAuth } from "./step-auth.shared.ts";
 
 export default defineEval({
   description:

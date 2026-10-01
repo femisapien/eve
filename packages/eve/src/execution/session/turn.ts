@@ -64,10 +64,6 @@ export function hasDelegatedCallerContext(serializedContext: Record<string, unkn
   );
 }
 
-const NO_INPUT_CAPABILITY_ERROR_MESSAGE =
-  "This session cannot request human input, so it cannot wait for a tool approval or question. " +
-  "Sessions started without `capabilities.requestInput`, such as schedules, must not use approval-gated tools.";
-
 export interface SessionExecutionInput {
   readonly capabilities?: SessionCapabilities;
   readonly cursor: SessionStateCursor;
@@ -216,18 +212,7 @@ export class SessionExecution {
       }
 
       if (result.action === "park") {
-        if (
-          result.hasPendingInputBatch &&
-          this.input.capabilities?.requestInput !== true &&
-          !hasDelegatedCallerContext(this.input.cursor.serializedContext)
-        ) {
-          throw new Error(NO_INPUT_CAPABILITY_ERROR_MESSAGE);
-        }
-        return {
-          authorizationAttemptIds: result.authorizationAttemptIds,
-          kind: "park",
-          settled: result.settled,
-        };
+        return { kind: "park", settled: result.settled };
       }
 
       const steering = await turn.takeSteering();
@@ -549,10 +534,6 @@ class ActiveTurn {
       if (selection === undefined) break;
       for (const sequence of selection.sequences) this.admitted.delete(sequence);
       const routed = await routeSelectedDelivery(selection, this.input.cursor);
-      if (routed.kind === "cancel-turn") {
-        this.abort();
-        break;
-      }
       if (routed.kind === "turn") steering.push(routed.delivery);
     }
     this.resetSteering();
@@ -656,12 +637,6 @@ class ActiveTurn {
       const routed = await this.input.cursor.advance((state) =>
         routeDeliverToChildren({ delivery, ...state }),
       );
-      if (routed.kind === "cancel-turn") {
-        this.input.queue.replaceDelivery(sequence, undefined);
-        this.admitted.delete(sequence);
-        this.abort();
-        return false;
-      }
       this.input.queue.replaceDelivery(sequence, routed.remainder);
       if (routed.remainder === undefined) {
         this.admitted.delete(sequence);

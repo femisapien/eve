@@ -20,6 +20,10 @@ export function isSessionStateIdleForHandoff(sessionState: DurableSessionState):
 
   // These registries are deleted when work settles. Their ordinary readers
   // tolerate malformed values as absent; that must not authorize a handoff.
+  // Only the coordination batch and proxy requests still have writers. The
+  // other keys belong to approval, sign-in, and budget parks that no longer
+  // exist; they stay so a session parked by an earlier version finishes on the
+  // deployment that can still answer it instead of moving to one that ignores it.
   const pendingKeys = [
     "eve.runtime.pendingAuthorization",
     "eve.runtime.pendingInputBatch",

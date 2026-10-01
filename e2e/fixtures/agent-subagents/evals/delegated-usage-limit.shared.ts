@@ -1,5 +1,4 @@
 import type { EveEvalContext } from "eve/evals";
-import { satisfies } from "eve/evals/expect";
 
 import { SURVEY_WORKER_INPUT_TOKENS } from "../constants";
 
@@ -7,31 +6,23 @@ import { SURVEY_WORKER_INPUT_TOKENS } from "../constants";
  * A delegated agent's spend counts against the session that delegated to it.
  * Alice asks for a tide survey, and the parent hands it to survey-worker. The
  * worker's one model call reports more input tokens than the parent's default
- * session budget, so the parent's next model call stops at its own
- * session-limit prompt, whose used figure includes the worker's tokens.
- * Approving the prompt lets the parent report the survey. Returns the session
- * for checks on how the parent delegated.
+ * session budget, so the parent's next model call fails with its own
+ * session-limit error, whose used figure includes the worker's tokens.
+ * Returns the session for checks on how the parent delegated.
  */
 export async function expectSurveyCountedAgainstParent(t: EveEvalContext, message: string) {
-  const { session } = await t.send(message);
-  const request = session.requireInputRequest({
-    display: "confirmation",
-    optionIds: ["continue", "stop"],
-    toolName: "session_limit_continuation",
+  const turn = await t.send(message);
+  turn.notEvent("input.requested");
+  turn.event("step.failed", {
+    count: 1,
+    data: {
+      code: "SESSION_TOKEN_LIMIT_REACHED",
+      details: {
+        kind: "input",
+        usedTokens: (used: unknown) =>
+          typeof used === "number" && used >= SURVEY_WORKER_INPUT_TOKENS,
+      },
+    },
   });
-  const parentLimitPrefix = `${session.sessionId ?? ""}:limit:input:`;
-  await t.require(
-    request.requestId,
-    satisfies(
-      (requestId: string) =>
-        requestId.startsWith(parentLimitPrefix) &&
-        Number(requestId.slice(parentLimitPrefix.length)) >= SURVEY_WORKER_INPUT_TOKENS,
-      "the parent's input limit prompt counts the worker's tokens",
-    ),
-  );
-
-  const resumed = await session.respond([{ optionId: "continue", requestId: request.requestId }]);
-  resumed.expectOk();
-  resumed.messageIncludes("SURVEY-REPLY Alice's tide survey has 12 stations.");
-  return session;
+  return turn.session;
 }

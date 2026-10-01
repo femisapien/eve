@@ -151,45 +151,6 @@ describe("routeDeliverPayload", () => {
     expect(routed.forChildren).toHaveLength(1);
     expect(routed.forSelf).toBeUndefined();
   });
-
-  it("asks the parent to cancel after routing Stop to a descendant session-limit request", () => {
-    const session = upsertProxyInputRequests({
-      entries: [
-        [
-          "req-limit",
-          { childContinuationToken: "child-a", event: REQUEST_EVENT, kind: "session-limit" },
-        ],
-      ],
-      forChildContinuationToken: "child-a",
-      session: createSession(),
-    });
-
-    const routed = routeDeliverPayload({
-      payload: {
-        inputResponses: [{ optionId: "stop", requestId: "req-limit" }],
-      },
-      state: session.state,
-    });
-
-    expect(routed.forChildren).toEqual([
-      {
-        childContinuationToken: "child-a",
-        payload: { inputResponses: [{ optionId: "stop", requestId: "req-limit" }] },
-        resolved: {
-          event: REQUEST_EVENT,
-          resolutions: [
-            {
-              kind: "session-limit",
-              outcome: "answered",
-              requestId: "req-limit",
-              response: { optionId: "stop", requestId: "req-limit" },
-            },
-          ],
-        },
-      },
-    ]);
-    expect(routed.parentAction).toEqual({ kind: "cancel-turn" });
-  });
 });
 
 describe("routeDeliverPayload source coordinates", () => {

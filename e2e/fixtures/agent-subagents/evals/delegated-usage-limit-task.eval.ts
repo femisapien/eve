@@ -5,8 +5,7 @@ import { expectSurveyCountedAgainstParent } from "./delegated-usage-limit.shared
 
 /** The parent starts one survey-worker task and waits for it; the task's reply carries its usage. */
 export default defineEval({
-  description:
-    "An agent task's token usage counts against the parent's session limit and continuation prompt.",
+  description: "An agent task's token usage counts against the parent's session limit.",
   timeoutMs: 90_000,
   async test(t) {
     const session = await expectSurveyCountedAgainstParent(

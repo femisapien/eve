@@ -1,6 +1,6 @@
 import { defineEval } from "eve/evals";
 
-import { runStepAuth } from "./agent-probe.shared.ts";
+import { runStepAuth } from "./step-auth.shared.ts";
 
 export default defineEval({
   description: "A missing token triggers sign-in through ctx.getToken, then the step succeeds.",

@@ -8,8 +8,7 @@ import { expectSurveyCountedAgainstParent } from "./delegated-usage-limit.shared
  * survey-worker; the tool's outcome carries the session's usage.
  */
 export default defineEval({
-  description:
-    "A workflow tool's ctx.agent token usage counts against the parent's session limit and continuation prompt.",
+  description: "A workflow tool's ctx.agent token usage counts against the parent's session limit.",
   timeoutMs: 90_000,
   async test(t) {
     const session = await expectSurveyCountedAgainstParent(

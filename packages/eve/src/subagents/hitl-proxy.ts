@@ -5,8 +5,7 @@ import type {
   SubagentInputRequestHookPayload,
 } from "#channel/types.js";
 import { getHarnessEmissionState } from "#harness/emission.js";
-import { resolveInputOutcome } from "#harness/input-request-resolution.js";
-import type { PendingInputBatchEvent } from "#harness/pending-input-batches.js";
+import type { InputRequestCoordinates } from "#harness/proxy-input-requests.js";
 import {
   getProxyInputRequests,
   toProxyInputRequestEntries,
@@ -20,7 +19,6 @@ import {
 } from "#protocol/message.js";
 import type { InputResponse } from "#shared/input.js";
 import { resolveTextToResponse } from "#channel/resolve-text.js";
-import { SESSION_LIMIT_STOP_OPTION_ID } from "#harness/session-limit-continuation.js";
 
 // ---------------------------------------------------------------------------
 // Upward proxy emission
@@ -95,7 +93,7 @@ export interface RoutedChildDelivery {
  * the coordinates of the child batch's `input.requested`.
  */
 export interface ProxiedInputResolutions {
-  readonly event: PendingInputBatchEvent;
+  readonly event: InputRequestCoordinates;
   readonly resolutions: readonly InputResolution[];
 }
 
@@ -107,7 +105,6 @@ export interface ProxiedInputResolutions {
 export interface RoutedDeliverPayload {
   readonly forChildren: readonly RoutedChildDelivery[];
   readonly forSelf: DeliverPayload | undefined;
-  readonly parentAction: { readonly kind: "cancel-turn" } | undefined;
 }
 
 /** In-progress accumulation for one `forChildren` bucket. */
@@ -117,7 +114,7 @@ interface ChildResponseBucket {
   readonly childContinuationToken: string;
   readonly childSessionInbox?: SessionInboxAddress;
   /** A child's routes all come from its latest batch, so they share coordinates. */
-  readonly event: PendingInputBatchEvent;
+  readonly event: InputRequestCoordinates;
   /** Parent-visible request IDs answered in this bucket. */
   readonly parentRequestIds: string[];
   readonly responses: InputResponse[];
@@ -151,7 +148,6 @@ export function routeDeliverPayload(input: {
 
   const responsesByChild = new Map<string, ChildResponseBucket>();
   const unroutedResponses: InputResponse[] = [];
-  let parentAction: RoutedDeliverPayload["parentAction"];
 
   const bucketFor = (route: ProxyInputRequest): ChildResponseBucket => {
     const bucketKey = JSON.stringify([
@@ -192,10 +188,6 @@ export function routeDeliverPayload(input: {
     // A request takes one answer; the first one in the payload wins.
     if (routedRequestIds.has(response.requestId)) continue;
     routedRequestIds.add(response.requestId);
-
-    if (route.kind === "session-limit" && response.optionId === SESSION_LIMIT_STOP_OPTION_ID) {
-      parentAction = { kind: "cancel-turn" };
-    }
 
     const bucket = bucketFor(route);
     bucket.parentRequestIds.push(response.requestId);
@@ -264,7 +256,7 @@ export function routeDeliverPayload(input: {
 
   const forSelf = Object.keys(remainder).length > 0 ? (remainder as DeliverPayload) : undefined;
 
-  return { forChildren, forSelf, parentAction };
+  return { forChildren, forSelf };
 }
 
 function resolveRetiredRequests(input: {
@@ -287,7 +279,7 @@ function toInputResolution(
   route: ProxyInputRequest,
   response: InputResponse | undefined,
 ): InputResolution {
-  const outcome = resolveInputOutcome(route.kind, response);
+  const outcome = response === undefined ? "ignored" : "answered";
   const resolution: InputResolution = { kind: route.kind, outcome, requestId };
   return response === undefined ? resolution : { ...resolution, response };
 }

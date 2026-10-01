@@ -445,40 +445,6 @@ export async function resolveStepDynamicTools(input: {
   storeResolvedStepTools({ ctx: input.ctx, event: input.event, metadata });
 }
 
-/** Converts persisted step metadata before any approval replay can read it. */
-export async function preparePersistedStepDynamicToolMetadata(input: {
-  readonly ctx: AlsContext;
-  readonly resolvers: readonly ResolvedDynamicToolResolver[];
-  readonly event: StepStartedStreamEvent;
-  readonly messages: readonly ModelMessage[];
-}): Promise<void> {
-  const persisted = input.ctx.get(StepDynamicToolMetadataKey) ?? [];
-  const current = persisted.filter(isCurrentDynamicToolMetadata);
-  if (
-    current.length === persisted.length &&
-    !hasUnregisteredDurableDynamicCallbacks(current, {
-      sessionId: input.ctx.require(SessionIdKey),
-      scope: "step",
-    })
-  ) {
-    if (current.length > 0) {
-      storeResolvedStepTools({ ctx: input.ctx, event: input.event, metadata: current });
-    }
-    return;
-  }
-
-  await resolveStepDynamicTools(input);
-  const resolved = input.ctx.get(StepDynamicToolMetadataKey) ?? [];
-  storeResolvedStepTools({
-    ctx: input.ctx,
-    event: input.event,
-    metadata: toCurrentDynamicToolMetadataList(
-      persisted,
-      resolved.filter(isCurrentDynamicToolMetadata),
-    ),
-  });
-}
-
 export async function dispatchDynamicToolEvent(input: {
   readonly ctx: AlsContext;
   readonly resolvers: readonly ResolvedDynamicToolResolver[];

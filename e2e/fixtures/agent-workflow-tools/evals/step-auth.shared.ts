@@ -1,0 +1,62 @@
+import type { EveEvalContext, EveEvalStreamEvent, EveEvalTurn } from "eve/evals";
+
+import { fixtureAuthorizationCallback } from "../agent/lib/fake-service.ts";
+
+async function completeSignIn(
+  t: EveEvalContext,
+  message: string,
+  toCallbackUrl: (authorizationUrl: string | undefined) => URL,
+): Promise<{ readonly callbackUrl: URL; readonly turn: EveEvalTurn }> {
+  const session = await t.session();
+  const live = await session.start(message);
+  const required = await live.waitForEvent("authorization.required");
+  const callbackUrl = toCallbackUrl(required.data.authorization?.url);
+  const response = await fetch(callbackUrl);
+  if (!response.ok) {
+    throw new Error(`Authorization callback failed (${response.status}).`);
+  }
+  return { callbackUrl, turn: await live.result() };
+}
+
+function requireAuthorizationOutcome(
+  turn: EveEvalTurn,
+  outcome: EveEvalStreamEvent<"authorization.completed">["data"]["outcome"],
+): void {
+  const completed = turn.events.filter(
+    (event): event is EveEvalStreamEvent<"authorization.completed"> =>
+      event.type === "authorization.completed",
+  );
+  if (completed.length !== 1 || completed[0]?.data.outcome !== outcome) {
+    throw new Error(`Expected one authorization.completed with outcome "${outcome}".`);
+  }
+}
+
+function requireMarker(turn: EveEvalTurn, marker: string): void {
+  if (!turn.message?.includes(marker)) {
+    throw new Error(`Probe did not produce ${marker}.`);
+  }
+}
+
+export async function runStepAuth(
+  t: EveEvalContext,
+  scenario: "EXPLICIT" | "IMPLICIT",
+): Promise<void> {
+  const { turn } = await completeSignIn(t, `WORKFLOW-STEP-AUTH-${scenario}`, (url) =>
+    fixtureAuthorizationCallback(t.target.url, url),
+  );
+  requireAuthorizationOutcome(turn, "authorized");
+  requireMarker(turn, "WORKFLOW-STEP-AUTH:authorized");
+  t.noFailedActions();
+}
+
+export async function runRejectedStepAuth(t: EveEvalContext): Promise<void> {
+  const { callbackUrl, turn } = await completeSignIn(t, "WORKFLOW-STEP-AUTH-REJECTED", (url) =>
+    fixtureAuthorizationCallback(t.target.url, url),
+  );
+  requireAuthorizationOutcome(turn, "failed");
+
+  const repeatedCallback = await fetch(callbackUrl);
+  if (repeatedCallback.status !== 404) {
+    throw new Error("The completed authorization callback must be disposed.");
+  }
+}

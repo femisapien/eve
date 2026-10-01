@@ -11,7 +11,6 @@ import {
 import { TurnCancelledError } from "#harness/turn-cancellation.js";
 import type { HarnessSession } from "#harness/types.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
-import { always } from "#tools/approval/policies.js";
 import { ContextContainer, contextStorage } from "#context/container.js";
 import { SessionKey } from "#context/keys.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
@@ -91,76 +90,44 @@ describe("generation steering with the real AI SDK", () => {
     }
   });
 
-  it.each(["input.requested", "turn.completed", "step.failed"] as const)(
-    "finishes committing %s when a correction arrives during publication",
-    async (boundary) => {
-      const logs = captureLogRecords();
-      const steering = new AbortController();
-      const events: UnstampedMessageStreamEvent[] = [];
-      const model = new MockLanguageModelV3({
-        doStream: async () => {
-          if (boundary === "step.failed") throw new Error("Model unavailable");
-          return {
-            stream: new ReadableStream<Part>({
-              start(controller) {
-                controller.enqueue({
-                  type: "tool-call",
-                  toolCallId: "publish-1",
-                  toolName: "publish_report",
-                  input: JSON.stringify({}),
-                });
-                controller.enqueue({
-                  type: "finish",
-                  finishReason: { unified: "tool-calls", raw: undefined },
-                  usage,
-                });
-                controller.close();
-              },
-            }),
-          };
-        },
-      });
-      const harness = createToolLoopHarness({
-        capabilities: { requestInput: true },
-        steeringSignal: steering.signal,
-        tools: new Map([
-          [
-            "publish_report",
-            {
-              approval: always(),
-              name: "publish_report",
-              description: "Publish Alice's report after approval",
-              execute: async () => ({ published: true }),
-              inputSchema: jsonSchema({ type: "object" }),
-            },
-          ],
-        ]),
-        resolveModel: async () => model,
-        handleEvent: async (event) => {
-          events.push(event);
-          if (event.type === boundary) steering.abort();
-        },
-      });
-      const ctx = new ContextContainer();
-      ctx.set(SessionKey, {
-        auth: { current: null, initiator: null },
-        sessionId: session().sessionId,
-        turn: { id: "turn_0", sequence: 0 },
-      });
-      const result = await contextStorage.run(ctx, () =>
-        harness(session(), { message: "Report only if there is a new update" }),
-      );
-      expect(result.steered).toBeUndefined();
-      expect(result.next).toBeNull();
-      expect(events.filter((event) => event.type === boundary)).toHaveLength(1);
-      expect(events.filter((event) => event.type === "session.waiting")).toHaveLength(1);
-      expect(events.filter((event) => event.type === "message.appended")).toHaveLength(0);
-      const parked = logs.records.filter(
-        (record) => record.message === "model call failed — parking session for retry by the user",
-      );
-      expect(parked).toHaveLength(boundary === "step.failed" ? 1 : 0);
-    },
-  );
+  it("finishes committing step.failed when a correction arrives during publication", async () => {
+    const logs = captureLogRecords();
+    const steering = new AbortController();
+    const events: UnstampedMessageStreamEvent[] = [];
+    const model = new MockLanguageModelV3({
+      doStream: async () => {
+        throw new Error("Model unavailable");
+      },
+    });
+    const harness = createToolLoopHarness({
+      capabilities: { requestInput: true },
+      steeringSignal: steering.signal,
+      tools: new Map(),
+      resolveModel: async () => model,
+      handleEvent: async (event) => {
+        events.push(event);
+        if (event.type === "step.failed") steering.abort();
+      },
+    });
+    const ctx = new ContextContainer();
+    ctx.set(SessionKey, {
+      auth: { current: null, initiator: null },
+      sessionId: session().sessionId,
+      turn: { id: "turn_0", sequence: 0 },
+    });
+    const result = await contextStorage.run(ctx, () =>
+      harness(session(), { message: "Report only if there is a new update" }),
+    );
+    expect(result.steered).toBeUndefined();
+    expect(result.next).toBeNull();
+    expect(events.filter((event) => event.type === "step.failed")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "session.waiting")).toHaveLength(1);
+    expect(events.filter((event) => event.type === "message.appended")).toHaveLength(0);
+    const parked = logs.records.filter(
+      (record) => record.message === "model call failed — parking session for retry by the user",
+    );
+    expect(parked).toHaveLength(1);
+  });
 
   it("commits the original input and turn preamble when steering precedes model startup", async () => {
     const steering = new AbortController();

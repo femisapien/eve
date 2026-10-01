@@ -8,7 +8,6 @@ import {
 } from "#subagents/parent-notification.js";
 import type { DurableSessionState } from "#execution/durable-session-store.js";
 import { nextTurnDelivery, type NextTurnInstruction } from "#execution/session/next-input.js";
-import { cancelDescendantTurnsStep } from "#execution/cancel-descendant-turns-step.js";
 import { SessionInputQueue } from "#execution/session/input-queue.js";
 import { SessionExecution } from "#execution/session/turn.js";
 import { SessionStateCursor } from "#execution/session/state-cursor.js";
@@ -208,13 +207,12 @@ async function runSessionLoop(
           sessionId: boot.sessionId,
         });
 
-  const nextParkedActivity = async (
-    expectedAttemptIds: ReadonlySet<string>,
-  ): Promise<Exclude<NextTurnInstruction, { kind: "workflow" | "cancel-working-tasks" }>> => {
+  const nextParkedActivity = async (): Promise<
+    Exclude<NextTurnInstruction, { kind: "workflow" | "cancel-working-tasks" }>
+  > => {
     while (true) {
       const next = await nextTurnDelivery({
         cursor,
-        expectedAttemptIds,
         hasWorkingTasks: () => workingTasks(sessionTaskTable(cursor)).length > 0,
         inbox,
         queue,
@@ -264,7 +262,7 @@ async function runSessionLoop(
   };
   const awaitPrewarmedAction = async (): Promise<SessionActionResult> => {
     while (true) {
-      const next = await nextParkedActivity(new Set());
+      const next = await nextParkedActivity();
       switch (next.kind) {
         case "expired":
         case "reset":
@@ -275,9 +273,6 @@ async function runSessionLoop(
           continue;
         case "turn":
           return await runDeliveredTurn(next);
-        case "cancel-turn":
-        case "authorization-resume":
-          continue;
       }
     }
   };
@@ -325,17 +320,9 @@ async function runSessionLoop(
         progress.caller = undefined;
       }
 
-      // An open authorization challenge must not wedge the session:
-      // ordinary deliveries keep starting normal turns while the challenge
-      // waits for its callback. The pending challenge survives intervening
-      // turns because every park re-derives `authorizationAttemptIds` from
-      // durable session state.
-      const next = await nextParkedActivity(new Set(action.authorizationAttemptIds ?? []));
+      const next = await nextParkedActivity();
 
       switch (next.kind) {
-        case "authorization-resume":
-          action = await runTurn({ delivery: { kind: "deliver", payloads: next.payloads } });
-          continue;
         case "expired":
         case "reset":
         case "closed":
@@ -343,15 +330,6 @@ async function runSessionLoop(
         case "clear":
         case "compact":
           action = await runTurn({ control: next.kind });
-          continue;
-        case "cancel-turn":
-          await cancelDescendantTurnsStep({
-            sessionState: cursor.sessionState,
-          });
-          await cancelWorkingTasks(cursor, "turn_cancelled");
-          await settleCancelledTurn(false);
-          // Cancellation consumes any outstanding caller; do not report the prior turn.
-          action = { ...action, settled: undefined };
           continue;
         case "turn": {
           const result = await runDeliveredTurn(next);

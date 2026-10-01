@@ -1,6 +1,5 @@
 import type { StandardSchemaV1 } from "#compiled/@standard-schema/spec/index.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
-import type { HarnessToolMap } from "#harness/types.js";
 import type { ContextReader } from "#context/key.js";
 import {
   SessionIdKey,
@@ -255,24 +254,6 @@ function requireCurrentDynamicToolMetadata(
     );
   }
   return metadata as readonly CurrentDynamicToolMetadata[];
-}
-
-/**
- * Builds live dynamic tool definitions. Narrower scopes appear first so they
- * win on name collision (the tool loop uses `??=` for deduplication).
- */
-export function buildResponseAuthorizationTools(input: {
-  readonly authoredTools: HarnessToolMap;
-  readonly context?: ContextReader;
-}): HarnessToolMap {
-  const tools = new Map<string, HarnessToolDefinition>();
-  for (const tool of input.context === undefined ? [] : buildDynamicTools(input.context)) {
-    if (!tools.has(tool.name)) tools.set(tool.name, tool);
-  }
-  for (const [name, tool] of input.authoredTools) {
-    if (!tools.has(name)) tools.set(name, tool);
-  }
-  return tools;
 }
 
 export function buildDynamicTools(ctx: ContextReader): readonly HarnessToolDefinition[] {

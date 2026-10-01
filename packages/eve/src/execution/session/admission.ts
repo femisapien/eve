@@ -32,10 +32,8 @@ export async function admitSessionInboxPayload(
   if (value.kind === "runtime-action-result")
     return { kind: "runtime-action-result", payload: value };
   if (isWorkflowMessage(value)) return { kind: "workflow", message: value };
-  if (value.kind === "authorization-callback") {
-    input.queue.enqueueAuthorization(value.payloads);
-    return { kind: "consumed" };
-  }
+  // Sign-ins complete inside the run that asked; nothing at the session waits for a callback.
+  if (value.kind === "authorization-callback") return { kind: "consumed" };
   // A child's questions reach the session only through the run that opened it.
   if (value.kind === "subagent-input-request" || value.kind === "subagent-authorization-event") {
     return { kind: "consumed" };

@@ -63,25 +63,9 @@ async function respond(request: MockModelRequest): Promise<MockModelResponse | s
   }
 
   const message =
-    [...request.userMessages]
-      .reverse()
-      .find((entry) => entry.startsWith("WORKFLOW-") || entry.includes("private-catalog")) ?? "";
+    [...request.userMessages].reverse().find((entry) => entry.startsWith("WORKFLOW-")) ?? "";
   const scenario = respondToTaskScenario(request, directiveOf(message));
   if (scenario !== undefined) return scenario;
-  if (message.includes("private-catalog")) {
-    const search = request.toolResults.find((entry) => entry.name === "connection_search");
-    if (search === undefined) {
-      return {
-        toolCalls: [
-          {
-            name: "connection_search",
-            input: { connection: "private-catalog", query: "items" },
-          },
-        ],
-      };
-    }
-    return JSON.stringify(search.output);
-  }
 
   const stepAuth = /WORKFLOW-STEP-AUTH-(IMPLICIT|EXPLICIT|REJECTED)/u.exec(message);
   if (stepAuth !== null) {
@@ -89,16 +73,6 @@ async function respond(request: MockModelRequest): Promise<MockModelResponse | s
     return result === undefined
       ? { toolCalls: [{ input: { service: stepAuth[1] }, name: "authorize_service" }] }
       : String(result.output);
-  }
-  const probe = /WORKFLOW-PROBE-blocking-local-(hitl|auth)/u.exec(message);
-  if (probe !== null) {
-    const result = request.toolResults.find((entry) => entry.name === "blocking_agent_probe");
-    if (result === undefined) {
-      return {
-        toolCalls: [{ input: { kind: probe[1] }, name: "blocking_agent_probe" }],
-      };
-    }
-    return `WORKFLOW-PROBE-RESULT ${String(result.output)}`;
   }
   for (const [directive, tool, service = "api"] of [
     ["WORKFLOW-APPROVAL-START", "gated_deploy"],

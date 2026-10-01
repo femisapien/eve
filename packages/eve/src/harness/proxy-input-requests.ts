@@ -1,5 +1,4 @@
 import type { SubagentInputRequestHookPayload } from "#channel/types.js";
-import type { PendingInputBatchEvent } from "#harness/pending-input-batches.js";
 import type { HarnessSession, SessionStateMap } from "#harness/types.js";
 import { inputOptionSchema, type InputOption, type InputRequestKind } from "#shared/input.js";
 import {
@@ -8,6 +7,13 @@ import {
 } from "#execution/session-inbox/address.js";
 import type { RemoteAgentBinding } from "#eve-channel/support.js";
 import { createInputResolvedEvent, type InputResolvedStreamEvent } from "#protocol/message.js";
+
+/** Where a request was raised: its events carry the requesting turn and step. */
+export interface InputRequestCoordinates {
+  readonly sequence: number;
+  readonly stepIndex: number;
+  readonly turnId: string;
+}
 
 const PROXY_INPUT_REQUESTS_KEY = "eve.runtime.proxyInputRequests";
 
@@ -53,7 +59,7 @@ export interface ProxyInputRequest {
    * Coordinates of the `input.requested` this session emitted for the request;
    * the `input.resolved` it emits once it routes the answer repeats them.
    */
-  readonly event: PendingInputBatchEvent;
+  readonly event: InputRequestCoordinates;
   readonly kind: InputRequestKind;
   /** Question metadata lets the human-facing parent resolve plain text before proxying by ID. */
   readonly question?: ProxyInputQuestion;
@@ -198,7 +204,7 @@ export function toProxyInputRequestEntries(
     ),
     requestIds: payload.event.requests.map((request) => request.requestId),
   };
-  const event: PendingInputBatchEvent = {
+  const event: InputRequestCoordinates = {
     sequence: payload.event.sequence,
     stepIndex: payload.event.stepIndex,
     turnId: payload.event.turnId,
@@ -209,7 +215,7 @@ export function toProxyInputRequestEntries(
       readonly inputSource?: string;
       readonly remote?: RemoteAgentBinding & { readonly sessionId: string };
       childSessionInbox?: SessionInboxAddress;
-      readonly event: PendingInputBatchEvent;
+      readonly event: InputRequestCoordinates;
       readonly kind: InputRequestKind;
       question?: ProxyInputQuestion;
     } & { readonly batch: ProxyInputRequestBatch } = {
@@ -304,7 +310,7 @@ function parseProxyInputRequest(value: unknown, requestId: string): ProxyInputRe
     inputSource?: string;
     remote?: RemoteAgentBinding & { readonly sessionId: string };
     childSessionInbox?: SessionInboxAddress;
-    readonly event: PendingInputBatchEvent;
+    readonly event: InputRequestCoordinates;
     readonly kind: InputRequestKind;
     question?: ProxyInputQuestion;
   } = {
@@ -322,7 +328,7 @@ function parseProxyInputRequest(value: unknown, requestId: string): ProxyInputRe
   return request;
 }
 
-function parseInputRequestEvent(value: unknown): PendingInputBatchEvent | undefined {
+function parseInputRequestEvent(value: unknown): InputRequestCoordinates | undefined {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
   const sequence = Reflect.get(value, "sequence");
   const stepIndex = Reflect.get(value, "stepIndex");

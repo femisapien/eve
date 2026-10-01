@@ -54,29 +54,6 @@ function createMockInbox(reads: readonly ScriptedRead[]): SessionInbox {
   };
 }
 
-const authorizationCallbackPayload = {
-  kind: "authorization-callback",
-  payloads: [
-    {
-      authorizationCallback: {
-        attemptId: "attempt-1",
-        callback: { method: "GET", params: { code: "abc" } },
-        connectionName: "weather",
-      },
-    },
-  ],
-} satisfies SessionInboxPayload;
-
-function authorizationRead(): ScriptedRead {
-  return { result: { done: false, value: authorizationCallbackPayload } };
-}
-
-function cancelRead(): ScriptedRead {
-  return {
-    result: { done: false, value: { kind: "cancel" } },
-  };
-}
-
 function messageRead(message: string): ScriptedRead {
   return {
     result: { done: false, value: { kind: "send", payload: { message } } },
@@ -94,7 +71,6 @@ type WaitInput = {
 function waitInput(inbox: SessionInbox): WaitInput {
   const cursor = createCursor(inbox);
   return {
-    expectedAttemptIds: new Set(["attempt-1"]),
     hasWorkingTasks: () => false,
     inbox: inbox,
     cursor,
@@ -268,37 +244,6 @@ describe("nextTurnDelivery", () => {
     expect(input.queue.pendingCount).toBe(1);
   });
 
-  it("surfaces an authorization callback as its own instruction", async () => {
-    const inbox = createMockInbox([authorizationRead()]);
-
-    const next = await nextTurnDelivery(waitInput(inbox));
-
-    expect(next.kind).toBe("authorization-resume");
-    if (next.kind !== "authorization-resume") throw new Error("unreachable");
-    expect(next.payloads).toEqual(authorizationCallbackPayload.payloads);
-  });
-
-  it("resumes authorization after a consumed no-op cancel", async () => {
-    // A cancel with no active turn is consumed without producing a parent
-    // turn; the wait continues and the callback must still resume the challenge.
-    const inbox = createMockInbox([cancelRead(), authorizationRead()]);
-
-    const next = await nextTurnDelivery(waitInput(inbox));
-
-    expect(next.kind).toBe("authorization-resume");
-  });
-
-  it("does not let buffered deliveries bypass a ready authorization callback", async () => {
-    const inbox = createMockInbox([]);
-    const queue = queueOf({ kind: "deliver", payloads: [{ message: "later" }] });
-    queue.enqueueAuthorization(authorizationCallbackPayload.payloads);
-
-    const next = await nextTurnDelivery({ ...waitInput(inbox), queue });
-
-    expect(next.kind).toBe("authorization-resume");
-    expect(queue.pendingCount).toBe(1);
-  });
-
   it("reports session closure while waiting for authorization", async () => {
     const inbox = createMockInbox([{ result: { done: true, value: undefined } }]);
 
@@ -322,10 +267,7 @@ describe("nextTurnDelivery", () => {
         stateDelta: {},
       });
 
-    const next = await nextTurnDelivery({
-      ...waitInput(inbox),
-      expectedAttemptIds: undefined,
-    });
+    const next = await nextTurnDelivery(waitInput(inbox));
 
     expect(vi.mocked(routeDeliverToChildren).mock.calls[1]?.[0].sessionState).toBe(retiredState);
     expect(next).toMatchObject({

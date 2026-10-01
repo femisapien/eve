@@ -11,8 +11,7 @@ import {
 // it, or calls a workflow tool that opens a `ctx.agent` session with
 // survey-worker. The worker's one model call reports more input tokens than
 // the parent's whole session budget, so once the worker's usage counts against
-// the parent, the parent's next model call stops at its own session-limit
-// prompt.
+// the parent, the parent's next model call fails at its own session limit.
 
 /** Whether a message is Alice's survey request. */
 export function isSurveyDirective(message: string): boolean {

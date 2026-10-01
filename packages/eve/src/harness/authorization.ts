@@ -18,10 +18,9 @@ import {
  * `startAuthorization` to `completeAuthorization` across the park:
  *
  * 1. `startAuthorization` returns `{ challenge, resume? }`. The runtime
- *    stores `resume` on the {@link AuthorizationChallenge} and journals it
- *    onto `session.state` via {@link setPendingAuthorization} when the turn
- *    parks — so it survives the suspend/resume across a `"use step"`
- *    boundary.
+ *    stores `resume` on the {@link AuthorizationChallenge}, which the workflow
+ *    run holds while it waits, so it survives the suspend/resume across a
+ *    `"use step"` boundary.
  * 2. The IdP redirect hits the framework callback route, which parses it
  *    (see `projectAuthorizationCallback` — params only, no headers) and
  *    resumes the workflow.
@@ -227,18 +226,6 @@ export function authorizationPendingAsJsonObject(input: {
   };
 }
 
-/**
- * Projects a full {@link AuthorizationSignal} to the opaque shape recorded
- * in model-facing tool results and session history.
- */
-export function modelFacingAuthorizationOutput(
-  signal: AuthorizationSignal,
-): AuthorizationPendingModelOutput {
-  return authorizationPendingAsJsonObject({
-    connections: signal.challenges.map((entry) => entry.name),
-  });
-}
-
 /** Human-readable tool output for {@link modelFacingAuthorizationOutput}. */
 export function authorizationPendingModelText(connections: readonly string[]): string {
   if (connections.length === 0) {
@@ -248,10 +235,6 @@ export function authorizationPendingModelText(connections: readonly string[]): s
     return `Authorization required for ${connections[0]}. Waiting for the user to sign in.`;
   }
   return `Authorization required for ${connections.join(", ")}. Waiting for the user to sign in.`;
-}
-
-export function isPendingAuthorizationToolOutput(value: unknown): boolean {
-  return isAuthorizationPendingModelOutput(value) || isAuthorizationSignal(value);
 }
 
 /**
@@ -284,119 +267,3 @@ export const CallbackBaseUrlKey = new ContextKey<string>("eve.callbackBaseUrl");
 
 /** Hook token of a runtime that owns its callback instead of using the session hook. */
 export const AuthorizationHookKey = new ContextKey<string>("eve.authorizationHook");
-
-// ---------------------------------------------------------------------------
-// Session state persistence (internal — used by framework only)
-// ---------------------------------------------------------------------------
-
-const PENDING_AUTHORIZATION_KEY = "eve.runtime.pendingAuthorization";
-
-export interface PendingAuthorizationState {
-  readonly challenges: readonly AuthorizationChallenge[];
-}
-
-export function setPendingAuthorization(
-  sessionState: Record<string, unknown> | undefined,
-  value: PendingAuthorizationState,
-): Record<string, unknown> {
-  const active = resolveActiveAuthorizationChallenges(value.challenges);
-  const pending = getPendingAuthorization(sessionState);
-  const previous = pending?.challenges ?? [];
-  const superseded = getSupersededAuthorizationChallenges(sessionState, active);
-  return {
-    ...sessionState,
-    [PENDING_AUTHORIZATION_KEY]: {
-      challenges: [...previous.filter((challenge) => !superseded.includes(challenge)), ...active],
-    },
-  };
-}
-
-/** Keeps the last challenge for each authorization name and principal scope. */
-export function resolveActiveAuthorizationChallenges(
-  challenges: readonly AuthorizationChallenge[],
-): readonly AuthorizationChallenge[] {
-  return challenges.filter(
-    (candidate, index) =>
-      !challenges
-        .slice(index + 1)
-        .some(
-          (replacement) =>
-            candidate.name === replacement.name &&
-            samePrincipal(candidate.principal, replacement.principal),
-        ),
-  );
-}
-
-/** Existing same-scope attempts replaced by newer attempts for the same principal. */
-export function getSupersededAuthorizationChallenges(
-  sessionState: Record<string, unknown> | undefined,
-  replacements: readonly AuthorizationChallenge[],
-): readonly AuthorizationChallenge[] {
-  const previous = getPendingAuthorization(sessionState)?.challenges ?? [];
-  return previous.filter((candidate) =>
-    replacements.some(
-      (replacement) =>
-        candidate.name === replacement.name &&
-        samePrincipal(candidate.principal, replacement.principal),
-    ),
-  );
-}
-
-function samePrincipal(
-  left: ConnectionPrincipal | undefined,
-  right: ConnectionPrincipal | undefined,
-): boolean {
-  if (left === undefined || right === undefined) return left === right;
-  if (left.type === "app" || right.type === "app") return left.type === right.type;
-  return left.id === right.id && left.issuer === right.issuer;
-}
-
-export function clearPendingAuthorization(
-  sessionState: Record<string, unknown> | undefined,
-  attemptIds?: readonly string[],
-): Record<string, unknown> | undefined {
-  if (sessionState === undefined || sessionState[PENDING_AUTHORIZATION_KEY] === undefined) {
-    return sessionState;
-  }
-
-  if (attemptIds !== undefined) {
-    if (attemptIds.length === 0) return sessionState;
-
-    const pending = getPendingAuthorization(sessionState);
-    if (pending !== undefined) {
-      const completedAttemptIds = new Set(attemptIds);
-      const challenges = pending.challenges.filter(
-        (challenge) => !completedAttemptIds.has(authorizationAttemptKey(challenge)),
-      );
-      if (challenges.length > 0) {
-        return {
-          ...sessionState,
-          [PENDING_AUTHORIZATION_KEY]: { challenges },
-        };
-      }
-    }
-  }
-
-  const state = { ...sessionState };
-  delete state[PENDING_AUTHORIZATION_KEY];
-  return Object.keys(state).length > 0 ? state : undefined;
-}
-
-function authorizationAttemptKey(challenge: AuthorizationChallenge): string {
-  return challenge.attemptId ?? challenge.candidateId ?? challenge.name;
-}
-
-export function getPendingAuthorization(
-  sessionState: Record<string, unknown> | undefined,
-): PendingAuthorizationState | undefined {
-  if (!sessionState) return undefined;
-  const v = sessionState[PENDING_AUTHORIZATION_KEY];
-  if (typeof v !== "object" || v === null) return undefined;
-  return v as PendingAuthorizationState;
-}
-
-export function hasPendingAuthorization(
-  sessionState: Record<string, unknown> | undefined,
-): boolean {
-  return getPendingAuthorization(sessionState) !== undefined;
-}

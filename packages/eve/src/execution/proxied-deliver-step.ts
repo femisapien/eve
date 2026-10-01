@@ -24,7 +24,7 @@ import {
   sendWorkflowAskAnswers,
   toToolInputResponseResponder,
 } from "#execution/tools/workflow/answer.js";
-import type { PendingInputBatchEvent } from "#harness/pending-input-batches.js";
+import type { InputRequestCoordinates } from "#harness/proxy-input-requests.js";
 import type { WorkflowAskRoute } from "#harness/proxy-input-requests.js";
 import {
   createInputResolvedEvent,
@@ -33,18 +33,12 @@ import {
 } from "#protocol/message.js";
 import { retireProxyInputRequests } from "#harness/proxy-input-requests.js";
 
-export type RoutedDeliverResult =
-  | {
-      readonly kind: "cancel-turn";
-      readonly serializedContext: Record<string, unknown>;
-      readonly sessionState: DurableSessionState;
-    }
-  | {
-      readonly kind: "continue";
-      readonly remainder: DeliverHookPayload | undefined;
-      readonly serializedContext: Record<string, unknown>;
-      readonly sessionState: DurableSessionState;
-    };
+export type RoutedDeliverResult = {
+  readonly kind: "continue";
+  readonly remainder: DeliverHookPayload | undefined;
+  readonly serializedContext: Record<string, unknown>;
+  readonly sessionState: DurableSessionState;
+};
 
 interface ChildBucket {
   readonly workflowAsk?: WorkflowAskRoute;
@@ -53,7 +47,7 @@ interface ChildBucket {
   >;
   readonly childContinuationToken: string;
   readonly childSessionInbox?: SessionInboxAddress;
-  readonly event: PendingInputBatchEvent;
+  readonly event: InputRequestCoordinates;
   readonly metadata: NonNullable<DeliverHookPayload["deliveryMetadata"]>[number][];
   readonly payloads: DeliverPayload[];
   /** Keyed by request id: a request resolves once however many payloads answer it. */
@@ -79,7 +73,6 @@ async function routeProxiedDeliver(
   const sourceDelivery = input.delivery;
   const parentPayloads = new Map<number, DeliverPayload>();
   const children = new Map<string, ChildBucket>();
-  let parentAction: { readonly kind: "cancel-turn" } | undefined;
   // Only a person's own message may answer or skip a pending question.
   const resolveMessage =
     !hasDelegatedSessionContext(input.serializedContext) && sourceDelivery.caller === undefined;
@@ -95,7 +88,6 @@ async function routeProxiedDeliver(
       resolveMessage,
       state: durableSession.state,
     });
-    parentAction ??= routed.parentAction;
     if (routed.forSelf !== undefined) parentPayloads.set(sourcePayloadIndex, routed.forSelf);
 
     for (const [childIndex, forChild] of routed.forChildren.entries()) {
@@ -198,7 +190,6 @@ async function routeProxiedDeliver(
     },
     resolvedEvents,
   );
-  if (parentAction !== undefined) return { ...context, ...parentAction };
   const orderedParentPayloads = [...parentPayloads].sort(([a], [b]) => a - b);
   const parentMetadata = orderedParentPayloads.flatMap(([sourcePayloadIndex], payloadIndex) =>
     (sourceDelivery.deliveryMetadata ?? [])

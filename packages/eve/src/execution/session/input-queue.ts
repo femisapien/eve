@@ -1,4 +1,4 @@
-import type { DeliverHookPayload, DeliverPayload } from "#channel/types.js";
+import type { DeliverHookPayload } from "#channel/types.js";
 import { coalesceDeliveries } from "#harness/messages.js";
 import { ANONYMOUS_PRINCIPAL, principalOf } from "#execution/session/principal.js";
 
@@ -19,14 +19,7 @@ interface QueuedControl {
   readonly sequence: number;
 }
 
-interface QueuedAuthorization {
-  readonly attemptId: string;
-  readonly kind: "authorization";
-  readonly payload: DeliverPayload;
-  readonly sequence: number;
-}
-
-type QueuedSessionInput = QueuedDelivery | QueuedControl | QueuedAuthorization;
+type QueuedSessionInput = QueuedDelivery | QueuedControl;
 
 export interface TurnSelection {
   readonly delivery: DeliverHookPayload;
@@ -43,8 +36,7 @@ export interface TurnSelection {
 
 export type SessionInputSelection =
   | TurnSelection
-  | { readonly control: SessionControl; readonly kind: "control" }
-  | { readonly kind: "authorization-resume"; readonly payloads: readonly DeliverPayload[] };
+  | { readonly control: SessionControl; readonly kind: "control" };
 
 /**
  * Ordered, admitted session input. Entries are private; callers receive typed
@@ -67,26 +59,6 @@ export class SessionInputQueue {
 
   enqueueControl(control: SessionControl): void {
     this.entries.push({ control, kind: "control", sequence: this.nextSequence++ });
-  }
-
-  /** Keeps one payload per authorization attempt; a repeated callback for the same attempt is dropped. */
-  enqueueAuthorization(payloads: readonly DeliverPayload[]): void {
-    for (const payload of payloads) {
-      const attemptId = authorizationAttemptId(payload);
-      if (attemptId === undefined) continue;
-      if (
-        this.entries.some(
-          (entry) => entry.kind === "authorization" && entry.attemptId === attemptId,
-        )
-      )
-        continue;
-      this.entries.push({
-        attemptId,
-        kind: "authorization",
-        payload,
-        sequence: this.nextSequence++,
-      });
-    }
   }
 
   delivery(sequence: number): DeliverHookPayload | undefined {
@@ -127,43 +99,16 @@ export class SessionInputQueue {
   }
 
   takeNext(options?: {
-    /**
-     * Attempt ids of the open authorization challenge. Callbacks for other
-     * attempts are stale and dropped; once every expected attempt has
-     * reported, the collected payloads resume the challenge ahead of
-     * ordinary input.
-     */
-    readonly expectedAttemptIds?: ReadonlySet<string>;
     /** Sequence of a delivery admitted while nothing else was pending. */
     readonly freshSequence?: number;
   }): SessionInputSelection | undefined {
-    const expected = options?.expectedAttemptIds ?? new Set<string>();
-    this.retain((entry) => entry.kind !== "authorization" || expected.has(entry.attemptId));
-    if (expected.size > 0) {
-      const collected = new Map(
-        this.entries.flatMap((entry) =>
-          entry.kind === "authorization" ? [[entry.attemptId, entry.payload] as const] : [],
-        ),
-      );
-      if ([...expected].every((attemptId) => collected.has(attemptId))) {
-        this.retain((entry) => entry.kind !== "authorization");
-        return {
-          kind: "authorization-resume",
-          payloads: [...expected].map((attemptId) => collected.get(attemptId)!),
-        };
-      }
-    }
-    const index = this.entries.findIndex((entry) => entry.kind !== "authorization");
-    if (index < 0) return undefined;
-    return this.takeSelectionAt(index, options?.freshSequence);
+    if (this.entries.length === 0) return undefined;
+    return this.takeSelectionAt(0, options?.freshSequence);
   }
 
   private takeSelectionAt(index: number, freshSequence: number | undefined): SessionInputSelection {
     const first = this.entries.splice(index, 1)[0]!;
     if (first.kind === "control") return { control: first.control, kind: "control" };
-    if (first.kind === "authorization") {
-      return { kind: "authorization-resume", payloads: [first.payload] };
-    }
 
     const turnEntries = [first, ...this.takeFollowingDeliveriesFrom(first, index)];
     const sequences = turnEntries.map(({ sequence }) => sequence);
@@ -246,9 +191,4 @@ export function isSteeringMessage(delivery: DeliverHookPayload, turn: SteeringTu
 function combine(entries: readonly DeliveryAdmission[]): DeliverHookPayload {
   if (entries.length === 1) return entries[0]!.delivery;
   return coalesceDeliveries(entries.map(({ delivery }) => delivery));
-}
-
-function authorizationAttemptId(payload: DeliverPayload): string | undefined {
-  const callback = payload["authorizationCallback"] as { readonly attemptId?: unknown } | undefined;
-  return typeof callback?.attemptId === "string" ? callback.attemptId : undefined;
 }

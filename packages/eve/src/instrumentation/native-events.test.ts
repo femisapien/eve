@@ -16,10 +16,7 @@ import {
   createTurnFailedEvent,
   createTurnStartedEvent,
 } from "#protocol/message.js";
-import {
-  createInstrumentationHandleEvent,
-  publishInputResolutions,
-} from "#instrumentation/native-events.js";
+import { createInstrumentationHandleEvent } from "#instrumentation/native-events.js";
 import type { InstrumentationEvent, InstrumentationHooks } from "#instrumentation/lifecycle.js";
 import {
   actionIdempotencyKey,
@@ -467,7 +464,7 @@ describe("createInstrumentationHandleEvent", () => {
     expect(events.every(Object.isFrozen)).toBe(true);
   });
 
-  it("publishes each input request and resolves it in a replacement worker", async () => {
+  it("publishes each input request once", async () => {
     const events: unknown[] = [];
     const scope = {
       attemptId: "session-1:turn-1:0:0",
@@ -510,24 +507,6 @@ describe("createInstrumentationHandleEvent", () => {
       await handleEvent(requested);
     });
 
-    const restored = await deserializeContext(await serializeContext(context));
-    await contextStorage.run(restored, () =>
-      publishInputResolutions({
-        batch: {
-          event: { sequence: 0, stepIndex: 0, turnId: "turn-1" },
-          inputs: [
-            {
-              outcome: "approved",
-              request,
-              response: { optionId: "approve", requestId: "request-1" },
-            },
-          ],
-        },
-        hooks: { capturesContent: true, publish: async (event) => void events.push(event) },
-        sessionId: "session-1",
-      }),
-    );
-
     const idempotencyKey = inputIdempotencyKey("session-1", "turn-1", "request-1");
     expect(events).toEqual([
       {
@@ -543,15 +522,6 @@ describe("createInstrumentationHandleEvent", () => {
         requestId: "request-1",
         scope,
         type: "input.requested",
-      },
-      {
-        idempotencyKey,
-        kind: "tool-approval",
-        outcome: "approved",
-        requestId: "request-1",
-        response: { optionId: "approve", text: undefined },
-        scope,
-        type: "input.resolved",
       },
     ]);
     expect(events.every(Object.isFrozen)).toBe(true);

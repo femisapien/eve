@@ -7,15 +7,7 @@ import { resolveApprovalPolicy, type ApprovalStatus } from "#approval/definition
 import { resolveWebSearchBackend, resolveWebSearchProviderTool } from "#harness/provider-tools.js";
 import type { HarnessToolMap } from "#harness/types.js";
 import { buildCallbackContext } from "#context/build-callback-context.js";
-import { loadContext } from "#context/container.js";
-import {
-  authorizationPendingModelText,
-  isAuthorizationPendingModelOutput,
-  isAuthorizationSignal,
-  modelFacingAuthorizationOutput,
-} from "#harness/authorization.js";
-import { stashToolInterrupt } from "#harness/tool-interrupts.js";
-import { isApprovedToolCall, markApprovalRecheck } from "#harness/approval-recheck.js";
+import { isAuthorizationSignal, type AuthorizationSignal } from "#harness/authorization.js";
 import { toModelSchema } from "#tools/schema.js";
 import { normalizeToolJsonOutput, normalizeToolModelOutput } from "#harness/tool-model-output.js";
 import type { ToolExecuteOptions } from "#tools/definition.js";
@@ -27,7 +19,6 @@ type ApprovalFn = (
   toolInput: unknown,
   callId: string,
   abortSignal: AbortSignal | undefined,
-  recheck: boolean,
 ) => Promise<NativeApprovalStatus>;
 
 const toolApprovals = new WeakMap<object, ApprovalFn>();
@@ -44,7 +35,6 @@ const toolApprovals = new WeakMap<object, ApprovalFn>();
  * retry call so the request can proceed without it.
  */
 export function buildToolSet(input: {
-  readonly approvedTools?: ReadonlySet<string>;
   readonly disabledProviderTools?: ReadonlySet<string>;
   readonly tools: HarnessToolMap;
 }): ToolSet {
@@ -57,7 +47,7 @@ export function buildToolSet(input: {
     }
 
     const authorToModelOutput = definition.toModelOutput;
-    const approval = buildApprovalFn(definition, input);
+    const approval = buildApprovalFn(definition);
     const aiTool = tool({
       description: definition.description,
       execute: wrapToolExecute(definition),
@@ -73,12 +63,6 @@ export function buildToolSet(input: {
               readonly output: unknown;
               readonly toolCallId?: string;
             }) => {
-              if (isAuthorizationPendingModelOutput(output)) {
-                return {
-                  type: "text" as const,
-                  value: authorizationPendingModelText(output.connections),
-                };
-              }
               if (authorToModelOutput !== undefined) {
                 return normalizeToolModelOutput({
                   output: await authorToModelOutput(output),
@@ -129,7 +113,6 @@ export function buildToolSet(input: {
  * ordering where step tools override turn/session tools.
  */
 export function buildToolSetFromDefinitions(input: {
-  readonly approvedTools?: ReadonlySet<string>;
   readonly disabledProviderTools?: ReadonlySet<string>;
   readonly tools: readonly HarnessToolDefinition[];
 }): ToolSet {
@@ -140,18 +123,15 @@ export function buildToolSetFromDefinitions(input: {
     }
   }
   return buildToolSet({
-    approvedTools: input.approvedTools,
     disabledProviderTools: input.disabledProviderTools,
     tools,
   });
 }
 
 /**
- * Wraps a tool's `execute` so a returned {@link AuthorizationSignal} is
- * stashed out-of-band ({@link stashToolInterrupt}) for the park detector while
- * the AI SDK records an opaque {@link AuthorizationPendingModelOutput} that
- * omits OAuth URLs, user codes, and hook URLs from model-facing history.
- * Returns `undefined` for client-side tools (no `execute`).
+ * Wraps a tool's `execute` so a returned {@link AuthorizationSignal} fails the
+ * call: a tool call cannot ask a person to sign in until gated calls run as
+ * tasks. Returns `undefined` for client-side tools (no `execute`).
  */
 export function wrapToolExecute(
   definition: HarnessToolDefinition,
@@ -193,8 +173,7 @@ function normalizeToolExecuteOutput(
   options: ToolExecuteOptions,
 ): unknown {
   if (isAuthorizationSignal(output)) {
-    stashToolInterrupt(loadContext(), options.toolCallId, output);
-    return modelFacingAuthorizationOutput(output);
+    throw new Error(signInUnavailableMessage(toolName, output));
   }
   return normalizeToolJsonOutput({
     boundary: "execute",
@@ -224,7 +203,6 @@ function normalizeToolExecuteOutput(
  * a gateway fallback provider has rejected a provider-specific tool.
  */
 export async function buildToolSetWithProviderTools(input: {
-  readonly approvedTools?: ReadonlySet<string>;
   readonly disabledProviderTools?: ReadonlySet<string>;
   readonly modelReference: RuntimeModelReference;
   readonly tools: HarnessToolMap;
@@ -232,7 +210,6 @@ export async function buildToolSetWithProviderTools(input: {
   const disabled = input.disabledProviderTools;
   const tools: ToolSet = {
     ...buildToolSet({
-      approvedTools: input.approvedTools,
       disabledProviderTools: disabled,
       tools: input.tools,
     }),
@@ -257,27 +234,36 @@ export async function buildToolSetWithProviderTools(input: {
   return tools;
 }
 
-function buildApprovalFn(
-  definition: HarnessToolDefinition,
-  input: { readonly approvedTools?: ReadonlySet<string> },
-): ApprovalFn {
-  return async (toolInput, callId, abortSignal, recheck) => {
+function signInUnavailableMessage(toolName: string, signal: AuthorizationSignal): string {
+  const connections = [...new Set(signal.challenges.map((challenge) => challenge.name))];
+  return `${toolName} needs a sign-in to ${connections.join(", ")}, and this version of eve cannot ask for one from a tool call. The call did not run.`;
+}
+
+const APPROVAL_UNAVAILABLE_REASON =
+  "This call needs a person's approval, and this version of eve cannot ask for one. The call did not run.";
+
+function buildApprovalFn(definition: HarnessToolDefinition): ApprovalFn {
+  return async (toolInput, callId, abortSignal) => {
     if (definition.approval === undefined) return undefined;
 
     const toolInputRecord = isObject(toolInput) ? toolInput : undefined;
     const context = {
       ...buildCallbackContext(),
       abortSignal: abortSignal ?? new AbortController().signal,
-      approvedTools: input.approvedTools ?? new Set<string>(),
+      // Nothing records approvals until gated calls run as tasks.
+      approvedTools: new Set<string>(),
       callId,
       toolInput: toolInputRecord,
       toolName: definition.name,
     };
 
-    const status = await resolveApprovalPolicy(definition.approval)(
-      recheck ? markApprovalRecheck(context) : context,
-    );
-    return typeof status === "boolean" ? (status ? "user-approval" : "not-applicable") : status;
+    const status = await resolveApprovalPolicy(definition.approval)(context);
+    const normalized =
+      typeof status === "boolean" ? (status ? "user-approval" : "not-applicable") : status;
+    const type = typeof normalized === "object" ? normalized.type : normalized;
+    return type === "user-approval"
+      ? { type: "denied", reason: APPROVAL_UNAVAILABLE_REASON }
+      : normalized;
   };
 }
 
@@ -286,7 +272,7 @@ export function buildToolApproval(
   tools: ToolSet,
   abortSignal?: AbortSignal,
 ): ToolApprovalConfiguration<ToolSet, Record<string, unknown>> {
-  return async ({ toolCall, messages }) => {
+  return async ({ toolCall }) => {
     const toolDefinition = tools[toolCall.toolName];
     if (toolDefinition === undefined) return undefined;
 
@@ -295,7 +281,6 @@ export function buildToolApproval(
       toolCall.input,
       toolCall.toolCallId,
       abortSignal,
-      isApprovedToolCall(messages, toolCall.toolCallId),
     )) as ToolApprovalStatus;
   };
 }

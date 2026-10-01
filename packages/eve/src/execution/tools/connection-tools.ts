@@ -45,7 +45,7 @@ import { defineTool, type ToolContext } from "#tools/definition.js";
 import type { DynamicToolSet } from "#tools/dynamic.js";
 import { defineJsonSchema } from "#tools/schema.js";
 
-import { connectionExecuteApproval, releaseApprovalPin } from "./connection-approval.js";
+import { connectionExecuteApproval } from "./connection-approval.js";
 import {
   closestToolNames,
   rankConnectionTools,
@@ -324,7 +324,6 @@ async function executeConnectionTool(
   }
   const registry = requireRegistry();
   const connection = requireConnection(registry, target.connection);
-  releaseApprovalPin(ctx.callId, connection);
   assertPendingAuthorizationInstances(registry, [connection]);
 
   const scoped = await resolveInteractiveAuthorization(registry, connection.connectionName);

@@ -4,12 +4,10 @@ import type { ChannelAdapter, ChannelAdapterContext } from "#channel/adapter.js"
 import { buildAdapterContext } from "#channel/adapter-context.js";
 import { callAdapterEventHandler } from "#channel/adapter.js";
 import { resolveTextToResponses } from "#channel/resolve-text.js";
-import type { DeliverPayload, SubagentInputRequestHookPayload } from "#channel/types.js";
+import type { SubagentInputRequestHookPayload } from "#channel/types.js";
 import { ContextContainer } from "#context/container.js";
 import type { CompiledBundle } from "#runtime/sessions/runtime-context-keys.js";
 import { BundleKey, ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
-import { serializeContext } from "#context/serialize.js";
-import { setHarnessEmissionState } from "#harness/emission-state.js";
 import { hasProxyInputRequests, upsertProxyInputRequests } from "#harness/proxy-input-requests.js";
 import type { HarnessEmitFn, HarnessSession } from "#harness/types.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
@@ -165,15 +163,6 @@ function buildEmptySession(continuationToken: string, sessionId: string): Harnes
   };
 }
 
-function buildOpenTurnSession(continuationToken: string, sessionId: string): HarnessSession {
-  return setHarnessEmissionState(buildEmptySession(continuationToken, sessionId), {
-    sessionStarted: true,
-    sequence: 3,
-    stepIndex: 1,
-    turnId: "turn_3",
-  });
-}
-
 /**
  * Builds an adapter-aware emit helper and a captured-events sink
  * paired to one parent context. The returned `emit` mirrors the
@@ -204,142 +193,6 @@ function buildCapturingEmit(ctx: ContextContainer): {
 
 // ---------------------------------------------------------------------------
 // Test 1 — Slack-style text-approve regression for Finding #1
-// ---------------------------------------------------------------------------
-
-describe("subagent HITL proxy → Slack-style text-approve regression (Finding #1)", () => {
-  it("persists adapter-state mutations across a serialize/deserialize boundary so text replies resolve against the cached batch", async () => {
-    // Build the parent-side adapter registry + bundle so the
-    // ChannelKey codec can round-trip our Slack-like adapter.
-    const slackishAdapter = buildSlackishAdapter();
-    const bundle = buildMockBundle([slackishAdapter]);
-
-    const ctx = new ContextContainer();
-    ctx.set(BundleKey, bundle);
-    ctx.set(ChannelKey, slackishAdapter);
-
-    // Drive a child HITL batch up through the parent's adapter. This
-    // is the exact call shape used by `runProxySubagentEventStep` on
-    // the workflow runtime.
-    const approvalRequest = buildApprovalRequest("req-approve-1");
-    const hookPayload = buildHitlPayload({
-      callId: "call-1",
-      childContinuationToken: "subagent:parent:call-1",
-      childSessionId: "sess-child",
-      request: approvalRequest,
-      subagentName: "linear",
-    });
-
-    const { emit, events, persistAdapterState } = buildCapturingEmit(ctx);
-    const parentSession = buildOpenTurnSession("parent-token", "sess-parent");
-    const entries = await emitProxiedInputRequest({
-      emit,
-      hookPayload,
-      session: parentSession,
-    });
-    // Simulate the workflow step's post-step
-    // `ctx.set(ChannelKey, { …adapter, state })` — the mutation the
-    // slackish adapter recorded on `adapterCtx.state.pendingRequests`
-    // must land on `ctx` so the serialize boundary below captures it.
-    persistAdapterState();
-
-    // The caller-owned ChannelKey update pins the handler's state
-    // mutation onto the serialized context.
-    const afterEmitAdapter = ctx.require(ChannelKey);
-    expect((afterEmitAdapter.state as SlackishState | undefined)?.pendingRequests).toEqual([
-      approvalRequest,
-    ]);
-    expect(entries).toEqual([
-      [
-        "req-approve-1",
-        {
-          batch: {
-            approvalRequestIds: ["req-approve-1"],
-            requestIds: ["req-approve-1"],
-          },
-          childContinuationToken: "subagent:parent:call-1",
-          event: { sequence: 0, stepIndex: 0, turnId: "turn_0" },
-          kind: "tool-approval",
-        },
-      ],
-    ]);
-
-    // The proxied `input.requested` parks the parent's open turn with
-    // `turn.waiting`; the call that asked is still running, so the turn
-    // neither completes nor resets.
-    expect(events.slice(1)).toEqual([
-      { data: { sequence: 3, turnId: "turn_3" }, type: "turn.waiting" },
-    ]);
-    expect(events[0]?.type).toBe("input.requested");
-
-    // The serialized adapter state must include mutations made while
-    // rendering the proxied input request.
-    const serialized = serializeContext(ctx);
-    const serializedChannel = serialized[ChannelKey.name] as {
-      readonly kind: string;
-      readonly state: SlackishState;
-    };
-    expect(serializedChannel.state.pendingRequests).toEqual([approvalRequest]);
-
-    // Drive a free-form text reply through a freshly-constructed
-    // adapter rehydrated from the serialized context — the Slack
-    // channel's real behaviour when a user types "approve" in the
-    // thread after clicking past the Block Kit buttons. The adapter
-    // resolves the text against its cached batch and returns
-    // structured `inputResponses`.
-    const rehydratedAdapter: ChannelAdapter<SlackishCtx> = {
-      ...slackishAdapter,
-      state: serializedChannel.state,
-    };
-    const rehydratedCtx = new ContextContainer();
-    rehydratedCtx.set(BundleKey, bundle);
-    rehydratedCtx.set(ChannelKey, rehydratedAdapter as ChannelAdapter);
-
-    const adapterCtx = buildAdapterContext<SlackishCtx>(rehydratedAdapter, rehydratedCtx);
-    const deliverResult = await rehydratedAdapter.deliver?.({ message: "approve" }, adapterCtx);
-
-    expect(deliverResult).toEqual({
-      inputResponses: [{ optionId: "approve", requestId: "req-approve-1" }],
-    });
-
-    // The resolved responses now flow through the proxy router. With
-    // the child's proxy entry recorded on the parent session, the
-    // response routes back down to the right descendant.
-    const parkedSession = upsertProxyInputRequests({
-      entries,
-      forChildContinuationToken: hookPayload.childContinuationToken,
-      session: buildEmptySession("parent-token", "sess-parent"),
-    });
-
-    const routed = routeDeliverPayload({
-      payload: deliverResult as DeliverPayload,
-      state: parkedSession.state,
-    });
-
-    expect(routed.forSelf).toBeUndefined();
-    expect(routed.forChildren).toEqual([
-      {
-        childContinuationToken: "subagent:parent:call-1",
-        payload: {
-          inputResponses: [{ optionId: "approve", requestId: "req-approve-1" }],
-        },
-        resolved: {
-          event: { sequence: 0, stepIndex: 0, turnId: "turn_0" },
-          resolutions: [
-            {
-              kind: "tool-approval",
-              outcome: "approved",
-              requestId: "req-approve-1",
-              response: { optionId: "approve", requestId: "req-approve-1" },
-            },
-          ],
-        },
-      },
-    ]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Test 2 — Nested subagent HITL proxying across multiple descendants
 // ---------------------------------------------------------------------------
 
 describe("subagent HITL proxy → concurrent-descendant routing", () => {

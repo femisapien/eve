@@ -33,8 +33,7 @@ const {
   rebindMissingCompiledDynamicToolCallbacks,
   validateDurableDynamicToolCallbacks,
 } = await import("#context/dynamic-tool-lifecycle.js");
-const { buildDynamicTools, buildResponseAuthorizationTools, replayDynamicTools } =
-  await import("#context/build-dynamic-tools.js");
+const { buildDynamicTools, replayDynamicTools } = await import("#context/build-dynamic-tools.js");
 
 import { ContextContainer } from "#context/container.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
@@ -1907,53 +1906,6 @@ describe("programmatic dynamic tools (no bundler transform)", () => {
     await expect(
       resolveApprovalPolicy(tool.approval)(createApprovalContext({ toolName: "guarded" })),
     ).resolves.toBe("user-approval");
-    getDynamicCallbackRegistry().delete("guarded");
-  });
-
-  it("uses the first dynamic definition for response authorization", () => {
-    const ctx = createCtx();
-    registerTestCallback("guarded", "execute", () => null);
-    registerTestCallback("guarded", "approvalRequest", () => "user-approval");
-    registerTestCallback(
-      "guarded",
-      "approvalResponse",
-      async () => ({ status: "allowed" }) as const,
-    );
-    ctx.set(StepDynamicToolMetadataKey, [
-      {
-        callbacks: {
-          approvalRequest: { closure: {} },
-          approvalResponse: { closure: {} },
-          execute: { closure: {} },
-        },
-        description: "step",
-        entryKey: "step:guarded",
-        inputSchema: { type: "object" },
-        name: "guarded",
-        resolverSlug: "step",
-      },
-    ]);
-    ctx.set(SessionDynamicToolMetadataKey, [
-      {
-        callbacks: {
-          approvalRequest: { closure: {} },
-          approvalResponse: { closure: {} },
-          execute: { closure: {} },
-        },
-        description: "session",
-        entryKey: "session:guarded",
-        inputSchema: { type: "object" },
-        name: "guarded",
-        resolverSlug: "session",
-      },
-    ]);
-
-    const tools = buildResponseAuthorizationTools({
-      authoredTools: new Map(),
-      context: ctx,
-    });
-
-    expect(tools.get("guarded")?.description).toBe("step");
     getDynamicCallbackRegistry().delete("guarded");
   });
 

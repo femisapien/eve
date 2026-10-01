@@ -27,6 +27,12 @@ import type { ToolExecuteOptions } from "#tools/definition.js";
 import { BASH_INPUT_SCHEMA, BASH_OUTPUT_SCHEMA } from "#tools/provided/bash.js";
 import { toInputSchema, UNSPECIFIED_INPUT_SCHEMA } from "#tools/schema.js";
 
+/** What an approval policy that asks for a person resolves to until gated calls run as tasks. */
+const APPROVAL_UNAVAILABLE = {
+  reason: expect.stringContaining("cannot ask for one"),
+  type: "denied",
+};
+
 function getJsonSchema(tool: unknown): unknown {
   return (tool as { inputSchema: { jsonSchema: unknown } }).inputSchema.jsonSchema;
 }
@@ -907,7 +913,7 @@ describe("buildToolSet", () => {
       ]);
 
       const result = buildToolSet({ tools });
-      await expect(resolveApproval(result, "dangerous", {})).resolves.toBe("user-approval");
+      await expect(resolveApproval(result, "dangerous", {})).resolves.toEqual(APPROVAL_UNAVAILABLE);
       await expect(resolveApproval(result, "safe", {})).resolves.toBe("not-applicable");
     });
 
@@ -949,7 +955,7 @@ describe("buildToolSet", () => {
       const result = buildToolSet({
         tools,
       });
-      await expect(resolveApproval(result, "bash", {})).resolves.toBe("user-approval");
+      await expect(resolveApproval(result, "bash", {})).resolves.toEqual(APPROVAL_UNAVAILABLE);
     });
 
     it("never() skips approval", async () => {
@@ -989,28 +995,7 @@ describe("buildToolSet", () => {
       const result = buildToolSet({
         tools,
       });
-      await expect(resolveApproval(result, "bash", {})).resolves.toBe("user-approval");
-    });
-
-    it("once() skips approval when tool already approved", async () => {
-      const tools: HarnessToolMap = new Map<string, HarnessToolDefinition>([
-        [
-          "bash",
-          {
-            description: "Run a command.",
-            execute: async () => "ok",
-            inputSchema: jsonSchema({}),
-            name: "bash",
-            approval: once(),
-          },
-        ],
-      ]);
-
-      const result = buildToolSet({
-        approvedTools: new Set(["bash"]),
-        tools,
-      });
-      await expect(resolveApproval(result, "bash", {})).resolves.toBe("not-applicable");
+      await expect(resolveApproval(result, "bash", {})).resolves.toEqual(APPROVAL_UNAVAILABLE);
     });
 
     it("tool without approval defaults to false when another tool has an override", async () => {
@@ -1039,7 +1024,7 @@ describe("buildToolSet", () => {
       const result = buildToolSet({
         tools,
       });
-      await expect(resolveApproval(result, "bash", {})).resolves.toBe("user-approval");
+      await expect(resolveApproval(result, "bash", {})).resolves.toEqual(APPROVAL_UNAVAILABLE);
       await expect(resolveApproval(result, "write_file", {})).resolves.toBeUndefined();
     });
 
@@ -1162,8 +1147,8 @@ describe("buildToolSet", () => {
       };
 
       const result = buildToolSet({ tools });
-      await expect(resolveApproval(result, "delete_project", {}, session)).resolves.toBe(
-        "user-approval",
+      await expect(resolveApproval(result, "delete_project", {}, session)).resolves.toEqual(
+        APPROVAL_UNAVAILABLE,
       );
 
       expect(capturedCtx?.session).toEqual({
@@ -1217,47 +1202,9 @@ describe("buildToolSet", () => {
       await expect(resolveApproval(result, "refund", {}, scheduleSession)).resolves.toBe(
         "not-applicable",
       );
-      await expect(resolveApproval(result, "refund", {}, humanResumedSession)).resolves.toBe(
-        "user-approval",
+      await expect(resolveApproval(result, "refund", {}, humanResumedSession)).resolves.toEqual(
+        APPROVAL_UNAVAILABLE,
       );
-    });
-
-    it("input-aware approval skips when compound key is in approvedTools", async () => {
-      const tools: HarnessToolMap = new Map<string, HarnessToolDefinition>([
-        [
-          "vercel__list_projects",
-          {
-            description: "List projects in the team.",
-            execute: async () => "ok",
-            inputSchema: jsonSchema({}),
-            name: "vercel__list_projects",
-            approval: ({ approvedTools, toolName, toolInput }) => {
-              if (approvedTools.has(toolName)) return "not-applicable";
-              const team = (toolInput as { teamId?: string } | undefined)?.teamId;
-              if (team === undefined) return "user-approval";
-              return approvedTools.has(`${toolName}:${team}`) ? "not-applicable" : "user-approval";
-            },
-          },
-        ],
-      ]);
-
-      const withCompoundKey = buildToolSet({
-        approvedTools: new Set(["vercel__list_projects:team_abc"]),
-        tools,
-      });
-      await expect(
-        resolveApproval(withCompoundKey, "vercel__list_projects", {
-          teamId: "team_abc",
-          limit: 10,
-        }),
-      ).resolves.toBe("not-applicable");
-
-      await expect(
-        resolveApproval(withCompoundKey, "vercel__list_projects", {
-          teamId: "team_xyz",
-          limit: 10,
-        }),
-      ).resolves.toBe("user-approval");
     });
   });
 });

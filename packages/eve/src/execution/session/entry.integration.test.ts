@@ -21,8 +21,6 @@ import { defineHook } from "#public/definitions/hook.js";
 import { sessions } from "#public/server/index.js";
 import type { MessageStreamEvent } from "#protocol/message.js";
 import { isEventId } from "#internal/testing/event-id.js";
-import { always } from "#tools/approval/policies.js";
-import { defineTool } from "#tools/definition.js";
 import { SessionTitleKey } from "#context/keys.js";
 import {
   buildSerializedContext,
@@ -587,87 +585,6 @@ describe("workflowEntry integration", () => {
     });
   });
 
-  it("forwards continued-turn HITL through the rebound caller", async () => {
-    const runtime = await createTestRuntime({
-      agent: { name: "workflow-entry-delegated-hitl-rebind" },
-      modules: [
-        {
-          loadNamespace: async () => ({
-            default: defineTool({
-              approval: always(),
-              description: "Apply a change after the user approves it.",
-              execute: () => ({ applied: true }),
-              inputSchema: {},
-            }),
-          }),
-          logicalPath: "tools/approve_change.ts",
-        },
-      ],
-    });
-    const workflowRuntime = createWorkflowRuntime({
-      compiledArtifactsSource: createBundledRuntimeCompiledArtifactsSource(),
-    });
-    const firstCallerToken = "subagent:parent-session:call-1";
-
-    await runtime.run(async () => {
-      const child = await start(workflowEntry, [
-        {
-          kind: "initial",
-          ownerDeploymentId: "dpl_inline",
-          input: { message: "delegated first turn" },
-          serializedContext: {
-            ...buildSerializedContext({
-              channelKind: "subagent",
-              channelState: {
-                callId: "call-1",
-                parentContinuationToken: sessionInboxHookToken(firstCallerToken),
-                parentSessionId: "parent-session",
-                subagentName: "researcher",
-              },
-              continuationToken: firstCallerToken,
-            }),
-            "eve.capabilities": { requestInput: true },
-          },
-        },
-      ]);
-      const stream = captureTurnEvents(child);
-
-      try {
-        await withTimeout(stream.nextTurn(), "delegated first turn");
-        await waitForRuntimeActionResult(child.runId, "call-1");
-
-        await expect(
-          workflowRuntime.dispatchSession({
-            command: {
-              caller: {
-                callId: "call-2",
-                replyTo: {
-                  kind: "hook",
-                  token: sessionInboxHookToken(sessionCommandHookToken(child.runId)),
-                },
-                subagentName: "researcher",
-              },
-              kind: "send",
-              payload: { message: "Use the approve_change tool exactly once." },
-            },
-            sessionId: child.runId,
-          }),
-        ).resolves.toEqual({ sessionId: child.runId, status: "accepted" });
-
-        const secondTurn = await withTimeout(stream.nextTurn(), "delegated HITL turn");
-        expect(filterEventsByType(secondTurn, "input.requested")).toHaveLength(1);
-        await expect(waitForSubagentInputRequest(child.runId, "call-2")).resolves.toMatchObject({
-          callId: "call-2",
-          kind: "subagent-input-request",
-          subagentName: "researcher",
-        });
-      } finally {
-        stream.dispose();
-        await child.cancel();
-      }
-    });
-  }, 60_000);
-
   it("exits a competing continuation owner before its first turn", async () => {
     const runtime = await createTestRuntime({ agent: { name: "workflow-entry-hook-owner" } });
     const continuationToken = "http:workflow-entry-hook-owner";
@@ -935,36 +852,6 @@ async function waitForRuntimeActionResult(runId: string, callId: string): Promis
   throw new Error(
     `Timed out waiting for delegated result "${callId}". Received: ${JSON.stringify(receivedPayloads)}`,
   );
-}
-
-async function waitForSubagentInputRequest(runId: string, callId: string): Promise<unknown> {
-  const world = await getWorld();
-  const deadline = Date.now() + 10_000;
-
-  while (Date.now() < deadline) {
-    const events = await world.events.list({
-      pagination: { limit: 1000 },
-      resolveData: "all",
-      runId,
-    });
-    for (const event of events.data) {
-      if (event.eventType !== "hook_received") continue;
-      const payload = await hydrateWorkflowArguments(event.eventData.payload, runId, undefined);
-      if (
-        typeof payload === "object" &&
-        payload !== null &&
-        "kind" in payload &&
-        payload.kind === "subagent-input-request" &&
-        "callId" in payload &&
-        payload.callId === callId
-      ) {
-        return payload;
-      }
-    }
-    await new Promise((resolve) => setTimeout(resolve, 100));
-  }
-
-  throw new Error(`Timed out waiting for a subagent input request from caller "${callId}".`);
 }
 
 function hasSubagentResult(value: unknown, callId: string): boolean {

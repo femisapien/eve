@@ -1,5 +1,4 @@
 import type {
-  ContentPart,
   GenerateTextOnStepStartCallback,
   LanguageModelUsage,
   ModelMessage,
@@ -25,7 +24,6 @@ import {
 import type { HarnessEmissionState } from "#harness/emission.js";
 import { emitStepStarted } from "#harness/emission.js";
 import { normalizeAssistantStepFinishReason } from "#harness/finish-reason.js";
-import { extractToolApprovalInputRequests } from "#harness/input-extraction.js";
 import {
   type AnthropicCacheMarker,
   applyConversationCacheControl,
@@ -46,8 +44,6 @@ import {
   type ToolLoopHarnessConfig,
 } from "#harness/types.js";
 import { contextStorage } from "#context/container.js";
-import { isAuthorizationSignal, isPendingAuthorizationToolOutput } from "#harness/authorization.js";
-import { readToolInterrupt } from "#harness/tool-interrupts.js";
 import { emitNestedToolActions } from "#harness/nested-actions.js";
 import { AuthKey } from "#context/keys.js";
 import { resolveConversationId } from "#shared/conversation-identity.js";
@@ -268,10 +264,6 @@ export async function emitStepActions(
   const excludedCallIds = new Set<string>([
     ...(options.excludedActionCallIds ?? []),
     ...providerExecutedCallIds,
-    ...extractToolApprovalInputRequests({
-      content: (step.content ?? []) as ContentPart<ToolSet>[],
-      excludedCallIds: options.excludedActionCallIds,
-    }).map((request) => request.action.callId),
     ...(step.toolCalls as TypedToolCall<ToolSet>[])
       .filter(isInvalidToolCall)
       .map((toolCall) => toolCall.toolCallId),
@@ -308,12 +300,6 @@ export async function emitStepActions(
   }
 
   const inlineCallIds = options.handledInlineToolResultCallIds;
-  const rawOutputByCallId = new Map<string, unknown>(
-    (step.toolResults as TypedToolResult<ToolSet>[]).map((toolResult) => [
-      toolResult.toolCallId,
-      toolResult.output,
-    ]),
-  );
 
   for (const result of reconcileToolResults(step)) {
     if (isExcluded(result.callId, result.toolName)) {
@@ -321,11 +307,6 @@ export async function emitStepActions(
     }
 
     if (inlineCallIds?.has(result.callId)) {
-      continue;
-    }
-
-    const rawOutput = rawOutputByCallId.get(result.callId);
-    if (shouldSkipAuthorizationActionResult(result.callId, rawOutput)) {
       continue;
     }
 
@@ -400,18 +381,6 @@ function reconcileToolResults(step: HarnessStepResult): readonly RuntimeToolResu
   }
 
   return [...resultsByCallId.values()];
-}
-
-function shouldSkipAuthorizationActionResult(callId: string, rawOutput: unknown): boolean {
-  if (rawOutput !== undefined && isPendingAuthorizationToolOutput(rawOutput)) {
-    return true;
-  }
-  const ctx = contextStorage.getStore();
-  if (ctx === undefined) {
-    return false;
-  }
-  const stashed = readToolInterrupt(ctx, callId);
-  return stashed !== undefined && isAuthorizationSignal(stashed);
 }
 
 function extractToolResultParts(messages: readonly ModelMessage[]): ToolResultPart[] {

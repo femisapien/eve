@@ -2,11 +2,7 @@ import type { LanguageModel, ModelMessage, UserContent } from "ai";
 
 import type { SessionAuthContext, SessionCapabilities } from "#channel/types.js";
 import type { AlsContext } from "#context/container.js";
-import type {
-  RuntimeIdentity,
-  StepStartedStreamEvent,
-  UnstampedMessageStreamEvent,
-} from "#protocol/message.js";
+import type { RuntimeIdentity, UnstampedMessageStreamEvent } from "#protocol/message.js";
 import type { RuntimeActionResult } from "#shared/action-types.js";
 import type { RuntimeModelReference } from "#runtime/agent/bootstrap.js";
 import type { InputResponse } from "#shared/input.js";
@@ -290,17 +286,6 @@ export interface ToolLoopHarnessConfig {
    * Omitted in production until an instrumentation runtime opts in.
    */
   readonly instrumentation?: SessionInstrumentation;
-  /** Restores runtime resources for the originating turn before approval work. */
-  readonly prepareApprovalTurn?: (event: {
-    readonly sequence: number;
-    readonly turnId: string;
-  }) => Promise<void>;
-  /** Resolves persisted step-scoped tools before an approval policy reads them. */
-  readonly resolveStepDynamicTools?: (input: {
-    readonly ctx: AlsContext;
-    readonly event: StepStartedStreamEvent;
-    readonly messages: readonly ModelMessage[];
-  }) => Promise<void>;
   readonly dispatchDynamicModelEvent?: (input: {
     readonly ctx: AlsContext;
     readonly event: UnstampedMessageStreamEvent;
