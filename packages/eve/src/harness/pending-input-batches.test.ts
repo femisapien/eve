@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { InputRequest } from "#shared/input.js";
-import { resolvePendingInput } from "#harness/input-requests.js";
+import { resolvePendingInput } from "#harness/hitl/index.js";
 import { appendPendingInputBatch, getPendingInputBatches } from "#harness/pending-input-batches.js";
 import type { HarnessSession } from "#harness/types.js";
 

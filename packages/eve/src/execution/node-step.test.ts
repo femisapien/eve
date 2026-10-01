@@ -11,7 +11,7 @@ import {
   StepDynamicToolMetadataKey,
 } from "#context/keys.js";
 import { BundleKey, ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
-import { appendPendingInputBatch } from "#harness/input-requests.js";
+import { appendPendingInputBatch } from "#harness/hitl/index.js";
 import { createInstrumentationHooks } from "#instrumentation/lifecycle.js";
 import {
   bindInstrumentationRuntime,

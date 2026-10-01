@@ -16,7 +16,7 @@ import { normalizeToolJsonOutput } from "#harness/tool-model-output.js";
 import { toolCallModelOutput } from "#harness/tool-call-io.js";
 import type { ToolExecuteOptions } from "#tools/definition.js";
 import { isAsyncIterable } from "#shared/async-iterable.js";
-import { iterateAsApprover, runAsApprover } from "#harness/approved-call-callers.js";
+import { iterateAsApprover, runAsApprover } from "#harness/hitl/approved-call-callers.js";
 
 type NativeApprovalStatus = Exclude<ApprovalStatus, boolean>;
 

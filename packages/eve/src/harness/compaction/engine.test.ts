@@ -1,13 +1,13 @@
 import type { ModelMessage } from "ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { COMPACTION_PROMPT_ENVELOPE } from "#harness/compaction-prompt.js";
+import { COMPACTION_PROMPT_ENVELOPE } from "#harness/compaction/prompt.js";
 import {
   compactMessages,
   getInputTokenCount,
   resolveCompactionModel,
   shouldCompact,
-} from "#harness/compaction.js";
+} from "#harness/compaction/engine.js";
 import { createFrameworkUserMessage } from "#harness/messages.js";
 import { estimateTokens } from "#harness/token-estimate.js";
 import type { CompactionConfig } from "#harness/types.js";

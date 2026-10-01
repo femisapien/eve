@@ -32,7 +32,7 @@ import {
 import { setHarnessEmissionState } from "#harness/emission.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import type { InputRequest } from "#shared/input.js";
-import { appendPendingInputBatch, getApprovedTools } from "#harness/input-requests.js";
+import { appendPendingInputBatch, getApprovedTools } from "#harness/hitl/index.js";
 import type { HarnessModelMessage } from "#harness/messages.js";
 import { getPendingInputBatches } from "#harness/pending-input-batches.js";
 import { createToolLoopHarness } from "#harness/tool-loop.js";

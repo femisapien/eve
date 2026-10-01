@@ -1,6 +1,6 @@
 import type { ModelMessage } from "ai";
 import type { SessionAuthContext } from "#channel/types.js";
-import { approverOfRequest } from "#harness/approval-candidates.js";
+import { approverOfRequest } from "#harness/hitl/approved-call-callers.js";
 import { commitCallEntry, isTaskTool } from "#execution/tasks/model-step.js";
 import {
   createCoordinationRequestFromToolCall,

@@ -9,7 +9,7 @@ import {
   isNoOutputGeneratedError,
   normalizeModelStreamError,
   extractUpstreamRejectionMessage,
-} from "#harness/model-call-error.js";
+} from "#harness/model-call/errors.js";
 import { TurnCancelledError } from "#harness/turn-cancellation.js";
 
 /**

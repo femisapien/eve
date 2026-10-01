@@ -46,7 +46,7 @@ import {
   type ConversationContext,
 } from "#shared/conversation-context.js";
 import type { InstrumentationDecision } from "#shared/instrumentation-decision.js";
-import { compactMessages, shouldCompact } from "#harness/compaction.js";
+import { compactMessages, shouldCompact } from "#harness/compaction/engine.js";
 import {
   createFrameworkUserMessage,
   createUserMessage,
@@ -62,13 +62,14 @@ import {
   modelFacingAuthorizationOutput,
   requestAuthorization,
 } from "#harness/authorization.js";
-import { hasPendingInputBatch, appendPendingInputBatch } from "#harness/input-requests.js";
+import { hasPendingInputBatch, appendPendingInputBatch } from "#harness/hitl/index.js";
 import { getPendingInputBatches } from "#harness/pending-input-batches.js";
 import { getPendingCoordinationBatch, pendingCoordinationCallIds } from "#harness/coordination.js";
 import { PendingSkillAnnouncementKey } from "#context/dynamic-skill-lifecycle.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
 import { stashToolInterrupt } from "#harness/tool-interrupts.js";
-import { appendMissingToolResultMessages, createToolLoopHarness } from "#harness/tool-loop.js";
+import { createToolLoopHarness } from "#harness/tool-loop.js";
+import { appendMissingToolResultMessages } from "#harness/model-call/response.js";
 import { countRunUsage } from "#execution/agent-sessions/usage.js";
 import { createTask, writeTaskTable } from "#execution/tasks/table.js";
 import { SessionLimitDeclinedError, TurnCancelledError } from "#harness/turn-cancellation.js";
@@ -237,7 +238,7 @@ function bindHookInstrumentation(
   )!.prepareExecution();
 }
 
-vi.mock("./compaction.js", () => ({
+vi.mock("#harness/compaction/engine.js", () => ({
   compactMessages: vi.fn(),
   estimateTokens: vi.fn().mockReturnValue(5000),
   getInputTokenCount: vi.fn().mockReturnValue(5000),

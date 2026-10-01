@@ -121,6 +121,11 @@
  *             `execution/legacy-remote-agent/`. Only the ingress files that
  *             route protocol-1 callers into it may import it, so deleting the
  *             directory removes protocol 1 without a search.
+ *   rule 49 — The human-in-the-loop lifecycle in `harness/hitl/` is
+ *             reached only through its `index.ts`, its request vocabulary
+ *             (`approval-prompt`, `budget-request`), and the approvers that
+ *             approved calls run as (`approved-call-callers`), so replacing it
+ *             changes one seam.
  *
  * Baselines for rules with pre-existing violations live in
  * `guard-invariants-baseline.json`. Counts and allowlists in that file
@@ -240,6 +245,7 @@ function isTsLike(relPath) {
  *   rule46: Violation[];
  *   rule47: Violation[];
  *   rule48: Violation[];
+ *   rule49: Violation[];
  *   symlinks: string[];
  * }} state
  */
@@ -273,6 +279,7 @@ async function scanRepo(state) {
     checkRule46(posix, lines, state.rule46);
     checkRule47(posix, lines, state.rule47);
     checkRule48(posix, lines, state.rule48);
+    checkRule49(posix, lines, state.rule49);
   }
 }
 
@@ -475,6 +482,33 @@ function checkRule47(posix, lines, violations) {
       line: idx + 1,
       message:
         "sends a caller's reply outside execution/session/program.ts and execution/session/finalization.ts. A turn replies to its caller only at its real end, which the session program owns; finalization replies when the session ends.",
+    });
+  });
+}
+
+// ---------- Rule 49: the human-in-the-loop lifecycle has one seam ----------
+
+const HUMAN_INPUT_DIR = "packages/eve/src/harness/hitl/";
+const HUMAN_INPUT_PRIVATE_IMPORT_RE =
+  /["'](?:#harness\/|(?:\.\.?\/)+)hitl\/(?!(?:index|approval-prompt|approved-call-callers|budget-request)\.js["'])/;
+
+/** @param {string} posix @param {string[]} lines @param {Violation[]} violations */
+function checkRule49(posix, lines, violations) {
+  if (
+    !posix.startsWith("packages/eve/src/") ||
+    posix.startsWith(HUMAN_INPUT_DIR) ||
+    posix.startsWith("packages/eve/src/internal/testing/") ||
+    /\.(?:test|integration\.test|scenario\.test)\.ts$/.test(posix)
+  )
+    return;
+  lines.forEach((line, idx) => {
+    if (!HUMAN_INPUT_PRIVATE_IMPORT_RE.test(line)) return;
+    violations.push({
+      rule: 49,
+      file: posix,
+      line: idx + 1,
+      message:
+        "imports the human-in-the-loop lifecycle's internals. Reach it through `#harness/hitl/index.js`, the one seam the rest of eve meets it at.",
     });
   });
 }
@@ -1544,6 +1578,7 @@ async function main() {
     rule46: /** @type {Violation[]} */ ([]),
     rule47: /** @type {Violation[]} */ ([]),
     rule48: /** @type {Violation[]} */ ([]),
+    rule49: /** @type {Violation[]} */ ([]),
     symlinks: /** @type {string[]} */ ([]),
   };
 
@@ -1658,6 +1693,7 @@ async function main() {
   // Rule 47
   violations.push(...state.rule47);
   violations.push(...state.rule48);
+  violations.push(...state.rule49);
 
   if (violations.length === 0) {
     process.stdout.write("[eve:guard:invariants] ok — all mechanical lints passed.\n");

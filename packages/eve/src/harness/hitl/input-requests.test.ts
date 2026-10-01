@@ -16,10 +16,10 @@ import {
   hasStepInput,
   resolvePendingInput,
   appendPendingInputBatch,
-} from "#harness/input-requests.js";
+} from "#harness/hitl/input-requests.js";
 import { cancelApprovalInputBatches } from "#harness/hitl/approval-input-requests.js";
 import { getDeferredStepInput } from "#harness/pending-input-batches.js";
-import { createSessionLimitContinuationRequest } from "#harness/session-limit-continuation.js";
+import { createSessionLimitContinuationRequest } from "#harness/hitl/budget-request.js";
 import { createRuntimeToolCallActionFromToolCall } from "#harness/tool-call-action.js";
 import { buildToolApproval, buildToolSet } from "#harness/tools.js";
 import type { HarnessSession, HarnessToolMap } from "#harness/types.js";

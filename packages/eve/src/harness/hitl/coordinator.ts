@@ -18,7 +18,7 @@ import {
   type ActiveApprovalCandidate,
   type ApprovalCandidateDecision,
   type ApprovalSettlementAuditRecord,
-} from "#harness/approval-candidates.js";
+} from "#harness/hitl/candidates.js";
 import {
   clearPendingAuthorization,
   getAuthorizationResult,

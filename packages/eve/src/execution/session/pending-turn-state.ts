@@ -1,5 +1,5 @@
 import { getPendingAuthorization } from "#harness/authorization.js";
-import { hasPendingInputBatch } from "#harness/input-requests.js";
+import { hasPendingInputBatch } from "#harness/hitl/index.js";
 import { getPendingCoordinationBatch, pendingCoordinationCallIds } from "#harness/coordination.js";
 import { pendingTaskToolCalls, type TaskToolCall } from "#execution/tasks/calls.js";
 import type { HarnessSession } from "#harness/types.js";

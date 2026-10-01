@@ -6,13 +6,13 @@ import { AuthKey, SessionKey } from "#context/keys.js";
 import {
   getApprovalAuditState,
   markApprovalCandidateAuthorizationRequired,
-} from "#harness/approval-candidates.js";
+} from "#harness/hitl/candidates.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 
 import type { SessionAuthContext } from "#channel/types.js";
-import { settleDirectApprovalResponse } from "#harness/approval-candidates.js";
-import { coordinateApprovalDelivery } from "#harness/approval-delivery-coordinator.js";
-import { selectApprovalReplayBatch } from "#harness/input-requests.js";
+import { settleDirectApprovalResponse } from "#harness/hitl/candidates.js";
+import { coordinateApprovalDelivery } from "#harness/hitl/coordinator.js";
+import { selectApprovalReplayBatch } from "#harness/hitl/input-requests.js";
 import { appendPendingInputBatch, getPendingInputBatches } from "#harness/pending-input-batches.js";
 import type { HarnessSession } from "#harness/types.js";
 import type { InputRequest } from "#shared/input.js";

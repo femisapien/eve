@@ -2,7 +2,7 @@ import type { SessionAuthContext } from "#channel/types.js";
 import { runAsCaller } from "#context/caller-scope.js";
 import { contextStorage } from "#context/container.js";
 import { ContextKey } from "#context/key.js";
-import { approverOfRequest } from "#harness/approval-candidates.js";
+import { approverOfRequest } from "./candidates.js";
 import type { ResolvedInputBatch } from "#harness/input-request-resolution.js";
 import type { SessionStateMap } from "#harness/types.js";
 
@@ -60,3 +60,5 @@ export async function* iterateAsApprover<T>(
     await iterator.return?.();
   }
 }
+
+export { approverOfRequest };
