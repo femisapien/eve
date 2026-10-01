@@ -84,8 +84,8 @@ export default defineEval({
 `client.sessions.create(...)` inputs. Later messages and approval responses in
 that session use the set; they do not accept `stubs`.
 
-A stub receives the tool input and the real tool's `ctx` plus `state`. It
-returns the same shape as the real `execute`. `state()` returns the starting
+A stub receives the tool input and a context with `state`, `toolName`, and
+`callId`. It returns the same shape as the real tool. `state()` returns the starting
 state for a root session.
 
 ## Semantics
@@ -134,25 +134,34 @@ model calls schedules_read
   and `connection_execute`. Without stubs, both fail closed.
 - **eve's own tools run as usual**, including when an app mounts them from
   `agent/tools/`: `bash`, `read_file`, `write_file`, `glob`, `grep`,
-  `web_fetch`, `load_skill`, and `no_reply`. Workflow tools, the `agent` tool,
-  and provider-executed tools such as `web_search` are outside the swap.
+  `web_fetch`, `load_skill`, `no_reply`, `ask_question`, `sleep`, and
+  `workflow`. Provider-executed tools such as `web_search` are outside the
+  swap.
+- **Authored workflow tools are stubbed at dispatch.** In a stubbed session the
+  call settles with its stub's result and starts no run. A workflow tool that
+  runs as a task fails the turn with `TOOL_STUB_UNSUPPORTED`.
+- **Remote agents are stubbed by name.** The session layer runs the stub for
+  each message and delivers its reply on the message's reply hook in the
+  payload a remote callback carries; no request leaves the server.
 - **Unknown sets fail at session create.** The error lists the sets eve found
   in `evals/stubs/`.
 - **Local subagents inherit the set** and share the root session's state. A
-  missing stub in a subagent fails that subagent's turn, and the parent
-  receives a failed agent result. Remote agents run for real.
+  missing stub in a subagent fails that subagent's turn and the root session's
+  turn. A stub that fails a turn outside a model step (a workflow tool, a
+  remote agent, a subagent) records the failure in the eval server's memory,
+  and the session takes it at its next step, before its model call.
 - **The model sees nothing.** `stubs` is never sent to the model, and the
   real tool definitions are unchanged.
 
 ## Scope
 
-In scope: authored and extension tools in `agent/tools/`, dynamic tools, and
-connection tools through `connection_search` and `connection_execute`.
+In scope: authored and extension tools in `agent/tools/`, dynamic tools,
+connection tools through `connection_search` and `connection_execute`,
+authored workflow tools that return one result, and remote agents.
 
 Out of scope for this proposal:
 
-- workflow tools and agent tools, which run outside the model step; an
-  authored workflow tool or a remote agent runs for real in a stubbed session;
+- workflow tools that run as tasks (`task`, `serve`);
 - provider-executed tools, such as `web_search`;
 - combining several stub sets in one session;
 - marking stubbed calls in `action.result` events or traces;

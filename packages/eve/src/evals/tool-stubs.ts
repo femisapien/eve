@@ -1,13 +1,15 @@
-import type { ToolContext } from "#tools/definition.js";
-
-/** Context passed to a tool stub: the real tool's context plus the stub set's state. */
-export type ToolStubContext<TState> = ToolContext & {
+/** Context passed to a tool stub. */
+export interface ToolStubContext<TState> {
   /**
    * The stub set's state for this eval session and its subagents. Mutate it
    * in place; later stub calls in the same session tree see the change.
    */
   readonly state: TState;
-};
+  /** Name of the tool or agent the call reached, as the model sees it. */
+  readonly toolName: string;
+  /** Id of the call, as on its stream events. */
+  readonly callId: string;
+}
 
 /** Returns the same shape as the real tool's `execute` for `input`. */
 export type ToolStub<TState> = (input: any, ctx: ToolStubContext<TState>) => unknown;
@@ -32,9 +34,9 @@ export interface ToolStubs<TState = unknown> extends ToolStubsInput<TState> {
  *
  * An eval selects a set with `t.send(message, { stubs })` or
  * `t.session({ stubs })`. In that session the model still sees every real
- * tool and its approval policy; a stub replaces only the tool's `execute`.
- * A stubbed session fails its turn when the model calls an authored,
- * extension, dynamic, or connection tool that has no stub.
+ * tool and its approval policy; a stub replaces only the tool's own work. Keys
+ * name authored, extension, dynamic, connection, and workflow tools, and
+ * remote agents. Calling one without a stub fails the turn.
  *
  * Throws when `tools` is not an object of functions or `state` is not a
  * function.

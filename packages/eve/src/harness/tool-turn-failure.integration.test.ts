@@ -139,6 +139,36 @@ describe("turn-failing tool errors", () => {
     ).rejects.toMatchObject({ code: "TOOL_STUB_MISSING", name: "TurnFailingToolError" });
   });
 
+  it("fail the turn before the model call when one is pending from outside the step", async () => {
+    let modelCalls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        modelCalls++;
+        return toolCallStream("check_draft");
+      },
+    });
+    const events: UnstampedMessageStreamEvent[] = [];
+    const step = createToolLoopHarness({
+      handleEvent: async (event) => {
+        events.push(event);
+      },
+      resolveModel: async () => model,
+      takePendingTurnFailure: () =>
+        new TurnFailingToolError("TOOL_STUB_MISSING", "A subagent had no stub."),
+      tools: new Map(),
+    });
+
+    const result = await contextStorage.run(new ContextContainer(), () =>
+      step(session("check_draft"), { message: "Check Alice's draft." }),
+    );
+
+    expect(modelCalls).toBe(0);
+    expect(result.settledTurn).toEqual({ isError: true, output: "A subagent had no stub." });
+    expect(events.find((event) => event.type === "turn.failed")).toMatchObject({
+      data: { code: "TOOL_STUB_MISSING" },
+    });
+  });
+
   it("leave ordinary tool errors to the model", async () => {
     const { events, result } = await runTurn(
       tool("check_draft", async () => {

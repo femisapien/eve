@@ -1,6 +1,6 @@
 import { defineToolStubs } from "eve/evals";
 
-/** Stubs the approval-gated `gate` and dynamic tools and `read-status` over one shared ledger. */
+/** Stubs approval-gated, dynamic, workflow, and plain tools over one shared ledger. */
 export default defineToolStubs({
   state: () => ({ markers: ["seeded-marker"] }),
   tools: {
@@ -12,6 +12,7 @@ export default defineToolStubs({
       state.markers.push(scope);
       return { scope, stubbed: true };
     },
+    "workflow-draft": () => ({ status: "stubbed-workflow" }),
     "read-status": ({ marker }: { marker: string }, { state }) => ({
       ledger: state.markers.join(","),
       marker,

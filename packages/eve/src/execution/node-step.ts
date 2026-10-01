@@ -24,8 +24,7 @@ import { workflowIdForHandling } from "#runtime/subagents/workflow-reference.js"
 import { findRegisteredRuntimeTool } from "#runtime/tools/registry.js";
 import type { ResolvedToolDefinition } from "#runtime/types.js";
 import { createToolExecuteWithAuth } from "#execution/tool-auth.js";
-import { withToolStub } from "#execution/tool-stubs.js";
-import { isProvidedToolExecute } from "#tools/provided/provided-tool.js";
+import { isStubbableTool, takeToolStubTurnFailure, withToolStub } from "#execution/tool-stubs.js";
 import {
   createPreparedWorkflowToolHarnessDefinition,
   createWorkflowToolHarnessDefinition,
@@ -117,6 +116,7 @@ export function createExecutionNodeStep(input: CreateExecutionNodeStepInput): St
     dispatchDynamicModelEvent: dispatchModelEvent,
     resolveModel,
     runtimeIdentity: buildRuntimeIdentity(input.node),
+    takePendingTurnFailure: takeToolStubTurnFailure,
     tools,
   });
   if (instrumentation === undefined) return step;
@@ -267,9 +267,9 @@ function createRegisteredHarnessToolDefinition(input: {
     endsTurn: def.endsTurn,
     executeInput: def.executeInput,
     execute: resolveAuthoredExecute({
-      owner: def.owner,
       rawExecute,
       scope: def.name,
+      stubbable: isStubbableTool(def),
     }),
     frameworkAction:
       def.owner.kind === "framework" && def.name === LOAD_SKILL_TOOL_NAME
@@ -297,9 +297,9 @@ function createRegisteredHarnessToolDefinition(input: {
  * - Tools without `execute` (provider-managed) stay `undefined`.
  */
 function resolveAuthoredExecute(input: {
-  readonly owner: ResolvedToolDefinition["owner"];
   readonly rawExecute: ResolvedToolDefinition["execute"];
   readonly scope: string;
+  readonly stubbable: boolean;
 }): HarnessToolDefinition["execute"] {
   const { rawExecute, scope } = input;
   if (rawExecute === undefined) {
@@ -307,10 +307,7 @@ function resolveAuthoredExecute(input: {
   }
   const authored = rawExecute as (toolInput: unknown, ctx: unknown) => unknown;
   return createToolExecuteWithAuth({
-    execute:
-      input.owner.kind === "framework" || isProvidedToolExecute(rawExecute)
-        ? authored
-        : withToolStub(authored),
+    execute: input.stubbable ? withToolStub(authored) : authored,
     scope,
   });
 }

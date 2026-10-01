@@ -198,7 +198,11 @@ import {
 } from "#harness/model-call-error.js";
 import { summarizeKnownError, type SemanticErrorSummary } from "#harness/semantic-errors/index.js";
 import { isTurnCancellation, throwIfTurnAborted } from "#harness/turn-cancellation.js";
-import { isTurnFailingToolError, readTurnFailure } from "#harness/tool-turn-failure.js";
+import {
+  isTurnFailingToolError,
+  readTurnFailure,
+  stashTurnFailure,
+} from "#harness/tool-turn-failure.js";
 import type { JsonObject, JsonValue } from "#shared/json.js";
 import { extractWorkflowStreamWriteErrorDetails } from "#harness/workflow-stream-error.js";
 import { getAdvertisedTools } from "#harness/advertised-tools.js";
@@ -1808,6 +1812,13 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
         settledTurn: { isError: true, output: turnFailure.message },
       };
     };
+
+    const pendingTurnFailure = config.takePendingTurnFailure?.();
+    if (pendingTurnFailure !== undefined && ctx !== undefined) {
+      stashTurnFailure(ctx, pendingTurnFailure);
+      const pendingFailure = await failTurnFromTool();
+      if (pendingFailure !== undefined) return pendingFailure;
+    }
 
     let result: HarnessStepResult;
     try {

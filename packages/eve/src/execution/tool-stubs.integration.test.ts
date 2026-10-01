@@ -3,8 +3,14 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { loadContext } from "#context/container.js";
-import { ToolStubSetKey } from "#context/keys.js";
-import { selectToolStubSet } from "#execution/tool-stubs.js";
+import { ContextContainer, contextStorage } from "#context/container.js";
+import { SessionIdKey, ToolStubSetKey } from "#context/keys.js";
+import {
+  runAgentStub,
+  runWorkflowToolStub,
+  selectToolStubSet,
+  takeToolStubTurnFailure,
+} from "#execution/tool-stubs.js";
 import { isTurnFailingToolError } from "#harness/tool-turn-failure.js";
 import {
   EVE_EVALUATION_ENV_FLAG,
@@ -12,7 +18,7 @@ import {
 } from "#internal/application/dev-environment.js";
 import { createTestRuntime } from "#internal/testing/app-harness.js";
 import { mockTool } from "#internal/testing/mocks/mock-tool.js";
-import { markProvidedTool } from "#tools/provided/provided-tool.js";
+import { noReply } from "#tools/provided/no-reply.js";
 import { useTemporaryAppRoots } from "#internal/testing/use-temporary-app-roots.js";
 
 // Stub files carry the `defineToolStubs()` brand directly, so they load from a
@@ -179,9 +185,10 @@ describe("stubbed tool execution", () => {
 
   it("runs eve-provided tools that the app mounts as usual in a stubbed session", async () => {
     await useEvalStubs({ "evals/stubs/ledger.ts": LEDGER_SET });
-    const realProvided = vi.fn(() => ({ real: true }));
     const runtime = await createTestRuntime({
-      tools: [markProvidedTool(mockTool({ name: "no_reply", execute: realProvided }))],
+      modules: [
+        { logicalPath: "tools/no_reply.ts", loadNamespace: async () => ({ default: noReply() }) },
+      ],
     });
 
     const output = await runtime.runAsSession({ sessionId: "session_provided_tool" }, () => {
@@ -189,8 +196,7 @@ describe("stubbed tool execution", () => {
       return runtime.executeTool("no_reply", {});
     });
 
-    expect(output).toEqual({ real: true });
-    expect(realProvided).toHaveBeenCalledTimes(1);
+    expect(output).toBe("No reply was sent.");
   });
 
   it("shares one state between a root session and its subagents", async () => {
@@ -224,5 +230,100 @@ describe("stubbed tool execution", () => {
 
     expect(childOutput).toEqual({ entries: ["seeded", "from-root", "from-child"] });
     expect(rootOutput).toEqual({ entries: ["seeded", "from-root", "from-child"] });
+  });
+});
+
+describe("stubs outside a model step", () => {
+  function takeFailure(sessionId: string) {
+    const ctx = new ContextContainer();
+    ctx.set(SessionIdKey, sessionId);
+    ctx.set(ToolStubSetKey, "ledger");
+    return contextStorage.run(ctx, () => takeToolStubTurnFailure());
+  }
+
+  it("answers a workflow tool call with its stub", async () => {
+    await useEvalStubs({ "evals/stubs/ledger.ts": LEDGER_SET });
+
+    const run = await runWorkflowToolStub({
+      callId: "call_workflow",
+      entryPoint: "execute",
+      input: { entry: "from-workflow" },
+      session: { id: "session_workflow", rootId: "session_workflow" },
+      set: "ledger",
+      toolName: "record_entry",
+    });
+
+    expect(run).toEqual({
+      kind: "output",
+      output: { entries: ["seeded", "from-workflow"], toolName: "record_entry" },
+    });
+    expect(takeFailure("session_workflow")).toBeUndefined();
+  });
+
+  it("fails the session's next step when a workflow tool has no stub", async () => {
+    await useEvalStubs({ "evals/stubs/ledger.ts": LEDGER_SET });
+
+    const run = await runWorkflowToolStub({
+      callId: "call_workflow_missing",
+      entryPoint: "execute",
+      input: {},
+      session: { id: "session_workflow_missing", rootId: "session_workflow_missing" },
+      set: "ledger",
+      toolName: "send_invoice",
+    });
+
+    expect(run).toMatchObject({ kind: "error", message: expect.stringContaining("send_invoice") });
+    expect(takeFailure("session_workflow_missing")).toMatchObject({ code: "TOOL_STUB_MISSING" });
+    expect(takeFailure("session_workflow_missing")).toBeUndefined();
+  });
+
+  it("fails closed for a workflow tool call that starts a task", async () => {
+    await useEvalStubs({ "evals/stubs/ledger.ts": LEDGER_SET });
+
+    const run = await runWorkflowToolStub({
+      callId: "call_workflow_task",
+      entryPoint: "task",
+      input: {},
+      session: { id: "session_workflow_task", rootId: "session_workflow_task" },
+      set: "ledger",
+      toolName: "record_entry",
+    });
+
+    expect(run.kind).toBe("error");
+    expect(takeFailure("session_workflow_task")).toMatchObject({ code: "TOOL_STUB_UNSUPPORTED" });
+  });
+
+  it("answers a remote agent's message with the stub keyed by the agent's name", async () => {
+    await useEvalStubs({
+      "evals/stubs/agents.ts": `export default {
+        _tag: "EveToolStubs",
+        tools: { researcher: (input) => "Researched: " + input.message },
+      };`,
+    });
+
+    const run = await runAgentStub({
+      callId: "call_agent",
+      message: "Find Alice's order.",
+      name: "researcher",
+      session: { id: "session_agent", rootId: "session_agent" },
+      set: "agents",
+    });
+
+    expect(run).toEqual({ kind: "output", output: "Researched: Find Alice's order." });
+  });
+
+  it("fails the root session's next step when a subagent's tool has no stub", async () => {
+    await useEvalStubs({ "evals/stubs/ledger.ts": LEDGER_SET });
+
+    await runWorkflowToolStub({
+      callId: "call_child_missing",
+      entryPoint: "execute",
+      input: {},
+      session: { id: "session_child_missing", rootId: "session_root_of_child" },
+      set: "ledger",
+      toolName: "send_invoice",
+    });
+
+    expect(takeFailure("session_root_of_child")).toMatchObject({ code: "TOOL_STUB_MISSING" });
   });
 });

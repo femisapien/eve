@@ -1,6 +1,8 @@
 import { defineEval } from "eve/evals";
 import { includes } from "eve/evals/expect";
 
+import { expectReply, scriptedSession } from "./continuation/helpers.ts";
+
 const gate = (marker: string) =>
   `Alice is recording an account change. Call the gate tool exactly once with marker "${marker}".`;
 const readStatus = (marker: string) =>
@@ -107,6 +109,41 @@ export default [
           'Unknown tool stub set "no-such-set". Sets in evals/stubs/: gate-ledger, gate-only.',
         ),
       );
+    },
+  }),
+  defineEval({
+    description: "Tool stubs: a workflow tool's stub runs in place of its workflow.",
+    tags: TAGS,
+    timeoutMs: 120_000,
+    async test(t) {
+      const session = await t.session({ ...scriptedSession, stubs: "gate-ledger" });
+      const live = await session.start("Read the draft through a workflow.", scriptedSession);
+      const turn = await expectReply(t, live, "Workflow draft status: stubbed-workflow.");
+      turn.calledTool("workflow-draft", { status: "completed", count: 1 });
+    },
+  }),
+  defineEval({
+    description: "Tool stubs: a workflow tool without a stub fails the turn.",
+    tags: TAGS,
+    timeoutMs: 120_000,
+    async test(t) {
+      const session = await t.session({ ...scriptedSession, stubs: "gate-only" });
+      const turn = await session.send("Read the draft through a workflow.", scriptedSession);
+      turn.event("turn.failed", { data: { code: "TOOL_STUB_MISSING" }, count: 1 });
+      turn.notEvent("message.completed");
+    },
+  }),
+  defineEval({
+    description: "Tool stubs: eve's ask_question runs as usual when the app mounts it.",
+    tags: TAGS,
+    timeoutMs: 120_000,
+    async test(t) {
+      const parked = await t.send(
+        'Alice is choosing where to ship. Call the ask_question tool exactly once with question "Where should Alice ship?"',
+        { stubs: "gate-only" },
+      );
+      parked.session.requireInputRequest({ toolName: "ask_question" });
+      parked.notEvent("turn.failed");
     },
   }),
 ];
