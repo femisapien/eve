@@ -76,28 +76,7 @@ const { session } = await client.sessions.create({
 await (await session.send("How do I configure redirects?")).result();
 ```
 
-Read it through `ctx.session.context` in tools, hooks, connection resolvers, workflow tools, or dynamic definitions. For example, select instructions at session start:
-
-```ts title="agent/instructions/surface.ts"
-import { defineDynamic, defineInstructions } from "eve/instructions";
-
-const surfaceInstructions = {
-  docs: "Help the user understand the documentation.",
-  dashboard: "Help the user manage their projects.",
-};
-
-export default defineDynamic({
-  events: {
-    "session.started": (_, { session }) => {
-      const surface = session.context.surface;
-      if (surface !== "docs" && surface !== "dashboard") {
-        throw new Error("Expected a docs or dashboard surface.");
-      }
-      return defineInstructions({ content: surfaceInstructions[surface] });
-    },
-  },
-});
-```
+Read it through `ctx.session.context` in tools, hooks, connection resolvers, workflow tools, or dynamic definitions. The client controls this value, so treat it as untrusted input: validate it before use, don't rely on it for authorization, and don't copy it into instructions.
 
 `sessionContext` must be a JSON object. eve checks that boundary and persists it before initialization, so `session.started` can read it even when the session was prewarmed. It survives later turns, reconnects, and workflow steps. A later session POST cannot replace it. Sessions created without context expose `{}`; child sessions do not inherit their parent's context automatically.
 
