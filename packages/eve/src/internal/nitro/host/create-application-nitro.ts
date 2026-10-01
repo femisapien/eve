@@ -21,7 +21,6 @@ import { createProductionNitroArtifactsConfig } from "#internal/nitro/host/artif
 import { createCompiledSandboxProviderPrunePlugin } from "#internal/nitro/host/compiled-sandbox-provider-prune-plugin.js";
 import { createDevelopmentRuntimePrunePlugin } from "#internal/nitro/host/development-runtime-prune-plugin.js";
 import { prepareSkillServerAssets } from "#internal/nitro/host/skill-server-assets.js";
-import { createLogger } from "#internal/logging.js";
 import { createExtensionScopePlugin } from "#internal/bundler/extension-scope-plugin.js";
 import { extensionOverridePaths } from "#compiler/extension-mount-bindings.js";
 import { createExtensionMountPlugin } from "#internal/bundler/extension-mount-plugin.js";
@@ -808,7 +807,7 @@ export async function createProductionApplicationNitro(
   // compile directory directly (see `createCompiledSkillFileSource`).
   const { manifest } = preparedHost.compileResult;
   const skillServerAssets = await prepareSkillServerAssets({
-    indexDirectory: join(options.buildDir, "eve-skill-index"),
+    stagingDirectory: join(options.buildDir, "eve-skill-assets"),
     skills: manifest.skills.map((skill) => skill.name),
     skillsRoot: join(
       preparedHost.compileResult.paths.compileDirectoryPath,
@@ -816,12 +815,6 @@ export async function createProductionApplicationNitro(
       "skills",
     ),
   });
-  if (skillServerAssets.unaddressable.length > 0) {
-    createLogger("eve:build").warn(
-      'Skipped skill files whose paths contain "?" or "\\"; Nitro server assets cannot ship them.',
-      { files: skillServerAssets.unaddressable.join(", ") },
-    );
-  }
   const nitro = await createNitro({
     _cli: { command: "build" },
     buildDir: options.buildDir,
@@ -839,7 +832,7 @@ export async function createProductionApplicationNitro(
     rolldownConfig: bundler.nitroRolldownConfig,
     rollupConfig: bundler.nitroRollupConfig,
     rootDir: preparedHost.appRoot,
-    serverAssets: skillServerAssets.serverAssets,
+    serverAssets: skillServerAssets,
     serverDir: false,
     traceDeps: bundler.tracedAppDependencies,
     traceOpts: { nft: { paths: bundler.tracedAppDependencyPaths } },

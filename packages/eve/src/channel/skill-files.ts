@@ -64,9 +64,8 @@ export type SkillFilesIndexEntry = readonly [
 
 /**
  * Index of the skill files a production build ships, written by `eve build`.
- * eve owns the listing rather than deriving it from storage keys, which
- * unstorage normalizes lossily, so `describe()` reports real paths and
- * storage is used only to fetch bytes. Entries are arrays, not object keys,
+ * eve owns the listing rather than deriving it from storage keys, so
+ * `describe()` reports real paths and storage is used only to fetch bytes. Entries are arrays, not object keys,
  * so names such as `__proto__` stay plain data.
  */
 export interface SkillFilesIndex {
@@ -76,36 +75,13 @@ export interface SkillFilesIndex {
 }
 
 /**
- * Whether a file at `relativePath` (`<skill>/<path>`) can ship as a Nitro
- * server asset.
- *
- * Nitro globs server assets without dotfiles and cannot inline a file whose
- * path contains `?`. `\` is a separator to unstorage, so it is excluded too.
- * Dev applies the same rule so `describe()` lists the same files in both
- * modes. Other characters, such as `:`, ship; a resulting key collision fails
- * the build.
+ * Storage key of a shipped skill file under {@link SKILL_FILES_SERVER_ASSET_BASE}:
+ * its SHA-256 with a `.bin` name. `.bin` makes Nitro inline the file as a
+ * `Uint8Array` whatever its real extension, and a hex name is left unchanged
+ * by unstorage key normalization, so real paths never pass through it.
  */
-export function isShippableSkillFilePath(relativePath: string): boolean {
-  return relativePath
-    .split("/")
-    .every((segment) => segment !== "" && !segment.startsWith(".") && !/[?\\]/.test(segment));
-}
-
-/**
- * Storage key of one shipped skill file under
- * {@link SKILL_FILES_SERVER_ASSET_BASE}, normalized as unstorage normalizes
- * keys: cut at `?`, `/` and `\` to `:`, repeated `:` collapsed, and leading
- * or trailing `:` dropped. Distinct paths can share a key (`a:b` and `a/b`),
- * which `eve build` rejects.
- */
-export function skillFileStorageKey(skill: string, path: string): string {
-  return (
-    `${skill}/${path}`
-      .split("?")[0]
-      ?.replace(/[/\\]/g, ":")
-      .replace(/:+/g, ":")
-      .replace(/^:|:$/g, "") ?? ""
-  );
+export function skillFileStorageKey(sha256: string): string {
+  return `${sha256}.bin`;
 }
 
 /** The subset of an unstorage `Storage` the server asset source reads with. */
@@ -160,12 +136,10 @@ interface IndexedSkillFile {
  * Listing and sizes come from the eve index ({@link SkillFilesIndex}), so
  * only files the build vetted are visible and an over-limit file is rejected
  * by size without loading it. Storage only supplies bytes, by the key the
- * index recorded. Nitro inlines each file as its own lazily imported chunk:
- * bytes for binary types, a UTF-8 string for text types, which is encoded
- * back. The result must match the indexed size and SHA-256, so a file Nitro
- * could not inline exactly (text that is not valid UTF-8, or text starting
- * with `base64:`, which unstorage decodes) is reported as `unavailable`
- * rather than served altered.
+ * index recorded. Nitro inlines each file as its own lazily imported chunk
+ * of bytes (see `skill-server-assets.ts`), so a read loads only that file.
+ * The bytes must match the indexed size and SHA-256; anything else is
+ * reported as `unavailable` rather than served altered.
  */
 export function createServerAssetSkillFileSource(
   openStorage: OpenSkillFileStorage,
@@ -203,12 +177,7 @@ export function createServerAssetSkillFileSource(
       }
       const storage = await openStorage(SKILL_FILES_SERVER_ASSET_BASE);
       const value = await storage.getItemRaw(file.storageKey);
-      const bytes =
-        value instanceof Uint8Array
-          ? value
-          : typeof value === "string"
-            ? new TextEncoder().encode(value)
-            : undefined;
+      const bytes = value instanceof Uint8Array ? value : undefined;
       if (bytes === undefined) {
         throw new SkillReadError(
           "unavailable",
@@ -221,7 +190,7 @@ export function createServerAssetSkillFileSource(
       ) {
         throw new SkillReadError(
           "unavailable",
-          `Skill "${skill}" file "${path}" does not match its build index; the bundler did not inline it byte for byte.`,
+          `Skill "${skill}" file "${path}" does not match its build index; this build did not ship it byte for byte.`,
         );
       }
       return bytes;
@@ -307,8 +276,6 @@ export function isStrictlyContainedPath(
  * - A skill root (`skills/<name>`) that is a symlink lists no files and
  *   cannot be read.
  * - Listing skips symlinks and does not descend into symlinked directories.
- * - Listing skips paths a production build cannot ship
- *   ({@link isShippableSkillFilePath}), so dev and production list the same files.
  * - Before opening, every path component under the skill root is checked with
  *   `lstat`: directories must be real directories and the leaf a regular file.
  * - The leaf is opened with `O_NOFOLLOW` where the platform defines it, the
@@ -359,9 +326,7 @@ export function createDiskSkillFileSource(skillsRoot: string): SkillFileSource {
       const skillRoot = `${skillsRoot}/${skill}`;
       if (!(await isRealDirectory(skillRoot))) return [];
       const files = await listRegularFiles(skillRoot, "");
-      return files
-        .filter((path) => isShippableSkillFilePath(`${skill}/${path}`))
-        .sort(comparePaths);
+      return files.sort(comparePaths);
     },
     async fileSize(skill, path) {
       const { handle, size } = await openFile(skill, path);
