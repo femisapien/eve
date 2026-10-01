@@ -5,7 +5,7 @@ description: "Publish an eve agent as an MCP server with auth support."
 
 The MCP channel publishes an eve agent as a stateless MCP server, with eve's inbound authentication, OAuth protected-resource discovery, and HTTP hardening.
 
-The channel currently publishes no tools. The `agent_*` invocation tools (`agent_start`, `agent_get`, `agent_update`, `agent_cancel`) have been removed. Publishing the agent's own tools and skills over this channel is the next step, and agents return over MCP as tasks after that. To hand a whole task to an eve agent from another eve agent today, use the [eve channel](./eve) with a [remote agent](../guides/remote-agents).
+The channel publishes the agent's invocable tools: `tools/list` returns them with their JSON schemas, and `tools/call` runs one. The `agent_*` invocation tools (`agent_start`, `agent_get`, `agent_update`, `agent_cancel`) have been removed. To hand a whole task to an eve agent from another eve agent today, use the [eve channel](./eve) with a [remote agent](../guides/remote-agents).
 
 Use an [MCP connection](../connections/mcp) instead when your eve agent needs to call someone else's MCP server.
 
@@ -39,6 +39,62 @@ export default mcpChannel({
 ```
 
 The channel registers `GET`, `POST`, and `DELETE` at the selected route.
+
+## Tools
+
+Every tool the agent can invoke outside a conversation is listed, in name order, with its input and output JSON schemas unchanged. Tools that need approval carry `_meta["dev.eve/approval"]: true`. `tools/list` and `server/discover` return `cacheScope: "private"` and `ttlMs: 300000`. The list is fixed per deployment, so clients may cache it for five minutes, but only per caller.
+
+```ts title="agent/channels/mcp.ts"
+import { localDev } from "eve/channels/auth";
+import { mcpChannel } from "eve/channels/mcp";
+
+export default mcpChannel({
+  auth: localDev(),
+  tools: true, // default; `false` removes the tools capability, the list, and calls
+  skills: true, // default; reserved for publishing the agent's skills
+});
+```
+
+### Tool sessions
+
+Each `tools/call` runs in a **tool session**. When the client sends a key in `_meta["dev.eve/tool-session"]` (a string of up to 512 characters), calls from the same principal with the same key share a session, and with it the session's sandbox. eve derives the session id from the principal and the key, so another caller cannot reach your session by reusing your key. Without a key, the call gets a one-off session. Servers advertise this in `server/discover` under `capabilities.extensions["dev.eve/tool-sessions"]`.
+
+A tool session has none of these:
+
+- **No turns and no steps.** No call is wrapped in a turn or a step. `ctx.session.turn` only names the call, and dynamic resolvers do not run.
+- **No authored session state.** `get()` on `defineState` returns the declared initial value, and `update()` throws. Keep state that must outlive a call in the sandbox, or behind a handle the tool returns.
+- **No ordering between calls.** Calls may run in parallel. Nothing serializes them.
+- **No at-most-once guarantee.** A call retried after a lost response runs again. An operation that must happen at most once needs its own server-side record.
+- **No model, instructions, history, or messages.**
+
+The sandbox starts on the first `ctx.getSandbox()` and persists between calls with the same key.
+
+### Approval and sign-in
+
+A tool that needs approval, or a sign-in to a connection, returns an MCP `input_required` result: a form elicitation under `dev.eve/approval`, or a URL elicitation under `dev.eve/authorization:<connection>`, plus a signed `requestState`. The client retries the same call with the answer in `inputResponses` and the `requestState`. eve only emits elicitation modes the client declared in its capabilities. Otherwise the call returns an error with code `input_unsupported`. A declined or cancelled approval returns `denied`.
+
+`requestState` is HMAC-signed, expires after 10 minutes, and is bound to the session, the tool name, and the arguments. A state used by another principal, for another tool, or with other arguments is refused with `-32602`. The signature grants nothing by itself: eve evaluates approval again on every call.
+
+Set the signing key in every production deployment:
+
+```bash
+EVE_MCP_REQUEST_STATE_SECRET=<at least 32 random bytes>
+```
+
+All instances must share the same value so that a retry can land on any of them. You can also pass `requestStateSecret` to `mcpChannel()`. Under `eve dev`, eve falls back to a random key for each process. In production without a secret, tools that would ask for approval or a sign-in return an error naming the variable, and other tools keep working.
+
+### Forwarded principals
+
+A router that calls the channel on behalf of its own users can name them in the `eve-forwarded-principal` header: unpadded base64url JSON, at most 16 KiB. eve reads the header only when `trustedForwarders` is set, and only from a forwarder the predicate accepts:
+
+```ts title="agent/channels/mcp.ts"
+export default mcpChannel({
+  auth: oidc({ issuer, audiences: [resource] }),
+  trustedForwarders: (forwarder) => forwarder.principalId === "router",
+});
+```
+
+A malformed or oversized header gets `400`. A header from an untrusted or anonymous caller gets `403`. A forwarded call runs as the forwarded user, and the router is recorded as `eve:forwarded-by`. The rules are the same as the [eve channel](./eve)'s.
 
 ## Interactive OAuth
 
