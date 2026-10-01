@@ -5,7 +5,7 @@ description: "Publish an eve agent as an MCP server with auth support."
 
 The MCP channel publishes an eve agent as a stateless MCP server, with eve's inbound authentication, OAuth protected-resource discovery, and HTTP hardening.
 
-The channel publishes the agent's invocable tools: `tools/list` returns them with their JSON schemas, and `tools/call` runs one. The `agent_*` invocation tools (`agent_start`, `agent_get`, `agent_update`, `agent_cancel`) have been removed. To hand a whole task to an eve agent from another eve agent today, use the [eve channel](./eve) with a [remote agent](../guides/remote-agents).
+The channel publishes the agent's invocable tools and its skills. `tools/list` returns the tools with their JSON schemas, and `tools/call` runs one. Skills are served as `skill://` resources under the MCP skills extension ([SEP-2640](#skills)). The `agent_*` invocation tools (`agent_start`, `agent_get`, `agent_update`, `agent_cancel`) have been removed. To hand a whole task to an eve agent from another eve agent today, use the [eve channel](./eve) with a [remote agent](../guides/remote-agents).
 
 Use an [MCP connection](../connections/mcp) instead when your eve agent needs to call someone else's MCP server.
 
@@ -51,13 +51,15 @@ import { mcpChannel } from "eve/channels/mcp";
 export default mcpChannel({
   auth: localDev(),
   tools: true, // default; `false` removes the tools capability, the list, and calls
-  skills: true, // default; reserved for publishing the agent's skills
+  skills: true, // default; `false` removes the skills extension and every `skill://` resource
 });
 ```
 
 ### Tool sessions
 
-Each `tools/call` runs in a **tool session**. When the client sends a key in `_meta["dev.eve/tool-session"]` (a string of up to 512 characters), calls from the same principal with the same key share a session, and with it the session's sandbox. eve derives the session id from the principal and the key, so another caller cannot reach your session by reusing your key. Without a key, the call gets a one-off session. Servers advertise this in `server/discover` under `capabilities.extensions["dev.eve/tool-sessions"]`.
+Each `tools/call` runs in a **tool session**. Servers advertise tool sessions in `server/discover` under `capabilities.extensions["dev.eve/tool-sessions"]`. A client opts in by declaring the same extension in its own capabilities (`capabilities.extensions["dev.eve/tool-sessions"]: {}`) and sending a key in `_meta["dev.eve/tool-session"]` (a string of up to 512 characters). Calls from the same principal with the same key then share a session, and with it the session's sandbox. eve derives the session id from the principal and the key, so another caller cannot reach your session by reusing your key.
+
+A client that does not declare the extension gets a one-off session for every call, and any key it sends is ignored. A call without a key also gets a one-off session.
 
 A tool session has none of these:
 
@@ -95,6 +97,29 @@ export default mcpChannel({
 ```
 
 A malformed or oversized header gets `400`. A header from an untrusted or anonymous caller gets `403`. A forwarded call runs as the forwarded user, and the router is recorded as `eve:forwarded-by`. The rules are the same as the [eve channel](./eve)'s.
+
+## Skills
+
+The channel serves the agent's skills through the MCP skills extension ([SEP-2640](https://github.com/modelcontextprotocol/modelcontextprotocol/pull/2640)). `server/discover` declares `capabilities.extensions["io.modelcontextprotocol/skills"]` with `directoryRead: true`, next to the `resources` capability. Every file of a skill has a `skill://<skill>/<path>` URI, such as `skill://usage-triage/SKILL.md` or `skill://usage-triage/references/runbook.md`.
+
+| Method                     | Returns                                                                              |
+| -------------------------- | ------------------------------------------------------------------------------------ |
+| `skills/list`              | Every served skill: its `SKILL.md` URI, frontmatter, and each file's digest and size |
+| `skills/get`               | One skill by its `skill://<skill>/SKILL.md` URI                                      |
+| `resources/list`           | The `SKILL.md` of each served skill                                                  |
+| `resources/read`           | One file: text as `text`, binary as a base64 `blob`                                  |
+| `resources/directory/read` | The direct children of `skill://<skill>` or of a directory below it                  |
+
+Lists are never paginated. `skills/list`, `resources/list`, and `resources/read` return `cacheScope: "private"` and `ttlMs: 60000`. Skills are fixed per deployment, and every caller the channel admits sees the same skills.
+
+The served `SKILL.md` always has frontmatter whose `name` is the skill's directory name and which has a `description`. Authored frontmatter that already has both is served byte for byte. Otherwise, for example for a flat skill whose `SKILL.md` eve generates without frontmatter, eve serves the document with rewritten frontmatter. The frontmatter and digest in `skills/list` always describe the served document.
+
+Each file is capped at 512 KiB. A supporting file over the cap is left out of the skill everywhere. A skill is not served at all, by any method, when:
+
+- its name is not a valid [Agent Skills name](https://agentskills.io/specification#name-field): 1 to 64 lowercase letters, digits, and hyphens, without a leading, trailing, or doubled hyphen. A skill authored as `skills/Hello_World.md` is not served.
+- its served description is not a valid [Agent Skills description](https://agentskills.io/specification#description-field): 1 to 1024 characters and not blank.
+- its `SKILL.md` is missing, is not UTF-8 text, has frontmatter that does not parse, or is over 512 KiB.
+- it exceeds the SEP-2640 limits of 512 files or 16 MiB in total.
 
 ## Interactive OAuth
 
