@@ -50,9 +50,14 @@ import {
 } from "#harness/messages.js";
 import { consumeDeferredStepInput } from "#harness/pending-input-batches.js";
 import type { HarnessSession, StepInput, StepResult } from "#harness/types.js";
-import type { DurableStepResult, TurnStepInput } from "#execution/session/turn-step-types.js";
+import type {
+  DurableStepResult,
+  TurnStepInput,
+  TurnStepResult,
+} from "#execution/session/turn-step-types.js";
 import { resolveSessionStepResult } from "#execution/session/turn-step-result.js";
-import { createSessionEventSink } from "#execution/publish-session-events.js";
+import { withSessionStateDelta } from "#execution/session/state-delta.js";
+import { openSessionEventPublisher } from "#execution/publish-session-events.js";
 import { createTurnEventHandler } from "#execution/session/turn-event-handler.js";
 import { derivePendingState } from "#execution/session/pending-turn-state.js";
 import {
@@ -60,6 +65,7 @@ import {
   createSessionStartedEvent,
   createTurnStartedEvent,
 } from "#protocol/message.js";
+import { authorizationEventFields } from "#harness/authorization-event-fields.js";
 import {
   CallbackBaseUrlKey,
   clearPendingAuthorization,
@@ -67,6 +73,7 @@ import {
   PendingAuthorizationResultKey,
 } from "#harness/authorization.js";
 import { resolveWorkflowCallbackBaseUrl } from "#execution/workflow-callback-url.js";
+import { countRunUsage } from "#execution/agent-sessions/usage.js";
 import { createDurableSessionState, readDurableSession } from "#execution/durable-session-store.js";
 import { buildRuntimeIdentity, createExecutionNodeStep } from "#execution/node-step.js";
 import { prepareWorkflowPreambleTrace } from "#execution/workflow-trace-context.js";
@@ -81,7 +88,6 @@ import {
   createCancelledModelCallBatchResult,
   type CompletedModelCallCheckpoint,
 } from "#execution/cancelled-model-call-batch.js";
-import * as activityCohort from "#execution/activity-cohort.js";
 
 function channelDeliveryErrorCode(error: unknown): string {
   if (typeof error === "object" && error !== null && "code" in error) {
@@ -94,9 +100,9 @@ function channelDeliveryErrorCode(error: unknown): string {
 export type { TurnStepInput };
 
 /** Runs a bounded batch of harness model steps inside one durable `"use step"` boundary. */
-export async function turnStep(rawInput: TurnStepInput): Promise<DurableStepResult> {
+export async function turnStep(input: TurnStepInput): Promise<TurnStepResult> {
   "use step";
-  return runSessionStep(rawInput);
+  return await withSessionStateDelta(input, runSessionStep);
 }
 
 async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> {
@@ -106,6 +112,10 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
   const runtimeResults = input.input?.runtimeResults;
 
   let durableSession = readDurableSession(input.sessionState);
+  // An `execute` run's delegated spend counts in the step that hands the model its result.
+  for (const usage of runtimeResults?.delegatedUsage ?? []) {
+    durableSession = countRunUsage(durableSession, usage);
+  }
   const ctx = await deserializeContext(input.serializedContext);
   const adapter = ctx.require(ChannelKey);
   const bundle = ctx.require(BundleKey);
@@ -132,11 +142,7 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
     );
     delivery = { ...delivery, payloads: remainingPayloads };
     if (matches.length > 0) {
-      const matchedAttemptIds = activityCohort.restoreAuthorizationActivity({
-        ctx,
-        matches,
-        pending: pendingAuth,
-      });
+      const matchedAttemptIds = matches.map((match) => match.result.attemptId);
       const authResults = matches.map((match) => match.result);
       ctx.set(PendingAuthorizationResultKey, authResults);
       durableSession = {
@@ -219,12 +225,12 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
     );
     await instrumentation?.flush();
   };
-  const sink = createSessionEventSink({
+  const publisher = openSessionEventPublisher({
     ctx,
+    origin: "own",
     sessionWritable: input.sessionWritable,
-    sessionId: initialSession.sessionId,
   });
-  const { adapterCtx } = sink;
+  const { adapterCtx } = publisher.dispatcher;
   // A hook's `ctx.cancel()` aborts the same signal the harness already honors
   // for `session.cancel()`, so both settle through one cancellation path.
   const hookCancellation = new AbortController();
@@ -245,7 +251,7 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
       effectiveAgent,
       effectiveNode,
       instrumentation,
-      sink,
+      publisher,
     });
     const previousAdapterState =
       delivery !== undefined && !isHarnessBetweenTurns(initialSession)
@@ -303,13 +309,6 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
       }
       resolved = { ...resolved, runtimeActionResults: runtimeResults.results };
     }
-
-    activityCohort.updateActivityRootForDelivery({
-      activeTurnId: activeTurnId(initialEmissionState),
-      ctx,
-      delivery: ignoredActiveDelivery ? undefined : rawDelivery,
-      sessionState: durableSession.state,
-    });
 
     if (rawDelivery !== undefined) {
       const updatedAdapter = { ...adapter, state: { ...adapterCtx.state } };
@@ -462,7 +461,7 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
             if (firstCall && completedAuths) {
               let emissionState = getHarnessEmissionState(schemaSession.state);
               const startsTurn = completedAuths.some(
-                ({ candidateId }) => candidateId === undefined,
+                ({ challenge }) => challenge.candidateId === undefined,
               );
               if (startsTurn && isHarnessBetweenTurns(schemaSession)) {
                 const turnInput = createTurnInputMessages(
@@ -507,13 +506,10 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
                 }
                 schemaSession = setHarnessEmissionState(schemaSession, emissionState);
               }
-              for (const { authorization, result, candidateId } of completedAuths) {
+              for (const { challenge } of completedAuths) {
                 await handleEvent(
                   createAuthorizationCompletedEvent({
-                    attemptId: result.attemptId,
-                    authorization,
-                    candidateId,
-                    name: result.name,
+                    ...authorizationEventFields(challenge),
                     outcome: "authorized",
                     sequence: emissionState.sequence,
                     stepIndex: emissionState.stepIndex,
@@ -553,9 +549,9 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
     stepResult = { ...stepResult, session: aliased };
 
     const durableResult = resolveSessionStepResult(stepResult, nextSerializedContext);
-    if (durableResult.action === "done") await sink.close();
+    if (durableResult.action === "done") await publisher.writer.close();
     return durableResult;
   } finally {
-    sink.release();
+    publisher.writer.release();
   }
 }

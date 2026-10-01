@@ -4,11 +4,23 @@ import { mockModel } from "eve/evals";
 
 import { WORKSPACE_FORWARDING_MARKER, WORKSPACE_LOOKUP_MESSAGE } from "../constants";
 import {
+  REMOTE_QUESTION_DIRECTIVE,
+  respondToRemoteQuestion,
+} from "./lib/remote-question-script.js";
+import { isNestedDirective, respondToNestedRequest } from "./lib/remote-nested-script.js";
+import { isDirectHitlDirective, respondToDirectHitl } from "./lib/remote-direct-hitl-script.js";
+import {
   isNotebookDirective,
   isNotebookEntry,
   respondAsNotebookKeeper,
   respondAsNotebookParent,
 } from "./lib/notebook.js";
+import {
+  isSurveyDirective,
+  isSurveyToolDirective,
+  respondAsSurveyParent,
+  respondAsSurveyToolParent,
+} from "./lib/survey.js";
 
 if (process.env.EVE_E2E_MODEL === "mock") {
   process.env.EVE_MOCK_AUTHORED_MODELS = "1";
@@ -87,7 +99,21 @@ const workspaceDispatcher = mockModel({
     };
   },
 });
+const remoteQuestionModel = mockModel({
+  modelId: "remote-question",
+  respond: respondToRemoteQuestion,
+});
+const remoteNestedModel = mockModel({ modelId: "remote-nested", respond: respondToNestedRequest });
+const remoteDirectHitlModel = mockModel({
+  modelId: "remote-direct-hitl",
+  respond: respondToDirectHitl,
+});
 const notebookParent = mockModel({ modelId: "notebook-parent", respond: respondAsNotebookParent });
+const surveyParent = mockModel({ modelId: "survey-parent", respond: respondAsSurveyParent });
+const surveyToolParent = mockModel({
+  modelId: "survey-tool-parent",
+  respond: respondAsSurveyToolParent,
+});
 // The remote keeper is a root session of this deployment, reached through remote-loopback.
 const notebookKeeper = mockModel({ modelId: "notebook-keeper", respond: respondAsNotebookKeeper });
 /** Reads the id of a tool's task from the latest framework-injected `[Tasks]` note. */
@@ -130,11 +156,26 @@ export default defineAgent({
         if (messages.some((message) => message.includes(WORKSPACE_FORWARDING_MARKER))) {
           return { model: workspaceDispatcher, modelContextWindowTokens: 1_000_000 };
         }
+        if (messages.some((message) => message.includes(REMOTE_QUESTION_DIRECTIVE))) {
+          return { model: remoteQuestionModel, modelContextWindowTokens: 1_000_000 };
+        }
+        if (messages.some(isNestedDirective)) {
+          return { model: remoteNestedModel, modelContextWindowTokens: 1_000_000 };
+        }
+        if (messages.some(isDirectHitlDirective)) {
+          return { model: remoteDirectHitlModel, modelContextWindowTokens: 1_000_000 };
+        }
         if (messages.some(isNotebookEntry)) {
           return { model: notebookKeeper, modelContextWindowTokens: 1_000_000 };
         }
         if (messages.some(isNotebookDirective)) {
           return { model: notebookParent, modelContextWindowTokens: 1_000_000 };
+        }
+        if (messages.some(isSurveyDirective)) {
+          return { model: surveyParent, modelContextWindowTokens: 1_000_000 };
+        }
+        if (messages.some(isSurveyToolDirective)) {
+          return { model: surveyToolParent, modelContextWindowTokens: 1_000_000 };
         }
         return { model: defaultModel, modelContextWindowTokens };
       },

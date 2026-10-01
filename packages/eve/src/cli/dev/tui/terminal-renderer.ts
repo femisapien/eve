@@ -161,7 +161,11 @@ import {
 import { renderQuestionChoices, renderQuestionPanel } from "./question-panel.js";
 import { TurnClock } from "./turn-clock.js";
 import { MessageQueue, renderMessageQueueRows } from "./message-queue.js";
-import { formatStoredDiagnostic, presentDiagnostic } from "./diagnostic-presentation.js";
+import {
+  formatStoredDiagnostic,
+  presentDiagnostic,
+  splitWorkflowLogs,
+} from "./diagnostic-presentation.js";
 import { reduceSetupSelectInput, setupSelectionIntent } from "./setup-selection-input.js";
 import {
   isProgressPulseVisible,
@@ -612,6 +616,7 @@ export class TerminalRenderer implements AgentTUIRenderer {
   #restoreLogCapture?: () => void;
   #stdoutLogBuffer = "";
   #stderrLogBuffer = "";
+  #stderrInWorkflowLog = false;
   #delayedDevBuildError?: string;
   /**
    * The in-place dev rebuild status line. While the dev server's rebuild log
@@ -4954,10 +4959,8 @@ export class TerminalRenderer implements AgentTUIRenderer {
     if (this.#logLevelHintActive) input.logLevel = this.#logs;
     const agentModel = this.#agentHeader?.info?.agent.model;
     if (agentModel?.routing.kind === "dynamic") {
-      input.model =
-        this.#resolvedModelId === undefined
-          ? "dynamic model"
-          : `dynamic model · ${this.#resolvedModelId}`;
+      input.dynamicModel = true;
+      if (this.#resolvedModelId !== undefined) input.model = this.#resolvedModelId;
     } else if (agentModel?.id !== undefined) input.model = agentModel.id;
     // "provider-default" is the absent-setting sentinel, not a level worth showing.
     if (agentModel?.reasoning !== undefined && agentModel.reasoning !== "provider-default") {
@@ -5027,6 +5030,7 @@ export class TerminalRenderer implements AgentTUIRenderer {
 
     this.#stdoutLogBuffer = "";
     this.#stderrLogBuffer = "";
+    this.#stderrInWorkflowLog = false;
 
     const capture = (target: NodeJS.WriteStream, source: "stdout" | "stderr"): (() => void) => {
       const original = target.write.bind(target);
@@ -5087,7 +5091,7 @@ export class TerminalRenderer implements AgentTUIRenderer {
    */
   #displayLogRecord(record: LogRecord): void {
     const fieldsText = record.fields === undefined ? "" : ` ${JSON.stringify(record.fields)}`;
-    this.#handleCapturedStderr(`[eve:${record.namespace}] ${record.message}${fieldsText}`);
+    this.#presentCapturedStderr(`[eve:${record.namespace}] ${record.message}${fieldsText}`);
     this.#paint();
   }
 
@@ -5166,7 +5170,30 @@ export class TerminalRenderer implements AgentTUIRenderer {
     flushPending();
   }
 
+  /**
+   * Workflow SDK output is framework-internal and not actionable for users, so
+   * it shows only under `/loglevel all`; the diagnostic log keeps every line.
+   */
   #handleCapturedStderr(content: string): void {
+    const segments = splitWorkflowLogs(content, this.#stderrInWorkflowLog);
+    this.#stderrInWorkflowLog = segments.at(-1)?.workflow ?? this.#stderrInWorkflowLog;
+    for (const segment of segments) {
+      if (segment.text.trim().length === 0) continue;
+      if (!segment.workflow) {
+        this.#presentCapturedStderr(segment.text);
+        continue;
+      }
+      this.#pushBlock({
+        kind: "log",
+        title: "stderr",
+        body: segment.text,
+        logVisibility: "all-only",
+        live: true,
+      });
+    }
+  }
+
+  #presentCapturedStderr(content: string): void {
     const lines = content.split("\n");
     const failedIndex = lines.findIndex((line) => {
       return parseDevRebuildLogLine(line.trimEnd())?.kind === "failed";

@@ -161,9 +161,14 @@ text is cut and marked `[truncated]`.
 <task_result id="deploy-4hd8sa" tool="deploy" status="completed">{"url":"https://…"}</task_result>
 ```
 
-**`task_wait({ timeoutSeconds? })`** parks the turn until any task has a result, a new message
-arrives, or `timeoutSeconds` pass. `timeoutSeconds` is a whole number of at least 1, in seconds
-like `sleep`. It returns at once when a result is already waiting. Waiting never stops a task. The
+**`task_wait({ timeoutSeconds? })`** controls when the model replies. The model should call it
+sparingly, only when it deliberately wants to withhold a message from the user while waiting for
+a task result. Tasks keep running and their results reach the model without this call; the model
+can reply now if the user should hear from it.
+
+The call parks the turn until any task has a result, a new message arrives, or `timeoutSeconds`
+pass. `timeoutSeconds` is a whole number of at least 1, in seconds like `sleep`. It returns at once
+when a result is already waiting. Waiting never stops a task. The
 model reads which tasks settled and which are still working, for example:
 
 ```text
@@ -231,7 +236,8 @@ final reply rather than the text written before the wait. `result()` stops at `t
 while a question is pending, and returns `status: "waiting"` with it; `respond()` then reads the
 same turn to its end. See [Aggregate a turn](/docs/guides/client/streaming#aggregate-a-turn).
 Channels such as [Slack](/docs/channels/slack) post a root session's text before the wait as an
-ordinary reply, then post the reply after the results as another message.
+ordinary reply, then post the reply after the results as another message. Slack also shows each
+turn's tasks in a live [task card](/docs/channels/slack#task-card).
 
 A steering message from the turn's own caller, one sent with `turnPolicy: "steer"`, the default,
 ends a `task_wait` and aborts the `abortSignal` of any `execute` call the turn waits on, but it
@@ -257,18 +263,23 @@ same `taskId` continues where it left off. A `serve` body that doesn't return to
 
 ## Stream events
 
-| Event           | When                                                                     | Data                                                                             |
-| --------------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------- |
-| `task.started`  | A call starts a task, or reaches a resumable task by its `taskId`        | `taskId`, `callId`, `turnId`, the tool `name`, and `kind`                        |
-| `task.settled`  | A reply, return, failure, or cancel settles one call                     | `taskId`, `callId`, `turnId`, `status`, and `output` or `error` unless cancelled |
-| `agent.started` | A workflow run, including an agent tool's, opens a session with an agent | `callId`, `turnId`, `taskId`, `name`, `sessionId`, `streamPath`                  |
-| `turn.waiting`  | An open turn parks on its tasks, a `task_wait`, a question, or a sign-in | `turnId` and `sequence`                                                          |
+| Event           | When                                                                     | Data                                                                                       |
+| --------------- | ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------ |
+| `task.started`  | A call starts a task, or reaches a resumable task by its `taskId`        | `taskId`, `callId`, `turnId`, the tool `name`, and `kind`                                  |
+| `task.settled`  | A reply, return, failure, or cancel settles one call                     | `taskId`, `callId`, `turnId`, `name`, `kind`, `status`, and `output`, `error`, or `cancel` |
+| `agent.started` | A workflow run, including an agent tool's, opens a session with an agent | `callId`, `turnId`, `taskId`, `name`, `sessionId`, `streamPath`                            |
+| `turn.waiting`  | An open turn parks on its tasks, a `task_wait`, a question, or a sign-in | `turnId` and `sequence`                                                                    |
 
 `task.started` and `task.settled` come once each per call, and `(taskId, callId)` identifies the
 call. Both carry that call's `turnId`, which for a resumable task's later call can be a later turn
-than the one that started the task. `kind` is `"agent"` for an agent tool's call and `"tool"`
-otherwise. `status` is `"completed"`, `"failed"`, or `"cancelled"`. A completed call carries
-`output`, a failed call carries `error`, and a cancelled call carries neither.
+than the one that started the task, and the task's tool `name` and `kind`. `kind` is `"agent"` for
+an agent tool's call and `"tool"` otherwise. Events recorded by earlier eve versions omit `name`
+and `kind` on `task.settled`; match those to their `task.started` by `callId`. `status` is `"completed"`, `"failed"`, or `"cancelled"`. A completed call carries
+`output`, a failed call carries `error`, and a cancelled call carries `cancel.reason`:
+`"task_cancel"` when the model called `task_cancel`, `"turn_cancelled"` when someone cancelled
+the turn, or the working tasks between turns, or `"turn_ended"` when the turn ended, such as by
+failing, while the task still worked. `cancel` is absent when the task's run stopped on its own, and on events recorded by
+earlier eve versions.
 `agent.started` names the call and turn whose run opened the session, and its `taskId` is absent
 when an `execute` call opened it. Results reach the model as a message in its history, not as a
 stream event, so read outcomes from `task.settled`. An `input.requested`,
@@ -287,6 +298,11 @@ task's start and end instead. See
   note cover every task in the session. Any later turn can continue an idle resumable task by its
   `taskId`, and that call runs with its own caller's auth. Only the turn's own caller steers it;
   anonymous callers share one identity.
+  eve doesn't check which caller started a task: in a session with several people, such as a
+  shared Slack thread, the model working for one person can continue or `task_cancel` a task
+  another person started. A continued `serve` task keeps the state its body built for earlier
+  calls, so [key per-caller data on the principal](/docs/tools/workflows#resumable-tasks-serve)
+  and enforce per-person access inside the tool.
 - **Working tasks.** A session runs at most 32 working tasks at once. An idle resumable task doesn't
   count, and a call that makes it work again does.
 - **No time limits.** Tasks have no timeout of their own. The session lifetime,

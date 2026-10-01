@@ -109,12 +109,8 @@ async function bootInitialOwner(
     if (stableClaim.status === "rejected") throw stableClaim.reason;
     if (aliasClaim.status === "rejected") {
       if (!isHookConflictError(aliasClaim.reason)) throw aliasClaim.reason;
-      if (
-        input.activityCollectorRunId !== undefined ||
-        input.continuationConflictCommand !== undefined
-      ) {
+      if (input.continuationConflictCommand !== undefined) {
         await settleContinuationConflictStep({
-          activityCollectorRunId: input.activityCollectorRunId,
           command: input.continuationConflictCommand,
           continuationToken,
         });
@@ -165,7 +161,15 @@ async function bootHandoffOwner(
   const serializedContext = stampSessionIdentity(checkpoint.serializedContext, sessionId);
   const inbox = createSessionInbox(sessionId);
   try {
-    await validateSessionCheckpointStep({ checkpoint });
+    const validation = await validateSessionCheckpointStep({ checkpoint });
+    if (validation.kind === "incompatible") {
+      const payloads = await inbox.release();
+      await signalSessionOwnerActivationStep({
+        activation: { kind: "incompatible", payloads, reason: validation.reason },
+        token: input.activationToken,
+      });
+      return undefined;
+    }
     await inbox.claimSessionHooks(
       sessionHookTokens({ serializedContext, sessionState: checkpoint.sessionState }),
     );
@@ -223,6 +227,7 @@ function createInitialDelivery(
           message: input.input.message,
           context: input.input.context,
           outputSchema: input.input.outputSchema,
+          state: input.input.state,
         },
         readClientContext(input.input),
       ),

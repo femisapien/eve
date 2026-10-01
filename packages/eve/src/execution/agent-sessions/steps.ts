@@ -7,7 +7,6 @@ import {
   resolveAgentStartTarget,
   type SubagentStartTarget,
 } from "#execution/agent-sessions/target.js";
-import { deriveChildActivityObserverConfig } from "#execution/activity-work.js";
 import { sessionInboxHookToken } from "#execution/session-inbox/address.js";
 import {
   createWorkflowCallbackUrl,
@@ -52,6 +51,7 @@ export type AgentSessionAddress =
   | {
       readonly callbackBaseUrl: string;
       readonly kind: "remote";
+      readonly forwardPrincipal?: boolean;
       readonly name: string;
       readonly nodeId: string;
       /** Keys the authored credential functions, as on `agent.started`. */
@@ -64,6 +64,8 @@ export type AgentSessionAddress =
 export interface OpenedAgentSession {
   readonly address: AgentSessionAddress;
   readonly context: AgentSessionContext;
+  /** Names the session within its run, as when it opened. */
+  readonly key: string;
 }
 
 /**
@@ -126,7 +128,6 @@ export async function sendAgentSessionMessageStep(
   if (address.kind === "remote") {
     const remote = await resolveSessionRemote(context, address);
     await continueRemoteAgentSession({
-      activityObserver: context.activityObserver,
       auth: input.auth.current,
       callback: {
         callId: context.parent.callId,
@@ -148,7 +149,6 @@ export async function sendAgentSessionMessageStep(
     command: {
       auth: input.auth.current,
       caller: {
-        activityObserver: context.activityObserver,
         callId: context.parent.callId,
         replyTo: { kind: "hook", token: input.replyTo },
         subagentName: address.name,
@@ -231,7 +231,6 @@ async function startLocalSession(
   const { action } = target;
   const { childContinuationToken, runInput } = buildSubagentRunInput({
     action,
-    activityObserver: context.activityObserver,
     auth: auth.current,
     capabilities: context.capabilities,
     channelMetadata: context.channelMetadata,
@@ -276,16 +275,9 @@ async function startRemoteSession(
   const callbackBaseUrl = resolveWorkflowCallbackBaseUrl(getWorkflowMetadata().url);
   const child = await startRemoteAgentSession({
     action,
-    activityObserver: deriveChildActivityObserverConfig({
-      activityObserver: context.activityObserver,
-      callId: action.callId,
-      kind: "remote-agent",
-      name: action.remoteAgentName,
-      parentSessionId: context.parent.sessionId,
-      parentTurnId: context.parent.turn.id,
-    }),
     auth: auth.current,
     callbackBaseUrl,
+    capabilities: context.capabilities,
     initiatorAuth: auth.initiator,
     operationId: `agent-session:${input.key}`,
     originAudience: context.trace.originAudience,
@@ -296,6 +288,7 @@ async function startRemoteSession(
   return {
     callbackBaseUrl,
     kind: "remote",
+    forwardPrincipal: remote.forwardPrincipal,
     name: action.remoteAgentName,
     nodeId: action.nodeId,
     resolverId: target.dynamicRemoteAgent?.credentialsStepId ?? action.nodeId,

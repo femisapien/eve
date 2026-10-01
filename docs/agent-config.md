@@ -21,7 +21,7 @@ For a static AI Gateway model ID, you can make the same source change from the
 project root with `eve set model anthropic/claude-opus-5.5` or from the local
 dev TUI with `/model anthropic/claude-opus-5.5`.
 
-The root `agent.ts` can be omitted when no runtime config is needed. eve then selects its default `agent.ts` source at the same slot, configured with `spacexai/grok-4.7`; authoring the file replaces that source.
+The root `agent.ts` can be omitted when no runtime config is needed. eve then selects its default `agent.ts` source at the same slot, configured with `openai/gpt-6-luna-fast` and `reasoning: "high"`; authoring the file replaces that source.
 When `agent.ts` is present, `model` is required.
 
 A config that selects a static Gateway model is compile-only. A config that contains a dynamic model or a direct-provider `LanguageModel` remains a runtime entry because eve must resolve that authored value while the agent runs. See [Authored module lifecycle](./reference/typescript-api#authored-module-lifecycle).
@@ -122,6 +122,8 @@ selected for that model call.
 
 ## Reasoning effort
 
+In an authored `agent.ts` with a static model, omitting `reasoning` uses the provider's default.
+
 Set `reasoning` to control the model's reasoning effort through AI SDK's
 provider-agnostic option:
 
@@ -213,16 +215,37 @@ not tool or infrastructure spend. It uses the cost reported with each model
 step; AI Gateway supplies this value, while model steps without reported cost
 do not add to the limit. Set any usage limit to `false` to uncap that axis.
 
-Delegated subagent sessions have no fixed default. Each child receives a
-share of the delegating parent's remaining quota at dispatch time — the
-remainder in the current budget window split evenly across the batch's local
-subagent calls — and a completed child's usage counts against the parent's
-quota. Token-cost budgets follow the same rules, including splitting the
-remaining US-dollar budget across a batch and adding completed child cost back
-to the parent. Approving a continuation opens a fresh parent window for later
-child grants without erasing lifetime usage. An authored child limit applies
-only when it is tighter than the parent's grant; an uncapped parent delegates
-uncapped children.
+Delegated subagent sessions have no fixed default. Each child receives a share
+of the delegating parent's remaining quota when it starts: the remainder in
+the current budget window split evenly across the agent tasks that one model
+step starts. A session that a workflow tool opens with `ctx.agent` receives
+the share of the model step that called the tool, or the whole remainder when
+that step starts no agent tasks; eve does not divide that share among several
+sessions one call opens. A child keeps its grant for its whole session,
+including turns that later calls with `taskId` start. Remote agent tasks count
+toward the split but receive no grant: they run under their own deployment's
+limits.
+
+A child's usage, including what the child's own subagents spent, counts
+against the parent's quota. An agent task's usage counts with each reply it
+sends. A turn it doesn't reply to, such as one a cancel stopped, counts with
+the next reply, or when the turn ends if no call waits for a reply. Sessions
+that any other `serve` workflow tool opens with `ctx.agent` count the same
+way; those of an `execute` or `task` tool count when the tool finishes. Remote
+agents' reported usage counts the same way. Later children draw from what
+remains, and the parent's own limit and continuation prompt include delegated
+spend. Token-cost budgets follow the same rules, including splitting the
+remaining US-dollar budget and adding child cost back to the parent. Approving
+a continuation opens a fresh parent window for later child grants without
+erasing lifetime usage. An authored child limit applies only when it is
+tighter than the parent's grant; an uncapped parent delegates uncapped
+children.
+
+Some delegated usage doesn't count against the parent: a `ctx.agent` turn
+still running when its workflow tool finishes or is cancelled; the `ctx.agent`
+usage of an `execute` tool whose parent turn is cancelled while it waits; and
+what a cancelled agent task's own subagents spend after the task reports its
+cancelled turn, until the task's next reply.
 
 ## Workflow world
 

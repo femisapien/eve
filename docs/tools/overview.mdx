@@ -60,6 +60,52 @@ The option defaults to `true` and works with `defineTool` and `defineWorkflowToo
 
 Compiled tools preserve Zod schema composition, including input and output schemas imported from helper modules. Durable replay metadata stays separate from the original schema, so adding it does not mutate shared schema objects.
 
+### End the turn after a tool call
+
+Set `endsTurn: true` when a successful call is the whole answer, such as reacting to a message. eve ends the turn after the call instead of calling the model again, so the turn completes without a final message and channels post no reply:
+
+```ts title="agent/tools/react.ts"
+export default defineTool({
+  description: "React to the current message. Use this when a reaction is the whole answer.",
+  endsTurn: true,
+  inputSchema: z.object({ emoji: z.string() }),
+  async execute({ emoji }) {
+    await addReaction(emoji);
+    return { emoji };
+  },
+});
+```
+
+With `endsTurn: true`, eve tells the model that the call ends its turn by appending this sentence, after a blank line, to the description the model sees:
+
+```text
+Calling this tool ends your turn once it succeeds: do not write a reply or call other tools in the same step. If it fails, you will see the error and can continue.
+```
+
+Write `description` for what the tool does and when to use it, and leave the turn-ending rule to eve. The appended sentence is not part of the tool definition, so `eve info` shows the description as you wrote it.
+
+To decide from the result instead, pass a function. eve calls it with the output of `execute` after each successful call, and the call ends the turn only when the function returns `true` or resolves to `true`. If the function throws or rejects, eve logs a warning and the turn continues as though it returned `false`:
+
+```ts title="agent/tools/react.ts"
+export default defineTool({
+  description:
+    "React to the current message. When the reaction posts, your turn ends; otherwise, reply in text.",
+  inputSchema: z.object({ emoji: z.string() }),
+  async execute({ emoji }) {
+    return { posted: await addReaction(emoji) };
+  },
+  endsTurn: (output) => output.posted,
+});
+```
+
+Declare `endsTurn` after `execute`, as above, so TypeScript infers `output` from what `execute` returns. With an `outputSchema`, `output` takes that schema's type wherever `endsTurn` appears.
+
+eve does not append the sentence for a function, because whether the call ends the turn is known only after it runs. Describe the behavior in `description` when the model needs to know it.
+
+The turn ends only when every tool call in the model's step can end the turn and succeeds, and every `endsTurn` function returns `true`. Otherwise the model receives the results and continues as usual. Text the model writes before the call is narration, so channels do not post it as the reply. While [tasks](/docs/tools/tasks) are still working, the turn waits for them and then calls the model again.
+
+eve ignores `endsTurn` in delegated sessions, which must return a reply to their caller, and on turns that request structured output; the model does not see the appended sentence there, and eve does not call an `endsTurn` function. `defineWorkflowTool` rejects `endsTurn` at build time. Dynamic tool entries accept `endsTurn: true` or `false`; eve rejects a function when the resolver returns the entry, because dynamic tool metadata is stored durably. To end a turn without taking any other action, add the opt-in [`no_reply`](/docs/concepts/built-in-tools#no_reply) tool.
+
 ### Label tool activity
 
 Use `label.start(input)` to describe a call in user-facing activity. The callback receives the validated tool input, so it can select the useful fields without exposing the full argument object:
@@ -179,6 +225,7 @@ examples.
 - `ctx.session`: session metadata, turn, auth, parent lineage.
 - `ctx.callId`: the id of the current tool call, carried by the call's [stream events](/docs/concepts/sessions-runs-and-streaming) and approval context.
 - `ctx.toolName`: the final runtime name the model called, including any namespace qualification.
+- `ctx.messages`: the model input for the step that requested this call, the same messages a `step.started` [dynamic resolver](/docs/guides/dynamic-capabilities) reads.
 - `ctx.abortSignal`: aborts when the active turn is cancelled. Pass it to cancellation-aware work; sandbox sessions from `ctx.getSandbox()` are already bound to it.
 - `ctx.getSandbox()`: the live [sandbox](/docs/sandbox) handle.
 

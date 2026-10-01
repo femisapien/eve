@@ -1,9 +1,12 @@
 import type { SubagentAuthorizationEventHookPayload } from "#channel/types.js";
+import type { SessionInboxAddress } from "#execution/session-inbox/address.js";
+import type { RemoteAgentBinding } from "#eve-channel/support.js";
 import type { SessionAuth } from "#context/session-context.js";
 import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
 import type { AgentSessionAddress } from "#execution/agent-sessions/steps.js";
 import type { InputRequest } from "#shared/input.js";
 import type { JsonObject, JsonValue } from "#shared/json.js";
+import type { TokenUsage } from "#shared/token-usage.js";
 import type {
   ToolInputRequest,
   ToolInputResponse,
@@ -71,7 +74,10 @@ export interface WorkflowToolRunReport {
 }
 
 export interface WorkflowToolRunRequestMessage {
+  readonly childSessionInbox?: SessionInboxAddress;
+  readonly remote?: RemoteAgentBinding & { readonly sessionId: string };
   readonly from: WorkflowToolRunRef;
+  readonly inputSource?: string;
   readonly replyTo: string;
   readonly request: WorkflowToolRequest;
   readonly requestCoordinates?: {
@@ -84,6 +90,8 @@ export interface WorkflowToolRunRequestMessage {
 export interface WorkflowToolRunOutcomeMessage {
   readonly from: WorkflowToolRunRef;
   readonly result: WorkflowToolRunOutcome;
+  /** What the run's `ctx.agent` sessions spent in all, once any of their turns ended. */
+  readonly usage?: TokenUsage;
 }
 
 /**
@@ -114,6 +122,22 @@ export interface WorkflowToolRunReplyMessage {
   /** The latest call the reply settles, which the body serves now. */
   readonly from: WorkflowToolRunRef;
   readonly output: JsonValue;
+  /**
+   * What the run's `ctx.agent` sessions spent so far, once any of their turns
+   * ended. A running total, so the session counts only what it adds to the
+   * last one it counted, and a redelivered reply adds nothing.
+   */
+  readonly usage?: TokenUsage;
+}
+
+/**
+ * A `serve` body's delegated spend that no reply carries: its `ctx.agent`
+ * sessions ended a turn while no call waited for a reply, such as a turn a
+ * cancel stopped. A running total, like a reply's.
+ */
+export interface WorkflowToolRunUsageMessage {
+  readonly from: WorkflowToolRunRef;
+  readonly usage: TokenUsage;
 }
 
 /** A task's run can take commands: its control hook is registered. */
@@ -128,6 +152,7 @@ export type WorkflowToolRunMessage =
   | ({ readonly kind: "reply" } & WorkflowToolRunReplyMessage)
   | ({ readonly kind: "request" } & WorkflowToolRunRequestMessage)
   | ({ readonly kind: "withdraw" } & WorkflowToolRunWithdrawMessage)
+  | ({ readonly kind: "usage" } & WorkflowToolRunUsageMessage)
   | ({ readonly kind: "outcome" } & WorkflowToolRunOutcomeMessage);
 
 /**
