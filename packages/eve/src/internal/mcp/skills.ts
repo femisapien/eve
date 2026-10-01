@@ -93,9 +93,11 @@ export interface McpSkillEntry {
  * What is served:
  *
  * - A skill is served when its entry file reads, fits the 512 KiB file cap,
- *   and the skill stays within SEP-2640's 512 files and 16 MiB. Otherwise it
- *   is absent everywhere: `skills/list`, `skills/get`, `resources/list`,
- *   reads, directory reads, and subscriptions.
+ *   its served frontmatter meets the Agent Skills format (name rules,
+ *   description 1-1024 characters), and the skill stays within SEP-2640's
+ *   512 files and 16 MiB. Otherwise it is absent everywhere: `skills/list`,
+ *   `skills/get`, `resources/list`, reads, directory reads, and
+ *   subscriptions.
  * - A supporting file over the cap is not served: `resources/read` refuses
  *   it, and the skill's `resources` and directory listings leave it out, so
  *   every view of the skill agrees on its files and the rest stays verifiable.
@@ -424,12 +426,12 @@ async function readEntryDocument(
     parsed.data.name === skill.name &&
     typeof parsed.data.description === "string"
   ) {
-    return {
+    return conformingEntry({
       bytes: raw.bytes,
       description: parsed.data.description,
       frontmatter: parsed.data,
       text: raw.text,
-    };
+    });
   }
 
   const description =
@@ -445,7 +447,31 @@ async function readEntryDocument(
   ) {
     return undefined;
   }
-  return { bytes, description, frontmatter: reparsed.data, text };
+  return conformingEntry({ bytes, description, frontmatter: reparsed.data, text });
+}
+
+/** Agent Skills `name`: 1-64 lowercase letters, digits, and single inner hyphens. */
+const SKILL_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/u;
+export const MCP_SKILL_NAME_MAX_LENGTH = 64;
+export const MCP_SKILL_DESCRIPTION_MAX_LENGTH = 1024;
+
+/**
+ * Whether served frontmatter meets the Agent Skills format SEP-2640 requires:
+ * a conforming `name` and a non-empty `description` of at most 1024
+ * characters. Checked on the document as served, authored or rewritten, so
+ * a skill that fails is absent from every surface.
+ */
+export function isConformingSkillFrontmatter(frontmatter: JsonObject): boolean {
+  const { name, description } = frontmatter;
+  if (typeof name !== "string" || typeof description !== "string") return false;
+  if (Array.from(name).length > MCP_SKILL_NAME_MAX_LENGTH) return false;
+  if (!SKILL_NAME_PATTERN.test(name)) return false;
+  if (description.trim().length === 0) return false;
+  return Array.from(description).length <= MCP_SKILL_DESCRIPTION_MAX_LENGTH;
+}
+
+function conformingEntry(entry: EntryDocument): EntryDocument | undefined {
+  return isConformingSkillFrontmatter(entry.frontmatter) ? entry : undefined;
 }
 
 /**
