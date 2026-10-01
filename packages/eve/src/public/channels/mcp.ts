@@ -16,6 +16,7 @@ import {
   resolveMcpRequestPrincipals,
   type McpRequestPrincipals,
 } from "#internal/mcp/forwarded-principal-header.js";
+import { createMcpSkillsFeature } from "#internal/mcp/skills.js";
 import { validateMcpHttpRequest, validateMcpMetadataRequest } from "#internal/mcp/http-security.js";
 import {
   createMcpRequestStateCodec,
@@ -457,9 +458,16 @@ async function handleMcpRequest(
 
 function skillsFeatures(
   config: McpChannelConfig,
-  _description: AgentDescription,
-  _args: RouteHandlerArgs,
+  description: AgentDescription,
+  args: RouteHandlerArgs,
 ): readonly McpServerFeature<McpRequestPrincipals>[] {
   if (!config.skills) return [];
-  return [];
+  // The description is already computed for this request; reuse it so one
+  // MCP request reads the manifest once.
+  return [
+    createMcpSkillsFeature({
+      describe: async () => description,
+      readSkill: (skill, path) => args.readSkill(skill, path),
+    }),
+  ];
 }
