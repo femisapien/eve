@@ -138,7 +138,7 @@ export async function emitStepStarted(
   );
 }
 
-interface FailedStepPayload {
+export interface FailedStepPayload {
   readonly code: string;
   readonly details?: JsonObject;
   readonly message: string;

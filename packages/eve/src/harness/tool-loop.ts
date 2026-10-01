@@ -104,6 +104,7 @@ import {
   emitStreamContent,
   emitTurnEpilogue,
   emitTurnPreamble,
+  type FailedStepPayload,
   getHarnessEmissionState,
   isHarnessBetweenTurns,
   setHarnessEmissionState,
@@ -1934,19 +1935,13 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
           upstreamRejection?.message ?? "model call failed — parking session for retry by the user",
           modelCallLogFields,
         );
-        emissionState = await emitRecoverableFailedTurn(emit, emissionState, {
-          code: "MODEL_CALL_FAILED",
-          continuationToken: session.continuationToken,
-          details,
-          message: errorMessage,
+        return await failTurn({
+          emissionState,
+          emit,
+          failure: { code: "MODEL_CALL_FAILED", details, message: errorMessage },
+          output: taskFailureOutput,
+          session,
         });
-        const settledTurn = { isError: true, output: taskFailureOutput } satisfies SettledTurn;
-        session = { ...session, outputSchema: undefined };
-        return {
-          next: null,
-          session: setHarnessEmissionState(session, emissionState),
-          settledTurn,
-        };
       }
     }
 
@@ -3019,6 +3014,31 @@ async function emitStructuredResult(
 }
 
 /**
+ * Fails the current turn recoverably: emits `step.failed` → `turn.failed` →
+ * `session.waiting` and parks the session for the next message.
+ */
+async function failTurn(input: {
+  readonly emissionState: ReturnType<typeof getHarnessEmissionState>;
+  readonly emit?: ToolLoopHarnessConfig["handleEvent"];
+  readonly failure: FailedStepPayload;
+  readonly output: string;
+  readonly session: HarnessSession;
+}): Promise<StepResult> {
+  // The schema belongs to the settled turn. A later conversation turn that
+  // omits outputSchema must not inherit a failed turn's contract.
+  let session: HarnessSession = { ...input.session, outputSchema: undefined };
+  if (input.emit) {
+    const emissionState = await emitRecoverableFailedTurn(input.emit, input.emissionState, {
+      ...input.failure,
+      continuationToken: session.continuationToken,
+    });
+    session = setHarnessEmissionState(session, emissionState);
+  }
+  const settledTurn = { isError: true, output: input.output } satisfies SettledTurn;
+  return { next: null, session, settledTurn };
+}
+
+/**
  * Closes a terminal turn. An unmet output schema fails the turn recoverably;
  * otherwise the structured value (or prose) ends the turn and the session
  * waits for the next message.
@@ -3047,21 +3067,13 @@ async function finishTurn(input: {
 
   const structured = extractFinalOutput(result);
   if (structured === undefined) {
-    // The schema belongs to the settled turn. A later conversation turn that
-    // omits outputSchema must not inherit a failed turn's contract.
-    session = { ...session, outputSchema: undefined };
-    if (emit) {
-      emissionState = await emitRecoverableFailedTurn(emit, emissionState, {
-        ...OUTPUT_SCHEMA_NOT_FULFILLED,
-        continuationToken: session.continuationToken,
-      });
-      session = setHarnessEmissionState(session, emissionState);
-    }
-    const settledTurn = {
-      isError: true,
+    return await failTurn({
+      emissionState,
+      emit,
+      failure: OUTPUT_SCHEMA_NOT_FULFILLED,
       output: OUTPUT_SCHEMA_NOT_FULFILLED.message,
-    } satisfies SettledTurn;
-    return { next: null, session, settledTurn };
+      session,
+    });
   }
 
   session = persistStructuredAssistantTurn(session, history, structured);
