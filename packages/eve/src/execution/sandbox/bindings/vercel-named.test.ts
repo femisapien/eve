@@ -169,4 +169,43 @@ describe("Vercel named sandbox sessions", () => {
     expect(await named.delete(context, address, { idleBefore: 200 })).toBe(true);
     expect(idle.delete).toHaveBeenCalled();
   });
+
+  it("re-checks at the final lookup, after the first check, before the delete request", async () => {
+    const idle = () =>
+      Object.assign(mockSandbox(address.name, "stopped"), {
+        delete: vi.fn(async () => undefined),
+        stop: vi.fn(async () => undefined),
+        updatedAt: new Date(10),
+      });
+    // Passes the first check, then a call resumes it before the final lookup.
+    const first = idle();
+    const resumed = Object.assign(idle(), { status: "running" });
+    // Passes the first check, then a call takes its lease before the final lookup.
+    const second = idle();
+    const finalIdle = idle();
+    const Sandbox = {
+      get: vi
+        .fn()
+        .mockResolvedValueOnce(first)
+        .mockResolvedValueOnce(resumed)
+        .mockResolvedValueOnce(second)
+        .mockResolvedValueOnce(finalIdle),
+    };
+    const { context, named } = setup({ Sandbox });
+
+    expect(await named.delete(context, address, { idleBefore: 200 })).toBe(false);
+    let leased = false;
+    const inUse = vi.fn(() => {
+      const answer = leased;
+      leased = true;
+      return answer;
+    });
+    expect(await named.delete(context, address, { idleBefore: 200, inUse })).toBe(false);
+
+    expect(inUse).toHaveBeenCalledTimes(2);
+    for (const sandbox of [first, resumed, second, finalIdle]) {
+      expect(sandbox.delete).not.toHaveBeenCalled();
+      expect(sandbox.stop).not.toHaveBeenCalled();
+    }
+  });
 });

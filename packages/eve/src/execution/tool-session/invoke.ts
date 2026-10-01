@@ -140,7 +140,9 @@ export async function invokeToolInSession(
   }
 
   const validated = await validateToolInput(definition, input);
-  if (!validated.success) return { message: validated.message, status: "invalid-input" };
+  if (validated.kind === "threw")
+    return failedFromError(validated.error, name, "input validation failed");
+  if (validated.kind === "invalid") return { message: validated.message, status: "invalid-input" };
 
   const oneOffNonce =
     options.key === undefined ? (options.oneOffNonce ?? createToolSessionOneOffNonce()) : undefined;
@@ -395,25 +397,26 @@ async function validateToolInput(
   definition: HarnessToolDefinition,
   input: unknown,
 ): Promise<
-  | { readonly success: true; readonly value: unknown }
-  | { readonly success: false; readonly message: string }
+  | { readonly kind: "valid"; readonly value: unknown }
+  | { readonly kind: "invalid"; readonly message: string }
+  | { readonly kind: "threw"; readonly error: unknown }
 > {
   const schema = asSchema(definition.inputSchema);
-  if (schema.validate === undefined) return { success: true, value: input };
+  if (schema.validate === undefined) return { kind: "valid", value: input };
+  let result: Awaited<ReturnType<NonNullable<typeof schema.validate>>>;
   try {
-    const result = await schema.validate(input);
-    return result.success
-      ? { success: true, value: result.value }
-      : {
-          message: `Invalid input for tool "${definition.name}": ${toErrorMessage(result.error)}`,
-          success: false,
-        };
+    result = await schema.validate(input);
   } catch (error) {
-    return {
-      message: `Invalid input for tool "${definition.name}": ${toErrorMessage(error)}`,
-      success: false,
-    };
+    // A validator that throws failed itself; its message is not a diagnostic of the input.
+    return { error, kind: "threw" };
   }
+  // A structured failure describes the input, so it goes back verbatim.
+  return result.success
+    ? { kind: "valid", value: result.value }
+    : {
+        kind: "invalid",
+        message: `Invalid input for tool "${definition.name}": ${toErrorMessage(result.error)}`,
+      };
 }
 
 async function toModelOutput(

@@ -58,12 +58,20 @@ export type SandboxStartOverride = (input: {
   /** Whether this call created the sandbox, so a failed selector may delete it. */
   readonly created: boolean;
   readonly handle: SandboxProviderHandle;
+  /**
+   * The identity the handle is tracked under for runtime shutdown, when the
+   * sandbox is private to this access rather than the session's (a one-off
+   * tool call's). Defaults to the session id.
+   */
+  readonly trackingId?: string;
 }>;
 
 interface OpenedSandbox {
   readonly handle: SandboxProviderHandle;
   readonly providerName: string;
   readonly sandbox: RuntimeSandboxSession;
+  /** Active-handle registry identity; see {@link SandboxStartOverride}. */
+  readonly trackingId: string;
 }
 
 // Parent and subagent sessions that share a sandbox each build their own
@@ -131,10 +139,12 @@ export async function ensureSandboxAccess(input: EnsureSandboxAccessInput): Prom
       session,
       storagePath: resolveSandboxCacheDirectory(appRoot),
     };
+    let trackingId = input.sessionId;
     const createHandle = async () => {
       if (input.startSandbox !== undefined) {
         const started = await input.startSandbox({ artifact, context, options, provider });
         createdByThisAccess = started.created;
+        trackingId = started.trackingId ?? input.sessionId;
         return started.handle;
       }
       const result = await provider.implementation.start(context, options, artifact);
@@ -156,19 +166,20 @@ export async function ensureSandboxAccess(input: EnsureSandboxAccessInput): Prom
     });
 
     const handle = await opening;
-    return installHandle(provider.providerName, handle);
+    return installHandle(provider.providerName, handle, trackingId);
   }
 
   function installHandle(
     providerName: string,
     handle: SandboxProviderHandle,
+    trackingId: string,
   ): RuntimeSandboxSession {
     const sandbox = withRuntimeSandboxLifecycle(
       handle.sandbox,
       (deleteOptions?: SandboxDeleteOptions) => handle.onSessionDelete(deleteOptions),
       () => handle.onSessionStop(),
     );
-    opened = { handle, providerName, sandbox };
+    opened = { handle, providerName, sandbox, trackingId };
     return sandbox;
   }
 
@@ -213,7 +224,7 @@ export async function ensureSandboxAccess(input: EnsureSandboxAccessInput): Prom
         throw error;
       });
     const handle = await opening;
-    installHandle(provider.providerName, handle);
+    installHandle(provider.providerName, handle, input.sessionId);
     trackActiveSandboxHandle({
       handle,
       providerName: provider.providerName,
@@ -325,7 +336,7 @@ export async function ensureSandboxAccess(input: EnsureSandboxAccessInput): Prom
     trackActiveSandboxHandle({
       handle: opened.handle,
       providerName: opened.providerName,
-      sessionId: input.sessionId,
+      sessionId: opened.trackingId,
     });
     return opened.handle;
   }
@@ -351,10 +362,14 @@ export async function ensureSandboxAccess(input: EnsureSandboxAccessInput): Prom
       if (input.ownsSandbox === false)
         throw new Error("Only the owning session can delete this sandbox.");
       const current = await requireHandle();
-      const providerName = opened?.providerName;
+      const tracked = opened;
       await current.onSessionDelete(deleteOptions);
-      if (providerName !== undefined) {
-        untrackActiveSandboxHandle({ handle: current, providerName, sessionId: input.sessionId });
+      if (tracked !== undefined) {
+        untrackActiveSandboxHandle({
+          handle: current,
+          providerName: tracked.providerName,
+          sessionId: tracked.trackingId,
+        });
       }
       opened = undefined;
       opening = undefined;

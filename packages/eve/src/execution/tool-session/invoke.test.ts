@@ -1,3 +1,4 @@
+import { jsonSchema } from "ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Approval } from "#approval/definition.js";
@@ -57,6 +58,7 @@ function principal(id: string, type = "user"): SessionAuthContext {
 // ---------------------------------------------------------------------------
 
 interface StoredSandbox {
+  deleted?: boolean;
   lastUsedAt: number;
   readonly mock: MockSandbox;
   running: boolean;
@@ -78,6 +80,7 @@ function createNamedProvider(options: { readonly named?: boolean } = {}) {
         if (typeof value !== "function") return value;
         return (...args: unknown[]) => {
           if (stopped) throw new Error(`stale handle for ${name}`);
+          if (stored.deleted === true) throw new Error(`sandbox ${name} was deleted`);
           return value.apply(target, args);
         };
       },
@@ -89,6 +92,7 @@ function createNamedProvider(options: { readonly named?: boolean } = {}) {
       },
       async onSessionDelete() {
         events.push(`delete:${name}`);
+        stored.deleted = true;
         store.delete(name);
       },
       async onSessionStop() {
@@ -100,6 +104,9 @@ function createNamedProvider(options: { readonly named?: boolean } = {}) {
   };
   const started: string[] = [];
   let onList: (() => Promise<void>) | undefined;
+  // Runs between a delete's idle check and the deletion, like a provider's
+  // later lookups and requests; nothing re-checks after it.
+  let beforeDelete: (() => Promise<void>) | undefined;
 
   const provider = defineSandboxProvider({
     name: "memory-named",
@@ -161,7 +168,11 @@ function createNamedProvider(options: { readonly named?: boolean } = {}) {
                   events.push(`kept:${name}`);
                   return false;
                 }
+                const pause = beforeDelete;
+                beforeDelete = undefined;
+                await pause?.();
                 events.push(`swept:${name}`);
+                stored.deleted = true;
                 store.delete(name);
                 return true;
               },
@@ -233,6 +244,22 @@ function createNamedProvider(options: { readonly named?: boolean } = {}) {
     },
     advance(ms: number) {
       now += ms;
+    },
+    /** Holds the next delete after its idle check until `release()`. */
+    pauseNextDelete() {
+      let reached!: () => void;
+      let release!: () => void;
+      const reachedPromise = new Promise<void>((resolve) => {
+        reached = resolve;
+      });
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      beforeDelete = async () => {
+        reached();
+        await released;
+      };
+      return { reached: reachedPromise, release };
     },
     /** Runs `fn` once, after the sweep lists sandboxes and before it deletes any. */
     afterList(fn: () => Promise<void>) {
@@ -397,6 +424,43 @@ describe("invokeTool: context", () => {
     });
     expect((await call(runtime, "t", {}, { key: "k".repeat(512) })).status).toBe("completed");
     expect(execute).toHaveBeenCalledTimes(1);
+  });
+
+  it("returns a throwing validator's error as generic with its error id, but schema failures verbatim", async () => {
+    const execute = vi.fn();
+    const runtime = runtimeWith([
+      tool("throws", execute, {
+        inputSchema: jsonSchema(
+          { type: "object" },
+          {
+            validate: () => {
+              throw new Error("vault lookup failed: token=sk_live_secret at 10.1.2.3");
+            },
+          },
+        ),
+      }),
+      tool("rejects", execute, {
+        inputSchema: jsonSchema(
+          { type: "object" },
+          { validate: () => ({ error: new Error("path: expected a string"), success: false }) },
+        ),
+      }),
+    ]);
+
+    const threw = await call(runtime, "throws", {});
+    expect(threw.status).toBe("failed");
+    if (threw.status !== "failed") return;
+    expect(threw.errorId).toBeTruthy();
+    expect(threw.message).toBe(
+      `Tool "throws" failed: input validation failed. The error is logged with id ${threw.errorId}.`,
+    );
+    expect(JSON.stringify(threw)).not.toMatch(/sk_live_secret|10\.1\.2\.3|vault/);
+
+    expect(await call(runtime, "rejects", {})).toEqual({
+      message: 'Invalid input for tool "rejects": path: expected a string',
+      status: "invalid-input",
+    });
+    expect(execute).not.toHaveBeenCalled();
   });
 
   it("validates input against the tool schema", async () => {
@@ -841,45 +905,97 @@ describe("invokeTool: sandbox", () => {
     expect((await call(runtime, "pure", {})).status).toBe("completed");
   });
 
-  it("gives concurrent one-off fallback calls their own sandboxes, so one ending deletes only its own", async () => {
+  it.each([
+    ["named", true],
+    ["fallback", false],
+  ] as const)(
+    "gives concurrent one-off %s calls with one nonce their own sandboxes, so one ending deletes only its own",
+    async (_kind, named) => {
+      const provider = createNamedProvider({ named });
+      let releaseSecond!: () => void;
+      const secondMayFinish = new Promise<void>((resolve) => {
+        releaseSecond = resolve;
+      });
+      let firstOpened!: () => void;
+      const opened = new Promise<void>((resolve) => {
+        firstOpened = resolve;
+      });
+      const runtime = runtimeWith(
+        [
+          tool("quick", async (_input, ctx) => {
+            await (await ctx.getSandbox()).writeTextFile({ content: "1", path: "/workspace/q" });
+            return "quick";
+          }),
+          tool("slow", async (_input, ctx) => {
+            const sandbox = await ctx.getSandbox();
+            await sandbox.writeTextFile({ content: "2", path: "/workspace/s" });
+            firstOpened();
+            await secondMayFinish;
+            // Still usable after the other call ended and deleted its sandbox.
+            return await sandbox.readTextFile({ path: "/workspace/s" });
+          }),
+        ],
+        provider.registry,
+      );
+
+      // The same nonce derives the same tool session id for both calls.
+      const slow = call(runtime, "slow", {}, { key: undefined, oneOffNonce: "nonce-1" });
+      await opened;
+      const quick = await call(runtime, "quick", {}, { key: undefined, oneOffNonce: "nonce-1" });
+      releaseSecond();
+
+      expect(quick).toMatchObject({ sandbox: { state: "created" }, status: "completed" });
+      // The slower call's sandbox survived the faster call's release.
+      expect(await slow).toMatchObject({ output: "2", status: "completed" });
+      const creates = named
+        ? provider.events.filter((event) => event.startsWith("create:"))
+        : provider.started;
+      expect(new Set(creates).size).toBe(2);
+      expect(provider.events.filter((event) => event.startsWith("delete:"))).toHaveLength(2);
+      expect(provider.store.size).toBe(0);
+    },
+  );
+
+  it("tracks each one-off fallback sandbox for shutdown under its own identity", async () => {
     const provider = createNamedProvider({ named: false });
-    let releaseSecond!: () => void;
-    const secondMayFinish = new Promise<void>((resolve) => {
-      releaseSecond = resolve;
-    });
-    let firstOpened!: () => void;
+    let olderOpened!: () => void;
     const opened = new Promise<void>((resolve) => {
-      firstOpened = resolve;
+      olderOpened = resolve;
+    });
+    let finishOlder!: () => void;
+    const olderMayFinish = new Promise<void>((resolve) => {
+      finishOlder = resolve;
     });
     const runtime = runtimeWith(
       [
-        tool("quick", async (_input, ctx) => {
-          await (await ctx.getSandbox()).writeTextFile({ content: "1", path: "/workspace/q" });
-          return "quick";
+        tool("older", async (_input, ctx) => {
+          await ctx.getSandbox();
+          olderOpened();
+          await olderMayFinish;
+          return "older";
         }),
-        tool("slow", async (_input, ctx) => {
-          const sandbox = await ctx.getSandbox();
-          await sandbox.writeTextFile({ content: "2", path: "/workspace/s" });
-          firstOpened();
-          await secondMayFinish;
-          // Still usable after the other call ended and deleted its sandbox.
-          return await sandbox.readTextFile({ path: "/workspace/s" });
-        }),
+        writeTool,
       ],
       provider.registry,
     );
 
-    // The same nonce derives the same tool session id for both calls.
-    const slow = call(runtime, "slow", {}, { key: undefined, oneOffNonce: "nonce-1" });
+    const older = call(runtime, "older", {}, { key: undefined, oneOffNonce: "nonce-1" });
     await opened;
-    const quick = await call(runtime, "quick", {}, { key: undefined, oneOffNonce: "nonce-1" });
-    releaseSecond();
+    // A newer call for the same logical session opens, finishes, and deletes its sandbox.
+    await call(
+      runtime,
+      "write",
+      { path: "/workspace/n", text: "n" },
+      { key: undefined, oneOffNonce: "nonce-1" },
+    );
+    await shutdownActiveSandboxHandles();
+    finishOlder();
+    await older;
 
-    expect(quick).toMatchObject({ sandbox: { state: "created" }, status: "completed" });
-    expect(await slow).toMatchObject({ output: "2", status: "completed" });
-    expect(new Set(provider.started).size).toBe(2);
-    expect(provider.events.filter((event) => event.startsWith("delete:"))).toHaveLength(2);
-    expect(provider.store.size).toBe(0);
+    const olderName = `unnamed:${provider.started[0]}`;
+    expect(provider.events.filter((event) => event.startsWith("shutdown:"))).toEqual([
+      `shutdown:${olderName}`,
+    ]);
   });
 
   it("reopens the sandbox after stop(): get, stop, get, execute", async () => {
@@ -993,6 +1109,36 @@ describe("sweepToolSessionSandboxes", () => {
     expect(await call(runtime, "read", { path: "/workspace/a.txt" })).toMatchObject({
       output: "still here",
       sandbox: { state: "resumed" },
+    });
+  });
+
+  it("makes a call that arrives mid-delete wait, then open a fresh sandbox instead of the one being deleted", async () => {
+    const provider = createNamedProvider();
+    const runtime = runtimeWith([writeTool, readTool], provider.registry);
+    await call(runtime, "write", { path: "/workspace/a.txt", text: "old" });
+    provider.advance(TOOL_SESSION_SANDBOX_EXPIRY_MS + 1);
+    provider.stopAll();
+    const paused = provider.pauseNextDelete();
+
+    const sweep = sweepToolSessionSandboxes({
+      compiledArtifactsSource: createBundledRuntimeCompiledArtifactsSource(),
+      now: provider.now,
+      registry: provider.registry,
+    });
+    await paused.reached;
+    // The sweep has checked the sandbox and is mid-delete; a call for it arrives now.
+    const finds = provider.events.filter((event) => event.startsWith("find:")).length;
+    const arriving = call(runtime, "write", { path: "/workspace/b.txt", text: "new" });
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    expect(provider.events.filter((event) => event.startsWith("find:"))).toHaveLength(finds);
+    paused.release();
+
+    const [result, written] = await Promise.all([sweep, arriving]);
+    expect(result.deleted).toHaveLength(1);
+    expect(written).toMatchObject({ sandbox: { state: "created" }, status: "completed" });
+    expect(await call(runtime, "read", { path: "/workspace/b.txt" })).toMatchObject({
+      output: "new",
+      sandbox: { state: "reused" },
     });
   });
 

@@ -67,21 +67,21 @@ export function createVercelNamedSessions(deps: {
         sandboxName: name,
       });
       if (sandbox === null) return false;
-      // Re-read just before deleting: a call that resumed it since the listing shows here.
-      if (
-        condition !== undefined &&
-        (isRunningStatus(sandbox.status) ||
-          vercelLastUsedAt(sandbox) >= condition.idleBefore ||
-          condition.inUse?.() === true)
-      ) {
-        return false;
-      }
-      await deleteVercelSandbox({
+      const keep =
+        condition === undefined
+          ? undefined
+          : (current: VercelSandbox) =>
+              isRunningStatus(current.status) ||
+              vercelLastUsedAt(current) >= condition.idleBefore ||
+              condition.inUse?.() === true;
+      // An early out; the check that counts runs on the final lookup, right before the request.
+      if (keep?.(sandbox) === true) return false;
+      return await deleteVercelSandbox({
         createOptions: deps.createOptions,
+        keep,
         loadDeleteSandboxModule: deps.loadDeleteSandboxModule,
         sandbox,
       });
-      return true;
     },
     async find(_context, _artifact, { name }) {
       const sandboxModule = await deps.loadSandboxModule();
