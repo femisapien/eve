@@ -110,6 +110,7 @@ export default defineParentSandbox();
 ```
 
 An inheriting subagent cannot declare its own managed workspace or skill files.
+When the model calls an inheriting subagent before the parent has used its sandbox, eve opens the parent's sandbox through its selector before dispatching the child. The child receives the initialized sandbox and its live options.
 
 ## Managed workspace and skills
 

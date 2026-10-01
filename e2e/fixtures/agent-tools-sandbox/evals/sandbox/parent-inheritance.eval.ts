@@ -1,5 +1,6 @@
 import { defineEval } from "eve/evals";
 import { includes } from "eve/evals/expect";
+import { SESSION_MARKER_PATH, SESSION_MARKER_TOKEN } from "./shared.js";
 
 const PARENT_TOKEN = "sandbox-parent-write-ok-N4K";
 const PARENT_PATH = "/workspace/parent-write.txt";
@@ -9,7 +10,15 @@ const CHILD_PATH = "/workspace/child-write.txt";
 export default defineEval({
   description: "Sandbox: a declared child can share the parent's live workspace.",
   async test(t) {
-    const parentWrite = await t.send(
+    const childFirst = await t.send(
+      `Ask the \`parent-sandbox\` subagent with message: ` +
+        `Run the bash command \`cat ${SESSION_MARKER_PATH}\` ` +
+        "and reply with the command output verbatim.",
+    );
+    childFirst.expectOk();
+    await t.require(childFirst.message, includes(SESSION_MARKER_TOKEN));
+
+    const parentWrite = await childFirst.session.send(
       `Run the bash command \`printf %s ${PARENT_TOKEN} > ${PARENT_PATH}\`. ` +
         "Reply with the single word: done.",
     );
@@ -29,7 +38,7 @@ export default defineEval({
     );
 
     t.succeeded();
-    t.calledSubagent("parent-sandbox", { status: "completed", count: 1 });
+    t.calledSubagent("parent-sandbox", { status: "completed", count: 2 });
     t.check(parentRead.message, includes(CHILD_TOKEN));
   },
 });

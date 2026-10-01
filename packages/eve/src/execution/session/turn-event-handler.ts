@@ -4,6 +4,7 @@ import { dispatchDynamicSkillEvent } from "#context/dynamic-skill-lifecycle.js";
 import { dispatchDynamicSubagentEvent } from "#context/dynamic-subagent-lifecycle.js";
 import { dispatchDynamicToolEvent } from "#context/dynamic-tool-lifecycle.js";
 import type { ContextContainer } from "#context/container.js";
+import { SandboxKey } from "#context/keys.js";
 import { dispatchMemoryLifecycleEvent } from "#context/memory-event-lifecycle.js";
 import type { bindDynamicConnections } from "#execution/dynamic-connections.js";
 import type { resolveEffectiveAgentRuntime } from "#execution/effective-agent-config.js";
@@ -12,7 +13,9 @@ import { throwIfTurnAborted, TurnCancelledError } from "#harness/turn-cancellati
 import type { HandleEventFn } from "#harness/types.js";
 import type { HookEventType } from "#public/definitions/hook.js";
 import type { ExecutionInstrumentation } from "#instrumentation/runtime.js";
+import type { ActionsRequestedStreamEvent } from "#protocol/message.js";
 import type { CompiledBundle } from "#runtime/sessions/runtime-context-keys.js";
+import { AGENT_TOOL_NAME } from "#tools/framework/agent-contract.js";
 
 /**
  * Whether `ctx.cancel()` from a hook on each event may stop the running turn.
@@ -85,6 +88,10 @@ export function createTurnEventHandler(input: {
     // An event's memory lifecycle runs after its write and before its hooks, so
     // a turn emits the event and runs its hooks itself instead of calling `publish`.
     const emitted = await publisher.emit(event);
+    // Commit the owner's selector state before an inheriting child starts in another workflow.
+    if (emitted.type === "actions.requested") {
+      await initializeInheritedSandbox(bundle, ctx, emitted);
+    }
     const lifecycleMessages = await dispatchMemoryLifecycleEvent({
       abortSignal,
       appRoot: effectiveNode.agent?.metadata?.appRoot ?? "",
@@ -137,4 +144,25 @@ export function createTurnEventHandler(input: {
     });
     if (cancelTurn !== undefined) throwIfTurnAborted(input.hookCancellation.signal);
   };
+}
+
+async function initializeInheritedSandbox(
+  bundle: CompiledBundle,
+  ctx: ContextContainer,
+  event: ActionsRequestedStreamEvent,
+) {
+  const inherits = (nodeId: string) =>
+    bundle.graph.nodesByNodeId.get(nodeId)?.sandboxRegistry.sandbox?.definition.kind === "parent";
+  const sharesSandbox = event.data.actions.some((action) => {
+    if (action.kind === "subagent-call") return inherits(action.nodeId);
+    if (action.kind !== "tool-call") return false;
+    const child = bundle.subagentRegistry.subagentsByName.get(action.toolName);
+    if (child !== undefined) return inherits(child.definition.nodeId);
+    return action.toolName === AGENT_TOOL_NAME && bundle.nodeId === undefined;
+  });
+  if (!sharesSandbox) return;
+  const sandbox = ctx.get(SandboxKey);
+  if (sandbox !== undefined && (await sandbox.captureState()).session === null) {
+    await sandbox.get();
+  }
 }
