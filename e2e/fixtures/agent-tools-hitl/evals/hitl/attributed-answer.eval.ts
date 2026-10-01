@@ -33,6 +33,22 @@ export default defineEval({
         status: "completed",
       });
     }
+    const approvalAddress = crypto.randomUUID();
+    const started = await send(
+      t.target,
+      approvalAddress,
+      'Alice is ready to schedule the release. Call the gate tool exactly once with marker "scheduled-release" and wait for approval.',
+    );
+    const waiting = await t.target.watchTurn(started.sessionId).result();
+    waiting.session.requireInputRequest({ toolName: "gate" });
+    const resumed = t.target.watchTurn(started.sessionId, { startIndex: waiting.events.length });
+    await send(t.target, approvalAddress, "approve", true);
+    const approved = await resumed.result();
+    approved.expectOk();
+    approved.calledTool("gate", {
+      status: "completed",
+      output: { executed: true, marker: "scheduled-release" },
+    });
     t.noFailedActions();
   },
 });

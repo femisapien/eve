@@ -160,6 +160,7 @@ export function coalesceTurnInputs(a: StepInput, b: StepInput): StepInput {
   const outputSchema = b.outputSchema ?? a.outputSchema;
 
   const result: {
+    answerText?: string;
     inputResponses?: readonly InputResponse[];
     message?: string | UserContent;
     context?: readonly string[];
@@ -172,6 +173,15 @@ export function coalesceTurnInputs(a: StepInput, b: StepInput): StepInput {
 
   if (message !== undefined) {
     result.message = message;
+    if (a.answerText !== undefined || b.answerText !== undefined) {
+      result.answerText = [a, b]
+        .flatMap((input) =>
+          typeof input.message === "string" && input.message.trim().length > 0
+            ? [input.answerText ?? input.message]
+            : [],
+        )
+        .join("\n\n");
+    }
   }
 
   if (context !== undefined) {

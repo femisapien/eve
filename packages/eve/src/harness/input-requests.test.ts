@@ -248,70 +248,81 @@ describe("resolvePendingInput", () => {
     expect(getDeferredStepInput(deferred.session)).toBeUndefined();
   });
 
-  it("resolves approval when follow-up text matches an option", () => {
-    const session = appendPendingInputBatch({
-      requests: [
-        {
-          action: {
-            callId: "approval-call",
-            input: { command: "pwd" },
-            kind: "tool-call",
-            toolName: "bash",
-          },
-          allowFreeform: false,
-          display: "confirmation",
-          kind: "tool-approval",
-          options: [
-            { id: "approve", label: "Yes" },
-            { id: "cancel", label: "No" },
-          ],
-          prompt: "Approve tool call: bash",
-          requestId: "approval-1",
-        } satisfies InputRequest,
-      ],
-      responseMessages: [
-        {
-          content: [
-            {
+  it.each([false, true])(
+    "respects response policy requirements for formatted replies: %j",
+    (requiresPolicy) => {
+      const session = appendPendingInputBatch({
+        responseAuthRequiredRequestIds: requiresPolicy ? ["approval-1"] : undefined,
+        requests: [
+          {
+            action: {
+              callId: "approval-call",
               input: { command: "pwd" },
-              toolCallId: "approval-call",
+              kind: "tool-call",
               toolName: "bash",
-              type: "tool-call",
             },
-            {
-              approvalId: "approval-1",
-              toolCallId: "approval-call",
-              type: "tool-approval-request",
-            },
-          ],
-          role: "assistant",
-        } satisfies ModelMessage,
-      ],
-      session: createHarnessSession(),
-    });
+            allowFreeform: false,
+            display: "confirmation",
+            kind: "tool-approval",
+            options: [
+              { id: "approve", label: "Yes" },
+              { id: "cancel", label: "No" },
+            ],
+            prompt: "Approve tool call: bash",
+            requestId: "approval-1",
+          } satisfies InputRequest,
+        ],
+        responseMessages: [
+          {
+            content: [
+              {
+                input: { command: "pwd" },
+                toolCallId: "approval-call",
+                toolName: "bash",
+                type: "tool-call",
+              },
+              {
+                approvalId: "approval-1",
+                toolCallId: "approval-call",
+                type: "tool-approval-request",
+              },
+            ],
+            role: "assistant",
+          } satisfies ModelMessage,
+        ],
+        session: createHarnessSession(),
+      });
 
-    const result = resolvePendingInput({
-      stepInput: { message: "approve" },
-      session,
-    });
+      const result = resolvePendingInput({
+        stepInput: { message: "Alice said: approve", answerText: "approve" },
+        session,
+      });
 
-    expect(result.outcome).toBe("resolved");
-    expect(result.deferredMessage).toBeUndefined();
-    expect(result.consumedMessage).toBe(true);
-    expect(result.messages.at(-1)).toEqual({
-      content: [
-        {
-          approvalId: "approval-1",
-          approved: true,
-          reason: undefined,
-          type: "tool-approval-response",
-        },
-      ],
-      role: "tool",
-    });
-    expect(getApprovedTools(result.session).has("bash")).toBe(true);
-    expect(getDeferredStepInput(result.session)).toBeUndefined();
-  });
+      if (requiresPolicy) {
+        expect(result.outcome).toBe("continue");
+        expect(result.consumedMessage).not.toBe(true);
+        expect(getPendingInputRequestIds(result.session.state)).toEqual(new Set(["approval-1"]));
+        expect(getApprovedTools(result.session).has("bash")).toBe(false);
+        return;
+      }
+      expect(result.outcome).toBe("resolved");
+      expect(result.deferredMessage).toBeUndefined();
+      expect(result.consumedMessage).toBe(true);
+      expect(result.messages.at(-1)).toEqual({
+        content: [
+          {
+            approvalId: "approval-1",
+            approved: true,
+            reason: undefined,
+            type: "tool-approval-response",
+          },
+        ],
+        role: "tool",
+      });
+      expect(getApprovedTools(result.session).has("bash")).toBe(true);
+      expect(getDeferredStepInput(result.session)).toBeUndefined();
+    },
+  );
 
   it("records compound approval key when resolveApprovalKey is provided", () => {
     const session = appendPendingInputBatch({

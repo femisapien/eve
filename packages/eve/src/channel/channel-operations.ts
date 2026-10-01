@@ -22,7 +22,7 @@ import {
 import type { JsonObject } from "#shared/json.js";
 
 interface BaseChannelSendOptions {
-  /** Plain reply text for pending questions when `message` includes channel formatting. */
+  /** Plain reply text for pending HITL requests when `message` includes channel formatting. */
   readonly answerText?: string;
   readonly auth: SessionAuthContext | null;
   readonly callback?: SessionCallback;

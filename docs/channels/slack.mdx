@@ -188,7 +188,7 @@ export default slackChannel({
 });
 ```
 
-The model-visible `<slack_message>` includes `sender_id`, `bot_user_id` when available, and the `is_mentioned` value from `ctx.isBotMentioned()`. Its `<content>` keeps `<@USER_ID>` intact while converting other mrkdwn to Markdown; routing is unchanged. Slack supplies the person's text separately as `answerText` for pending questions, without changing this model-visible envelope.
+The model-visible `<slack_message>` includes `sender_id`, `bot_user_id` when available, and the `is_mentioned` value from `ctx.isBotMentioned()`. Its `<content>` keeps `<@USER_ID>` intact while converting other mrkdwn to Markdown; routing is unchanged. Slack supplies the person's text separately as `answerText` for pending questions and tool approvals, without changing this model-visible envelope.
 
 When a Slack message includes a link preview, eve includes its attachment text in `<content>` alongside the sender's message, including when the link has words around it. Shared Slack messages work the same way: eve extracts the forwarded message body from Slack's message-unfurl attachment and keeps any top-level comment.
 
@@ -670,7 +670,7 @@ A turn that only plans gets a card too, because `taskCard` runs for every turn t
 
 HITL renders as Slack buttons and selects. Fixed-choice actions and freeform modal submissions pass through `onInputResponse` before the parked session resumes. The initial **Type your answer** action only opens eve's modal; the hook runs when the user submits an answer.
 
-A plain-text reply accepted by a message hook can also answer the only pending `ask_question` or `ctx.ask()` question: a matching option selects that option, and other text answers it when free text is allowed. These replies follow the message hook's auth policy, not `onInputResponse`. See [How pause and resume works](/docs/human-in-the-loop#how-pause-and-resume-works).
+A plain-text reply accepted by a message hook can also answer the only pending `ask_question` or `ctx.ask()` question: a matching option selects that option, and other text answers it when free text is allowed. These replies follow the message hook's auth policy, not `onInputResponse`. Typing `approve` or `cancel` can also resolve a matching local tool approval that has no response policy. Approvals with a response policy still require the buttons. See [How pause and resume works](/docs/human-in-the-loop#how-pause-and-resume-works).
 
 Set `approvalChannel` to choose where each input request appears, including tool approvals and questions from `ctx.ask()`. Return `"direct-message"` when the request must be visible only to the Slack user who triggered the turn, or `"thread"` for the normal shared thread.
 

@@ -198,6 +198,7 @@ export function defaultDeliverResult(payload: DeliverPayload): StepInput | undef
   if (payload.message !== undefined) {
     return attachClientContext(
       {
+        answerText: payload.answerText,
         inputResponses: payload.inputResponses,
         message: payload.message,
         context: payload.context,

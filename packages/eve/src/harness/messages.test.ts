@@ -125,6 +125,24 @@ describe("coalesceTurnInputs", () => {
     ).toEqual({ message: "first\n\nsecond" });
   });
 
+  it("coalesces answer text with every message, not just the last approval keyword", () => {
+    expect(
+      coalesceTurnInputs(
+        { message: "Alice: approve", answerText: "approve" },
+        { message: "Actually, wait." },
+      ),
+    ).toEqual({
+      message: "Alice: approve\n\nActually, wait.",
+      answerText: "approve\n\nActually, wait.",
+    });
+    expect(
+      coalesceTurnInputs(
+        { context: ["thread"] },
+        { message: "Alice: approve", answerText: "approve" },
+      ),
+    ).toEqual({ message: "Alice: approve", answerText: "approve", context: ["thread"] });
+  });
+
   it("merges inputResponses from both payloads", () => {
     const result = coalesceTurnInputs(
       { inputResponses: [{ requestId: "r1", optionId: "approve" }] },

@@ -75,6 +75,7 @@ export function finishResolvedInput(input: {
   // AI SDK collects approval responses only from the tail tool message. Turn
   // input must replay after that isolated approval response.
   const deferredInput: {
+    answerText?: string;
     context?: StepInput["context"];
     inputResponses?: StepInput["inputResponses"];
     message?: StepInput["message"];
@@ -93,6 +94,9 @@ export function finishResolvedInput(input: {
     }
     if (input.resolvedStepInput?.message !== undefined) {
       deferredInput.message = input.resolvedStepInput.message;
+      if (input.resolvedStepInput.answerText !== undefined) {
+        deferredInput.answerText = input.resolvedStepInput.answerText;
+      }
     }
   }
   attachClientContext(deferredInput, clientContext);
@@ -131,6 +135,7 @@ export function compactStepInput(input: ResolvedStepInput | undefined): Resolved
   }
 
   const result: {
+    answerText?: string;
     context?: StepInput["context"];
     inputResponses?: StepInput["inputResponses"];
     message?: StepInput["message"];
@@ -140,7 +145,10 @@ export function compactStepInput(input: ResolvedStepInput | undefined): Resolved
 
   if ((input.context?.length ?? 0) > 0) result.context = input.context;
   if ((input.inputResponses?.length ?? 0) > 0) result.inputResponses = input.inputResponses;
-  if (input.message !== undefined) result.message = input.message;
+  if (input.message !== undefined) {
+    result.message = input.message;
+    if (input.answerText !== undefined) result.answerText = input.answerText;
+  }
   if (input.messageConsumed === true) result.messageConsumed = true;
   if (input.outputSchema !== undefined) result.outputSchema = input.outputSchema;
 

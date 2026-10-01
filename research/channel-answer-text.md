@@ -24,10 +24,16 @@ await from(threadId).send(attributedMessage, {
 
 `ChannelSendOptions.answerText?: string` reaches `DeliverPayload.answerText`.
 Core uses it instead of `message` when resolving a string message against the
-only pending question. Omission retains direct message matching. An empty string
+only pending question, or an eligible approval batch. Omission retains direct message matching. An empty string
 does not fall back to the envelope. Missing or multipart messages, delegated
 deliveries, ambiguous questions, and explicit input responses retain their
 existing behavior.
+
+Existing approval matching also carries this field through channel delivery,
+batching, and deferred harness input. Its eligibility rules remain unchanged:
+requests with response policies are excluded from text matching, and proxied
+approvals still need structured responses. This repairs formatted channels rather
+than adding new ways to approve tools.
 
 The field does not reach the model. Ordinary Slack message envelopes, fetched
 thread history, authored context, and attachments remain unchanged. Core does

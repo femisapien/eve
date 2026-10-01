@@ -152,6 +152,8 @@ export interface AttributedInputResponse {
 }
 
 export interface StepInput {
+  /** Plain channel reply used for matching; never appended to model history. */
+  readonly answerText?: string;
   /** Internal responder-bound input produced at the delivery boundary. */
   readonly attributedInputResponses?: readonly AttributedInputResponse[];
   readonly inputResponses?: readonly InputResponse[];

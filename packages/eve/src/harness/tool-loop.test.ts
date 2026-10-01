@@ -8392,61 +8392,116 @@ describe("createToolLoopHarness", () => {
     expect(getPendingInputRequestIds(result.session.state)).toEqual(new Set(["approval-1"]));
   });
 
-  it("consumes text approval shortcuts without appending them as user messages", async () => {
-    const generateCalls: unknown[] = [];
+  it.each([undefined, "approve"])(
+    "consumes approval shortcuts without model envelope leakage: %j",
+    async (answerText) => {
+      const generateCalls: unknown[] = [];
 
-    vi.mocked(ToolLoopAgent).mockImplementation(function (
-      this: Record<string, unknown>,
-      settings: MockAgentSettings,
-    ) {
-      const { onStepEnd, prepareStep } = settings;
-      this.generate = vi.fn().mockImplementation(async (input: { messages: unknown[] }) => {
-        if (prepareStep) {
-          await prepareStep({
-            messages: input.messages,
-            steps: [],
-            stepNumber: 0,
-            model: {},
-            context: undefined,
-          });
-        }
-        generateCalls.push(input.messages);
-        const result = {
-          finishReason: "stop",
-          response: { messages: [{ content: "Approved.", role: "assistant" }] },
-          text: "Approved.",
-          toolCalls: [],
-          toolResults: [],
-        };
-        if (onStepEnd) await onStepEnd(result);
-        return createMockGenerateResult(result);
-      });
-      return this as unknown as ToolLoopAgent;
-    } as unknown as ConstructorParameters<typeof ToolLoopAgent> extends [infer S]
-      ? (settings: S) => ToolLoopAgent
-      : never);
+      vi.mocked(ToolLoopAgent).mockImplementation(function (
+        this: Record<string, unknown>,
+        settings: MockAgentSettings,
+      ) {
+        const { onStepEnd, prepareStep } = settings;
+        this.generate = vi.fn().mockImplementation(async (input: { messages: unknown[] }) => {
+          if (prepareStep) {
+            await prepareStep({
+              messages: input.messages,
+              steps: [],
+              stepNumber: 0,
+              model: {},
+              context: undefined,
+            });
+          }
+          generateCalls.push(input.messages);
+          const result = {
+            finishReason: "stop",
+            response: { messages: [{ content: "Approved.", role: "assistant" }] },
+            text: "Approved.",
+            toolCalls: [],
+            toolResults: [],
+          };
+          if (onStepEnd) await onStepEnd(result);
+          return createMockGenerateResult(result);
+        });
+        return this as unknown as ToolLoopAgent;
+      } as unknown as ConstructorParameters<typeof ToolLoopAgent> extends [infer S]
+        ? (settings: S) => ToolLoopAgent
+        : never);
 
-    const session = appendPendingInputBatch({
-      requests: [
-        {
-          action: {
-            callId: "call-1",
-            input: { note: "text approval" },
-            kind: "tool-call",
-            toolName: "guarded_echo",
+      const session = appendPendingInputBatch({
+        requests: [
+          {
+            action: {
+              callId: "call-1",
+              input: { note: "text approval" },
+              kind: "tool-call",
+              toolName: "guarded_echo",
+            },
+            allowFreeform: false,
+            display: "confirmation",
+            kind: "tool-approval",
+            options: [
+              { id: "approve", label: "Approve" },
+              { id: "cancel", label: "Cancel" },
+            ],
+            prompt: "Approve tool call: guarded_echo",
+            requestId: "approval-1",
           },
-          allowFreeform: false,
-          display: "confirmation",
-          kind: "tool-approval",
-          options: [
-            { id: "approve", label: "Approve" },
-            { id: "cancel", label: "Cancel" },
+        ],
+        responseMessages: [
+          {
+            content: [
+              {
+                input: { note: "text approval" },
+                toolCallId: "call-1",
+                toolName: "guarded_echo",
+                type: "tool-call",
+              },
+              {
+                approvalId: "approval-1",
+                toolCallId: "call-1",
+                type: "tool-approval-request",
+              },
+            ],
+            role: "assistant",
+          },
+        ],
+        session: createTestSession({
+          agent: {
+            modelReference: { id: "test-model" },
+            system: "You are a test assistant.",
+            tools: [
+              {
+                description: "Echo a note",
+                name: "guarded_echo",
+                inputSchema: { type: "object" },
+              },
+            ],
+          },
+        }),
+      });
+
+      const config = createTestConfig(undefined, {
+        tools: new Map([
+          [
+            "guarded_echo",
+            {
+              description: "Echo a note",
+              execute: vi.fn().mockResolvedValue("ok"),
+              inputSchema: jsonSchema({ type: "object" }),
+              name: "guarded_echo",
+            },
           ],
-          prompt: "Approve tool call: guarded_echo",
-          requestId: "approval-1",
-        },
-      ],
-      responseMessages: [
+        ]),
+      });
+
+      await createToolLoopHarness(config)(session, {
+        message:
+          answerText === undefined ? "approve" : "<slack_message>Alice: approve</slack_message>",
+        answerText,
+      });
+
+      expect(generateCalls[0]).toEqual([
         {
           content: [
             {
@@ -8463,68 +8518,20 @@ describe("createToolLoopHarness", () => {
           ],
           role: "assistant",
         },
-      ],
-      session: createTestSession({
-        agent: {
-          modelReference: { id: "test-model" },
-          system: "You are a test assistant.",
-          tools: [
+        {
+          content: [
             {
-              description: "Echo a note",
-              name: "guarded_echo",
-              inputSchema: { type: "object" },
+              approvalId: "approval-1",
+              approved: true,
+              reason: undefined,
+              type: "tool-approval-response",
             },
           ],
+          role: "tool",
         },
-      }),
-    });
-
-    const config = createTestConfig(undefined, {
-      tools: new Map([
-        [
-          "guarded_echo",
-          {
-            description: "Echo a note",
-            execute: vi.fn().mockResolvedValue("ok"),
-            inputSchema: jsonSchema({ type: "object" }),
-            name: "guarded_echo",
-          },
-        ],
-      ]),
-    });
-
-    await createToolLoopHarness(config)(session, { message: "approve" });
-
-    expect(generateCalls[0]).toEqual([
-      {
-        content: [
-          {
-            input: { note: "text approval" },
-            toolCallId: "call-1",
-            toolName: "guarded_echo",
-            type: "tool-call",
-          },
-          {
-            approvalId: "approval-1",
-            toolCallId: "call-1",
-            type: "tool-approval-request",
-          },
-        ],
-        role: "assistant",
-      },
-      {
-        content: [
-          {
-            approvalId: "approval-1",
-            approved: true,
-            reason: undefined,
-            type: "tool-approval-response",
-          },
-        ],
-        role: "tool",
-      },
-    ]);
-  });
+      ]);
+    },
+  );
 
   it("defers durable and ephemeral context past the approval-response model call", async () => {
     setupMockAgent({

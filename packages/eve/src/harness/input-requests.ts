@@ -252,7 +252,7 @@ function resolveTextMessageInput(
   const textRequests = pendingBatch.requests.filter(
     (request) => !responseAuthRequired.has(request.requestId),
   );
-  const responses = resolveTextToResponses(stepInput.message, textRequests);
+  const responses = resolveTextToResponses(stepInput.answerText ?? stepInput.message, textRequests);
   if (responses.length === 0) return stepInput;
 
   return compactStepInput({
@@ -260,5 +260,6 @@ function resolveTextMessageInput(
     inputResponses: [...(stepInput.inputResponses ?? []), ...responses],
     messageConsumed: true,
     message: undefined,
+    answerText: undefined,
   });
 }

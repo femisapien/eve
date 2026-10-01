@@ -170,7 +170,7 @@ export interface TurnCaller {
  * attachments and other multimodal input straight to the harness.
  */
 export interface DeliverPayload {
-  /** Channel-provided plain text for question matching; does not change the model message. */
+  /** Channel-provided plain text for HITL matching; does not change the model message. */
   readonly answerText?: string;
   readonly inputResponses?: readonly InputResponse[];
   readonly message?: string | UserContent;
