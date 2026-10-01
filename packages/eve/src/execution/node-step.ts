@@ -118,12 +118,11 @@ export function createExecutionNodeStep(input: CreateExecutionNodeStepInput): St
     runtimeIdentity: buildRuntimeIdentity(input.node),
     tools,
   });
-  if (instrumentation === undefined) return step;
   return async (session, stepInput) => {
     try {
       return await step(session, stepInput);
     } finally {
-      await instrumentation.flush();
+      await instrumentation?.flush();
     }
   };
 }
