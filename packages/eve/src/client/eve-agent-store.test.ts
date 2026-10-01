@@ -79,6 +79,12 @@ function streamingTurnEvents(): MessageStreamEvent[] {
   ] as UnstampedMessageStreamEvent[]);
 }
 
+/** A boundary that lists the deliveries whose response it completes. */
+function processedBoundary(...processedDeliveryIds: string[]) {
+  const event = createSessionWaitingEvent();
+  return { ...event, data: { ...event.data, processedDeliveryIds } };
+}
+
 function startedResponse(deliveryId = "delivery_1"): Response {
   return new Response(
     JSON.stringify({
@@ -2246,7 +2252,7 @@ describe("EveAgentStore steering", () => {
     const events = stampTestEvents([
       createMessageReceivedEvent({ message: "First", sequence: 0, turnId: "turn_1" }),
       createTurnStartedEvent({ sequence: 1, turnId: "turn_1" }),
-      createSessionWaitingEvent(),
+      processedBoundary("first-delivery"),
       createMessageReceivedEvent({ message: "Use Linear", sequence: 0, turnId: "turn_2" }),
       createTurnStartedEvent({ sequence: 1, turnId: "turn_2" }),
       createAuthorizationRequiredEvent({
@@ -2258,7 +2264,8 @@ describe("EveAgentStore steering", () => {
         turnId: "turn_2",
         webhookUrl: "https://agent.example.com/callback",
       }),
-      createSessionWaitingEvent(),
+      // The sign-in's callback resumes the steered message's work, so it isn't processed yet.
+      processedBoundary(),
       createAuthorizationCompletedEvent({
         attemptId: "attempt_1",
         name: "linear",
@@ -2267,7 +2274,7 @@ describe("EveAgentStore steering", () => {
         stepIndex: 0,
         turnId: "turn_2",
       }),
-      createSessionWaitingEvent(),
+      processedBoundary("delivery_1"),
     ] as UnstampedMessageStreamEvent[]).map((event, index) => ({
       ...event,
       meta: { ...event.meta, deliveryIds: [index < 3 ? "first-delivery" : "delivery_1"] },
@@ -2319,7 +2326,7 @@ describe("EveAgentStore steering", () => {
         stepIndex: 0,
         turnId: "turn_1",
       }),
-      createSessionWaitingEvent(),
+      processedBoundary("first-delivery"),
       createMessageReceivedEvent({ message: "Instead", sequence: 0, turnId: "turn_2" }),
       createTurnStartedEvent({ sequence: 1, turnId: "turn_2" }),
       createMessageCompletedEvent({
@@ -2329,14 +2336,14 @@ describe("EveAgentStore steering", () => {
         stepIndex: 0,
         turnId: "turn_2",
       }),
-      createSessionWaitingEvent(),
+      processedBoundary("delivery_1"),
     ] as UnstampedMessageStreamEvent[]).map((event, index) => ({
       ...event,
       meta: { ...event.meta, deliveryIds: [index < 4 ? "first-delivery" : "delivery_1"] },
     }));
     const fetchMock = vi
       .spyOn(globalThis, "fetch")
-      .mockResolvedValueOnce(startedResponse())
+      .mockResolvedValueOnce(startedResponse("first-delivery"))
       .mockResolvedValueOnce(activeStream.response)
       .mockResolvedValueOnce(startedResponse());
     const store = createStore({ reducer: defaultMessageReducer() });

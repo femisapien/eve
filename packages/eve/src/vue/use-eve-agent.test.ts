@@ -77,6 +77,10 @@ function completedTurnData(input: {
   readonly userMessage: string;
 }): ConversationState {
   return {
+    authorizations: {},
+    calls: {},
+    candidates: {},
+    nextSequence: 0,
     tasks: {},
     agents: {},
     inputs: {},
