@@ -31,6 +31,9 @@ We add information to the streamed events to give authoritative answers to facts
 currently have to guess, and every reader uses the same projection instead of a custom fold over
 the streamed events. The work lands in the seven PRs listed under [Implementation plan](#implementation-plan).
 
+The main text covers the design and rollout. Expand the labeled sections for inventories,
+protocol fields, and detailed before/after code.
+
 ## Starting point
 
 This plan assumes these four PRs have merged:
@@ -49,6 +52,12 @@ publishes stream version 26, and the other readers fold raw events.
 ## Problem
 
 ### Many copies of the same state
+
+Ten durable records describe pending work, while lifecycle events are built in 16 files.
+Every mutation must report the matching event, and every reader must interpret it consistently.
+
+<details>
+<summary>Current records and competing lifecycle readers</summary>
 
 ```text
 ┌─ server: ten records ────────┐           ┌─ readers, each with its own rules ───────────┐
@@ -74,6 +83,8 @@ publishes stream version 26, and the other readers fold raw events.
 | Where does a call stand?                     | the pending batches and run registry, the task table, `part.state`, `eve dev`'s `toolState`, client task calls, task cards, `derive-run-facts`, the ACP adapter                                                                                          |
 | Which turn or call does something belong to? | emission state, `TurnDeliveryIdsKey` (messages only), the client's settlement buffering, `agentCallTurns`                                                                                                                                                |
 
+</details>
+
 ### Where readers disagree
 
 Three ordinary situations, as each reader reports them today:
@@ -97,34 +108,18 @@ Task cards here means the `TaskCardView` that channel renderers draw. Each row h
 
 ### Why they drift
 
-1. **Changing a record and emitting its event are separate statements.** Lifecycle events are
-   built in 16 files. Every site that changes a record must also emit, and some don't.
-2. **Records keep copies of public facts.** Relayed requests store each request's coordinates,
-   kind, and question. The task table stores calls and outcomes. Approval candidates store
-   settlements. Each copy is parsed, validated, and closed by hand: relayed requests at five
-   sites, and sign-ins at two, plus supersession.
-3. **A record tracks whether its events went out.** Approval candidates carry `eventEmitted` and
-   `pendingEventEmitted` flags. The tool loop emits every unmarked entry, then marks it.
-4. **Readers re-derive from raw events.** Each reader above maps results with its own rules. The
-   message reducer folds a second call lifecycle into `part.state`, and `agentCallTurns` assigns a
-   child session's turns to calls by counting messages.
-5. **Status is inferred from shape.** The handoff idle check probes five raw keys and three
-   registries. Nothing writes one of those keys, `eve.harness.pendingWorkflowInterrupt`.
+- **Mutation and reporting are separate.** Some cleanup paths drop requests without reporting
+  withdrawals; `clear` can leave approvals answerable.
+- **Records duplicate lifecycle facts.** Requests, task outcomes, and approval settlements are
+  copied and closed by hand. Approval candidates also track whether events were emitted.
+- **Readers infer what the stream omits.** They reconstruct call status, attribution, and read
+  boundaries from raw events, message position, or registry shape. Partial answers can leave
+  `respond()` waiting; overlapping answers can end at a sibling's boundary.
+- **Execution depends on replay.** Approvals replayed through the AI SDK can be skipped after
+  memory or instruction changes, while new input waits behind the parked batch.
 
-Besides the disagreements above, these cause user-visible bugs:
-
-- `clear` leaves approvals answerable, so a later answer runs a call from the cleared context.
-- A workflow call can dispatch while its approval is open. #3983 added a filter for this.
-- Approvals are replayed through the AI SDK, so new input waits behind an approval batch.
-- Answering some of a step's approvals emits no boundary, so `respond()` waits for the rest.
-- Cancelling a turn clears relayed requests without an event, and so does a task run that
-  finishes on its own. Readers keep showing those requests as answerable.
-- A relayed request carries the child session's coordinates, so clients attach it to the root's
-  first message.
-- An answer's events carry the delivery IDs of the message that started the parked turn, so
-  `respond(B)` can stop at a sibling answer's boundary.
-
-### Recent fixes in the same area
+<details>
+<summary>Recent fixes in the same area</summary>
 
 As of 2026-09-30, these PRs fix symptoms of the same problem one at a time. Each is right to
 land now, and the plan keeps its tests:
@@ -147,6 +142,8 @@ land now, and the plan keeps its tests:
 - **Readers re-deriving lifecycle.** #3980: channel activity counted a local agent's turn as its
   caller's, so the caller looked done early.
 
+</details>
+
 ## Design
 
 ### Four kinds of state
@@ -164,16 +161,11 @@ Both `TurnState` and `SessionProjection` are stored in durable session state, al
 records. Their boundary is execution information versus lifecycle facts, not private versus
 public visibility: **if a fact can be derived from published events, read it from the projection.**
 
-For an approval, the projection says that call C awaits request R and records R's decision.
-`TurnState` retains C's execution arguments and the suspended model-step transcript needed to
-resume. Those payloads reference C and R; they do not carry another approval or call status.
-Likewise, the projection records a task's outcome, while `TurnState` records that the model has
-yet to consume its result. Consumption is not another copy of task status.
-
-Queued input and accepted deliveries awaiting a boundary remain execution bookkeeping until
-events announce their turn attribution or completion. Announced turn delivery IDs live in the
-projection. A session-limit prompt is a projected input request; any private resume data belongs
-to a record keyed by its request ID, not a second pending-prompt flag in `TurnState`.
+For an approval, the projection records the request and decision; `TurnState` retains execution
+arguments and the suspended model step. For a task, the projection records its outcome;
+`TurnState` tracks whether the model has consumed it. Neither keeps a second lifecycle status.
+Announced delivery attribution and session-limit prompts also belong to the projection, not
+independent maps or pending flags in `TurnState`.
 
 ### Single unified fold
 
@@ -222,10 +214,11 @@ status onto their own vocabulary, so the three rows in
    stored call status.
 5. Caches are computed in the save function.
 
-`pnpm guard:invariants` enforces invariants 1 and 2. The check fails if code outside the machine
-imports turn-state writers or lifecycle event constructors, or if code outside the commit path
-writes the stored projection. It also keeps transitions pure, so a transition decides only from
-its view and its input:
+Proposed guards restrict state writers and lifecycle builders to the machine, projection writes
+to `commit`, and transitions to pure logic. They do not make effects and publishing atomic.
+
+<details>
+<summary>Guard sketch</summary>
 
 ```js
 // scripts/guard-invariants.mjs (sketch)
@@ -239,7 +232,16 @@ forbidInFile("packages/eve/src/harness/session-machine/transitions.ts", {
 });
 ```
 
+</details>
+
 ### The session machine
+
+Steps run effects inline, then pass their results into pure transitions. A transition returns
+execution state and lifecycle events; `commit` publishes, folds, prunes, and saves them together.
+Effects must be repeat-safe because a failed durable step is retried from the start.
+
+<details>
+<summary>Module layout, transitions, and state types</summary>
 
 The machine is one directory. Its transition list reads as the lifecycle:
 
@@ -297,10 +299,9 @@ interface Transition {
 }
 ```
 
-Every durable step has the same shape. `step` loads the view and hands it to a callback, which
-runs the step's effects, such as tools, model calls, or run commands, and returns a transition.
-The callback passes the effects' results into the transition, and effects must be safe to repeat,
-because a step that fails is retried from the start. `commit` does the rest:
+</details>
+
+Every durable step uses the same wrapper (sketch):
 
 ```ts
 // harness/session-machine/commit.ts (sketch)
@@ -323,18 +324,18 @@ async function commit(view: SessionView, t: Transition, publish: Publish) {
 }
 ```
 
-Cancelling a turn shows the difference. Today `settleCancelledTurnStep` is a durable step with
-three parts. `restoreSessionStep` rebuilds the runtime context and reads the durable session from
-the step's input. `publishFromSessionStep` opens the session's event publisher, which writes each
-event to the stream, hands it to the channel adapter, and runs hooks, and it takes two callbacks
-that know nothing about each other:
+**Cancellation shows the difference.** Today `publishFromSessionStep` separates what readers
+hear from what gets cleared: it emits turn/session boundaries but silently removes pending
+work. The machine instead reports withdrawals and stopped calls, and the fold closes them.
 
-- `publish` decides what readers hear. `emitCancelledTurn` writes `turn.cancelled` and
-  `session.waiting`, reading only the emission state to learn which turn it's cancelling.
-- `updateSession` decides what changes. It clears four records, each through its own helper.
+<details>
+<summary>Before: independent publishing and cleanup callbacks</summary>
 
-Last, the step serializes the context, computes caches such as `hasProxyInputRequests`, and
-returns the diff. From `execution/settle-cancelled-turn-step.ts`, trimmed:
+`restoreSessionStep` loads the durable session and runtime context. `publishFromSessionStep`
+opens the publisher (stream, channel, hooks) and takes two independent callbacks: `publish`
+decides what readers hear; `updateSession` decides what changes. The step then serializes the
+context, computes caches, and returns the diff. From `execution/settle-cancelled-turn-step.ts`,
+trimmed:
 
 ```ts
 const step = await restoreSessionStep(input);
@@ -364,22 +365,14 @@ const { published } = await publishFromSessionStep(step, {
 });
 ```
 
-Nothing ties the two callbacks together. `removeBlockingWorkflowToolRuns` forgets the running
-workflow calls, `commitCancelledCoordinationBatch` moves the parked step's calls into history,
-`clearAllProxyInputRequests` drops the questions the session relays for its children, and
-`clearPendingSessionLimitPrompt` drops the prompt. The model is told each parked call was
-cancelled, because `commitCancelledCoordinationBatch` writes "The turn was cancelled before this
-call finished." into its history, but the stream says nothing. Readers see only `turn.cancelled`
-and decide for themselves what happened to the running call and the relayed question, which is the
-third row of the table above. Even the turn being cancelled comes from whichever record has it:
-the coordination batch if one is parked, else the emission state. (#4083, open, replaces
-`clearAllProxyInputRequests` with reported withdrawals. The other three clears stay silent.)
+The helpers remove workflow runs, commit parked calls into model history, and drop relayed
+questions and the session-limit prompt. The model history says the calls were cancelled, but
+the stream reports only boundaries. Each reader guesses the rest. #4083 replaces the silent
+relayed-request cleanup with reported withdrawals; the proposal generalizes that fix.
 
-With the state machine, there is one callback, and it only needs to think about what events it
-returns, and even that is done with structured helpers rather than hand-rolled conditionals.
-Translating those events into stored lifecycle state is the job of the shared `foldSession`.
-Execution payload is retained or dropped separately; it doesn't decide which requests or calls
-are open:
+</details>
+
+After (sketch):
 
 ```ts
 // execution/settle-cancelled-turn-step.ts
@@ -412,9 +405,15 @@ the second path clears the run's relayed requests without an event.
 
 ### What happens to `tool-loop.ts`
 
-Most of the lifecycle lives in `harness/tool-loop.ts` today. The file is 3,356 lines, and
-`createToolLoopHarness` is one 1,577-line closure. Each durable step runs the closure's step
-body, which walks every stage of a turn in order. In outline, from `main`:
+Today `harness/tool-loop.ts` mixes pending-work coordination, lifecycle bookkeeping, and model
+execution in a 3,356-line file, with a 1,577-line harness closure. The proposal moves coordination,
+parking, and finishing into transitions. Model input, streaming/recovery, inline tools,
+compaction, and observability stay in the tool loop.
+
+<details>
+<summary>Before: tool-loop stages and lifecycle call sites</summary>
+
+Outline from `main`:
 
 ```ts
 // harness/tool-loop.ts today: the step body inside createToolLoopHarness (outline)
@@ -453,10 +452,9 @@ Along the way the file builds 10 kinds of lifecycle events itself, among them `i
 from 20 call sites and sets the emission state 15 times. The #4018 draft moved the records into
 `TurnState` but kept this shape.
 
-With the machine, the tool loop keeps what only it can do: building the model's input, calling
-the model with streaming, retries, and recovery, running inline tools, compaction, and
-observability. Pending work, parking, and finishing move into transitions, and the step body
-becomes a few effects between them:
+</details>
+
+After, the step body becomes effects between transitions (sketch):
 
 ```ts
 // harness/tool-loop.ts (sketch)
@@ -483,6 +481,12 @@ About 700 lines leave the file: the pending-work stage and the parking half of
 remains is the model step.
 
 ### Turn and call lifecycles
+
+The projection records turn and call lifecycle. The machine derives scheduling conditions such
+as “ready to dispatch” from those facts and execution payload; it does not store another status.
+
+<details>
+<summary>Turn/call diagrams and derived scheduling stages</summary>
 
 A turn:
 
@@ -530,7 +534,15 @@ The turn's execution phase is also derived, while its announced open/closed life
 the projection. If a ready or running workflow or task call exists, the turn waits on the runtime.
 If only approvals or the prompt remain, the turn closes. Otherwise the model runs.
 
+</details>
+
 ### What the records become
+
+Legacy records split into projected facts and execution payload, rather than moving wholesale
+into `TurnState`. Pruning retains facts referenced by suspended execution until it consumes them.
+
+<details>
+<summary>Record-by-record split and idle-check before/after</summary>
 
 | Record                                                 | Lifecycle facts owned by the projection                     | Execution or presentation data that remains                                                                                    |
 | ------------------------------------------------------ | ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
@@ -578,18 +590,20 @@ the stream reports it:
 export const isIdle = (v: SessionView) => v.turn.queued === undefined && !hasOpenWork(v.projection);
 ```
 
-The projection is folded on every event, not only for a particular reader, and includes relayed
-events. Before it's stored in every session, its pruning must be bounded. A fold that keeps every
-turn that continues another would grow without limit in a long-lived session. It keeps one link
-from each open turn to its root instead. It also retains decisions and outcomes referenced by
-suspended execution until that execution consumes them; pruning must not force `TurnState` to
-keep a second copy of those lifecycle facts.
+</details>
 
 ### What the stream states
 
 Each fact the session knew but the stream left unstated becomes a new field or value. No existing
 field changes meaning unless a new field marks it, so a reader can tell from each event which
 rules its writer followed; see [Compatibility](#compatibility).
+
+Withdrawals and stopped calls get explicit outcomes. Requests name their owning call, sign-ins
+name their attempt, and boundaries name the deliveries they finish. This removes inference by
+turn position, message counting, or whichever answer happened to finish first.
+
+<details>
+<summary>Stream fields and overlapping-answer example</summary>
 
 | Fact                                        | Readers guessed                                                      | Now                                                                                      |
 | ------------------------------------------- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
@@ -621,7 +635,21 @@ sequenceDiagram
   Note over A,S: Before, respond(B) ended at the first boundary,<br/>which could be A's.
 ```
 
+</details>
+
 ### Clients and eve's other readers
+
+`ConversationState` combines message content with the shared projection. Every reader uses its
+selectors, then maps the result to its presentation:
+
+- Chat and `eve dev` share `toolCallState`; AI SDK `part.state` is materialized from that status.
+- `send()` and `respond()` end at their delivery's boundary; store status no longer counts follow-ups.
+- Agent calls match child turns by delivery ID, not message order.
+- Task cards read the stored projection; evals and ACP fold their streams with the same function.
+  Failed task outcomes count as failures, denials don't, and ACP updates when work actually settles.
+
+<details>
+<summary>Conversation fold and lifecycle selectors: before/after</summary>
 
 **The conversation state.** `ConversationState` is the message list plus the projection. The
 conversation reducer runs the message reducer for content and the shared fold for lifecycle, on
@@ -694,6 +722,11 @@ export const pendingSignIns = (c: ConversationState) =>
 The public type can keep `calls` and `authorizations` out, as the draft in #3986 does, so eve can
 change how it stores them. The selectors read them either way.
 
+</details>
+
+<details>
+<summary>Tool rendering and AI SDK part states: before/after</summary>
+
 **Tool call state.** Today `eve dev` maps a tool call from the part, the inputs, the tasks, and
 the store's status, in its own function (from `cli/dev/tui/transcript-parts.ts`, trimmed):
 
@@ -756,6 +789,11 @@ and output) and writes `state` from the call's status:
 ones. A call interrupted because the reader's stream stopped remains a read-time judgment, passed
 as `streaming`.
 
+</details>
+
+<details>
+<summary>Read boundaries, store status, and child-turn attribution: before/after</summary>
+
 **Reads and store status.** `respond()` and `send()` resolve at the first boundary whose
 `processedDeliveryIds` lists their delivery. A boundary without the field comes from an older
 writer, so they end there, as today.
@@ -811,6 +849,11 @@ With the projection:
 const callTurns = (child: ConversationState, deliveryId: string) =>
   Object.values(child.turns).filter((turn) => turn.deliveryIds.includes(deliveryId));
 ```
+
+</details>
+
+<details>
+<summary>Task cards, eval assertions, and ACP: before/after</summary>
 
 **Task cards, evals, and ACP.** These don't hold a `ConversationState`, but they read the same
 projection. Task cards read the stored one on the server. Evals and ACP fold the events they
@@ -875,6 +918,8 @@ const failed = Object.keys(projection.calls).filter(
 `toolCallState`, and its diagnostics log reads failures from the projection instead of raw
 `action.result` events, so a failed subagent reaches the log too.
 
+</details>
+
 ## Compatibility
 
 Sessions aren't ported to the new state. This follows existing practice:
@@ -892,23 +937,14 @@ that changes it.
 
 ## Performance
 
-The plan stores essentially the same state as we do today, just in a different shape. What needs care:
+The plan reshapes existing state rather than retaining a second full history. Validate:
 
-- **Stored projection size.** Every session step copies and diffs the whole durable state
-  (`withSessionStateDelta`), so the server's projection must stay proportional to open work.
-  Pruning keeps open work, decisions and outcomes still referenced by execution, one link from
-  each open turn to its root, and what task cards need until their final update. PR 2 adds a test
-  that folds a long generated session and asserts the stored projection stays under a fixed size.
-- **Step count.** `commit` runs inside the steps that already exist, so no durable steps are
-  added. PR 1 compares step counts for a fixed scenario before and after.
-- **Client folds and selectors.** The client keeps the full history, but only lifecycle events
-  touch the projection; text deltas don't. Selectors run on every render, so the fold indexes
-  inputs by `callId`, and selectors memoize on the maps they read, which keep their identity
-  between text deltas. Writing `part.state` uses a call-to-message index, so a `turn.cancelled`
-  updates its calls without rescanning the transcript. The fold reports which calls an event
-  changed, so ACP and task cards don't compare every call on every event.
-- **Stream size.** A few events per cancel or clear, one field per boundary, and one `meta` field
-  on the events an answer produces.
+- **Bounded server state:** retain open work, facts still referenced by execution, root links,
+  and data needed for final task-card updates. PR 2 tests size over a long generated session.
+- **Step count:** `commit` runs within existing steps; PR 1 compares counts before and after.
+- **Client cost:** text deltas preserve lifecycle-map identity. Index inputs and message parts by
+  call ID, memoize selectors, and report changed calls instead of rescanning history.
+- **Stream overhead:** extra outcomes on cancel/clear, delivery IDs on boundaries, and answer metadata.
 
 ## Testing
 
@@ -921,31 +957,35 @@ The plan stores essentially the same state as we do today, just in a different s
 - **Generated sessions** run seeded random sequences of messages, answers, steering, results,
   sign-ins, cancels, and clears against a model that calls tools at random. CI runs a fixed seed
   set.
-- **Rules the checker enforces:**
+- **Older writers:** test each new fact's fallback against older events.
+- **End-to-end evals and TUI smoke tests:** cover approval, sign-in, relay, cancellation, and
+  overlapping-answer workflows.
 
-  | Rule                | A reader may rely on                                                                                           |
-  | ------------------- | -------------------------------------------------------------------------------------------------------------- |
-  | `turn-order`        | one turn at a time, content inside its turn, nothing after the session ends                                    |
-  | `resolved-twice`    | a request resolves once                                                                                        |
-  | `open-after-owner`  | no request or sign-in outlives its task, turn, a clear, or the session                                         |
-  | `state-agreement`   | execution references agree with projected requests, decisions, and outcomes; no independent lifecycle statuses |
-  | `unasked-sign-in`   | a call settled for a sign-in is named by an `authorization.required`                                           |
-  | `own-coordinates`   | events name only turns and calls this stream announced                                                         |
-  | `unsettled-call`    | a completed turn leaves no call without an outcome                                                             |
-  | `delivery-boundary` | every accepted delivery is listed by a boundary's `processedDeliveryIds`                                       |
+<details>
+<summary>Contract rules and historical draft validation</summary>
 
-- **Older writers:** each fallback has a unit test over an older writer's events, such as a
-  `respond()` over boundaries without `processedDeliveryIds`.
-- **End-to-end evals** cover approvals (partial, separate, stale, and policy-settled answers),
-  sign-ins, relayed questions, task and workflow calls, cancellation, and `respond()` with
-  overlapping answers. TUI smoke tests cover `eve dev`.
+| Rule                | A reader may rely on                                                                                           |
+| ------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `turn-order`        | one turn at a time, content inside its turn, nothing after the session ends                                    |
+| `resolved-twice`    | a request resolves once                                                                                        |
+| `open-after-owner`  | no request or sign-in outlives its task, turn, a clear, or the session                                         |
+| `state-agreement`   | execution references agree with projected requests, decisions, and outcomes; no independent lifecycle statuses |
+| `unasked-sign-in`   | a call settled for a sign-in is named by an `authorization.required`                                           |
+| `own-coordinates`   | events name only turns and calls this stream announced                                                         |
+| `unsettled-call`    | a completed turn leaves no call without an outcome                                                             |
+| `delivery-boundary` | every accepted delivery is listed by a boundary's `processedDeliveryIds`                                       |
 
 Drafts of most of these changes exist in #4018, #4044, #3986, and #3977. Against them, 1,500
 generated seeds pass locally. On 200 seeds, removing the cancel withdrawals fails 15% of seeds,
 removing the clear withdrawals fails 40%, and removing the sign-in ask beside an approval fails
 55%.
 
+</details>
+
 ## Implementation plan
+
+Seven PRs: extract the machine, replace lifecycle copies with the stored projection, then move
+readers onto it. PRs 5 and 6 can proceed independently after PR 4.
 
 ```mermaid
 flowchart LR
@@ -973,6 +1013,9 @@ Sizes are rough net estimates for production code in `packages/eve/src`.
 
 In total, production code in `packages/eve/src` should shrink by roughly 850–1,700 lines. Tests
 should shrink by about 3,000, mostly suites written against the replaced records.
+
+<details>
+<summary>Per-PR scope, sequencing, and regression coverage</summary>
 
 ### 1. Session machine
 
@@ -1063,6 +1106,8 @@ old paths.
 
 - Folds activity under each stretch of an answer, and shows requests inline where they arrived.
 - Builds on the public selectors, with no copied helpers.
+
+</details>
 
 ## Out of scope
 
