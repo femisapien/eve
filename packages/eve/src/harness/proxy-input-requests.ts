@@ -139,14 +139,14 @@ export function upsertProxyInputRequestState(input: {
 /** Removes every proxy route the predicate selects. */
 export function clearProxyInputRequestsWhere<T extends { readonly state?: SessionStateMap }>(
   session: T,
-  select: (route: ProxyInputRequest) => boolean,
+  select: (route: ProxyInputRequest, requestId: string) => boolean,
 ): T {
   const current = readMap(session.state);
   const next: Record<string, ProxyInputRequest> = {};
   let changed = false;
 
   for (const [requestId, route] of Object.entries(current)) {
-    if (select(route)) {
+    if (select(route, requestId)) {
       changed = true;
       continue;
     }
@@ -173,17 +173,6 @@ export function retireProxyInputRequests<T extends { readonly state?: SessionSta
   }
 
   return changed ? writeMap(session, next) : session;
-}
-
-/**
- * Removes every proxy entry. Called when a cancelled turn orphans its
- * descendants so stale HITL responses no longer route to them.
- */
-export function clearAllProxyInputRequests(session: HarnessSession): HarnessSession {
-  if (!hasProxyInputRequests(session.state)) {
-    return session;
-  }
-  return writeMap(session, {});
 }
 
 /**

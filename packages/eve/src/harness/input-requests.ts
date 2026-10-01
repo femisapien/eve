@@ -22,14 +22,13 @@ import type {
   ResolvedStepInput,
 } from "#harness/hitl/pending-input-resolution.js";
 import {
-  clearPendingSessionLimitPrompt,
   isSessionLimitInputBatch,
   resolveSessionLimitInput,
 } from "#harness/hitl/session-limit-input-requests.js";
 import type { HarnessSession, StepInput } from "#harness/types.js";
 import { readClientContext } from "#internal/client-context.js";
 
-export { getApprovedTools, clearPendingSessionLimitPrompt };
+export { getApprovedTools };
 export type { RejectedActionBatch };
 export type { ResolvedInputBatch } from "#harness/input-request-resolution.js";
 export {

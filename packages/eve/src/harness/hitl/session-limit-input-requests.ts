@@ -1,7 +1,6 @@
 import type { PendingInputBatch } from "#harness/pending-input-batches.js";
 import { buildResolvedInputBatch } from "#harness/input-request-resolution.js";
 import {
-  getPendingInputBatches,
   queueDeferredStepInput,
   removePendingInputBatches,
 } from "#harness/pending-input-batches.js";
@@ -19,7 +18,6 @@ import {
   isSessionLimitContinuationRequest,
   resolveSessionLimitContinuation,
 } from "#harness/session-limit-continuation.js";
-import type { HarnessSession } from "#harness/types.js";
 
 const SESSION_LIMIT_BATCH_INVARIANT_MESSAGE =
   "Session-limit pending input batches must contain only session-limit requests.";
@@ -81,13 +79,4 @@ export function isSessionLimitPromptBatch(batch: PendingInputBatch): boolean {
     batch.requests.length > 0 &&
     batch.requests.every((request) => isSessionLimitContinuationRequest(request))
   );
-}
-
-/** Drops only harness-authored session-limit prompts from a parked session. */
-export function clearPendingSessionLimitPrompt(session: HarnessSession): HarnessSession {
-  const dropped = getPendingInputBatches(session.state).filter(isSessionLimitPromptBatch);
-  if (dropped.length === 0) {
-    return session;
-  }
-  return removePendingInputBatches(session, dropped);
 }

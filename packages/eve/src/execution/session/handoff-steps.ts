@@ -1,4 +1,6 @@
-import { getBlockingWorkflowToolRuns } from "#harness/workflow-tool-runs.js";
+import { getDeferredStepInput } from "#harness/pending-input-batches.js";
+import { storedProjection } from "#harness/session-machine/view.js";
+import { openInputs, openSignIns } from "#protocol/session-projection.js";
 import { deserializeContext } from "#context/serialize.js";
 import { readDurableSession, type DurableSessionState } from "#execution/durable-session-store.js";
 import {
@@ -10,41 +12,32 @@ import { resumeHook } from "#internal/workflow/runtime.js";
 import { getResolvedRuntimeAgentNode } from "#runtime/graph.js";
 import { BundleKey } from "#runtime/sessions/runtime-context-keys.js";
 import { getSandboxEnvironmentRuntime } from "#shared/sandbox-environment.js";
-import { isObject } from "#shared/guards.js";
 
-/** Parses retained work with this deployment's code before deciding whether it can move. */
-export function isSessionStateIdleForHandoff(sessionState: DurableSessionState): boolean {
-  const { state } = readDurableSession(sessionState);
-  // Decoding the run registry rejects corrupt state before any busy-work shortcut.
-  const workflowToolRuns = getBlockingWorkflowToolRuns(state);
-
-  // These registries are deleted when work settles. Their ordinary readers
-  // tolerate malformed values as absent; that must not authorize a handoff.
-  const pendingKeys = [
-    "eve.runtime.pendingAuthorization",
-    "eve.runtime.pendingInputBatch",
-    "eve.runtime.pendingCoordinationBatch",
-    "eve.runtime.deferredStepInput",
-    "eve.harness.pendingWorkflowInterrupt",
-  ];
-  if (pendingKeys.some((key) => state?.[key] !== undefined)) return false;
-  const batches = state?.["eve.runtime.pendingInputBatches"];
-  if (batches !== undefined && (!Array.isArray(batches) || batches.length > 0)) return false;
-  const proxyRequests = state?.["eve.runtime.proxyInputRequests"];
-  if (
-    proxyRequests !== undefined &&
-    (!isObject(proxyRequests) || Object.keys(proxyRequests).length > 0)
-  )
-    return false;
-  return workflowToolRuns.length === 0;
+/**
+ * A session hands off only between turns with nothing open: no request, sign-in, or queued
+ * input. Open work is whatever the stored projection shows open, so a new kind of work is
+ * covered as soon as the stream reports it.
+ */
+export function isSessionStateIdleForHandoff(input: {
+  readonly serializedContext: Record<string, unknown>;
+  readonly sessionState: DurableSessionState;
+}): boolean {
+  const projection = storedProjection(input.serializedContext);
+  return (
+    projection.activeTurnId === undefined &&
+    openInputs(projection).length === 0 &&
+    openSignIns(projection).length === 0 &&
+    getDeferredStepInput(readDurableSession(input.sessionState)) === undefined
+  );
 }
 
 /** Reads durable work using the source deployment's handoff contract. */
 export async function isSessionIdleForHandoffStep(input: {
+  readonly serializedContext: Record<string, unknown>;
   readonly sessionState: DurableSessionState;
 }): Promise<boolean> {
   "use step";
-  return isSessionStateIdleForHandoff(input.sessionState);
+  return isSessionStateIdleForHandoff(input);
 }
 
 export type SessionCheckpointValidation =
@@ -91,7 +84,7 @@ export async function validateSessionCheckpointStep(input: {
       throw new Error("Session checkpoint sandbox provider state is incompatible.");
     }
   }
-  if (!isSessionStateIdleForHandoff(checkpoint.sessionState)) {
+  if (!isSessionStateIdleForHandoff(checkpoint)) {
     throw new Error("Session checkpoint contains pending work and cannot be handed off.");
   }
   return { kind: "valid" };

@@ -12,12 +12,8 @@
  *    the prompt).
  */
 import { createInputRequestedEvent } from "#protocol/message.js";
-import {
-  emitFailedStep,
-  emitTurnEpilogue,
-  setHarnessEmissionState,
-  type HarnessEmissionState,
-} from "#harness/emission.js";
+import { emitFailedStep, emitTurnEpilogue } from "#harness/emission.js";
+import type { TurnPosition } from "#harness/session-machine/view.js";
 import { appendPendingInputBatch } from "#harness/input-requests.js";
 import type { HarnessModelMessage } from "#harness/messages.js";
 import { createSessionLimitContinuationRequest } from "#harness/session-limit-continuation.js";
@@ -36,7 +32,7 @@ const SESSION_TOKEN_COST_LIMIT_REACHED_CODE = "SESSION_TOKEN_COST_LIMIT_REACHED"
 interface SessionLimitPolicyInput {
   readonly config: ToolLoopHarnessConfig;
   readonly emit?: ToolLoopHarnessConfig["handleEvent"];
-  readonly emissionState: HarnessEmissionState;
+  readonly emissionState: TurnPosition;
   readonly session: HarnessSession;
 }
 
@@ -112,7 +108,7 @@ export async function enforceSessionUsageLimit(
 async function parkOnSessionUsageLimit(input: {
   readonly config: ToolLoopHarnessConfig;
   readonly emit: NonNullable<ToolLoopHarnessConfig["handleEvent"]>;
-  readonly emissionState: HarnessEmissionState;
+  readonly emissionState: TurnPosition;
   readonly messages: readonly HarnessModelMessage[];
   readonly session: HarnessSession;
   readonly violation: SessionUsageLimitViolation;
@@ -121,7 +117,7 @@ async function parkOnSessionUsageLimit(input: {
     sessionId: input.session.sessionId,
     violation: input.violation,
   });
-  let emissionState = input.emissionState;
+  const emissionState = input.emissionState;
 
   const parkedSession = appendPendingInputBatch({
     event: {
@@ -143,12 +139,8 @@ async function parkOnSessionUsageLimit(input: {
     }),
   );
 
-  emissionState = await emitTurnEpilogue(input.emit, emissionState, parkedSession.history);
-
-  return {
-    next: null,
-    session: setHarnessEmissionState(parkedSession, emissionState),
-  };
+  await emitTurnEpilogue(input.emit, emissionState, parkedSession.history);
+  return { next: null, session: parkedSession };
 }
 
 function violationWindow(violation: SessionUsageLimitViolation): number {
@@ -164,7 +156,7 @@ function formatSessionLimitMessage(kind: SessionUsageLimitViolation["kind"]): st
 async function failSessionUsageLimit(input: {
   readonly config: ToolLoopHarnessConfig;
   readonly emit?: ToolLoopHarnessConfig["handleEvent"];
-  readonly emissionState: HarnessEmissionState;
+  readonly emissionState: TurnPosition;
   readonly session: HarnessSession;
   readonly violation: SessionUsageLimitViolation;
 }): Promise<StepResult> {

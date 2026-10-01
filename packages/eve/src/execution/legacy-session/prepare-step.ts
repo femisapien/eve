@@ -2,7 +2,8 @@ import { hydrateWorkflowArguments } from "#compiled/@workflow/core/serialization
 import { getWorld, resolveRunEncryptionKey } from "#internal/workflow/runtime.js";
 import { DEFAULT_SESSION_TIMEOUT_MS } from "#execution/session/timeout.js";
 import { readLegacyTurnInput, type LegacyTurnInput } from "./input.js";
-import { readLegacySnapshot, importConversation } from "./snapshot.js";
+import { readLegacySnapshot, importConversation, importProjection } from "./snapshot.js";
+import { SessionProjectionKey } from "#context/keys.js";
 import { SESSION_INBOX_CONTEXT_KEY } from "#execution/session-inbox/address.js";
 import { isObject } from "#shared/guards.js";
 
@@ -32,6 +33,7 @@ export async function prepareLegacySessionStep(rawInput: unknown) {
   const serializedContext: Record<string, unknown> = {
     ...input.serializedContext,
     "eve.sessionId": sessionState.sessionId,
+    [SessionProjectionKey.name]: importProjection(originalSession),
     [SESSION_INBOX_CONTEXT_KEY]: { sessionId: sessionState.sessionId },
   };
   delete serializedContext["eve.sessionCallback"];

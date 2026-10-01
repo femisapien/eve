@@ -9,7 +9,7 @@ import {
   commitCancelledCoordinationBatch,
   getPendingCoordinationBatch,
 } from "#harness/coordination.js";
-import { getHarnessEmissionState } from "#harness/emission.js";
+import { createProjectionRecorder } from "#internal/testing/session-projection-recorder.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import { getPendingInputBatches } from "#harness/pending-input-batches.js";
 import { createToolLoopHarness } from "#harness/tool-loop.js";
@@ -72,6 +72,12 @@ function setup(
     tools: new Map(tools.map((tool) => [tool.name, tool])),
     ...overrides,
   };
+  const recorder = createProjectionRecorder();
+  const handleEvent = config.handleEvent;
+  config.handleEvent = async (event, messages) => {
+    recorder.record(event);
+    await handleEvent?.(event, messages);
+  };
   const session: HarnessSession = {
     agent: {
       modelReference: { id: "approval-model" },
@@ -87,10 +93,10 @@ function setup(
     session: HarnessSession,
     input?: Parameters<ReturnType<typeof createToolLoopHarness>>[1],
   ) =>
-    contextStorage.run(createApprovalContext(), () =>
+    contextStorage.run(recorder.enter(createApprovalContext()), () =>
       createToolLoopHarness(config)(session, input),
     );
-  return { events, config, model, step, session };
+  return { events, config, model, recorder, step, session };
 }
 
 function requests(session: HarnessSession) {
@@ -128,7 +134,7 @@ describe("workflow approval resume (real AI SDK)", () => {
     expect(
       getPendingCoordinationBatch(approved.session.state)?.tasks.map((task) => task.callId),
     ).toEqual(["call-0"]);
-    const resumedTurn = getHarnessEmissionState(approved.session.state).turnId;
+    const resumedTurn = fixture.recorder.position.turnId;
     expect(resumedTurn).not.toBe("");
     expect(
       fixture.events.slice(start).filter((event) => event.type === "turn.started"),

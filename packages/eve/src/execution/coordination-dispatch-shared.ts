@@ -28,7 +28,7 @@ import {
   getPendingCoordinationBatch,
   setPendingCoordinationBatch,
 } from "#harness/coordination.js";
-import { activeTurnId } from "#harness/active-turn-id.js";
+import { activeTurnId, storedProjection, turnPosition } from "#harness/session-machine/view.js";
 import type { ActivityWorkIdentityV1 } from "#protocol/activity.js";
 import type { RuntimeActionResult, RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
 import type { SessionParent } from "#channel/types.js";
@@ -107,7 +107,8 @@ export async function prepareCoordinationDispatch(input: {
   if (pending === undefined) return undefined;
   const requests = pending.tasks;
   if (requests.length === 0) return undefined;
-  const turnId = pending.event.turnId || activeTurnId(input.sessionState.emissionState);
+  const turnId =
+    pending.event.turnId || activeTurnId(turnPosition(storedProjection(input.serializedContext)));
   const event = pending.event.turnId === turnId ? pending.event : { ...pending.event, turnId };
   const ctx = await deserializeContext(input.serializedContext);
   const prepared = await prepareActionDispatch({

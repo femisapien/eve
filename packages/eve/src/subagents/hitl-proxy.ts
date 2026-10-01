@@ -4,7 +4,8 @@ import type {
   SubagentAuthorizationEventHookPayload,
   SubagentInputRequestHookPayload,
 } from "#channel/types.js";
-import { getHarnessEmissionState } from "#harness/emission.js";
+import { turnPosition } from "#harness/session-machine/view.js";
+import { currentProjection } from "#harness/session-machine/current.js";
 import { resolveInputOutcome } from "#harness/input-request-resolution.js";
 import type { PendingInputBatchEvent } from "#harness/pending-input-batches.js";
 import {
@@ -37,17 +38,36 @@ export async function emitProxiedInputRequest(input: {
   readonly hookPayload: SubagentInputRequestHookPayload;
   readonly session: HarnessSession;
 }): Promise<readonly (readonly [requestId: string, route: ProxyInputRequest])[]> {
+  const hookPayload = servedCallCoordinates(input.hookPayload);
   await input.emit(
     createInputRequestedEvent({
-      requests: input.hookPayload.event.requests,
-      sequence: input.hookPayload.event.sequence,
-      stepIndex: input.hookPayload.event.stepIndex,
-      taskId: input.hookPayload.event.taskId,
-      turnId: input.hookPayload.event.turnId,
+      callId: hookPayload.callId,
+      requests: hookPayload.event.requests,
+      sequence: hookPayload.event.sequence,
+      stepIndex: hookPayload.event.stepIndex,
+      taskId: hookPayload.event.taskId,
+      turnId: hookPayload.event.turnId,
     }),
   );
   await emitTurnWaiting(input.emit, input.session);
-  return toProxyInputRequestEntries(input.hookPayload);
+  return toProxyInputRequestEntries(hookPayload);
+}
+
+/**
+ * A relayed request belongs to the call it serves, not to the child's turn: it takes the
+ * coordinates this session announced for that call, so readers attach it to the call.
+ */
+function servedCallCoordinates(
+  payload: SubagentInputRequestHookPayload,
+): SubagentInputRequestHookPayload {
+  const projection = currentProjection();
+  const call = projection.calls[payload.callId];
+  if (call === undefined) return payload;
+  const sequence = projection.turns[call.turnId]?.sequence ?? payload.event.sequence;
+  return {
+    ...payload,
+    event: { ...payload.event, sequence, stepIndex: call.stepIndex, turnId: call.turnId },
+  };
 }
 
 /**
@@ -61,14 +81,32 @@ export async function emitProxiedAuthorizationEvent(input: {
   readonly hookPayload: SubagentAuthorizationEventHookPayload;
   readonly session: HarnessSession;
 }): Promise<void> {
-  await input.emit(input.hookPayload.event);
+  const projection = currentProjection();
+  const call = projection.calls[input.hookPayload.callId];
+  const { event } = input.hookPayload;
+  // Like a relayed request, a relayed sign-in belongs to the call it serves.
+  await input.emit(
+    call === undefined
+      ? event
+      : ({
+          ...event,
+          data: {
+            ...event.data,
+            sequence: projection.turns[call.turnId]?.sequence ?? event.data.sequence,
+            stepIndex: call.stepIndex,
+            turnId: call.turnId,
+          },
+        } as typeof event),
+  );
   if (input.hookPayload.event.type === "authorization.required") {
     await emitTurnWaiting(input.emit, input.session);
   }
 }
 
-async function emitTurnWaiting(emit: HarnessEmitFn, session: HarnessSession): Promise<void> {
-  const turn = getHarnessEmissionState(session.state);
+/** Parks the open turn on a relayed request; between turns there is no turn to park. */
+async function emitTurnWaiting(emit: HarnessEmitFn, _session: HarnessSession): Promise<void> {
+  const turn = turnPosition(currentProjection());
+  if (turn.turnId === "") return;
   await emit(createTurnWaitingEvent({ sequence: turn.sequence, turnId: turn.turnId }));
 }
 

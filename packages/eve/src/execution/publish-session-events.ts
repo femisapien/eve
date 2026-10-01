@@ -18,8 +18,8 @@ import { resolveEffectiveAgentRuntime } from "#execution/effective-agent-config.
 import { reconcileSessionContinuationToken } from "#execution/reconcile-session-continuation-token.js";
 import { observeSessionActivity } from "#execution/session-activity-projection.js";
 import { hydrateDurableSession } from "#execution/session.js";
-import { activeTurnId } from "#harness/active-turn-id.js";
-import { getHarnessEmissionState } from "#harness/emission.js";
+import { activeTurnId, turnPosition } from "#harness/session-machine/view.js";
+import { dropClosedRecords } from "#harness/session-machine/commit.js";
 import type { HandleEventFn, HarnessSession } from "#harness/types.js";
 import { bindSessionInstrumentation } from "#instrumentation/runtime.js";
 import { createLogger } from "#internal/logging.js";
@@ -173,9 +173,13 @@ export async function withSessionEventEmitter<T>(
       const emit =
         instrumentation?.createHandleEvent({
           handleEvent: publish,
-          turnId: activeTurnId(getHarnessEmissionState(input.durableSession.state)),
+          turnId: activeTurnId(turnPosition(readSessionProjection(ctx))),
         }) ?? publish;
-      return await emitEvents(emit, enrichedSession);
+      const emitted = await emitEvents(emit, enrichedSession);
+      return {
+        ...emitted,
+        session: dropClosedRecords(emitted.session, readSessionProjection(ctx)),
+      };
     });
   } finally {
     await instrumentation?.flush();

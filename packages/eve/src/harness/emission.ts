@@ -57,31 +57,23 @@ import { normalizeModelStreamError } from "#harness/model-call-error.js";
 import { createOrderedStreamEmitter } from "#harness/ordered-stream-emitter.js";
 import { interruptStreamOnFailure } from "#harness/interruptible-stream.js";
 import { isInlineAuthorizationToolResult } from "#harness/inline-tool-authorization.js";
-import type { HarnessEmissionState } from "#harness/emission-state.js";
+import { nextStepIndex, turnPosition, type TurnPosition } from "#harness/session-machine/view.js";
+import { currentProjection } from "#harness/session-machine/current.js";
 import type { HarnessEmitFn, HarnessToolMap, StepInput } from "#harness/types.js";
 import { normalizeAssistantStepFinishReason } from "#harness/finish-reason.js";
 
-export {
-  getHarnessEmissionState,
-  isHarnessBetweenTurns,
-  setHarnessEmissionState,
-} from "#harness/emission-state.js";
-export type { HarnessEmissionState } from "#harness/emission-state.js";
-
 /**
  * Emits `session.started` (once), `turn.started`, and `message.received` at the
- * beginning of a new turn. Returns updated emission state.
+ * beginning of a new turn, or `message.received` alone when steering re-enters the open turn.
  */
 export async function emitTurnPreamble(
   emitFn: HarnessEmitFn,
   input: StepInput,
-  state: HarnessEmissionState,
+  state: TurnPosition,
   messages: readonly ModelMessage[],
   runtimeIdentity?: RuntimeIdentity,
   traceContext?: RuntimeTraceContext,
-): Promise<HarnessEmissionState> {
-  // Steering re-enters an open turn: keep its id and step index and skip the
-  // `turn.started` it already emitted.
+): Promise<TurnPosition> {
   const steering = state.turnId !== "";
   const turnId = steering ? state.turnId : `turn_${state.sequence}`;
 
@@ -105,36 +97,29 @@ export async function emitTurnPreamble(
       }),
     );
   }
-
-  const nextState: HarnessEmissionState = {
-    sessionStarted: true,
-    sequence: state.sequence,
-    stepIndex: steering ? state.stepIndex : 0,
-    turnId,
-  };
-  return steering && state.assistantOutputStarted
-    ? { ...nextState, assistantOutputStarted: true }
-    : nextState;
+  return currentPosition();
 }
 
 /**
- * Emits `step.started` for one model call.
+ * Emits `step.started` for the open turn's next model call and returns the position its
+ * events carry.
  */
 export async function emitStepStarted(
   emitFn: HarnessEmitFn,
-  state: HarnessEmissionState,
+  state: TurnPosition,
   modelId: string,
   messages?: readonly import("ai").ModelMessage[],
-): Promise<void> {
+): Promise<TurnPosition> {
   await emitFn(
     createStepStartedEvent({
       modelId,
       sequence: state.sequence,
-      stepIndex: state.stepIndex,
+      stepIndex: nextStepIndex(currentProjection()),
       turnId: state.turnId,
     }),
     messages,
   );
+  return currentPosition();
 }
 
 interface FailedStepPayload {
@@ -150,7 +135,7 @@ interface FailedStepPayload {
  */
 async function emitStepAndTurnFailed(
   emitFn: HarnessEmitFn,
-  state: HarnessEmissionState,
+  state: TurnPosition,
   input: FailedStepPayload,
 ): Promise<void> {
   await emitFn(
@@ -181,7 +166,7 @@ async function emitStepAndTurnFailed(
  */
 export async function emitFailedStep(
   emitFn: HarnessEmitFn,
-  state: HarnessEmissionState,
+  state: TurnPosition,
   input: FailedStepPayload & { readonly sessionId: string },
 ): Promise<void> {
   await emitStepAndTurnFailed(emitFn, state, input);
@@ -194,39 +179,20 @@ export async function emitFailedStep(
  */
 export async function emitRecoverableFailedTurn(
   emitFn: HarnessEmitFn,
-  state: HarnessEmissionState,
+  state: TurnPosition,
   input: FailedStepPayload & { readonly continuationToken: string },
-): Promise<HarnessEmissionState> {
+): Promise<TurnPosition> {
   await emitStepAndTurnFailed(emitFn, state, input);
   await emitFn(createSessionWaitingEvent());
-
-  return {
-    sessionStarted: state.sessionStarted,
-    sequence: state.sequence + 1,
-    stepIndex: 0,
-    turnId: "",
-  };
+  return currentPosition();
 }
 
-/**
- * Returns updated emission state for the next step in the current turn.
- */
-export function advanceStep(state: HarnessEmissionState): HarnessEmissionState {
-  return {
-    ...state,
-    stepIndex: state.stepIndex + 1,
-  };
-}
-
-/**
- * Emits `turn.completed` and `session.waiting`.
- * Returns updated emission state with an incremented sequence.
- */
+/** Emits `turn.completed` and `session.waiting`. */
 export async function emitTurnEpilogue(
   emitFn: HarnessEmitFn,
-  state: HarnessEmissionState,
+  state: TurnPosition,
   messages: readonly ModelMessage[],
-): Promise<HarnessEmissionState> {
+): Promise<TurnPosition> {
   await emitFn(
     createTurnCompletedEvent({
       sequence: state.sequence,
@@ -235,13 +201,12 @@ export async function emitTurnEpilogue(
     messages,
   );
   await emitFn(createSessionWaitingEvent());
+  return currentPosition();
+}
 
-  return {
-    sessionStarted: state.sessionStarted,
-    sequence: state.sequence + 1,
-    stepIndex: 0,
-    turnId: "",
-  };
+/** The position the next lifecycle event carries, from the stored projection. */
+export function currentPosition(): TurnPosition {
+  return turnPosition(currentProjection());
 }
 
 /**
@@ -279,7 +244,7 @@ interface StreamActionEmissionOptions {
  */
 export async function emitStreamContent(
   emitFn: HarnessEmitFn,
-  state: HarnessEmissionState,
+  state: TurnPosition,
   fullStream: AsyncIterable<TextStreamPart<ToolSet>>,
   options?: StreamActionEmissionOptions,
 ): Promise<EmittedStreamContent> {
@@ -316,7 +281,7 @@ function reportedFinishReason(
 
 async function consumeStreamContent(
   emitFn: HarnessEmitFn,
-  state: HarnessEmissionState,
+  state: TurnPosition,
   fullStream: AsyncIterable<TextStreamPart<ToolSet>>,
   providerActionBatch: ReturnType<typeof createProviderStreamActionBatch>,
   options?: StreamActionEmissionOptions,

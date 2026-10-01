@@ -15,10 +15,9 @@ import {
   withSessionStateDelta,
   type WithSessionStateDelta,
 } from "#execution/session/state-delta.js";
-import { emitCancelledTurn } from "#harness/cancelled-turn-emission.js";
-import { clearPendingSessionLimitPrompt } from "#harness/input-requests.js";
-import { getHarnessEmissionState, setHarnessEmissionState } from "#harness/emission.js";
-import { clearAllProxyInputRequests } from "#harness/proxy-input-requests.js";
+import { cancel } from "#harness/session-machine/transitions.js";
+import { dropClosedRecords, sessionView } from "#harness/session-machine/commit.js";
+import { currentProjection } from "#harness/session-machine/current.js";
 import { removeBlockingWorkflowToolRuns } from "#harness/workflow-tool-runs.js";
 import { getTurnUsageState, takeSessionUsageDelta } from "#harness/turn-tag-state.js";
 import type { TokenUsage } from "#shared/token-usage.js";
@@ -62,36 +61,29 @@ export async function settleCancelledTurn(
   const ctx = await deserializeContext(input.serializedContext);
   // Before `turn.cancelled` projects, so only what stays answerable holds the work open.
   retainAnswerableActivityBlockers(ctx, durableSession.state);
+  const cancelledTurnId = currentProjection(ctx).activeTurnId;
   const emitted = await withSessionEventEmitter(
     { ctx, durableSession, origin: "own", sessionWritable: input.sessionWritable },
-    async (emit, scopedSession) => ({
-      result: await emitCancelledTurn(emit, getHarnessEmissionState(durableSession.state)),
-      session: scopedSession,
-    }),
+    async (emit, scopedSession) => {
+      for (const event of cancel(sessionView(currentProjection(ctx), scopedSession.state))) {
+        await emit(event);
+      }
+      return { result: undefined, session: scopedSession };
+    },
   );
-  const emissionState = emitted.result;
   const session = emitted.session;
 
-  // `clearPendingSessionLimitPrompt`: cancellation settles with the step's
-  // input snapshot, which can resurrect an already-answered session-limit
-  // prompt (the decline that cancelled this turn consumed the answer in the
-  // discarded turn state). The pre-model gate re-raises the prompt while the
-  // violation holds, so the next delivery gets a fresh prompt instead of
-  // queueing forever behind a stale one.
+  // The cancel reported every request and call it closed; what remains is execution the turn
+  // no longer runs: its parked calls commit to history as cancelled, and its runs are forgotten.
   const owningTurnId =
-    getPendingCoordinationBatch(session.state)?.event.turnId ??
-    input.sessionState.emissionState.turnId;
+    getPendingCoordinationBatch(session.state)?.event.turnId ?? cancelledTurnId ?? "";
   const cancelledSession = reconcileSessionContinuationToken(
     ctx,
-    setHarnessEmissionState(
-      clearPendingSessionLimitPrompt(
-        clearAllProxyInputRequests(
-          commitCancelledCoordinationBatch(
-            removeBlockingWorkflowToolRuns({ ...session, outputSchema: undefined }, owningTurnId),
-          ),
-        ),
+    dropClosedRecords(
+      commitCancelledCoordinationBatch(
+        removeBlockingWorkflowToolRuns({ ...session, outputSchema: undefined }, owningTurnId),
       ),
-      emissionState,
+      currentProjection(ctx),
     ),
   );
   const base = { serializedContext: serializeContext(ctx) };

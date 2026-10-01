@@ -46,7 +46,7 @@ import type {
 } from "#execution/session/turn-step-types.js";
 import { StepAgentStarts } from "#execution/session/step-agent-starts.js";
 import { turnStep } from "#execution/session/turn-step.js";
-import { activeTurnId } from "#harness/active-turn-id.js";
+import { activeTurnId, storedProjection, turnPosition } from "#harness/session-machine/view.js";
 import { coalesceDeliveries } from "#harness/messages.js";
 import { TurnCancelledError } from "#harness/turn-cancellation.js";
 import { decodeSessionInboxPayload } from "#execution/session-inbox/protocol.js";
@@ -240,6 +240,7 @@ export class SessionExecution {
   private async finishCancelledTurn(): Promise<TurnOutcome> {
     const { cursor } = this.input;
     await cancelDescendantTurnsStep({
+      serializedContext: cursor.serializedContext,
       sessionState: cursor.sessionState,
     });
     await cancelWorkingTasks(cursor);
@@ -487,7 +488,9 @@ class ActiveTurn {
     this.input = input;
     this.caller = owner.caller;
     this.identity = { callerCallId: owner.caller?.callId, principal: owner.principal };
-    this.expectedTurnId = activeTurnId(input.cursor.sessionState.emissionState);
+    this.expectedTurnId = activeTurnId(
+      turnPosition(storedProjection(input.cursor.serializedContext)),
+    );
     this.unsubscribe = input.inbox.onInterrupt((payload) => {
       if (this.cancelsThisTurn(payload)) this.abort();
     });

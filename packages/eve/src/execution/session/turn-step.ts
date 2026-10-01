@@ -29,19 +29,16 @@ import {
 } from "#context/keys.js";
 import { BundleKey, ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
-import {
-  emitTurnPreamble,
-  getHarnessEmissionState,
-  isHarnessBetweenTurns,
-  setHarnessEmissionState,
-} from "#harness/emission.js";
+import { emitTurnPreamble } from "#harness/emission.js";
 import { bindSessionInstrumentation } from "#instrumentation/runtime.js";
 import { RuntimeActionSettlementTimesKey } from "#harness/runtime-action-settlement-state.js";
 import * as agentTraceState from "#tracing/agent-trace-context-store.js";
 import { matchAuthorizationCallbacks } from "#execution/authorization-callback-match.js";
 import { isTurnCancellation, throwIfTurnAborted } from "#harness/turn-cancellation.js";
 import { setChannelContext } from "#execution/channel-context.js";
-import { activeTurnId } from "#harness/active-turn-id.js";
+import { activeTurnId, isBetweenTurns, turnPosition } from "#harness/session-machine/view.js";
+import { currentProjection } from "#harness/session-machine/current.js";
+import { dropClosedRecords } from "#harness/session-machine/commit.js";
 import {
   coalesceTurnInputs,
   createTurnInputMessages,
@@ -181,7 +178,8 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
     rootSessionId: initialSession.rootSessionId ?? initialSession.sessionId,
     sessionId: initialSession.sessionId,
   });
-  const initialEmissionState = getHarnessEmissionState(initialSession.state);
+  const initialEmissionState = turnPosition(currentProjection(ctx));
+  const startedBetweenTurns = isBetweenTurns(currentProjection(ctx));
   if (
     !initialEmissionState.sessionStarted &&
     !ctx.has(SessionTitleKey) &&
@@ -259,7 +257,7 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
       sink,
     });
     const previousAdapterState =
-      delivery !== undefined && !isHarnessBetweenTurns(initialSession)
+      delivery !== undefined && !startedBetweenTurns
         ? structuredClone(adapterCtx.state)
         : undefined;
     // Run the adapter's deliver hook for each queued payload and coalesce
@@ -284,7 +282,7 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
       resolved = results.length === 0 ? undefined : results.reduce(coalesceTurnInputs);
     }
     const ignoredActiveDelivery =
-      delivery !== undefined && resolved === undefined && !isHarnessBetweenTurns(initialSession);
+      delivery !== undefined && resolved === undefined && !startedBetweenTurns;
     if (ignoredActiveDelivery) {
       // The adapter sees the incoming caller, but an ignored correction must
       // not change the identity or reply destination of the interrupted work.
@@ -327,7 +325,7 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
       setChannelContext(ctx, updatedAdapter);
     }
 
-    if (delivery !== undefined && resolved === undefined && isHarnessBetweenTurns(initialSession)) {
+    if (delivery !== undefined && resolved === undefined && startedBetweenTurns) {
       await contextStorage.run(ctx, () =>
         instrumentation?.instrumentChannelDelivery({
           ctx,
@@ -345,7 +343,7 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
 
       return {
         action: "park",
-        ...derivePendingState(aliased),
+        ...derivePendingState(aliased, currentProjection(ctx)),
         serializedContext: nextSerializedContext,
         sessionState: nextState,
       };
@@ -387,7 +385,7 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
               }),
           ),
         ]);
-        if (!isHarnessBetweenTurns(initialSession)) {
+        if (!startedBetweenTurns) {
           await rebindMissingCompiledDynamicToolCallbacks({
             ctx,
             event: createTurnStartedEvent({
@@ -462,20 +460,20 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
               firstCall && resolved?.outputSchema !== undefined
                 ? { ...enrichedSession, outputSchema: resolved.outputSchema }
                 : enrichedSession;
-            const connectionState = getHarnessEmissionState(schemaSession.state);
+            const connectionState = turnPosition(currentProjection(ctx));
             await dynamicConnections.rehydrate(
               connectionState,
               runtimeIdentity,
-              isHarnessBetweenTurns(schemaSession)
+              isBetweenTurns(currentProjection(ctx))
                 ? undefined
                 : { sequence: connectionState.sequence, turnId: activeTurnId(connectionState) },
             );
             if (firstCall && completedAuths) {
-              let emissionState = getHarnessEmissionState(schemaSession.state);
+              let emissionState = turnPosition(currentProjection(ctx));
               const startsTurn = completedAuths.some(
                 ({ challenge }) => challenge.candidateId === undefined,
               );
-              if (startsTurn && isHarnessBetweenTurns(schemaSession)) {
+              if (startsTurn && isBetweenTurns(currentProjection(ctx))) {
                 const turnInput = createTurnInputMessages(
                   consumeDeferredStepInput({ session: schemaSession, input: stepInput }).input,
                 );
@@ -516,7 +514,6 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
                     state: memoryCommit?.state ?? schemaSession.state,
                   };
                 }
-                schemaSession = setHarnessEmissionState(schemaSession, emissionState);
               }
               for (const { challenge } of completedAuths) {
                 await handleEvent(
@@ -555,7 +552,10 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
     }
 
     // Re-stamp the current address after handlers add a continuation alias.
-    const aliased = reconcileSessionContinuationToken(ctx, stepResult.session);
+    const aliased = dropClosedRecords(
+      reconcileSessionContinuationToken(ctx, stepResult.session),
+      currentProjection(ctx),
+    );
     agentTraceState.pruneAgentTraceState(ctx, aliased.sessionId, aliased.state);
     const nextSerializedContext = serializeContext(ctx);
     stepResult = { ...stepResult, session: aliased };

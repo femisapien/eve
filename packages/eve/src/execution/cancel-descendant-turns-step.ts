@@ -6,11 +6,13 @@ import {
   type BlockingWorkflowToolRun,
 } from "#harness/workflow-tool-runs.js";
 import { createLogger, logError } from "#internal/logging.js";
+import { storedProjection, turnPosition } from "#harness/session-machine/view.js";
 
 const log = createLogger("execution.cancel-descendant-turns");
 
 /** Cancels every workflow tool run the turn is waiting on. */
 export async function cancelDescendantTurnsStep(input: {
+  readonly serializedContext: Record<string, unknown>;
   readonly sessionState: DurableSessionState;
 }): Promise<void> {
   "use step";
@@ -21,7 +23,7 @@ export async function cancelDescendantTurnsStep(input: {
     workflowToolRuns = getBlockingWorkflowToolRuns(
       session.state,
       getPendingCoordinationBatch(session.state)?.event.turnId ??
-        input.sessionState.emissionState.turnId,
+        turnPosition(storedProjection(input.serializedContext)).turnId,
     );
   } catch (error) {
     logError(log, "failed to read pending descendants during cancellation", error, {

@@ -20,7 +20,10 @@ import {
 } from "#execution/session/state-delta.js";
 import { reconcileSessionContinuationToken } from "#execution/reconcile-session-continuation-token.js";
 import { emitProxiedAuthorizationEvent, emitProxiedInputRequest } from "#subagents/hitl-proxy.js";
-import { upsertProxyInputRequests } from "#harness/proxy-input-requests.js";
+import { getProxyInputRequests, upsertProxyInputRequests } from "#harness/proxy-input-requests.js";
+import { currentProjection } from "#harness/session-machine/current.js";
+import { sessionView } from "#harness/session-machine/commit.js";
+import { finishRun } from "#harness/session-machine/transitions.js";
 import type { WorkflowAskRoute } from "#harness/proxy-input-requests.js";
 
 type SubagentEventHookPayload =
@@ -73,6 +76,19 @@ export async function emitProxiedSubagentEvent(input: {
         return { result: undefined, session };
       }
 
+      // A child's fresh batch replaces its prior one, whose routes stop working, so readers
+      // must stop offering what it held.
+      const incoming = new Set(hookPayload.event.requests.map((request) => request.requestId));
+      const replaced = [...getProxyInputRequests(session.state)]
+        .filter(
+          ([requestId, route]) =>
+            route.childContinuationToken === hookPayload.childContinuationToken &&
+            route.inputSource === hookPayload.inputSource &&
+            !incoming.has(requestId),
+        )
+        .map(([requestId]) => requestId);
+      const view = sessionView(currentProjection(ctx), session.state);
+      for (const event of finishRun(view, { requestIds: replaced })) await emit(event);
       const entries = await emitProxiedInputRequest({ emit, hookPayload, session });
       return { result: entries, session };
     },

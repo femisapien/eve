@@ -1,8 +1,4 @@
-import {
-  readDurableSession,
-  replaceDurableSessionSnapshot,
-  type DurableSession,
-} from "#execution/durable-session-store.js";
+import { readDurableSession } from "#execution/durable-session-store.js";
 import {
   relaySessionEvents,
   type PublishedSessionEvents,
@@ -15,8 +11,10 @@ import {
 import type { WorkflowToolRunControlMessage } from "#execution/tools/workflow/messages.js";
 import { ignoreGoneTarget } from "#execution/tasks/workflow-target.js";
 import { resumeHook } from "#internal/workflow/runtime.js";
-import { getProxyInputRequests, retireProxyInputRequests } from "#harness/proxy-input-requests.js";
-import { createInputResolvedEvent, type UnstampedMessageStreamEvent } from "#protocol/message.js";
+import { getProxyInputRequests } from "#harness/proxy-input-requests.js";
+import { sessionView } from "#harness/session-machine/commit.js";
+import { finishRun } from "#harness/session-machine/transitions.js";
+import { storedProjection } from "#harness/session-machine/view.js";
 
 /**
  * Decides a run's request to withdraw a question. A question the session
@@ -42,47 +40,17 @@ async function withdrawWorkflowToolRunQuestion(
   input: WithdrawQuestionInput,
 ): Promise<PublishedSessionEvents> {
   const session = readDurableSession(input.sessionState);
-  const withdrawn = withdrawWorkflowAsks(
-    session,
-    (requestId, runId) => requestId === input.requestId && runId === input.runId,
-  );
+  const route = getProxyInputRequests(session.state).get(input.requestId);
+  const offered = route?.workflowAsk?.runId === input.runId;
+  const withdrawn = offered
+    ? finishRun(sessionView(storedProjection(input.serializedContext), session.state), {
+        requestIds: [input.requestId],
+      })
+    : [];
   const decision: WorkflowToolRunControlMessage = {
     kind: "withdrawn",
     requestId: input.requestId,
   };
   await ignoreGoneTarget(resumeHook(input.control, decision));
-  return await relaySessionEvents(
-    {
-      serializedContext: input.serializedContext,
-      sessionState: replaceDurableSessionSnapshot({
-        session: withdrawn.session,
-        state: input.sessionState,
-      }),
-      sessionWritable: input.sessionWritable,
-    },
-    withdrawn.events,
-  );
-}
-
-/**
- * Retires the `ctx.ask()` questions `select` picks and returns the
- * `input.resolved` events that report them `cancelled`.
- */
-export function withdrawWorkflowAsks(
-  session: DurableSession,
-  select: (requestId: string, runId: string) => boolean,
-): { readonly events: readonly UnstampedMessageStreamEvent[]; readonly session: DurableSession } {
-  const requestIds: string[] = [];
-  const events: UnstampedMessageStreamEvent[] = [];
-  for (const [requestId, route] of getProxyInputRequests(session.state)) {
-    if (route.workflowAsk === undefined || !select(requestId, route.workflowAsk.runId)) continue;
-    requestIds.push(requestId);
-    events.push(
-      createInputResolvedEvent({
-        resolutions: [{ kind: "question", outcome: "cancelled", requestId }],
-        ...route.event,
-      }),
-    );
-  }
-  return { events, session: retireProxyInputRequests(session, requestIds) };
+  return await relaySessionEvents(input, withdrawn);
 }

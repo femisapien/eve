@@ -22,7 +22,7 @@ import {
   createRuntimeToolResultFromMessagePart,
   createRuntimeToolResultFromStepResult,
 } from "#harness/action-result-helpers.js";
-import type { HarnessEmissionState } from "#harness/emission.js";
+import type { TurnPosition } from "#harness/session-machine/view.js";
 import { emitStepStarted } from "#harness/emission.js";
 import { normalizeAssistantStepFinishReason } from "#harness/finish-reason.js";
 import { extractToolApprovalInputRequests } from "#harness/input-extraction.js";
@@ -86,7 +86,7 @@ interface StepHooksInput {
   readonly auth?: import("#channel/types.js").SessionAuthContext | null;
   readonly cachePath: PromptCachePath;
   readonly emit?: HarnessEmitFn;
-  readonly emissionState: HarnessEmissionState;
+  readonly emissionState: TurnPosition;
   /**
    * When `false`, `onStepStart` skips the `step.started` emission.
    * Used by the harness recovery path to avoid emitting `step.started`
@@ -249,7 +249,7 @@ export function buildStepHooks(input: StepHooksInput): StepHooks {
  */
 export async function emitStepActions(
   emitFn: HarnessEmitFn,
-  state: HarnessEmissionState,
+  state: TurnPosition,
   step: HarnessStepResult,
   options: {
     readonly emittedActionCallIds?: ReadonlySet<string>;

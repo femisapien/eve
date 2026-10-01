@@ -10,7 +10,10 @@ import type {
 } from "#shared/action-types.js";
 import { markRuntimeWorkflowToolAction } from "#shared/action-types.js";
 import { parseJsonObject, type JsonObject } from "#shared/json.js";
-import { clearProxyInputRequestsWhere } from "#harness/proxy-input-requests.js";
+import { getProxyInputRequests } from "#harness/proxy-input-requests.js";
+import { currentProjection } from "#harness/session-machine/current.js";
+import { sessionView } from "#harness/session-machine/commit.js";
+import { finishRun } from "#harness/session-machine/transitions.js";
 import {
   findBlockingWorkflowToolRun,
   removeBlockingWorkflowToolRuns,
@@ -254,7 +257,8 @@ export async function resolvePendingCoordination(input: {
   }
 
   let nextSession: HarnessSession = input.session;
-  // Drop a finished run's unanswered requests so a late click cannot reach it.
+  // Nobody can answer what a finished run asked, so its open questions are withdrawn.
+  const finishedRunRequestIds: string[] = [];
   for (const result of readyResults) {
     if (result.kind !== "tool-result") continue;
     const record = findBlockingWorkflowToolRun(
@@ -263,14 +267,10 @@ export async function resolvePendingCoordination(input: {
       batch.event.turnId,
     );
     if (record === undefined) continue;
-    nextSession = removeBlockingWorkflowToolRuns(
-      clearProxyInputRequestsWhere(
-        nextSession,
-        (route) => route.workflowAsk?.runId === record.address.runId,
-      ),
-      batch.event.turnId,
-      record.callId,
-    );
+    for (const [requestId, route] of getProxyInputRequests(nextSession.state)) {
+      if (route.workflowAsk?.runId === record.address.runId) finishedRunRequestIds.push(requestId);
+    }
+    nextSession = removeBlockingWorkflowToolRuns(nextSession, batch.event.turnId, record.callId);
   }
 
   const state = { ...nextSession.state };
@@ -281,6 +281,10 @@ export async function resolvePendingCoordination(input: {
   };
 
   if (input.emit !== undefined) {
+    const view = sessionView(currentProjection(), nextSession.state);
+    for (const event of finishRun(view, { requestIds: finishedRunRequestIds })) {
+      await input.emit(event);
+    }
     for (const result of readyResults) {
       await input.emit(
         createActionResultEvent({

@@ -1,6 +1,6 @@
 import type { ContextContainer } from "#context/container.js";
 import { dispatchDynamicConnectionEvent } from "#context/dynamic-connection-lifecycle.js";
-import type { HarnessEmissionState } from "#harness/emission.js";
+import type { TurnPosition } from "#harness/session-machine/view.js";
 import {
   createSessionStartedEvent,
   createTurnStartedEvent,
@@ -21,7 +21,7 @@ export function bindDynamicConnections(
   return {
     dispatch,
     async rehydrate(
-      state: HarnessEmissionState,
+      state: TurnPosition,
       runtime: RuntimeIdentity,
       turn?: { readonly sequence: number; readonly turnId: string },
     ): Promise<void> {

@@ -1,3 +1,4 @@
+import { isBetweenTurns, storedProjection } from "#harness/session-machine/view.js";
 import {
   EntityConflictError,
   RunExpiredError,
@@ -76,7 +77,7 @@ export async function interruptLegacySessionStep(prepared: PreparedLegacySession
         throw error;
     }
   }
-  if (prepared.input.inputCommitted || prepared.sessionState.emissionState.turnId === "")
+  if (prepared.input.inputCommitted || isBetweenTurns(storedProjection(prepared.serializedContext)))
     return {
       sessionState: prepared.sessionState,
       serializedContext: prepared.serializedContext,

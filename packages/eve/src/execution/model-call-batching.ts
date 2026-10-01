@@ -1,3 +1,4 @@
+import { currentProjection } from "#harness/session-machine/current.js";
 import { derivePendingState } from "#execution/session/pending-turn-state.js";
 import type { HarnessSession, StepInput, StepResult } from "#harness/types.js";
 
@@ -51,7 +52,7 @@ function shouldRunAnotherModelCall(input: {
     return false;
   }
 
-  const pending = derivePendingState(input.result.session);
+  const pending = derivePendingState(input.result.session, currentProjection());
   return (
     !pending.hasPendingAuthorization &&
     !pending.hasPendingInputBatch &&

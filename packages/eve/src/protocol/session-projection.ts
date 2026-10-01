@@ -1,5 +1,6 @@
 import type {
   ActionResultError,
+  ApprovalCandidateOutcome,
   AuthorizationOutcome,
   InputResolutionOutcome,
   UnstampedMessageStreamEvent,
@@ -19,18 +20,23 @@ export interface SessionTurn {
   readonly status: "active" | "completed" | "cancelled" | "failed";
   /** The open turn is parked, holding on its tasks or on a question one of its calls asked. */
   readonly waiting?: boolean;
-  /** The step the turn's latest `step.started` opened. */
+  /** The step the turn's latest `step.started` opened, or `0` before its first. */
   readonly stepIndex: number;
+  /** The turn published a `step.started`. */
+  readonly stepStarted?: true;
   /** The turn streamed assistant output, so steering can no longer restart it. */
   readonly outputStarted?: boolean;
 }
 
 export interface SessionInput {
   readonly request: InputRequest;
+  readonly sequence: number;
   readonly turnId: string;
   readonly stepIndex: number;
   /** The task whose run asks, when a task asks. */
   readonly taskId?: string;
+  /** The call a relayed request serves. */
+  readonly callId?: string;
   /** `responded` is client-only: an answer this client sent that the stream hasn't settled. */
   readonly status: "open" | "responded" | "settled";
   readonly response?: InputResponse;
@@ -91,6 +97,7 @@ export interface SessionAuthorization {
   /** The attempt's `attemptId`, or its connection name from a writer that sent none. */
   readonly attemptId: string;
   readonly name: string;
+  readonly sequence: number;
   readonly turnId: string;
   readonly stepIndex: number;
   readonly taskId?: string;
@@ -98,6 +105,13 @@ export interface SessionAuthorization {
   readonly status: "required" | AuthorizationOutcome;
   /** The sign-in resumes its work through a callback, rather than inline. */
   readonly awaitsCallback?: true;
+}
+
+/** One responder's decision on an approval, as `approval.candidate` reports it. */
+export interface SessionApprovalCandidate {
+  readonly candidateId: string;
+  readonly requestId: string;
+  readonly outcome: ApprovalCandidateOutcome;
 }
 
 export interface SessionProjection {
@@ -117,12 +131,22 @@ export interface SessionProjection {
   readonly calls: Readonly<Record<string, SessionCall>>;
   /** By `attemptId`. */
   readonly authorizations: Readonly<Record<string, SessionAuthorization>>;
+  /** By `candidateId`. */
+  readonly candidates: Readonly<Record<string, SessionApprovalCandidate>>;
 }
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
 export function initialSessionProjection(): SessionProjection {
-  return { authorizations: {}, calls: {}, inputs: {}, nextSequence: 0, tasks: {}, turns: {} };
+  return {
+    authorizations: {},
+    calls: {},
+    candidates: {},
+    inputs: {},
+    nextSequence: 0,
+    tasks: {},
+    turns: {},
+  };
 }
 
 function updateTurn<S extends SessionProjection>(
@@ -231,9 +255,11 @@ export function foldSession<S extends SessionProjection>(
     }
     case "step.started":
       return updateTurn(state, typed.data.turnId, (turn) => {
-        if (!turn.waiting && turn.stepIndex === typed.data.stepIndex) return turn;
+        if (!turn.waiting && turn.stepStarted && turn.stepIndex === typed.data.stepIndex) {
+          return turn;
+        }
         const { waiting: _waiting, ...rest } = turn;
-        return { ...rest, stepIndex: typed.data.stepIndex };
+        return { ...rest, stepIndex: typed.data.stepIndex, stepStarted: true };
       });
     case "turn.waiting":
       return updateTurn(state, typed.data.turnId, (turn) =>
@@ -306,9 +332,11 @@ export function foldSession<S extends SessionProjection>(
       const settled =
         status === "rejected" || error?.code === TOOL_EXECUTION_DENIED
           ? "rejected"
-          : status === "failed" || result.isError === true
-            ? "failed"
-            : "completed";
+          : status === "cancelled"
+            ? "cancelled"
+            : status === "failed" || result.isError === true
+              ? "failed"
+              : "completed";
       if (call === undefined) {
         // A result whose call wasn't announced, such as an approved call resuming.
         const unannounced: Mutable<SessionCall> = {
@@ -384,14 +412,16 @@ export function foldSession<S extends SessionProjection>(
         if (inputs[request.requestId] !== undefined) continue;
         const input: Mutable<SessionInput> = {
           request,
+          sequence: typed.data.sequence,
           turnId: typed.data.turnId,
           stepIndex: typed.data.stepIndex,
           status: "open",
         };
         if (typed.data.taskId !== undefined) input.taskId = typed.data.taskId;
+        if (typed.data.callId !== undefined) input.callId = typed.data.callId;
         inputs[request.requestId] = input;
-        // A relayed request names the child's call, not one this session made.
-        if (request.kind !== "tool-approval" || typed.data.taskId !== undefined) continue;
+        // A relayed request's action is the child's call, not one this session made.
+        if (request.kind !== "tool-approval" || isRelayed(typed.data)) continue;
         const { callId, toolName } = request.action;
         calls ??= { ...state.calls };
         const call = calls[callId];
@@ -410,6 +440,11 @@ export function foldSession<S extends SessionProjection>(
       return calls === undefined ? { ...state, inputs } : { ...state, calls, inputs };
     }
     case "approval.candidate": {
+      const { candidateId, outcome, requestId } = typed.data;
+      state = {
+        ...state,
+        candidates: { ...state.candidates, [candidateId]: { candidateId, outcome, requestId } },
+      };
       const current = state.inputs[typed.data.requestId];
       if (current === undefined || current.status === "settled") return state;
       if (typed.data.outcome === "pending" || current.status === "open") return state;
@@ -453,6 +488,7 @@ export function foldSession<S extends SessionProjection>(
       const authorization: Mutable<SessionAuthorization> = {
         attemptId,
         name: typed.data.name,
+        sequence: typed.data.sequence,
         turnId: typed.data.turnId,
         stepIndex: typed.data.stepIndex,
         status: "required",
@@ -469,6 +505,7 @@ export function foldSession<S extends SessionProjection>(
         ...(current ?? {
           attemptId,
           name: typed.data.name,
+          sequence: typed.data.sequence,
           turnId: typed.data.turnId,
           stepIndex: typed.data.stepIndex,
         }),
@@ -481,12 +518,16 @@ export function foldSession<S extends SessionProjection>(
   }
 }
 
+function isRelayed(request: { readonly callId?: string; readonly taskId?: string }): boolean {
+  return request.callId !== undefined || request.taskId !== undefined;
+}
+
 function settleApprovalCall<S extends SessionProjection>(
   state: S,
   input: SessionInput,
   outcome: InputResolutionOutcome | "approved" | "cancelled",
 ): S {
-  if (input.request.kind !== "tool-approval" || input.taskId !== undefined) return state;
+  if (input.request.kind !== "tool-approval" || isRelayed(input)) return state;
   const status = callStatusAfterApproval(outcome);
   if (status === undefined) return state;
   return updateCall(state, input.request.action.callId, (call) => {
@@ -602,5 +643,8 @@ export function pruneSessionProjection(
   const turns = Object.fromEntries(
     Object.entries(state.turns).filter(([turnId]) => referencedTurns.has(turnId)),
   );
-  return { ...state, authorizations, calls, inputs, tasks, turns };
+  const candidates = Object.fromEntries(
+    Object.entries(state.candidates).filter(([, candidate]) => candidate.requestId in inputs),
+  );
+  return { ...state, authorizations, calls, candidates, inputs, tasks, turns };
 }

@@ -1,3 +1,4 @@
+import { storedProjection } from "#harness/session-machine/view.js";
 import { createDurableSessionState } from "#execution/durable-session-store.js";
 import { derivePendingState } from "#execution/session/pending-turn-state.js";
 import type { DurableStepResult } from "#execution/session/turn-step-types.js";
@@ -43,7 +44,7 @@ export function resolveSessionStepResult(
   }
 
   if (stepResult.next === null) {
-    const pending = derivePendingState(stepResult.session);
+    const pending = derivePendingState(stepResult.session, storedProjection(nextSerializedContext));
 
     // Usage stays unreported until the turn settles, so the caller's result includes all of it.
     if (stepResult.settledTurn !== undefined) {

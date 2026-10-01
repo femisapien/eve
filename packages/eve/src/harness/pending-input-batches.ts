@@ -263,7 +263,9 @@ export function consumeDeferredStepInput(input: {
   };
 }
 
-export function getDeferredStepInput(session: HarnessSession): StepInput | undefined {
+export function getDeferredStepInput(session: {
+  readonly state?: SessionStateMap;
+}): StepInput | undefined {
   return session.state?.[DEFERRED_STEP_INPUT_KEY] as StepInput | undefined;
 }
 

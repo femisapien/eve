@@ -10,7 +10,7 @@ import { setPendingAuthorization } from "#harness/authorization.js";
 import { z } from "zod";
 import { ContextContainer, contextStorage } from "#context/container.js";
 import { SessionKey } from "#context/keys.js";
-import { getHarnessEmissionState } from "#harness/emission.js";
+import { createProjectionRecorder } from "#internal/testing/session-projection-recorder.js";
 import { getPendingCoordinationBatch } from "#harness/coordination.js";
 import { getPendingInputBatches } from "#harness/pending-input-batches.js";
 import { createToolLoopHarness } from "#harness/tool-loop.js";
@@ -146,6 +146,7 @@ function fixture(
     workflowId: "diagnostic-workflow",
   });
   const restoredTurns: string[] = [];
+  const recorder = createProjectionRecorder();
   const harness = createToolLoopHarness({
     prepareApprovalTurn: async (event) => {
       const ctx = new ContextContainer();
@@ -175,13 +176,14 @@ function fixture(
     resolveModel: async () => model,
     handleEvent: async (event) => {
       events.push(event);
+      recorder.record(event);
     },
   });
   async function step(input?: StepInput): Promise<StepResult> {
     const before = events.length;
     const beforeCalls = modelCalls;
-    const emission = getHarnessEmissionState(session.state);
-    const ctx = new ContextContainer();
+    const emission = recorder.position;
+    const ctx = recorder.enter(new ContextContainer());
     ctx.set(SessionKey, {
       sessionId: session.sessionId,
       auth: { current: null, initiator: null },
@@ -196,7 +198,7 @@ function fixture(
       next: typeof result.next === "function" ? "continue" : result.next,
       settledTurn: result.settledTurn,
       historyLastRole: session.history.at(-1)?.role,
-      emission: getHarnessEmissionState(session.state),
+      emission: recorder.position,
       deferred: session.state?.["eve.runtime.deferredStepInput"],
       pending: getPendingInputBatches(session.state).map((batch) => ({
         owner: batch.event,

@@ -91,7 +91,11 @@ export interface MessageStreamEventMeta {
  * approval gate: it never executed, so it is neither a success nor a
  * runtime failure.
  */
-export type ActionResultStatus = "completed" | "failed" | "rejected";
+/**
+ * How a call ended. `cancelled` is a call eve stopped before it finished: its turn was
+ * cancelled, the context was cleared, or it needed a sign-in. `error.code` says which.
+ */
+export type ActionResultStatus = "completed" | "failed" | "rejected" | "cancelled";
 
 /**
  * Stable failure payload projected onto `action.result`.
@@ -286,6 +290,12 @@ export interface ApprovalSettledStreamEvent {
  */
 export interface InputRequestedStreamEvent {
   data: {
+    /**
+     * The call a relayed request serves: the task or workflow call whose run, or whose child
+     * session, asks. A relayed request carries that call's coordinates. Absent for the
+     * session's own requests, whose approvals name their call in `request.action`.
+     */
+    callId?: string;
     requests: readonly InputRequest[];
     sequence: number;
     stepIndex: number;
@@ -1299,6 +1309,7 @@ export function createApprovalSettledEvent(
  * Creates the `input.requested` event for one pending HITL batch.
  */
 export function createInputRequestedEvent(input: {
+  readonly callId?: string;
   readonly requests: readonly InputRequest[];
   readonly sequence: number;
   readonly stepIndex: number;
@@ -1311,6 +1322,7 @@ export function createInputRequestedEvent(input: {
     stepIndex: input.stepIndex,
     turnId: input.turnId,
   };
+  if (input.callId !== undefined) data.callId = input.callId;
   if (input.taskId !== undefined) data.taskId = input.taskId;
   return { data, type: "input.requested" };
 }
@@ -1343,15 +1355,19 @@ export function createInputResolvedEvent(input: {
 export function createActionResultEvent(input: {
   readonly presentation?: ActionPresentationByCallId;
   readonly rejected?: boolean;
+  /** eve stopped the call before it finished; see {@link ActionResultStatus}. */
+  readonly stopped?: ActionResultError;
   readonly result: RuntimeActionResult;
   readonly sequence: number;
   readonly stepIndex: number;
   readonly turnId: string;
 }): ActionResultStreamEvent {
   const outcome =
-    input.rejected === true
-      ? { error: buildActionResultError(input.result), status: "rejected" as const }
-      : normalizeActionResultOutcome(input.result);
+    input.stopped !== undefined
+      ? { error: input.stopped, status: "cancelled" as const }
+      : input.rejected === true
+        ? { error: buildActionResultError(input.result), status: "rejected" as const }
+        : normalizeActionResultOutcome(input.result);
 
   return {
     data: {
