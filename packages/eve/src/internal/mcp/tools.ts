@@ -19,6 +19,7 @@ import {
   hashToolArguments,
   type McpRequestStateCodec,
   type McpRequestStatePayload,
+  type McpRequestStateSignIn,
 } from "#internal/mcp/request-state.js";
 import type { ToolModelOutput } from "#tools/model-output.js";
 
@@ -135,14 +136,20 @@ async function callMcpTool(
   if (!tools.has(name)) throw new ProtocolError(INVALID_PARAMS, `Tool ${name} not found`);
   const args = params.arguments ?? {};
 
-  const rawKey = ctx.mcpReq._meta?.[MCP_TOOL_SESSION_META_KEY];
-  if (rawKey !== undefined && typeof rawKey !== "string") {
-    return toolError("invalid_input", `_meta["${MCP_TOOL_SESSION_META_KEY}"] must be a string.`);
-  }
-  const key = rawKey;
-  if (key !== undefined) {
-    const problem = validateToolSessionKey(key);
-    if (problem !== undefined) return toolError("invalid_input", problem);
+  // The key only counts for a client that declared the extension. Anyone
+  // else gets a one-off session, and a stray key is ignored, not validated,
+  // so invocation, minting, and retry binding all see the same `undefined`.
+  let key: string | undefined;
+  if (declaresToolSessions(server, context, ctx)) {
+    const rawKey = ctx.mcpReq._meta?.[MCP_TOOL_SESSION_META_KEY];
+    if (rawKey !== undefined && typeof rawKey !== "string") {
+      return toolError("invalid_input", `_meta["${MCP_TOOL_SESSION_META_KEY}"] must be a string.`);
+    }
+    if (rawKey !== undefined) {
+      const problem = validateToolSessionKey(rawKey);
+      if (problem !== undefined) return toolError("invalid_input", problem);
+    }
+    key = rawKey;
   }
 
   const options: {
@@ -162,11 +169,27 @@ async function callMcpTool(
     assertStateBinding(state, { args, key, name, principals: context.principals });
     options.callId = state.callId;
     if (key === undefined && state.nonce !== undefined) options.oneOffNonce = state.nonce;
+    const responses = ctx.mcpReq.inputResponses;
     if (state.kind === "approval") {
-      const answer = readApprovalAnswer(ctx.mcpReq.inputResponses);
-      if (answer !== undefined) options.approval = answer;
-    } else if (state.approval !== undefined) {
-      options.approval = state.approval;
+      const answer = readApprovalAnswer(responses);
+      // No answer: ask again from the signed state. Core does not run.
+      if (answer === undefined) return await askAgain(server, context, ctx, state);
+      options.approval = answer;
+    } else {
+      // The codec refuses an authorization state without sign-ins; never
+      // read an empty list as "every sign-in accepted".
+      if (state.authorization === undefined || state.authorization.length === 0) {
+        throw invalidRequestState();
+      }
+      const answers = readAuthorizationAnswers(responses, state.authorization);
+      if (answers.kind === "refused") return toolError("denied", refusalMessage(answers.refused));
+      if (answers.kind === "missing") {
+        return await askAgain(server, context, ctx, { ...state, authorization: answers.missing });
+      }
+      // Every sign-in was accepted. Core checks the grants itself and asks
+      // again if one is still missing. The approval answer that led to this
+      // round is restored only here, from the round that carried it.
+      if (state.approval !== undefined) options.approval = state.approval;
     }
   }
 
@@ -209,6 +232,105 @@ function assertStateBinding(
     throw invalidRequestState();
   }
   if (sid !== state.sid) throw invalidRequestState();
+}
+
+/**
+ * Whether the request declared `dev.eve/tool-sessions` in its client
+ * capabilities, the same place elicitation modes are read from.
+ */
+function declaresToolSessions(
+  server: McpServer,
+  context: McpToolsContext,
+  ctx: McpRequestHandlerExtra,
+): boolean {
+  const declared = declaredCapabilities(server, context, ctx);
+  if (declared === undefined) return false;
+  const extensions = declared.extensions;
+  return isJsonObject(extensions) && isJsonObject(extensions[MCP_TOOL_SESSIONS_EXTENSION]);
+}
+
+type AuthorizationAnswers =
+  | { readonly kind: "accepted" }
+  | { readonly kind: "missing"; readonly missing: readonly McpRequestStateSignIn[] }
+  | {
+      readonly kind: "refused";
+      readonly refused: readonly {
+        readonly action: "cancel" | "decline";
+        readonly name: string;
+      }[];
+    };
+
+/**
+ * Reads the answers to every sign-in the round asked for. Any decline or
+ * cancel refuses the call. Otherwise any sign-in without an elicitation
+ * answer is still outstanding. Only when every one was accepted may core run.
+ */
+export function readAuthorizationAnswers(
+  responses: McpJsonObject | undefined,
+  outstanding: readonly McpRequestStateSignIn[],
+): AuthorizationAnswers {
+  const refused: { action: "cancel" | "decline"; name: string }[] = [];
+  const missing: McpRequestStateSignIn[] = [];
+  for (const signIn of outstanding) {
+    const view = inputResponse(responses, `${MCP_AUTHORIZATION_KEY_PREFIX}${signIn.name}`);
+    if (view.kind !== "elicit") missing.push(signIn);
+    else if (view.action !== "accept") refused.push({ action: view.action, name: signIn.name });
+  }
+  if (refused.length > 0) return { kind: "refused", refused };
+  if (missing.length > 0) return { kind: "missing", missing };
+  return { kind: "accepted" };
+}
+
+function refusalMessage(
+  refused: readonly { readonly action: "cancel" | "decline"; readonly name: string }[],
+): string {
+  return refused
+    .map(
+      (entry) =>
+        `The sign-in to "${entry.name}" was ${entry.action === "cancel" ? "cancelled" : "declined"}.`,
+    )
+    .join(" ");
+}
+
+/**
+ * Re-asks the questions a signed state still has open, without calling core:
+ * the approval form, or the sign-ins that got no answer. The new state keeps
+ * every binding and lists only what is still outstanding.
+ */
+async function askAgain(
+  server: McpServer,
+  context: McpToolsContext,
+  ctx: McpRequestHandlerExtra,
+  state: McpRequestStatePayload,
+): Promise<McpToolCallResult> {
+  if (context.requestState.kind === "missing") {
+    return toolError("internal", context.requestState.reason);
+  }
+  const payload: { -readonly [K in keyof McpRequestStatePayload]: McpRequestStatePayload[K] } = {
+    args: state.args,
+    callId: state.callId,
+    kind: state.kind,
+    sid: state.sid,
+    tool: state.tool,
+    v: 1,
+  };
+  if (state.nonce !== undefined) payload.nonce = state.nonce;
+  if (state.kind === "approval") {
+    if (!clientSupports(server, context, ctx, "form")) return approvalUnsupported(state.tool);
+    const requestState = await context.requestState.codec.mint(payload);
+    return approvalRequest(state.callId, state.tool, requestState);
+  }
+  const signIns = state.authorization ?? [];
+  if (!clientSupports(server, context, ctx, "url")) {
+    return signInUnsupported(
+      state.tool,
+      signIns.map((entry) => entry.name),
+    );
+  }
+  if (state.approval !== undefined) payload.approval = state.approval;
+  payload.authorization = signIns;
+  const requestState = await context.requestState.codec.mint(payload);
+  return authorizationRequest(state.callId, signIns, requestState);
 }
 
 function invalidRequestState(): ProtocolError {
@@ -269,12 +391,7 @@ async function toMcpToolResult(
       return withSandbox(toolError("denied", result.reason ?? "The call was denied."));
     case "approval-required": {
       if (!clientSupports(server, context, ctx, "form")) {
-        return withSandbox(
-          toolError(
-            "input_unsupported",
-            `The tool "${call.name}" needs approval, and this client did not declare form elicitation.`,
-          ),
-        );
+        return withSandbox(approvalUnsupported(call.name));
       }
       if (context.requestState.kind === "missing") {
         return withSandbox(toolError("internal", context.requestState.reason));
@@ -282,25 +399,7 @@ async function toMcpToolResult(
       const requestState = await context.requestState.codec.mint(
         statePayload(context, call, "approval", result.callId, result.oneOffNonce),
       );
-      return withSandbox({
-        _meta: { [MCP_APPROVAL_KEY]: { callId: result.callId, tool: call.name } },
-        inputRequests: {
-          [MCP_APPROVAL_KEY]: {
-            method: "elicitation/create",
-            params: {
-              message: `Allow the tool "${call.name}" to run?`,
-              mode: "form",
-              requestedSchema: {
-                properties: { approved: { title: "Approve", type: "boolean" } },
-                required: ["approved"],
-                type: "object",
-              },
-            },
-          },
-        },
-        requestState,
-        resultType: "input_required",
-      });
+      return withSandbox(approvalRequest(result.callId, call.name, requestState));
     }
     case "authorization-required": {
       const missingUrl = result.challenges.find((entry) => entry.challenge.url === undefined);
@@ -314,43 +413,92 @@ async function toMcpToolResult(
       }
       if (!clientSupports(server, context, ctx, "url")) {
         return withSandbox(
-          toolError(
-            "input_unsupported",
-            `The tool "${call.name}" needs a sign-in to ${formatNames(result.challenges)}, and this client did not declare URL elicitation.`,
+          signInUnsupported(
+            call.name,
+            result.challenges.map((entry) => entry.name),
           ),
         );
       }
       if (context.requestState.kind === "missing") {
         return withSandbox(toolError("internal", context.requestState.reason));
       }
-      const requestState = await context.requestState.codec.mint(
-        statePayload(context, call, "authorization", result.callId, result.oneOffNonce),
-      );
-      return withSandbox({
-        _meta: {
-          [MCP_AUTHORIZATION_META_KEY]: {
-            callId: result.callId,
-            connections: result.challenges.map((entry) => entry.name),
-          },
-        },
-        inputRequests: Object.fromEntries(
-          result.challenges.map((entry) => [
-            `${MCP_AUTHORIZATION_KEY_PREFIX}${entry.name}`,
-            {
-              method: "elicitation/create",
-              params: {
-                message: signInMessage(entry),
-                mode: "url",
-                url: entry.challenge.url,
-              },
-            },
-          ]),
-        ),
-        requestState,
-        resultType: "input_required",
+      const signIns = result.challenges.map(toSignIn);
+      const requestState = await context.requestState.codec.mint({
+        ...statePayload(context, call, "authorization", result.callId, result.oneOffNonce),
+        authorization: signIns,
       });
+      return withSandbox(authorizationRequest(result.callId, signIns, requestState));
     }
   }
+}
+
+function toSignIn(entry: InvokeToolAuthorizationChallenge): McpRequestStateSignIn {
+  const { url, userCode } = entry.challenge;
+  // Challenges without a URL were refused before this point.
+  if (url === undefined) throw new Error(`The sign-in to "${entry.name}" has no URL.`);
+  return userCode === undefined ? { name: entry.name, url } : { name: entry.name, url, userCode };
+}
+
+function approvalUnsupported(tool: string): Extract<McpToolCallResult, { content: unknown }> {
+  return toolError(
+    "input_unsupported",
+    `The tool "${tool}" needs approval, and this client did not declare form elicitation.`,
+  );
+}
+
+function signInUnsupported(
+  tool: string,
+  names: readonly string[],
+): Extract<McpToolCallResult, { content: unknown }> {
+  return toolError(
+    "input_unsupported",
+    `The tool "${tool}" needs a sign-in to ${names.map((name) => `"${name}"`).join(", ")}, and this client did not declare URL elicitation.`,
+  );
+}
+
+function approvalRequest(callId: string, tool: string, requestState: string): McpToolCallResult {
+  return {
+    _meta: { [MCP_APPROVAL_KEY]: { callId, tool } },
+    inputRequests: {
+      [MCP_APPROVAL_KEY]: {
+        method: "elicitation/create",
+        params: {
+          message: `Allow the tool "${tool}" to run?`,
+          mode: "form",
+          requestedSchema: {
+            properties: { approved: { title: "Approve", type: "boolean" } },
+            required: ["approved"],
+            type: "object",
+          },
+        },
+      },
+    },
+    requestState,
+    resultType: "input_required",
+  };
+}
+
+function authorizationRequest(
+  callId: string,
+  signIns: readonly McpRequestStateSignIn[],
+  requestState: string,
+): McpToolCallResult {
+  return {
+    _meta: {
+      [MCP_AUTHORIZATION_META_KEY]: { callId, connections: signIns.map((entry) => entry.name) },
+    },
+    inputRequests: Object.fromEntries(
+      signIns.map((entry) => [
+        `${MCP_AUTHORIZATION_KEY_PREFIX}${entry.name}`,
+        {
+          method: "elicitation/create",
+          params: { message: signInMessage(entry), mode: "url", url: entry.url },
+        },
+      ]),
+    ),
+    requestState,
+    resultType: "input_required",
+  };
 }
 
 function statePayload(
@@ -395,13 +543,9 @@ function statePayload(
   return payload;
 }
 
-function signInMessage(entry: InvokeToolAuthorizationChallenge): string {
-  const code = entry.challenge.userCode === undefined ? "" : ` Code: ${entry.challenge.userCode}`;
+function signInMessage(entry: McpRequestStateSignIn): string {
+  const code = entry.userCode === undefined ? "" : ` Code: ${entry.userCode}`;
   return `Sign in to ${entry.name} to continue.${code}`;
-}
-
-function formatNames(challenges: readonly InvokeToolAuthorizationChallenge[]): string {
-  return challenges.map((entry) => `"${entry.name}"`).join(", ");
 }
 
 /**
@@ -416,15 +560,25 @@ function clientSupports(
   ctx: McpRequestHandlerExtra,
   mode: "form" | "url",
 ): boolean {
-  const declared =
-    context.era === "modern"
-      ? ctx.mcpReq.envelope?.[CLIENT_CAPABILITIES_META_KEY]
-      : server.server.getClientCapabilities();
-  if (!isJsonObject(declared)) return false;
+  const declared = declaredCapabilities(server, context, ctx);
+  if (declared === undefined) return false;
   const elicitation = declared.elicitation;
   if (!isJsonObject(elicitation)) return false;
   if (mode === "url") return elicitation.url !== undefined;
   return elicitation.form !== undefined || elicitation.url === undefined;
+}
+
+/** The client capabilities this request declared: per request in the modern era, else from `initialize`. */
+function declaredCapabilities(
+  server: McpServer,
+  context: McpToolsContext,
+  ctx: McpRequestHandlerExtra,
+): McpJsonObject | undefined {
+  const declared =
+    context.era === "modern"
+      ? ctx.mcpReq.envelope?.[CLIENT_CAPABILITIES_META_KEY]
+      : server.server.getClientCapabilities();
+  return isJsonObject(declared) ? declared : undefined;
 }
 
 function toolError(

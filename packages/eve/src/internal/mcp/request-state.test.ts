@@ -35,6 +35,20 @@ describe("MCP requestState codec", () => {
     await expect(createMcpRequestStateCodec(SECRET).verify(state, ctx)).resolves.toEqual(payload);
   });
 
+  it("round-trips an authorization round with its outstanding sign-ins", async () => {
+    const signIn: McpRequestStatePayload = {
+      ...payload,
+      approval: { approved: true },
+      authorization: [
+        { name: "linear", url: "https://idp.example/a", userCode: "ABCD" },
+        { name: "github", url: "https://idp.example/b" },
+      ],
+      kind: "authorization",
+    };
+    const state = await createMcpRequestStateCodec(SECRET).mint(signIn);
+    await expect(createMcpRequestStateCodec(SECRET).verify(state, ctx)).resolves.toEqual(signIn);
+  });
+
   it("rejects a state signed with another secret", async () => {
     const state = await createMcpRequestStateCodec(SECRET).mint(payload);
     await expect(createMcpRequestStateCodec("t".repeat(32)).verify(state, ctx)).rejects.toThrow(
@@ -86,6 +100,16 @@ describe("MCP requestState codec", () => {
       { ...payload, sid: "" },
       { ...payload, nonce: 1 },
       { ...payload, approval: { approved: "yes" } },
+      { ...payload, authorization: [{ name: "linear", url: "https://idp.example/a" }] },
+      { ...payload, kind: "authorization" },
+      { ...payload, authorization: [], kind: "authorization" },
+      { ...payload, authorization: [{ name: "linear" }], kind: "authorization" },
+      { ...payload, authorization: [{ name: "", url: "https://x" }], kind: "authorization" },
+      {
+        ...payload,
+        authorization: [{ name: "linear", url: "https://x", userCode: 1 }],
+        kind: "authorization",
+      },
       "a string",
     ]) {
       const state = await codec.mint(bad as never);

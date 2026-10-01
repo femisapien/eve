@@ -20,8 +20,9 @@ export const MCP_REQUEST_STATE_TTL_SECONDS = 600;
 /**
  * What eve signs into an MCP `requestState`. The client can read it (the codec
  * signs, it does not encrypt), so it holds no secrets: the session id is a
- * hash, the arguments are a hash, and the one-off nonce only names a sandbox
- * the same principals can already reach.
+ * hash, the arguments are a hash, the one-off nonce only names a sandbox
+ * the same principals can already reach, and the sign-in URLs are the ones
+ * this same client was just sent.
  *
  * A valid signature grants nothing by itself. It proves eve minted this state
  * for this tool, these arguments, and this session; core still re-evaluates
@@ -41,6 +42,20 @@ export interface McpRequestStatePayload {
   readonly nonce?: string;
   /** The person's approval answer, carried into a sign-in round that follows it. */
   readonly approval?: { readonly approved: boolean };
+  /**
+   * The sign-ins a `kind: "authorization"` round asked for, one per input
+   * request key. A retry must answer every one before core runs again, and a
+   * missing answer is asked for again from here, without calling core.
+   */
+  readonly authorization?: readonly McpRequestStateSignIn[];
+}
+
+/** One outstanding sign-in in an authorization round. */
+export interface McpRequestStateSignIn {
+  /** The connection name; the input request key is `dev.eve/authorization:<name>`. */
+  readonly name: string;
+  readonly url: string;
+  readonly userCode?: string;
 }
 
 /** A resolved deployment secret, or why there is none. */
@@ -137,7 +152,21 @@ function isRequestStatePayload(value: unknown): value is McpRequestStatePayload 
     if (typeof approval !== "object" || approval === null) return false;
     if (typeof approval.approved !== "boolean") return false;
   }
+  if (payload.kind === "authorization") {
+    if (!Array.isArray(payload.authorization) || payload.authorization.length === 0) return false;
+    if (!payload.authorization.every(isSignIn)) return false;
+  } else if (payload.authorization !== undefined) {
+    return false;
+  }
   return true;
+}
+
+function isSignIn(value: unknown): value is McpRequestStateSignIn {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const entry = value as Record<string, unknown>;
+  if (typeof entry.name !== "string" || entry.name.length === 0) return false;
+  if (typeof entry.url !== "string" || entry.url.length === 0) return false;
+  return entry.userCode === undefined || typeof entry.userCode === "string";
 }
 
 /** `sha256` (hex) of the canonical JSON of a call's arguments. */

@@ -197,6 +197,48 @@ describe("mcpChannel tools over real HTTP", () => {
     expect(approved.result).toMatchObject({ structuredContent: { deployed: "prod" } });
   });
 
+  // Runs before the sign-in flag exists, so every call here still needs a sign-in.
+  it("re-asks a missing sign-in answer and denies a cancelled one, without running the tool", async () => {
+    const meta = { "dev.eve/tool-session": "refused-thread" };
+    const asked = await callTool(server(1), "alice", "issues", {}, { meta });
+    expect(asked.result?.resultType).toBe("input_required");
+    const [key] = Object.keys(asked.result!.inputRequests);
+
+    const missing = await callTool(
+      server(2),
+      "alice",
+      "issues",
+      {},
+      { inputResponses: {}, meta, requestState: asked.result!.requestState },
+    );
+    expect(missing.result).toMatchObject({
+      inputRequests: { [key!]: { params: { mode: "url", url: "https://idp.example/authorize" } } },
+      resultType: "input_required",
+    });
+
+    for (const [action, word] of [
+      ["cancel", "cancelled"],
+      ["decline", "declined"],
+    ] as const) {
+      const refused = await callTool(
+        server(2),
+        "alice",
+        "issues",
+        {},
+        {
+          inputResponses: { [key!]: { action } },
+          meta,
+          requestState: missing.result!.requestState,
+        },
+      );
+      expect(refused.result).toMatchObject({
+        isError: true,
+        structuredContent: { error: { code: "denied" } },
+      });
+      expect(refused.result!.structuredContent.error.message).toContain(`was ${word}`);
+    }
+  });
+
   it("retries a sign-in on another instance holding only the same secret", async () => {
     const meta = { "dev.eve/tool-session": "sign-in-thread" };
     const asked = await callTool(server(1), "alice", "issues", {}, { meta });
@@ -243,6 +285,33 @@ describe("mcpChannel tools over real HTTP", () => {
       },
     );
     expect(approved.result).toMatchObject({ structuredContent: { deployed: "staging" } });
+  });
+
+  it("ignores a tool session key from a client that did not declare the extension", async () => {
+    const stray = { meta: { "dev.eve/tool-session": "stray-thread" }, undeclared: true };
+    const asked = await callTool(server(1), "alice", "deploy", { env: "qa" }, stray);
+    const payload = decodeRequestState(asked.result!.requestState);
+    expect(typeof payload.nonce).toBe("string");
+
+    const answer = { "dev.eve/approval": { action: "accept", content: { approved: true } } };
+    // Declaring on the retry turns the key on, which the one-off state does not match.
+    const declared = await callTool(
+      server(2),
+      "alice",
+      "deploy",
+      { env: "qa" },
+      { inputResponses: answer, meta: stray.meta, requestState: asked.result!.requestState },
+    );
+    expect(declared.error?.code).toBe(-32_602);
+
+    const approved = await callTool(
+      server(2),
+      "alice",
+      "deploy",
+      { env: "qa" },
+      { ...stray, inputResponses: answer, requestState: asked.result!.requestState },
+    );
+    expect(approved.result).toMatchObject({ structuredContent: { deployed: "qa" } });
   });
 
   it("refuses a forged requestState and a valid one replayed by another principal or forwarder", async () => {
@@ -343,6 +412,8 @@ interface CallOptions {
   readonly inputResponses?: Json;
   readonly meta?: Json;
   readonly requestState?: unknown;
+  /** Leave `dev.eve/tool-sessions` out of the declared client capabilities. */
+  readonly undeclared?: boolean;
 }
 
 async function callTool(
@@ -407,10 +478,9 @@ async function mcpFetch(
         ...params,
         _meta: {
           ...options.meta,
-          "io.modelcontextprotocol/clientCapabilities": {
-            elicitation: { form: {}, url: {} },
-            extensions: { "dev.eve/tool-sessions": {} },
-          },
+          "io.modelcontextprotocol/clientCapabilities": options.undeclared
+            ? { elicitation: { form: {}, url: {} } }
+            : { elicitation: { form: {}, url: {} }, extensions: { "dev.eve/tool-sessions": {} } },
           "io.modelcontextprotocol/clientInfo": { name: "eve-scenario", version: "0.0.0" },
           "io.modelcontextprotocol/protocolVersion": MCP_PROTOCOL_VERSION,
         },
