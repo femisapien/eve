@@ -1,4 +1,4 @@
-import { access, readdir } from "node:fs/promises";
+import { access, mkdir, readdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
@@ -7,12 +7,18 @@ import { useScenarioApp } from "#internal/testing/scenario-app.js";
 import { buildApplication } from "./build-application.js";
 import { startProductionServer } from "./start-production-server.js";
 
-describe("skill files in production server output", () => {
+/** A 1x1 PNG; its bytes include NUL and non-UTF-8 sequences. */
+const PNG = Buffer.from(
+  "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+  "base64",
+);
+
+describe("skill files in production server assets", () => {
   const scenarioApp = useScenarioApp();
 
-  it("ships the skills tree as non-public server files that readSkill() serves", async () => {
+  it("bundles the skills tree as Nitro server assets that readSkill() serves byte for byte", async () => {
     const { appRoot } = await scenarioApp({
-      name: "server-output-skill-files",
+      name: "skill-server-assets",
       installDependencies: true,
       files: {
         "agent/agent.ts": 'export default { model: "openai/gpt-5.4" };',
@@ -34,21 +40,29 @@ describe("skill files in production server output", () => {
           '        lower: await readSkill("lower", "SKILL.md"),',
           "      }),",
           "    ),",
+          '    GET("/logo", async (_request, { readSkill }) => {',
+          '      const bytes = await readSkill("research", "assets/logo.png");',
+          "      return new Response(bytes, {",
+          '        headers: { "x-kind": typeof bytes === "string" ? "string" : "bytes" },',
+          "      });",
+          "    }),",
           "  ],",
           "});",
         ].join("\n"),
       },
     });
+    await mkdir(join(appRoot, "agent/skills/research/assets"), { recursive: true });
+    await writeFile(join(appRoot, "agent/skills/research/assets/logo.png"), PNG);
 
     await buildApplication(appRoot, { skipSandboxPrewarm: true });
-    const serverSkills = join(appRoot, ".output", "server", "_eve-skills");
-    expect(
-      (await readdir(serverSkills, { recursive: true, withFileTypes: true }))
-        .filter((entry) => entry.isFile())
-        .map((entry) => join(entry.parentPath, entry.name).slice(serverSkills.length + 1))
-        .sort(),
-    ).toEqual(["lower/skill.MD", "research/SKILL.md", "research/references/deep/api.md"]);
-    await expect(access(join(appRoot, ".output", "public", "_eve-skills"))).rejects.toMatchObject({
+    // The server function carries no plain copy of the tree: Nitro inlines
+    // each file as a lazily imported chunk.
+    const serverFiles = (
+      await readdir(join(appRoot, ".output", "server"), { recursive: true })
+    ).map(String);
+    expect(serverFiles.filter((path) => /\.(png|md|MD)$/.test(path))).toEqual([]);
+    expect(serverFiles).toEqual(expect.arrayContaining([join("_virtual", "logo.png.mjs")]));
+    await expect(access(join(appRoot, ".output", "server", "_eve-skills"))).rejects.toMatchObject({
       code: "ENOENT",
     });
 
@@ -64,12 +78,15 @@ describe("skill files in production server output", () => {
           { description: "Lower-case entry.", files: ["skill.MD"], name: "lower" },
           {
             description: "Research carefully.",
-            files: ["SKILL.md", "references/deep/api.md"],
+            files: ["SKILL.md", "assets/logo.png", "references/deep/api.md"],
             name: "research",
           },
         ],
       });
-      expect((await fetch(new URL("/_eve-skills/research/SKILL.md", server.url))).status).toBe(404);
+      const logo = await fetch(new URL("/logo", server.url));
+      expect(logo.status).toBe(200);
+      expect(logo.headers.get("x-kind")).toBe("bytes");
+      expect(Buffer.from(await logo.arrayBuffer()).equals(PNG)).toBe(true);
     } finally {
       await server.close();
     }

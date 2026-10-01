@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import type { H3Event } from "nitro";
 import {
   context as apiContext,
@@ -39,10 +41,19 @@ import {
 import { resolveNitroChannelRuntimeBundle } from "#internal/nitro/routes/runtime-stack.js";
 import { compileFromMemory } from "#internal/testing/compile-from-memory.js";
 import { withBundledCompiledArtifacts } from "#runtime/loaders/bundled-artifacts.js";
-import { SERVER_OUTPUT_SKILLS_URL_GLOBAL } from "#channel/skill-files.js";
 
 vi.mock("#internal/nitro/routes/runtime-stack.js", () => ({
   resolveNitroChannelRuntimeBundle: vi.fn(),
+}));
+
+// Production builds serve skill files through Nitro server assets; this
+// stands in for `useStorage("assets:<base>")` with the index and bytes that
+// `eve build` would register.
+const serverAssetItems = new Map<string, unknown>();
+vi.mock("nitro/storage", () => ({
+  useStorage: (base: string) => ({
+    getItemRaw: async (key: string) => serverAssetItems.get(`${base}:${key}`) ?? null,
+  }),
 }));
 
 vi.mock("#internal/vercel/project-link.js", () => ({
@@ -187,7 +198,7 @@ describe("dispatchChannelRequest", () => {
       skills: [{ description: "Research skill.", name: "research" }],
     });
     // Materialization strips skill files from the manifest; production builds
-    // ship them as server output files, located through the entry-chunk stamp.
+    // ship them as Nitro server assets.
     const manifest = {
       ...compiled.manifest,
       skills: compiled.manifest.skills.map(({ files: _files, ...skill }) => skill),
@@ -199,10 +210,9 @@ describe("dispatchChannelRequest", () => {
         {
           handler: async (_request, args) => {
             const description = await args.describe();
-            const skillError = await args.readSkill("research").catch((error: unknown) => error);
             return Response.json({
               name: description.name,
-              skillError: (skillError as { code?: string }).code,
+              skill: await args.readSkill("research"),
               skills: description.skills,
               tools: description.tools.length,
             });
@@ -220,22 +230,40 @@ describe("dispatchChannelRequest", () => {
       runtime,
     });
 
-    // No tree exists at the stamped URL, so the skill is listed without files.
-    vi.stubGlobal(
-      SERVER_OUTPUT_SKILLS_URL_GLOBAL,
-      "file:///eve-test-missing-server-output/_eve-skills/",
+    const skillMarkdown = "---\nname: research\ndescription: Research skill.\n---\n";
+    const skillBytes = new TextEncoder().encode(skillMarkdown);
+    serverAssetItems.set(
+      "assets:eve-skill-index:skills.json",
+      JSON.stringify({
+        version: 1,
+        skills: [
+          [
+            "research",
+            [
+              [
+                "SKILL.md",
+                skillBytes.byteLength,
+                "research:SKILL.md",
+                createHash("sha256").update(skillBytes).digest("hex"),
+              ],
+            ],
+          ],
+        ],
+      }),
     );
+    // Nitro inlines text-typed assets as strings.
+    serverAssetItems.set("assets:eve-skills:research:SKILL.md", skillMarkdown);
     const response = await withBundledCompiledArtifacts({ manifest, moduleMap }, () =>
       dispatchChannelRequest(createEvent({ url: "https://eve.test/mcp" }), "GET /mcp", {
         kind: "production",
         sandboxScope: "test",
       }),
-    ).finally(() => vi.unstubAllGlobals());
+    ).finally(() => serverAssetItems.clear());
 
     await expect(response.json()).resolves.toEqual({
       name: "wired-agent",
-      skillError: "unknown-file",
-      skills: [{ description: "Research skill.", files: [], name: "research" }],
+      skill: skillMarkdown,
+      skills: [{ description: "Research skill.", files: ["SKILL.md"], name: "research" }],
       tools: expect.any(Number),
     });
   });

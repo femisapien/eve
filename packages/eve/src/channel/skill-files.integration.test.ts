@@ -1,7 +1,7 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
@@ -9,8 +9,11 @@ import {
   createCompiledSkillFileSource,
   createDiskSkillFileSource,
   readSkillFile,
-  SERVER_OUTPUT_SKILLS_URL_GLOBAL,
 } from "#channel/skill-files.js";
+
+function indexEntry(path: string, key: string, bytes: Uint8Array) {
+  return [path, bytes.byteLength, key, createHash("sha256").update(bytes).digest("hex")];
+}
 
 describe("createDiskSkillFileSource", () => {
   let root: string;
@@ -125,28 +128,65 @@ describe("createDiskSkillFileSource", () => {
     await expect(source.listFiles("research")).resolves.toEqual(["SKILL.md"]);
   });
 
-  it("reads bundled deployments from the server output tree the entry chunk points at", async () => {
-    const serverOutputSkills = join(root, "server", "_eve", "skills");
-    await mkdir(join(serverOutputSkills, "research"), { recursive: true });
-    await writeFile(join(serverOutputSkills, "research", "SKILL.md"), "# Bundled\n");
-    const createBundledSource = () =>
-      createCompiledSkillFileSource({
-        compiledArtifactsSource: { kind: "bundled" },
-        workspaceResourceRoot: { logicalPath: "workspace-resources/__root__", rootEntries: [] },
-      });
-    const global = globalThis as Record<string, unknown>;
-
-    try {
-      global[SERVER_OUTPUT_SKILLS_URL_GLOBAL] = pathToFileURL(`${serverOutputSkills}/`).href;
-      await expect(
-        readSkillFile({ skill: "research", skills: ["research"], source: createBundledSource() }),
-      ).resolves.toBe("# Bundled\n");
-    } finally {
-      delete global[SERVER_OUTPUT_SKILLS_URL_GLOBAL];
-    }
-    // A server not built by `eve build` has no stamped tree.
-    await expect(createBundledSource().listFiles("research")).rejects.toMatchObject({
-      code: "unavailable",
+  it("reads bundled deployments from Nitro server assets through the build index", async () => {
+    const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0xff, 0x80]);
+    const markdown = "# Bundled\n";
+    const items = new Map<string, unknown>([
+      [
+        "eve-skill-index:skills.json",
+        JSON.stringify({
+          version: 1,
+          skills: [
+            [
+              "research",
+              [
+                indexEntry("SKILL.md", "research:SKILL.md", new TextEncoder().encode(markdown)),
+                indexEntry("assets/logo.png", "research:assets:logo.png", png),
+                ["huge.bin", 600 * 1024, null, null],
+                indexEntry("tampered.md", "research:tampered.md", new TextEncoder().encode("a")),
+              ],
+            ],
+          ],
+        }),
+      ],
+      // Nitro inlines text-typed assets as strings and binary ones as bytes.
+      ["eve-skills:research:SKILL.md", markdown],
+      ["eve-skills:research:assets:logo.png", png],
+      ["eve-skills:research:tampered.md", "b"],
+    ]);
+    const opened: string[] = [];
+    const source = createCompiledSkillFileSource({
+      compiledArtifactsSource: { kind: "bundled" },
+      openStorage: async (base) => {
+        opened.push(base);
+        return { getItemRaw: async (key) => items.get(`${base}:${key}`) ?? null };
+      },
+      workspaceResourceRoot: { logicalPath: "workspace-resources/__root__", rootEntries: [] },
     });
+    const read = (path?: string) =>
+      readSkillFile({ path, skill: "research", skills: ["research"], source });
+
+    await expect(source.listFiles("research")).resolves.toEqual([
+      "SKILL.md",
+      "assets/logo.png",
+      "huge.bin",
+      "tampered.md",
+    ]);
+    await expect(source.listFiles("__proto__")).resolves.toEqual([]);
+    await expect(read()).resolves.toBe(markdown);
+    await expect(read("assets/logo.png")).resolves.toEqual(png);
+    await expect(read("huge.bin")).rejects.toMatchObject({ code: "too-large" });
+    await expect(read("tampered.md")).rejects.toMatchObject({ code: "unavailable" });
+    await expect(read("missing.md")).rejects.toMatchObject({ code: "unknown-file" });
+    expect(new Set(opened)).toEqual(new Set(["eve-skill-index", "eve-skills"]));
+  });
+
+  it("reports bundled deployments without a build index as unavailable", async () => {
+    const source = createCompiledSkillFileSource({
+      compiledArtifactsSource: { kind: "bundled" },
+      openStorage: async () => ({ getItemRaw: async () => null }),
+      workspaceResourceRoot: { logicalPath: "workspace-resources/__root__", rootEntries: [] },
+    });
+    await expect(source.listFiles("research")).rejects.toMatchObject({ code: "unavailable" });
   });
 });
