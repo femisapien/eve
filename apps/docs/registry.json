@@ -164,6 +164,30 @@
       ]
     },
     {
+      "name": "extension/link",
+      "type": "registry:item",
+      "title": "Link",
+      "description": "Give an eve agent guarded access to a Link wallet for payment methods, purchase requests, and checkout credentials.",
+      "dependencies": [
+        "@stripe/link-integrations-eve"
+      ],
+      "envVars": {
+        "LINK_ACCESS_TOKEN": ""
+      },
+      "meta": {
+        "eve": {
+          "requires": ">=0.54.4"
+        }
+      },
+      "files": [
+        {
+          "path": "registry/extensions/link.ts",
+          "type": "registry:file",
+          "target": "agent/extensions/link.ts"
+        }
+      ]
+    },
+    {
       "name": "extension/kernel",
       "type": "registry:item",
       "title": "KERNEL",
@@ -436,6 +460,19 @@
           "path": "registry/tools/sleep.ts",
           "type": "registry:file",
           "target": "agent/tools/sleep.ts"
+        }
+      ]
+    },
+    {
+      "name": "tool/no_reply",
+      "type": "registry:item",
+      "title": "No Reply",
+      "description": "End the turn without sending a reply.",
+      "files": [
+        {
+          "path": "registry/tools/no_reply.ts",
+          "type": "registry:file",
+          "target": "agent/tools/no_reply.ts"
         }
       ]
     },

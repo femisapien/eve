@@ -1,6 +1,7 @@
 import type { SessionContext } from "#context/session-context.js";
 import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
 import { createAgentSessions } from "#execution/agent-sessions/session.js";
+import { createRunUsageTally, type RunUsageTally } from "#execution/agent-sessions/usage.js";
 import {
   ask,
   attachWorkflowToolRunContext,
@@ -26,6 +27,7 @@ import type {
 } from "#execution/tools/workflow/messages.js";
 import type { WorkflowToolRunInbox } from "#execution/tools/workflow/owner.js";
 import type { JsonValue } from "#shared/json.js";
+import type { TokenUsage } from "#shared/token-usage.js";
 import type { ToolContext } from "#tools/definition.js";
 import type {
   AgentSession,
@@ -35,7 +37,7 @@ import type {
   WorkflowSharedContext,
 } from "#tools/workflow-definition.js";
 
-type ServeContext = ToolContext & WorkflowServeContext<JsonValue>;
+type ServeContext = Omit<ToolContext, "messages"> & WorkflowServeContext<JsonValue>;
 
 type ServeEntryPoint = (
   receive: WorkflowServeReceive<JsonValue>,
@@ -54,6 +56,8 @@ interface ServedCall {
   readonly from: WorkflowToolRunRef;
   /** The run's session in the call's turn, with the auth the call was admitted with. */
   readonly session: SessionContext["session"];
+  /** The call's turn context. */
+  readonly turn: SessionContext["turn"];
 }
 
 interface PendingReceive {
@@ -88,6 +92,14 @@ class WorkflowServeCalls implements WorkflowBodyControl {
   private readonly runRef: WorkflowToolRunRef;
   private readonly runSession: SessionContext["session"];
   private readonly owner: WorkflowToolRunInbox;
+  /**
+   * What the body's `ctx.agent` sessions spent. Each reply carries the total,
+   * and a turn that ends while no call waits for a reply, such as one a cancel
+   * stopped, sends it on its own, since no reply would carry it.
+   */
+  readonly usage: RunUsageTally = createRunUsageTally(() => this.sendUncarriedUsage());
+  /** The latest total a message carried, so a turn that spent nothing sends none. */
+  private carriedUsage: TokenUsage | undefined;
   private readonly toolName: string;
   private readonly seenCallIds: Set<string>;
   private firstReceived = false;
@@ -120,7 +132,7 @@ class WorkflowServeCalls implements WorkflowBodyControl {
       input: this.runRef.input,
       sequence: this.runRef.sequence,
       stepIndex: this.runRef.stepIndex,
-      turnContext: input.session.turn.context,
+      turnContext: input.turn.context,
       turnId: this.runRef.turnId,
     });
     this.waiting = [this.first];
@@ -143,7 +155,8 @@ class WorkflowServeCalls implements WorkflowBodyControl {
   /**
    * The call the body serves now: the latest call it received. Steps,
    * questions, sign-ins, and `agent.started` belong to this call, so they
-   * carry its `callId` and turn; `ctx.session` is its view of the session,
+   * carry its `callId` and turn; `ctx.session` and `ctx.turn` are its view of
+   * the session and turn,
    * `ctx.agents` lists the agents it may open, a session opened now is its
    * child, and a message sent now carries its auth.
    */
@@ -210,6 +223,18 @@ class WorkflowServeCalls implements WorkflowBodyControl {
   async flush(): Promise<void> {
     await this.asks.flush();
     await this.replies;
+  }
+
+  /** Sends the usage total when no call waits for the reply that would carry it. */
+  private sendUncarriedUsage(): void {
+    if (this.waiting.length > 0 || this.endedBy !== undefined) return;
+    const { from } = this.latest;
+    this.replies = this.replies.then(async () => {
+      const usage = this.usage.total();
+      if (usage === undefined || isSameUsage(usage, this.carriedUsage)) return;
+      this.carriedUsage = usage;
+      await this.owner.send({ from, kind: "usage", usage });
+    });
   }
 
   /** A later call reached the run. Redelivered calls are ignored. */
@@ -281,8 +306,9 @@ class WorkflowServeCalls implements WorkflowBodyControl {
       session: {
         ...this.runSession,
         auth: call.auth,
-        turn: { context: call.turnContext, id: call.turnId, sequence: call.sequence },
+        turn: { id: call.turnId, sequence: call.sequence },
       },
+      turn: { context: call.turnContext },
     };
   }
 
@@ -295,8 +321,27 @@ class WorkflowServeCalls implements WorkflowBodyControl {
     const latest = calls.at(-1);
     if (latest === undefined) return;
     const callIds = calls.map((served) => served.from.callId);
-    await this.owner.send({ callIds, from: latest.from, kind: "reply", output });
+    const usage = this.usage.total();
+    this.carriedUsage = usage;
+    await this.owner.send({
+      callIds,
+      from: latest.from,
+      kind: "reply",
+      output,
+      ...(usage !== undefined && { usage }),
+    });
   }
+}
+
+function isSameUsage(total: TokenUsage, carried: TokenUsage | undefined): boolean {
+  return (
+    carried !== undefined &&
+    total.inputTokens === carried.inputTokens &&
+    total.outputTokens === carried.outputTokens &&
+    total.cacheReadTokens === carried.cacheReadTokens &&
+    total.cacheWriteTokens === carried.cacheWriteTokens &&
+    total.costUsd === carried.costUsd
+  );
 }
 
 /** Starts a `serve` body, which runs once for its task and serves every call to it. */
@@ -316,7 +361,7 @@ export function startServeBody(input: WorkflowBodyInput): StartedWorkflowBody {
     },
     owner: input.owner,
   };
-  const agentSessions = createAgentSessions(run);
+  const agentSessions = createAgentSessions(run, calls.usage);
   const ctx = createServeContext(input, calls, agentSessions.open);
   attachWorkflowToolRunContext(ctx, run);
   return {
@@ -324,6 +369,7 @@ export function startServeBody(input: WorkflowBodyInput): StartedWorkflowBody {
     close: agentSessions.close,
     control: calls,
     outcome: executeServeBody(input, calls, ctx),
+    usage: calls.usage,
   };
 }
 
@@ -373,6 +419,9 @@ function createServeContext(
     },
     get session() {
       return calls.current.session;
+    },
+    get turn() {
+      return calls.current.turn;
     },
     reply: (output) => calls.reply(output),
   };

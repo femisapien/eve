@@ -21,3 +21,10 @@ export const NOTEBOOK_NAME = "Harbor Lumen 4482";
 export const NOTEBOOK_CORRECTION = `${NOTEBOOK_ENTRY} Correction: Alice meant the south pier, not the north pier.`;
 /** What a keeper reports once it measures the pier Alice meant after her correction. */
 export const CORRECTED_MEASUREMENT = "NOTEBOOK-DEPTH south pier 4.2 m";
+
+/** Starts Alice's survey request, which the parent delegates to one survey-worker task. */
+export const SURVEY_DIRECTIVE = "SURVEY-DELEGATE";
+/** Starts Alice's survey request, which the parent runs through the survey-through-tool workflow tool. */
+export const SURVEY_TOOL_DIRECTIVE = "SURVEY-TOOL";
+/** What survey-worker reports for its one model call: more than the parent's default 40M input budget. */
+export const SURVEY_WORKER_INPUT_TOKENS = 50_000_000;

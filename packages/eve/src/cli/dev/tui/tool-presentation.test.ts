@@ -146,9 +146,12 @@ describe("presentTool", () => {
     expect(presentTool("agent", { message: "Audit the auth flow.\nDetails…" }).title).toBe(
       "Delegate Audit the auth flow.",
     );
-    expect(presentTool("connection_search", { keywords: "linear issues" }).title).toBe(
-      "Discover linear issues",
+    expect(presentTool("connection_search", { query: "linear issues" }).title).toBe(
+      "Search linear issues",
     );
+    expect(
+      presentTool("connection_execute", { connection: "linear", tool: "list_issues" }).title,
+    ).toBe("Call linear.list_issues");
     expect(presentTool("final_output", { anything: true }).title).toBe("Return final output");
   });
 
@@ -217,6 +220,13 @@ describe("presentTool", () => {
     );
     // Without roster knowledge the generic formatter keeps its shape.
     expect(presentTool("stock-price", { message: "x" }).title).toBe("stock-price");
+  });
+
+  it("names the self-modification subagent without its extension namespace", () => {
+    expect(
+      presentTool("self-modification__agent", { message: "Add a tool." }, { isSubagent: true })
+        .title,
+    ).toBe("Delegate agent editor");
   });
 
   it("keeps unknown tools on the generic formatter", () => {

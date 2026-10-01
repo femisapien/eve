@@ -58,8 +58,8 @@ describe("approval-only connection restoration", () => {
           context: {},
           id: "test",
           auth: { current: bob, initiator: alice },
-          turn: { context: undefined },
         },
+        turn: { context: undefined },
       }),
     );
     expect(fixture.registry.getConnectionNames()).toEqual(["notes"]);

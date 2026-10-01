@@ -3,6 +3,7 @@ import { getWorkflowMetadata } from "#compiled/@workflow/core/index.js";
 import type { SessionContext } from "#context/session-context.js";
 import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
 import { createAgentSessions } from "#execution/agent-sessions/session.js";
+import { createRunUsageTally, type RunUsageTally } from "#execution/agent-sessions/usage.js";
 import type {
   AgentSession,
   WorkflowSharedContext,
@@ -36,6 +37,7 @@ export interface WorkflowBodyDefinition {
   readonly input: JsonObject;
 
   readonly session: SessionContext["session"];
+  readonly turn: SessionContext["turn"];
   readonly stepIndex: number;
   readonly toolName: string;
   readonly workflowId: string;
@@ -69,9 +71,12 @@ export interface StartedWorkflowBody {
   close(): Promise<void>;
   readonly control: WorkflowBodyControl;
   readonly outcome: Promise<WorkflowToolRunOutcome>;
+  /** What the body's `ctx.agent` sessions spent, which the run's outcome carries. */
+  readonly usage: RunUsageTally;
 }
 
-type WorkflowCallContext = ToolContext & WorkflowToolContext;
+// Workflow bodies replay deterministically, so they never receive model messages.
+type WorkflowCallContext = Omit<ToolContext, "messages"> & WorkflowToolContext;
 
 /** What an `execute` call a steering message stopped settles with when its body rejects. */
 const INTERRUPTED_OUTPUT = { interrupted: true } as const;
@@ -147,7 +152,8 @@ export function startCallBody(input: WorkflowBodyInput): StartedWorkflowBody {
     from,
     owner: input.owner,
   };
-  const agentSessions = createAgentSessions(run);
+  const usage = createRunUsageTally();
+  const agentSessions = createAgentSessions(run, usage);
   const ctx = createCallContext(input, signals, agentSessions.open);
   attachWorkflowToolRunContext(ctx, run);
   return {
@@ -155,6 +161,7 @@ export function startCallBody(input: WorkflowBodyInput): StartedWorkflowBody {
     close: agentSessions.close,
     control: signals,
     outcome: executeCallBody(input, ctx, signals, from),
+    usage,
   };
 }
 
@@ -231,15 +238,18 @@ export function resolveWorkflowEntryPoint<TEntryPoint>(input: WorkflowBodyInput)
 /**
  * The members every entry point's context shares, bound to the run. `ask`
  * is the entry point's own, since what it may ask for depends on its calls.
- * The members that describe a call, `abortSignal`, `agents`, `callId`, and
- * `session` (whose turn is the call's), come from the entry point, which
- * knows its calls.
+ * The members that describe a call, `abortSignal`, `agents`, `callId`,
+ * `session` (whose turn is the call's), and `turn`, come from the entry point,
+ * which knows its calls.
  */
 export function createSharedContext(
   input: WorkflowBodyInput,
   agent: (name: string) => AgentSession,
   askPerson: WorkflowSharedContext["ask"],
-): Omit<ToolContext & WorkflowSharedContext, "abortSignal" | "agents" | "callId" | "session"> {
+): Omit<
+  ToolContext & WorkflowSharedContext,
+  "abortSignal" | "agents" | "callId" | "messages" | "session" | "turn"
+> {
   const unavailable = (member: string, hint: string): never => {
     throw new Error(
       `ctx.${member} is not available inside a workflow tool; ${hint}. Tool "${input.toolName}" runs as a durable workflow body, which only replays deterministic code.`,
@@ -287,6 +297,7 @@ function createCallContext(
     agents: createAgentsView(input.agentContext),
     callId: input.callId,
     session: input.session,
+    turn: input.turn,
   };
   return ctx;
 }

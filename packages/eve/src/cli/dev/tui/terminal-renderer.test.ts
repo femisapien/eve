@@ -1182,6 +1182,39 @@ describe("TerminalRenderer (inline scrollback)", () => {
       expect(screen.snapshot()).toMatch(/✓ researcher {2}finished in \d+s · Fetched 1 URL/u);
     });
 
+    it("names a self-modification task as the agent editor modifying your agent", async () => {
+      const { screen, renderer } = makeRenderer();
+      renderer.renderAgentHeader({ name: "Weather Agent", serverUrl: "http://localhost:3000" });
+      const stream = taskStream();
+      const rendering = renderer.renderStream(stream.result, { continueSession: true });
+
+      stream.push(
+        { type: "step-start" },
+        {
+          type: "tool-call",
+          toolCallId: "call-s",
+          toolName: "self-modification__agent",
+          input: { message: "Add a tool that reports the forecast" },
+        },
+        {
+          type: "task-started",
+          toolCallId: "call-s",
+          kind: "agent",
+          toolName: "self-modification__agent",
+        },
+        { type: "step-finish" },
+      );
+      await screen.waitForText("Modifying your agent");
+      expect(screen.snapshot()).toContain("※ agent editor  Add a tool that reports the forecast");
+      expect(screen.snapshot()).not.toContain("self-modification__agent");
+
+      stream.push({ type: "task-settled", toolCallId: "call-s", status: "completed" });
+      await screen.waitForText("✓ agent editor");
+      stream.close();
+      await rendering;
+      renderer.shutdown();
+    });
+
     it("waits for an agent's own last events before writing its end line", async () => {
       const { screen, renderer } = makeRenderer();
       renderer.renderAgentHeader({ name: "Weather Agent", serverUrl: "http://localhost:3000" });
@@ -1883,6 +1916,7 @@ describe("TerminalRenderer (inline scrollback)", () => {
               ...info.agent.config,
               owner: {
                 kind: "extension" as const,
+                mountId: "extensions/self-modification",
                 namespace: "self-modification",
                 packageName: "eve",
               },
@@ -3209,6 +3243,54 @@ describe("TerminalRenderer (inline scrollback)", () => {
 
     process.stdout.write("server listening on 3000\n");
     expect(append).toHaveBeenCalledWith({ source: "stdout", detail: "server listening on 3000" });
+    renderer.shutdown();
+  });
+
+  it("shows Workflow SDK stderr only when every log is shown and still records it", () => {
+    const screen = new MockScreen({ columns: 140, rows: 30 });
+    const input = new MockUserInput();
+    const stub = stubDiagnostics();
+    const renderer = new TerminalRenderer({
+      input,
+      output: screen,
+      captureForeignOutput: true,
+      logs: "stderr",
+      unicode: true,
+      diagnostics: stub.diagnostics,
+    });
+    renderer.renderAgentHeader({ name: "Weather Agent", serverUrl: "http://localhost:3000" });
+    const detail = [
+      "[workflow-sdk] Step execution already in flight in this process; awaiting its settlement instead of executing again",
+      "  run    wrun_01",
+      "[workflow-sdk] Encountered FatalError while executing step",
+      "FatalError: step body threw",
+      "    at releaseStep (release-step.ts:1:1)",
+      "[eve:dev] agent reloaded",
+    ].join("\n");
+    // Pipe chunks from the server process can carry several records and can
+    // split one record, even mid-line.
+    const split = detail.indexOf("body threw");
+
+    process.stderr.write(detail.slice(0, split));
+    process.stderr.write(`${detail.slice(split)}\n`);
+
+    const recorded = stub.append.mock.calls
+      .map(([entry]) => entry as { source: string; detail?: string })
+      .filter((entry) => entry.source === "stderr")
+      .map((entry) => entry.detail);
+    expect(recorded.join("\n")).toBe(detail);
+    const hidden = screen.snapshot();
+    expect(hidden).toContain("[eve:dev] agent reloaded");
+    expect(hidden).not.toContain("[workflow-sdk]");
+    expect(hidden).not.toContain("wrun_01");
+    expect(hidden).not.toContain("step body threw");
+
+    renderer.setLogDisplayMode("all");
+    // Adjacent log blocks collapse to the newest, so the split record's tail
+    // proves the hidden segments are revealed.
+    const shown = screen.snapshot();
+    expect(shown).toContain("FatalError: step body threw");
+    expect(shown).toContain("[eve:dev] agent reloaded");
     renderer.shutdown();
   });
 
@@ -5701,7 +5783,7 @@ describe("TerminalRenderer status line", () => {
     expect(promptRow).toBeGreaterThan(-1);
     const statusRow = lines.slice(promptRow + 1).join("\n");
     expect(statusRow).not.toContain(":3000");
-    expect(statusRow).toContain("anthropic/claude-sonnet-5");
+    expect(statusRow).toContain("claude-sonnet-5");
     // The linked project folds into the connected gateway label.
     expect(statusRow).toContain("· ai-gateway(oidc:my-agent)");
     expect(statusRow).not.toContain("⚠ ai-gateway");
@@ -5728,7 +5810,7 @@ describe("TerminalRenderer status line", () => {
     expect(promptRow).toBeGreaterThan(-1);
     const footer = lines.slice(promptRow + 1).join("\n");
     expect(footer).toContain("dynamic model");
-    expect(footer).not.toContain("openai/gpt-5.6-sol");
+    expect(footer).not.toContain("gpt-5.6-sol");
     expect(footer).not.toContain("⚠ ai-gateway");
     input.type("done");
     input.enter();
@@ -5736,33 +5818,33 @@ describe("TerminalRenderer status line", () => {
     await renderer.renderStream(
       {
         events: (async function* (): AsyncIterable<AgentTUIStreamEvent> {
-          yield { type: "step-start", modelId: "openai/gpt-5.6-luna" };
-          expect(screen.snapshot()).toContain("dynamic model · openai/gpt-5.6-luna");
+          yield { type: "step-start", modelId: "openai/gpt-6-luna-fast" };
+          expect(screen.snapshot()).toContain("dynamic model · gpt-6-luna · ⚡︎");
           yield { type: "step-start", modelId: "openai/gpt-5.6-sol" };
-          expect(screen.snapshot()).toContain("dynamic model · openai/gpt-5.6-sol");
-          expect(screen.snapshot()).not.toContain("openai/gpt-5.6-luna");
+          expect(screen.snapshot()).toContain("dynamic model · gpt-5.6-sol");
+          expect(screen.snapshot()).not.toContain("gpt-6-luna");
           yield { type: "finish" };
         })(),
       },
       { submittedPrompt: "hi", continueSession: true },
     );
-    expect(screen.snapshot()).toContain("dynamic model · openai/gpt-5.6-sol");
+    expect(screen.snapshot()).toContain("dynamic model · gpt-5.6-sol");
     await renderer.renderStream(
       {
         events: (async function* (): AsyncIterable<AgentTUIStreamEvent> {
           yield { type: "turn-start", turnId: "next-turn" };
           expect(screen.snapshot()).toContain("dynamic model");
-          expect(screen.snapshot()).not.toContain("openai/gpt-5.6-sol");
+          expect(screen.snapshot()).not.toContain("gpt-5.6-sol");
           yield { type: "step-start", modelId: "openai/gpt-5.6-luna" };
           yield { type: "finish" };
         })(),
       },
       { submittedPrompt: "hello again", continueSession: true },
     );
-    expect(screen.snapshot()).toContain("dynamic model · openai/gpt-5.6-luna");
+    expect(screen.snapshot()).toContain("dynamic model · gpt-5.6-luna");
     renderer.renderSessionBoundary();
     expect(screen.snapshot()).toContain("dynamic model");
-    expect(screen.snapshot()).not.toContain("openai/gpt-5.6-luna");
+    expect(screen.snapshot()).not.toContain("gpt-5.6-luna");
     renderer.shutdown();
   });
 
@@ -5779,9 +5861,9 @@ describe("TerminalRenderer status line", () => {
         { type: "step-start", modelId: "openai/gpt-5.6-sol" },
       ]),
     );
-    expect(screen.snapshot()).toContain("dynamic model · openai/gpt-5.6-sol");
+    expect(screen.snapshot()).toContain("dynamic model · gpt-5.6-sol");
     await renderer.renderIdleStream(streamOf([{ type: "turn-start", turnId: "first" }]));
-    expect(screen.snapshot()).toContain("dynamic model · openai/gpt-5.6-sol");
+    expect(screen.snapshot()).toContain("dynamic model · gpt-5.6-sol");
     await renderer.renderIdleStream(
       streamOf([
         { type: "turn-start", turnId: "wake" },
@@ -5789,7 +5871,7 @@ describe("TerminalRenderer status line", () => {
       ]),
     );
     expect(screen.snapshot()).toContain("dynamic model");
-    expect(screen.snapshot()).not.toContain("openai/gpt-5.6-sol");
+    expect(screen.snapshot()).not.toContain("gpt-5.6-sol");
     expect(screen.snapshot()).toContain("Model selection failed");
     renderer.shutdown();
   });
@@ -5905,26 +5987,36 @@ describe("TerminalRenderer status line", () => {
     renderer.shutdown();
   });
 
-  it("renders the reasoning level and fast marker on the model segment", () => {
+  it.each([
+    {
+      model: "xai/grok-4.5",
+      reasoning: "xhigh" as const,
+      providerOptions: { gateway: { serviceTier: "priority" } },
+      expected: "grok-4.5 · xhigh · ⚡︎",
+    },
+    {
+      model: "openai/gpt-6-luna-fast",
+      reasoning: "high" as const,
+      providerOptions: {},
+      expected: "gpt-6-luna · high · ⚡︎",
+    },
+  ])("renders model metadata from the header: $expected", (selection) => {
     const { screen, renderer } = makeRenderer(100);
     renderer.renderNotice("anchor");
     renderer.renderAgentHeader({
       name: "Weather Agent",
       serverUrl: "http://localhost:3000",
       info: agentInfoWithModel(
-        "xai/grok-4.5",
+        selection.model,
         { kind: "gateway", connected: true, credential: "oidc" },
-        {
-          reasoning: "xhigh",
-          providerOptions: { gateway: { serviceTier: "priority" } },
-        },
+        { reasoning: selection.reasoning, providerOptions: selection.providerOptions },
       ),
     });
     // The first header commits with no footer; a Vercel status probe is the
     // paint that reveals the persistent status line beneath it.
     renderer.setVercelStatus(vercelStatus);
 
-    expect(screen.snapshot()).toContain("xai/grok-4.5@xhigh ↯");
+    expect(screen.snapshot()).toContain(selection.expected);
     renderer.shutdown();
   });
 
@@ -5946,9 +6038,9 @@ describe("TerminalRenderer status line", () => {
     renderer.setVercelStatus(vercelStatus);
 
     const snapshot = screen.snapshot();
-    expect(snapshot).toContain("xai/grok-4.5");
-    expect(snapshot).not.toContain("@provider-default");
-    expect(snapshot).not.toContain("↯");
+    expect(snapshot).toContain("grok-4.5");
+    expect(snapshot).not.toContain("provider-default");
+    expect(snapshot).not.toContain("⚡︎");
     renderer.shutdown();
   });
 
@@ -5979,7 +6071,7 @@ describe("TerminalRenderer status line", () => {
     renderer.reset();
 
     const snapshot = screen.snapshot();
-    expect(snapshot).toContain("anthropic/claude-sonnet-5");
+    expect(snapshot).toContain("claude-sonnet-5");
     expect(snapshot).toContain("· ai-gateway(oidc:my-agent)");
     // A fresh conversation clears the token flow entirely (↑ 0 ↓ 0 is noise).
     expect(snapshot).not.toContain("↑ 0");

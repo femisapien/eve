@@ -6,7 +6,7 @@ const TURN_CLIENT_CONTEXT_STATE_KEY = "eve.harness.turnClientContext";
 interface TurnClientContextState {
   /** Position of ephemeral client context in each model request for this turn. */
   readonly insertionIndex: number;
-  /** The turn's `clientContext` as sent, exposed as `ctx.session.turn.context`. */
+  /** The turn's `clientContext` as sent, exposed as `ctx.turn.context`. */
   readonly value?: ClientContextValue;
   readonly messages: readonly string[];
   readonly turnId: string;

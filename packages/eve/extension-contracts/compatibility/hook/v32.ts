@@ -1,10 +1,14 @@
-// Existing message.received handlers remain valid when the event carries clientContext.
 import { defineHook } from "#public/hooks/index.js";
+
+// Epoch 32 tool-call action requests had no `parentCallId`; epoch 33 adds it
+// as optional for nested actions. Hooks that read tool calls keep working.
 export default defineHook({
   events: {
-    async "message.received"(event, ctx) {
-      const sandbox = await ctx.getSandbox();
-      await sandbox.writeTextFile({ content: event.data.message, path: "last-message.txt" });
+    "actions.requested"(event) {
+      for (const action of event.data.actions) {
+        if (action.kind !== "tool-call") continue;
+        console.info("tool requested", { callId: action.callId, toolName: action.toolName });
+      }
     },
   },
 });

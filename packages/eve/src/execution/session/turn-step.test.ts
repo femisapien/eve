@@ -81,10 +81,11 @@ function turnStep(input: Omit<TurnStepInput, "input"> & { readonly input?: Legac
           ? { runtimeResults: { results: input.input.results } }
           : { control: input.input.kind };
   }
-  return runTurnStep({ ...input, input: payload });
+  return runSessionStateStep({ ...input, input: payload }, runTurnStep);
 }
 import { routeProxiedDeliverStep } from "#execution/proxied-deliver-step.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
+import { runSessionStateStep } from "#internal/testing/session-state-step.js";
 
 const REQUEST_EVENT = { sequence: 0, stepIndex: 0, turnId: "turn_0" };
 
@@ -399,7 +400,8 @@ describe("routeProxiedDeliverStep", () => {
         [
           "ask-1",
           {
-            workflowAsk: { control: "control", question: { allowFreeform: true }, runId: "run-1" },
+            workflowAsk: { control: "control", question: { allowFreeform: true } },
+            runId: "run-1",
             childContinuationToken: "ask-1",
             event: REQUEST_EVENT,
             kind: "question",
@@ -458,8 +460,8 @@ describe("routeProxiedDeliverStep", () => {
                 allowFreeform: false,
                 options: [{ id: "approve", label: "Approve" }],
               },
-              runId: "run-1",
             },
+            runId: "run-1",
             childContinuationToken: "ask-1",
             event: REQUEST_EVENT,
             kind: "question",
@@ -702,7 +704,7 @@ describe("dispatchCoordinationStep", () => {
     });
 
     const persisted = vi.mocked(createDurableSessionState).mock.calls.at(-1)?.[0].session;
-    expect(result.sessionState).not.toBe(sessionState);
+    expect(result.stateDelta.sessionState).toBeDefined();
     expect(getPendingCoordinationBatch(persisted?.state)?.event.turnId).toBe("turn_3");
   });
 });
@@ -3049,14 +3051,17 @@ describe("runProxySubagentEventStep", () => {
       continuationToken: "http:proxy-test",
     });
 
-    const result = await runProxySubagentEventStep({
-      hookPayload: buildHookPayload(),
-      sessionWritable: createTestWritable(),
-      serializedContext: buildSerializedContextForAdapter(cachingAdapter, {
-        acceptedForwardedTracePolicy: true,
-      }),
-      sessionState,
-    });
+    const result = await runSessionStateStep(
+      {
+        hookPayload: buildHookPayload(),
+        sessionWritable: createTestWritable(),
+        serializedContext: buildSerializedContextForAdapter(cachingAdapter, {
+          acceptedForwardedTracePolicy: true,
+        }),
+        sessionState,
+      },
+      runProxySubagentEventStep,
+    );
 
     // The updated serialized context must carry the adapter state
     // mutation so the session loop can thread it into the next
@@ -3118,12 +3123,15 @@ describe("runProxySubagentEventStep", () => {
       continuationToken: "http:proxy-test",
     });
 
-    const result = await runProxySubagentEventStep({
-      hookPayload: buildHookPayload(),
-      sessionWritable: createTestWritable(),
-      serializedContext: buildSerializedContextForAdapter(aliasingAdapter),
-      sessionState,
-    });
+    const result = await runSessionStateStep(
+      {
+        hookPayload: buildHookPayload(),
+        sessionWritable: createTestWritable(),
+        serializedContext: buildSerializedContextForAdapter(aliasingAdapter),
+        sessionState,
+      },
+      runProxySubagentEventStep,
+    );
 
     expect(result.sessionState.continuationToken).toBe("http:proxy-second");
     expect(result.serializedContext[ContinuationTokenKey.name]).toBe("http:proxy-second");

@@ -127,12 +127,12 @@ function buildConnectionResolveContext(ctx: ContextContainer): DynamicConnection
     session: {
       id: ctx.get(SessionIdKey) ?? "",
       context: ctx.get(SessionContextKey) ?? {},
-      turn: { context: ctx.get(TurnContextKey) },
       auth: {
         current: ctx.get(AuthKey) ?? null,
         initiator: ctx.get(InitiatorAuthKey) ?? null,
       },
     },
+    turn: { context: ctx.get(TurnContextKey) },
     channel: {
       kind: channel === undefined ? undefined : getAdapterKind(channel),
     },

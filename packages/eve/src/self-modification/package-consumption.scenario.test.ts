@@ -180,6 +180,11 @@ describe("packed package consumption", () => {
       appRoot,
     );
     await access(join(appRoot, "node_modules/eve/dist/src/self-modification/agent.js"));
+    await run(
+      "node",
+      ["--input-type=module", "-e", 'await import("eve/extensions/code/sandbox")'],
+      appRoot,
+    );
     await writeAppFile(
       appRoot,
       "verify-development-extension.mjs",
@@ -196,7 +201,7 @@ if (compiled.subagents.length !== 1 || subagent === undefined || !subagent.agent
 `,
     );
     await run("node", ["verify-development-extension.mjs"], appRoot);
-    const build = await run("pnpm", ["build"], appRoot);
+    const build = await run("pnpm", ["exec", "eve", "build", "--skip-sandbox-prewarm"], appRoot);
     const output = `${build.stdout}\n${build.stderr}`;
     if (output.includes("Could not resolve '#shared/")) {
       throw new Error(

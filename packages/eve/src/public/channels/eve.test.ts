@@ -28,6 +28,7 @@ import {
   type Session as RuntimeSession,
 } from "#context/keys.js";
 import { createMessageCompletedEvent } from "#protocol/message.js";
+import { writeForwardedParentSessionBaggage } from "#protocol/baggage.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
 
 /**
@@ -57,13 +58,7 @@ const OVERRIDE_AUTH: SessionAuthContext = {
 
 type MockSendOptions = Pick<
   RunInput,
-  | "auth"
-  | "callback"
-  | "capabilities"
-  | "continuationToken"
-  | "activityObserver"
-  | "initiatorAuth"
-  | "title"
+  "auth" | "callback" | "capabilities" | "continuationToken" | "initiatorAuth" | "title"
 >;
 
 function createJsonMessageRequest(body: unknown): Request {
@@ -142,7 +137,6 @@ function createEveCreateHandler(
       callback: runInput.callback,
       capabilities: runInput.capabilities,
       continuationToken: runInput.continuationToken,
-      activityObserver: runInput.activityObserver,
       initiatorAuth: runInput.initiatorAuth,
       title: runInput.title,
     } satisfies MockSendOptions);
@@ -958,6 +952,59 @@ describe("eveChannel — create session idempotency", () => {
     expect(handler.resolveSession).toHaveBeenCalledWith(token);
   });
 
+  it("exposes a trusted remote invocation identity only for delegated creates", async () => {
+    const invocations: unknown[] = [];
+    const handler = createEveCreateHandler({
+      auth: () => ACCEPTED_AUTH,
+      trustedForwarders: () => true,
+      onMessage(ctx) {
+        invocations.push(ctx.eve.invocation);
+        return { auth: ctx.eve.caller };
+      },
+    });
+    const request = createJsonMessageRequest({
+      callback: {
+        callId: "call-1",
+        subagentName: "research",
+        token: "tok123",
+        url: "https://caller.example.com/eve/v1/callback/tok123",
+      },
+      message: "hi",
+      operationId: "remote-operation-1",
+      protocolVersion: REMOTE_AGENT_PROTOCOL_VERSION,
+    });
+    request.headers.set(
+      "baggage",
+      writeForwardedParentSessionBaggage(undefined, {
+        callId: "call-1",
+        rootSessionId: "root-session",
+        sessionId: "parent-session",
+        turn: { id: "parent-turn", sequence: 1 },
+      })!,
+    );
+    expect((await handler.fetch(request)).status).toBe(202);
+    expect((await handler.fetch(createJsonMessageRequest({ message: "hi" }))).status).toBe(202);
+    expect(invocations).toEqual([{ operationId: "remote-operation-1" }, undefined]);
+
+    const noLineage = createEveCreateHandler({
+      auth: () => ACCEPTED_AUTH,
+      onMessage(ctx) {
+        expect(ctx.eve.invocation).toBeUndefined();
+        return { auth: ctx.eve.caller };
+      },
+    });
+    expect(
+      (
+        await noLineage.fetch(
+          createJsonMessageRequest({
+            message: "hi",
+            operationId: "ordinary-operation",
+          }),
+        )
+      ).status,
+    ).toBe(202);
+  });
+
   it("returns the existing child for a replayed operation without dispatching again", async () => {
     const handler = createEveCreateHandler(
       { auth: () => ACCEPTED_AUTH },
@@ -1322,6 +1369,106 @@ describe("eveChannel — create session (text)", () => {
 
     expect(response.status).toBe(400);
   });
+});
+
+describe("eveChannel — remote agent protocol 1 callers", () => {
+  const callback = {
+    callId: "call-1",
+    subagentName: "research",
+    token: "tok123",
+    url: "https://caller.example.com/eve/v1/callback/tok123",
+  };
+  // What an eve 0.66–0.68 background task adds when it delegates.
+  const legacyTaskFields = {
+    activityObserver: {
+      sink: {
+        url: "https://caller.example.com/eve/v1/activity/abcdefghijklmnopqrstuvwxyz123456",
+        version: 1,
+      },
+      workIdentity: {
+        callId: "call-1",
+        id: "work:caller:turn-1:call-1",
+        kind: "task",
+        name: "research",
+        rootSessionId: "caller",
+        rootTurnId: "turn-1",
+      },
+    },
+    callback: { ...callback, taskId: "task-1" },
+  };
+
+  it.each([
+    ["a direct call", { callback }, {}],
+    ["a background task", legacyTaskFields, { taskId: "task-1" }],
+  ])(
+    "serves an unversioned create from %s and answers protocol 1",
+    async (_caller, fields, legacyCaller) => {
+      const logs = captureLogRecords();
+      const handler = createEveCreateHandler({ auth: none() });
+
+      const response = await handler.fetch(
+        createJsonMessageRequest({ capabilities: {}, message: "hi", ...fields }),
+      );
+
+      expect(response.status).toBe(202);
+      await expect(response.json()).resolves.toEqual({
+        ok: true,
+        protocolVersion: 1,
+        sessionId: "test-session-id",
+        status: "accepted",
+      });
+      const runInput = handler.createSession.mock.calls[0]?.[0];
+      expect(runInput?.callback).toEqual(callback);
+      expect(runInput?.legacyRemoteAgentCaller).toEqual(legacyCaller);
+      expect(logs.records).toContainEqual(
+        expect.objectContaining({
+          level: "info",
+          message: "serving a remote agent protocol 1 caller",
+        }),
+      );
+    },
+  );
+
+  it("serves a protocol-1 continuation", async () => {
+    const handler = createEveContinueHandler({ auth: none() });
+
+    const response = await handler.fetch(
+      createJsonMessageRequest({ message: "and then?", ...legacyTaskFields }),
+    );
+
+    expect(response.status).toBe(202);
+    const options = handler.send.mock.calls[0]?.[1];
+    expect(options?.callback).toEqual(callback);
+  });
+
+  it("rejects a delegating caller on a protocol this deployment does not serve", async () => {
+    const handler = createEveCreateHandler({ auth: none() });
+
+    const response = await handler.fetch(
+      createJsonMessageRequest({ callback, message: "hi", protocolVersion: 3 }),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toMatchObject({
+      code: "REMOTE_AGENT_PROTOCOL_MISMATCH",
+      protocolVersion: REMOTE_AGENT_PROTOCOL_VERSION,
+    });
+    expect(handler.createSession).not.toHaveBeenCalled();
+  });
+
+  it.each([null, "2"])(
+    "rejects a delegating create whose protocolVersion is %j instead of treating it as protocol 1",
+    async (protocolVersion) => {
+      const handler = createEveCreateHandler({ auth: none() });
+
+      const response = await handler.fetch(
+        createJsonMessageRequest({ callback, message: "hi", protocolVersion }),
+      );
+
+      expect(response.status).toBe(400);
+      expect(handler.createSession).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe("eveChannel — create session (UserContent array)", () => {
@@ -2399,6 +2546,33 @@ describe("eveChannel — forwarded principal", () => {
 
     expect(response.status).toBe(403);
     expect(handler.send).not.toHaveBeenCalled();
+  });
+
+  it("attributes a trusted remote input response to the forwarded human", async () => {
+    const handler = createEveContinueHandler({
+      auth: () => ROUTER_CALLER,
+      trustedForwarders: (forwarder) => forwarder.principalId === ROUTER_CALLER.principalId,
+    });
+    const response = await handler.fetch(
+      new Request("https://example.com/eve/v1/session/test-session-id", {
+        body: JSON.stringify({
+          forwardedPrincipal: { current: FORWARDED_CURRENT },
+          inputResponses: [{ requestId: "approval-1", optionId: "approve" }],
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }),
+    );
+    expect(response.status).toBe(202);
+    expect(handler.respond).toHaveBeenCalledWith(
+      [{ requestId: "approval-1", optionId: "approve" }],
+      expect.objectContaining({
+        auth: expect.objectContaining({
+          principalId: FORWARDED_CURRENT.principalId,
+          attributes: expect.objectContaining({ "eve:forwarded-by": ROUTER_CALLER.principalId }),
+        }),
+      }),
+    );
   });
 
   it("rejects a forwarded continuation when the channel has no trustedForwarders", async () => {

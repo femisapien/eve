@@ -56,14 +56,14 @@ export interface DynamicResolveContext {
     readonly auth: SessionAuth;
     /** Application context supplied at session creation. Defaults to `{}`. */
     readonly context: SessionContext["session"]["context"];
-    readonly turn: {
-      /**
-       * The `clientContext` sent with the active turn's message or input
-       * response, as sent. `undefined` outside a turn, such as `session.started`
-       * while prewarming.
-       */
-      readonly context?: SessionContext["session"]["turn"]["context"];
-    };
+  };
+  readonly turn: {
+    /**
+     * The `clientContext` sent with the active turn's message or input
+     * response, as sent. `undefined` outside a turn, such as `session.started`
+     * while prewarming.
+     */
+    readonly context?: SessionContext["turn"]["context"];
   };
   /** Channel metadata for the request that triggered this resolve. */
   readonly channel: {

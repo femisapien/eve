@@ -3,6 +3,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { start } from "#internal/workflow/runtime.js";
 import {
   captureTurnEvents,
+  containsEventSequence,
   filterEventsByType,
   readFirstTurnReply,
 } from "#internal/testing/events.js";
@@ -21,7 +22,7 @@ import {
   stepReferenceWorkflow,
   workflowContextMisuseWorkflow,
 } from "#internal/testing/workflow-tool-fixtures.js";
-import type { InputRequestedStreamEvent } from "#protocol/message.js";
+import type { InputRequestedStreamEvent, MessageStreamEvent } from "#protocol/message.js";
 import {
   buildWorkflowToolSerializedContext,
   createWorkflowToolRuntime,
@@ -327,7 +328,7 @@ describe("workflow tools", () => {
     });
   }, 60_000);
 
-  it("lets a deadline win a race against an unanswered ask", async () => {
+  it("lets a deadline win a race against an unanswered ask and withdraws the ask", async () => {
     const runtime = await createWorkflowToolRuntime({
       agentName: "workflow-tool-ask-deadline",
       execute: askThenRaceWorkflow,
@@ -350,12 +351,16 @@ describe("workflow tools", () => {
       try {
         // Asking parks the turn; the sleep then wins and the same turn resumes.
         const asked = await stream.nextTurn();
-        expect(filterEventsByType(asked, "input.requested")).toHaveLength(1);
+        const requested = filterEventsByType(asked, "input.requested");
+        expect(requested).toHaveLength(1);
+        const requestId = requested[0]!.data.requests[0]!.requestId;
 
         const outputs: string[] = [];
+        const resumedEvents: MessageStreamEvent[] = [];
         // A replayed parked boundary may arrive before the deadline result.
         for (let attempt = 0; attempt < 5 && outputs.length === 0; attempt += 1) {
           const resumed = await stream.nextTurn();
+          resumedEvents.push(...resumed);
           expect(filterEventsByType(resumed, "turn.failed")).toHaveLength(0);
           expect(filterEventsByType(resumed, "session.failed")).toHaveLength(0);
           outputs.push(
@@ -365,6 +370,15 @@ describe("workflow tools", () => {
           );
         }
         expect(outputs.some((output) => output.includes('"decided":"timed out"'))).toBe(true);
+        // The run returned without the answer, so channels must stop offering its question.
+        expect(
+          filterEventsByType(resumedEvents, "input.resolved").map(
+            (event) => event.data.resolutions,
+          ),
+        ).toEqual([[{ kind: "question", outcome: "cancelled", requestId }]]);
+        expect(containsEventSequence(resumedEvents, ["input.resolved", "action.result"])).toBe(
+          true,
+        );
       } finally {
         stream.dispose();
         await run.cancel();

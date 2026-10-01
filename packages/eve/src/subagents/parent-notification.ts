@@ -5,7 +5,7 @@ import { deserializeContext } from "#context/serialize.js";
 import { parseSessionCallback } from "#channel/session-callback.js";
 import type { TurnCaller } from "#channel/types.js";
 import type { RuntimeSubagentChildResult } from "#shared/action-types.js";
-import { ActivityObserverKey, SessionCallbackKey } from "#context/keys.js";
+import { SessionCallbackKey } from "#context/keys.js";
 import {
   isSubagentAdapterState,
   SUBAGENT_ADAPTER_KIND,
@@ -19,6 +19,10 @@ import { parseJsonValue } from "#shared/json.js";
 import type { TokenUsage } from "#shared/token-usage.js";
 import { resumeHook } from "#internal/workflow/runtime.js";
 import { postSessionCallbackRequest } from "#execution/session-callback-request.js";
+import {
+  withSessionStateDelta,
+  type SessionStateTransition,
+} from "#execution/session/state-delta.js";
 
 const log = createLogger("execution.delegated-parent-notification");
 
@@ -160,8 +164,8 @@ function createSettledTurnResult(input: {
     output,
     subagentName: input.caller.subagentName,
   };
-  // Legacy per-result usage projection (usage spans); the parent folds
-  // `outcome.usageDelta`, never this field, when an outcome is present.
+  // Legacy per-result usage projection (usage spans); the run that opened the
+  // child tallies `outcome.usageDelta`, never this field, when present.
   return input.settled.usage === undefined ? result : { ...result, usage: input.settled.usage };
 }
 
@@ -207,15 +211,19 @@ export async function resolveInitialTurnCallerStep(input: {
 export async function bindTurnCallerContextStep(input: {
   readonly caller: TurnCaller | undefined;
   readonly serializedContext: Record<string, unknown>;
-}): Promise<Record<string, unknown>> {
+}): Promise<SessionStateTransition> {
   "use step";
 
-  const caller = input.caller;
-  if (caller === undefined) return input.serializedContext;
-  const withActivity =
-    caller.activityObserver === undefined
-      ? input.serializedContext
-      : { ...input.serializedContext, [ActivityObserverKey.name]: caller.activityObserver };
+  return await withSessionStateDelta(input, async ({ caller, serializedContext }) => ({
+    serializedContext: bindTurnCallerContext(caller, serializedContext),
+  }));
+}
+
+function bindTurnCallerContext(
+  caller: TurnCaller | undefined,
+  serializedContext: Record<string, unknown>,
+): Record<string, unknown> {
+  if (caller === undefined) return serializedContext;
   if (caller.replyTo.kind === "callback") {
     const callback = {
       callId: caller.callId,
@@ -223,10 +231,10 @@ export async function bindTurnCallerContextStep(input: {
       token: caller.replyTo.token,
       url: caller.replyTo.url,
     };
-    return { ...withActivity, [SessionCallbackKey.name]: callback };
+    return { ...serializedContext, [SessionCallbackKey.name]: callback };
   }
 
-  const adapter = withActivity[ChannelKey.name];
+  const adapter = serializedContext[ChannelKey.name];
   if (
     adapter === null ||
     typeof adapter !== "object" ||
@@ -243,7 +251,7 @@ export async function bindTurnCallerContextStep(input: {
     subagentName: caller.subagentName,
   };
   return {
-    ...withActivity,
+    ...serializedContext,
     [ChannelKey.name]: {
       ...adapter,
       state: nextState,

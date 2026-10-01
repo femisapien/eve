@@ -1,15 +1,11 @@
 import type { UserContent } from "ai";
 
-import type {
-  ActivityObserverConfig,
-  SessionCallback,
-  SessionCapabilities,
-} from "#channel/types.js";
+import type { SessionCallback, SessionCapabilities } from "#channel/types.js";
+import type { LegacyRemoteAgentCaller } from "#execution/legacy-remote-agent/protocol.js";
 import type { ClientContextValue } from "#internal/client-context.js";
 import { parseJsonObject, type JsonObject } from "#shared/json.js";
 
 export interface ParsedCreateBody {
-  activityObserver?: ActivityObserverConfig;
   callback?: SessionCallback;
   capabilities?: SessionCapabilities;
   message?: string | UserContent;
@@ -18,11 +14,13 @@ export interface ParsedCreateBody {
   operationId?: string;
   outputSchema?: JsonObject;
   sessionContext?: JsonObject;
+  /** Remote agent protocol of a delegating caller; set only with {@link callback}. */
+  protocolVersion?: number;
+  legacyRemoteAgentCaller?: LegacyRemoteAgentCaller;
 }
 
 /** Enforces the fields that only make sense when creation also starts a turn. */
 export function validateMessageFreeCreate(input: {
-  readonly activityObserver: ActivityObserverConfig | undefined;
   readonly callback: SessionCallback | undefined;
   readonly hasClientContext: boolean;
   readonly hasMessageField: boolean;
@@ -36,46 +34,17 @@ export function validateMessageFreeCreate(input: {
     );
   }
   if (input.message !== undefined) return undefined;
-  if (
-    input.hasClientContext ||
-    input.callback !== undefined ||
-    input.activityObserver !== undefined ||
-    input.outputSchema !== undefined
-  ) {
+  if (input.hasClientContext || input.callback !== undefined || input.outputSchema !== undefined) {
     return Response.json(
       {
         error:
-          "Creating a session without a message does not accept 'clientContext', 'callback', 'activityObserver', or 'outputSchema'.",
+          "Creating a session without a message does not accept 'clientContext', 'callback', or 'outputSchema'.",
         ok: false,
       },
       { status: 400 },
     );
   }
   return undefined;
-}
-
-export function parseCapabilitiesField(value: unknown): SessionCapabilities | Response | undefined {
-  if (value === undefined) return undefined;
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    return Response.json(
-      { error: "Expected 'capabilities' to be an object.", ok: false },
-      { status: 400 },
-    );
-  }
-
-  const keys = Object.keys(value);
-  const requestInput = Reflect.get(value, "requestInput");
-  if (
-    keys.some((key) => key !== "requestInput") ||
-    (requestInput !== undefined && typeof requestInput !== "boolean")
-  ) {
-    return Response.json(
-      { error: "Expected 'capabilities.requestInput' to be a boolean when provided.", ok: false },
-      { status: 400 },
-    );
-  }
-
-  return requestInput === undefined ? {} : { requestInput };
 }
 
 export function parseSessionContextField(value: unknown): JsonObject | Response | undefined {

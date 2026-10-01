@@ -13,6 +13,7 @@ import {
   type AgentSessionMessage,
   type OpenedAgentSession,
 } from "#execution/agent-sessions/steps.js";
+import type { RunUsageTally } from "#execution/agent-sessions/usage.js";
 import { disposeHook } from "#execution/hook-ownership.js";
 import type { WorkflowToolRunContext } from "#execution/tools/workflow/ask.js";
 import type { RuntimeSubagentResult } from "#shared/action-types.js";
@@ -37,7 +38,10 @@ type AgentTurnEnd =
  * run names its session, so replay reaches the same one, and `close` ends
  * every session the run opened, cancelling any turn still running.
  */
-export function createAgentSessions(run: WorkflowToolRunContext): {
+export function createAgentSessions(
+  run: WorkflowToolRunContext,
+  usage: RunUsageTally,
+): {
   readonly close: () => Promise<void>;
   readonly open: (name: string) => AgentSession;
 } {
@@ -50,7 +54,7 @@ export function createAgentSessions(run: WorkflowToolRunContext): {
       }
       const key = `${run.from.runId}:${String(handles)}`;
       handles += 1;
-      return new RunAgentSession({ key, name, run, sessions });
+      return new RunAgentSession({ key, name, run, sessions, usage });
     },
     close: async () => {
       if (sessions.length === 0) return;
@@ -75,6 +79,8 @@ class RunAgentSession implements AgentSession {
   readonly #run: WorkflowToolRunContext;
   /** Every session the run opened, which it ends when it finishes. */
   readonly #sessions: OpenedAgentSession[];
+  /** What the run's sessions spent, which the run reports to its calling session. */
+  readonly #usage: RunUsageTally;
   #opened: Promise<OpenedAgentSession> | undefined;
   /** Oldest first. */
   readonly #awaited: AwaitedReply[] = [];
@@ -84,11 +90,13 @@ class RunAgentSession implements AgentSession {
     readonly name: string;
     readonly run: WorkflowToolRunContext;
     readonly sessions: OpenedAgentSession[];
+    readonly usage: RunUsageTally;
   }) {
     this.#key = input.key;
     this.#name = input.name;
     this.#run = input.run;
     this.#sessions = input.sessions;
+    this.#usage = input.usage;
   }
 
   async send<TOutput = unknown>(
@@ -133,7 +141,11 @@ class RunAgentSession implements AgentSession {
     return reply;
   }
 
-  /** Forwards the turn's questions up to the session and returns its end. */
+  /**
+   * Forwards the turn's questions up to the session and returns its end. The
+   * turn's usage is tallied before its end settles any reply, so the reply the
+   * body sends with the turn's result carries it.
+   */
   async #readTurn(hook: Hook<AgentTurnReply>, expectsData: boolean): Promise<AgentTurnEnd> {
     try {
       for await (const reply of hook) {
@@ -143,6 +155,20 @@ class RunAgentSession implements AgentSession {
             owner: this.#run.owner,
             replyTo: hook.token,
             request: reply,
+            remote:
+              this.#opened === undefined
+                ? undefined
+                : await this.#opened.then(({ address }) =>
+                    address.kind === "remote"
+                      ? {
+                          forwardPrincipal: address.forwardPrincipal,
+                          name: address.name,
+                          resolverId: address.resolverId,
+                          url: address.url,
+                          sessionId: address.sessionId,
+                        }
+                      : undefined,
+                  ),
           });
           continue;
         }
@@ -150,6 +176,7 @@ class RunAgentSession implements AgentSession {
           (candidate): candidate is RuntimeSubagentResult => candidate.kind === "subagent-result",
         );
         if (result !== undefined) {
+          if (result.origin === "child") this.#usage.record(result.outcome.usageDelta);
           return { kind: "ended", result: toAgentMessageResult(result, expectsData) };
         }
       }
@@ -201,7 +228,7 @@ class RunAgentSession implements AgentSession {
         key: this.#key,
         name: this.#name,
       });
-      const opened = { address, context };
+      const opened = { address, context, key: this.#key };
       this.#sessions.push(opened);
       await this.#run.owner.send({ from, kind: "agent-started", session: address });
       return opened;

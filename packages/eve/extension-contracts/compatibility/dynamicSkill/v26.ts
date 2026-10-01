@@ -1,8 +1,9 @@
-// Existing callbacks remain valid when message.received carries clientContext.
 import { defineDynamic, defineSkill } from "#public/skills/index.js";
+
+// Epoch 26 tool-call action requests had no `parentCallId`; epoch 27 adds it as optional.
 export default defineDynamic({
   events: {
-    "turn.started": (_, ctx) =>
+    "turn.started": (_event, ctx) =>
       defineSkill({
         description: "Review the active request.",
         markdown: `Review evidence for session ${ctx.session.id}.`,

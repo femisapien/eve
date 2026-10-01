@@ -1,8 +1,14 @@
 import { defineChannel } from "#public/channels/index.js";
 import { defineSchedule } from "#public/schedules/index.js";
 
+// Epoch 18 authorization events had no `principalId`; it is additive.
 const updates = defineChannel({
   routes: [],
+  events: {
+    "authorization.required"(event) {
+      console.info("sign-in required", { name: event.name });
+    },
+  },
   receive(input, { from }) {
     return from("daily-updates").send(input.message, { auth: input.auth });
   },
@@ -10,14 +16,7 @@ const updates = defineChannel({
 
 export default defineSchedule({
   cron: "0 9 * * *",
-  async run({ to, waitUntil, appAuth }) {
-    const session = await to(updates, {}).send("Prepare the daily summary.", { auth: appAuth });
-    const result = await session.send("Include yesterday's activity.", {
-      auth: appAuth,
-      title: "Daily summary",
-      turnPolicy: "queue",
-    });
-    if (result.status === "session_not_active") return;
-    waitUntil(Promise.resolve(result.sessionId));
+  async run({ to, appAuth }) {
+    await to(updates, {}).send("Prepare the daily summary.", { auth: appAuth });
   },
 });

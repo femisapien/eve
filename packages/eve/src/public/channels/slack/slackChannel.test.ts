@@ -10,16 +10,16 @@ import {
   type CompiledChannel,
 } from "#channel/compiled-channel.js";
 import type { ChannelFrom, ChannelSource } from "#channel/channel-operations.js";
+import type { SessionAuthContext } from "#channel/types.js";
 import { isHttpRouteDefinition } from "#channel/routes.js";
 import { ContextContainer, contextStorage } from "#context/container.js";
-import { SessionKey } from "#context/keys.js";
+import { AuthKey, SessionKey } from "#context/keys.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
 import {
   mockChannelContext,
   type ObservedChannelDelivery,
 } from "#internal/testing/mocks/mock-channel-operations.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
-import { experimental_slackActivityStatus } from "#public/channels/slack/activity.js";
 import { decodeSlackApiBody } from "#internal/testing/slack-api-body.js";
 import {
   HITL_ACTION_PREFIX,
@@ -37,7 +37,11 @@ import {
 } from "#public/channels/slack/limits.js";
 import { defaultSlackAuth } from "#public/channels/slack/index.js";
 import {
-  constrainAuthorizationRequired,
+  composeSlackRenderers,
+  type SlackRenderChain,
+  type SlackRenderer,
+} from "#public/channels/slack/renderers.js";
+import {
   slackChannel,
   type SlackAuthorizationEventContext,
   type SlackInboundEventContext,
@@ -70,9 +74,13 @@ function slackRespondTypeChecks(
 void slackRespondTypeChecks;
 
 slackChannel({
-  events: {
-    "input.requested"(_event, _channel, _ctx) {},
-  },
+  renderers: [
+    {
+      events: {
+        "input.requested"(_event, _channel, _ctx, _next) {},
+      },
+    },
+  ],
 });
 
 function getAdapter(channel: unknown): ChannelAdapter<any> {
@@ -119,6 +127,13 @@ function slackOperations(fetchMock: ReturnType<typeof vi.fn>): string[] {
     if (operation === undefined) throw new Error(`Unexpected Slack request: ${String(url)}`);
     return operation;
   });
+}
+
+// The thread statuses set through `assistant.threads.setStatus`, in order.
+function slackStatuses(fetchMock: ReturnType<typeof vi.fn>): unknown[] {
+  return slackCalls(fetchMock, "assistant.threads.setStatus").map(
+    ([, init]) => parseSlackRequestBody(init).status,
+  );
 }
 
 // A response from a gateway in front of Slack: a received non-2xx whose
@@ -190,6 +205,10 @@ function withState(
 
 function stubAccessor() {
   return { get: () => undefined, set: () => {} } as any;
+}
+
+function callerAccessor(auth: unknown) {
+  return { get: (key: unknown) => (key === AuthKey ? auth : undefined), set: () => {} } as any;
 }
 
 const stubAlsContext = (() => {
@@ -503,6 +522,18 @@ describe("slackChannel()", () => {
     });
   });
 
+  it("keeps build metadata when spread with replaced routes", () => {
+    const channel = slackChannel({ botName: "Support Bot" });
+    const wrapped = { ...channel, routes: [...channel.routes] };
+
+    expect(getChannelBuildMetadata(wrapped, "support")).toEqual(
+      getChannelBuildMetadata(channel, "support"),
+    );
+    expect(getChannelBuildMetadata(wrapped, "support")?.manifest).toMatchObject({
+      display_information: { name: "Support Bot" },
+    });
+  });
+
   it("classifies from durable state through the audience hook", () => {
     const adapter = withState(getAdapter(slackChannel()), { audience: "private" });
 
@@ -676,36 +707,108 @@ describe("slackChannel() default event handlers", () => {
     expect(fetchMock).toHaveBeenCalledTimes(method === "files.getUploadURLExternal" ? 1 : 3);
   });
 
-  it("activity-owned message.completed uses the same oversized reply snippet", async () => {
-    const uploadedBodies = useSuccessfulSlackFileUpload(fetchMock);
+  it("names one working task in the status while a turn waits, and counts several", async () => {
+    const adapter = withState(
+      getAdapter(slackChannel({ credentials: { botToken: "xoxb-test" } })),
+      THREAD_STATE,
+    );
+    const ctx = buildAdapterContext(adapter, stubAccessor());
+    const taskStarted = (callId: string, name: string) =>
+      makeEvent("task.started", { callId, kind: "agent", name, taskId: `${name}-1`, turnId: "t1" });
+    const waiting = makeEvent("turn.waiting", { sequence: 1, turnId: "t1" });
+
+    await callEvent(adapter, taskStarted("c1", "researcher"), ctx);
+    await callEvent(adapter, taskStarted("c2", "reviewer"), ctx);
+    await callEvent(adapter, taskStarted("c3", "deploy"), ctx);
+    await callEvent(adapter, waiting, ctx);
+    await callEvent(
+      adapter,
+      makeEvent("task.settled", {
+        callId: "c1",
+        status: "completed",
+        taskId: "researcher-1",
+        turnId: "t1",
+      }),
+      ctx,
+    );
+    await callEvent(
+      adapter,
+      makeEvent("task.settled", {
+        callId: "c3",
+        status: "cancelled",
+        taskId: "deploy-1",
+        turnId: "t1",
+      }),
+      ctx,
+    );
+    await callEvent(adapter, waiting, ctx);
+    await callEvent(
+      adapter,
+      makeEvent("task.settled", {
+        callId: "c2",
+        status: "completed",
+        taskId: "reviewer-1",
+        turnId: "t1",
+      }),
+      ctx,
+    );
+    await callEvent(adapter, taskStarted("c4", "agent"), ctx);
+    await callEvent(adapter, waiting, ctx);
+
+    expect(slackStatuses(fetchMock)).toEqual([
+      "Waiting on 3 tasks...",
+      "Waiting on reviewer...",
+      "Waiting on a task...",
+    ]);
+  });
+
+  it("forgets a failed turn's tasks even when a renderer replaces its failure reply", async () => {
     const adapter = withState(
       getAdapter(
         slackChannel({
-          activity: { renderers: [experimental_slackActivityStatus()] },
           credentials: { botToken: "xoxb-test" },
+          renderers: [{ events: { async "turn.failed"() {} } }],
         }),
       ),
       THREAD_STATE,
     );
     const ctx = buildAdapterContext(adapter, stubAccessor());
-    const message = "x".repeat(SLACK_MARKDOWN_TEXT_MAX_LENGTH + 1);
 
     await callEvent(
       adapter,
-      makeEvent("message.completed", {
-        finishReason: "stop",
-        message,
-        sequence: 0,
-        stepIndex: 0,
+      makeEvent("task.started", {
+        callId: "c1",
+        kind: "agent",
+        name: "researcher",
+        taskId: "researcher-1",
         turnId: "t1",
       }),
       ctx,
     );
-
-    expect(uploadedBodies).toEqual([message]);
-    expect(fetchMock.mock.calls.map(([input]) => String(input))).not.toContain(
-      "https://slack.com/api/chat.postMessage",
+    await callEvent(
+      adapter,
+      makeEvent("turn.failed", {
+        code: "MODEL_CALL_FAILED",
+        message: "x",
+        sequence: 1,
+        turnId: "t1",
+      }),
+      ctx,
     );
+    await callEvent(
+      adapter,
+      makeEvent("task.started", {
+        callId: "c2",
+        kind: "agent",
+        name: "reviewer",
+        taskId: "reviewer-1",
+        turnId: "t2",
+      }),
+      ctx,
+    );
+    await callEvent(adapter, makeEvent("turn.waiting", { sequence: 1, turnId: "t2" }), ctx);
+
+    expect(slackStatuses(fetchMock)).toEqual(["Waiting on reviewer..."]);
   });
 
   it("message.completed skips post when finishReason is tool-calls", async () => {
@@ -768,7 +871,7 @@ describe("slackChannel() default event handlers", () => {
     expect(ctx.state.pendingToolCallMessage).toBeNull();
   });
 
-  it("keeps the model's own task calls out of the typing status", async () => {
+  it("shows the first call's start label in the typing status, without the model's own task calls", async () => {
     const adapter = withState(
       getAdapter(slackChannel({ credentials: { botToken: "xoxb-test" } })),
       THREAD_STATE,
@@ -776,12 +879,13 @@ describe("slackChannel() default event handlers", () => {
     const ctx = buildAdapterContext(adapter, stubAccessor());
     const requested = (toolNames: readonly string[]) =>
       makeEvent("actions.requested", {
-        actions: toolNames.map((toolName, index) => ({
-          callId: `call_${String(index)}`,
+        actions: toolNames.map((toolName) => ({
+          callId: `call_${toolName}`,
           input: {},
           kind: "tool-call" as const,
           toolName,
         })),
+        presentation: { call_search: { label: "Search checkout incidents" } },
         sequence: 0,
         stepIndex: 0,
         turnId: "t1",
@@ -790,11 +894,9 @@ describe("slackChannel() default event handlers", () => {
     await callEvent(adapter, requested(["task_wait"]), ctx);
     expect(fetchMock).not.toHaveBeenCalled();
 
-    await callEvent(adapter, requested(["task_cancel", "search"]), ctx);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(parseSlackRequestBody(fetchMock.mock.calls[0]![1] as RequestInit)).toMatchObject({
-      status: "search",
-    });
+    await callEvent(adapter, requested(["task_cancel", "search", "deploy"]), ctx);
+    await callEvent(adapter, requested(["task_cancel", "deploy"]), ctx);
+    expect(slackStatuses(fetchMock)).toEqual(["Search checkout incidents +1 more", "deploy"]);
   });
 
   it("message.completed clears typing without posting for empty delivery", async () => {
@@ -843,19 +945,23 @@ describe("slackChannel() default event handlers", () => {
           approvalChannel: (request) =>
             request.prompt.startsWith("Sensitive") ? "direct-message" : "thread",
           credentials: { botToken: "xoxb-test" },
-          events: {
-            async "input.requested"(event, _channel, _ctx, defaultDeliver) {
-              const privateRequests = event.requests.filter((request) =>
-                request.prompt.startsWith("Sensitive"),
-              );
-              customPrompts.push(
-                ...event.requests
-                  .filter((request) => !privateRequests.includes(request))
-                  .map((request) => request.prompt),
-              );
-              await defaultDeliver({ ...event, requests: privateRequests });
+          renderers: [
+            {
+              events: {
+                async "input.requested"(event, _channel, _ctx, next) {
+                  const privateRequests = event.requests.filter((request) =>
+                    request.prompt.startsWith("Sensitive"),
+                  );
+                  customPrompts.push(
+                    ...event.requests
+                      .filter((request) => !privateRequests.includes(request))
+                      .map((request) => request.prompt),
+                  );
+                  await next({ ...event, requests: privateRequests });
+                },
+              },
             },
-          },
+          ],
         }),
       ),
       {
@@ -1240,12 +1346,30 @@ describe("slackChannel() default event handlers", () => {
     });
   });
 
+  it("records the Slack user behind each delivered message's principal", async () => {
+    const adapter = withState(getAdapter(slackChannel()), THREAD_STATE);
+    const ctx = buildAdapterContext(
+      adapter,
+      callerAccessor({
+        attributes: { user_id: "U_ALICE" },
+        authenticator: "slack-webhook",
+        principalId: "slack:T01:U_ALICE",
+        principalType: "user",
+      }),
+    );
+
+    // Slack-derived auth wins over the author stamped in delivery state.
+    await adapter.deliver!({ message: "hello", state: { triggeringUserId: "U_OTHER" } }, ctx);
+
+    expect(ctx.state.slackUsersByPrincipal).toEqual({ "slack:T01:U_ALICE": "U_ALICE" });
+  });
+
   it("refreshes triggeringUserId from the current Slack caller on every turn", async () => {
     const onTurnStarted = vi.fn();
     const adapter = withState(
       getAdapter(
         slackChannel({
-          events: { "turn.started": onTurnStarted },
+          renderers: [{ events: { "turn.started": onTurnStarted } }],
         }),
       ),
       { ...THREAD_STATE, triggeringUserId: "U_FIRST" },
@@ -1977,6 +2101,57 @@ describe("slackChannel() inbound mention pipeline", () => {
     });
   });
 
+  it("routes every inbound message through a route wrapper's from(address).send", async () => {
+    const channel = asCompiled<SlackChannelState>(
+      slackChannel({
+        credentials: { botToken: "xoxb-test" },
+        onAppMention: () => ({ auth: null }),
+        onDirectMessage: () => ({ auth: null }),
+      }),
+    );
+    const seen: string[] = [];
+    const failures: unknown[] = [];
+    const wrapped = {
+      ...channel,
+      routes: channel.routes.map((route) =>
+        isHttpRouteDefinition(route)
+          ? {
+              ...route,
+              handler: (request: Request, args: Parameters<typeof route.handler>[1]) =>
+                route.handler(request, {
+                  ...args,
+                  from: (address) => {
+                    const source = args.from(address);
+                    return {
+                      ...source,
+                      async send(message, options) {
+                        seen.push(address);
+                        try {
+                          return await source.send(message, options);
+                        } catch (error) {
+                          failures.push(error);
+                          throw error;
+                        }
+                      },
+                    };
+                  },
+                }),
+            }
+          : route,
+      ),
+    };
+    const rejection = new Error("delivery rejected");
+    const send = vi.fn().mockResolvedValueOnce({ id: "s1" }).mockRejectedValueOnce(rejection);
+
+    const mention = buildMentionBody({ channel: "C_WRAP" });
+    await firePost(wrapped, buildSignedRequest({ body: mention.body }), { send });
+    const dm = buildDirectMessageBody({ channel: "D_WRAP" });
+    await firePost(wrapped, buildSignedRequest({ body: dm.body }), { send });
+
+    expect(seen).toEqual([`C_WRAP:${mention.ts}`, `D_WRAP:${dm.ts}`]);
+    expect(failures).toEqual([rejection]);
+  });
+
   it("uses the app installation workspace for mention credentials", async () => {
     const botToken = vi.fn((_context: { readonly teamId?: string }) => "xoxb-test");
     const channel = slackChannel({
@@ -2011,10 +2186,8 @@ describe("slackChannel() inbound mention pipeline", () => {
   });
 
   it("exposes private conversation detection to message handlers", async () => {
-    fetchMock.mockResolvedValue(
-      new Response(JSON.stringify({ ok: true, channel: { is_private: false } }), {
-        headers: { "content-type": "application/json" },
-      }),
+    fetchMock.mockImplementation(async () =>
+      Response.json({ ok: true, channel: { is_private: false } }),
     );
     let isPrivate: boolean | undefined;
     const channel = slackChannel({
@@ -2029,11 +2202,9 @@ describe("slackChannel() inbound mention pipeline", () => {
     await firePost(channel, buildSignedRequest({ body }));
 
     expect(isPrivate).toBe(false);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect(String(fetchMock.mock.calls[0]![0])).toContain("conversations.info");
-    expect(parseSlackRequestBody(fetchMock.mock.calls[0]![1] as RequestInit)).toEqual({
-      channel: "C_PUBLIC",
-    });
+    const lookups = slackCalls(fetchMock, "conversations.info");
+    expect(lookups).toHaveLength(1);
+    expect(parseSlackRequestBody(lookups[0]![1])).toEqual({ channel: "C_PUBLIC" });
   });
 
   it("binds onAppMention to flat session operations", async () => {
@@ -2066,6 +2237,7 @@ describe("slackChannel() inbound mention pipeline", () => {
     const { body } = buildMentionBody({
       channel: "C_BOUND",
       threadTs: "1700000000.000300",
+      ts: "1700000000.000005",
     });
 
     const { send } = await firePost(channel, buildSignedRequest({ body }));
@@ -2503,17 +2675,68 @@ describe("slackChannel() inbound mention pipeline", () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it("default onAppMention posts a 'Thinking...' typing indicator", async () => {
-    const channel = slackChannel({ credentials: { botToken: "xoxb-test" } });
+  it("acknowledges a mention while an authored onAppMention is still deciding", async () => {
+    const deciding = Promise.withResolvers<{ auth: null }>();
+    let statusesWhileDeciding: unknown[] = [];
+    const channel = slackChannel({
+      credentials: { botToken: "xoxb-test" },
+      async onAppMention() {
+        await vi.waitFor(() =>
+          expect(slackCalls(fetchMock, "assistant.threads.setStatus")).toHaveLength(1),
+        );
+        statusesWhileDeciding = slackStatuses(fetchMock);
+        return await deciding.promise;
+      },
+    });
     const { body } = buildMentionBody();
+    const fired = firePost(channel, buildSignedRequest({ body }));
+    await vi.waitFor(() => expect(statusesWhileDeciding).toEqual(["Thinking..."]));
+
+    deciding.resolve({ auth: null });
+    const { send } = await fired;
+
+    expect(send).toHaveBeenCalledOnce();
+    expect(slackStatuses(fetchMock)).toEqual(["Thinking..."]);
+  });
+
+  it("clears the acknowledgement when the message hook drops the mention", async () => {
+    const channel = slackChannel({
+      credentials: { botToken: "xoxb-test" },
+      onAppMention: () => null,
+    });
+    const { body } = buildMentionBody();
+
+    const { send } = await firePost(channel, buildSignedRequest({ body }));
+
+    expect(send).not.toHaveBeenCalled();
+    expect(slackStatuses(fetchMock)).toEqual(["Thinking...", ""]);
+  });
+
+  it("runs a renderer's received around eve's acknowledgement", async () => {
+    const channel = slackChannel({
+      credentials: { botToken: "xoxb-test" },
+      renderers: [
+        {
+          async received(message, ctx, next) {
+            await ctx.slack.request("reactions.add", {
+              channel: message.channelId,
+              name: "eyes",
+              timestamp: message.ts,
+            });
+            await next();
+          },
+        },
+      ],
+    });
+    const { body } = buildMentionBody();
+
     await firePost(channel, buildSignedRequest({ body }));
 
-    const typingCall = fetchMock.mock.calls.find((call) =>
-      String(call[0]).includes("assistant.threads.setStatus"),
-    );
-    expect(typingCall).toBeDefined();
-    const sent = parseSlackRequestBody(typingCall![1] as RequestInit);
-    expect(sent.status).toBe("Thinking...");
+    expect(slackOperations(fetchMock).slice(0, 2)).toEqual([
+      "reactions.add",
+      "assistant.threads.setStatus",
+    ]);
+    expect(slackStatuses(fetchMock)).toEqual(["Thinking..."]);
   });
 
   it("returns 200 OK without dispatching for non-app_mention events", async () => {
@@ -3128,6 +3351,31 @@ describe("slackChannel() inbound direct message pipeline", () => {
     expect(options.title).toBe("Private message");
   });
 
+  it("maps a custom-auth message sender to their Slack user when delivered", async () => {
+    const customAuth = {
+      attributes: {},
+      authenticator: "okta",
+      principalId: "okta|alice",
+      principalType: "user",
+    };
+    const channel = slackChannel({
+      credentials: { botToken: "xoxb-test" },
+      onDirectMessage: () => ({ auth: customAuth }),
+    });
+
+    const { body } = buildDirectMessageBody();
+    const { send } = await firePost(channel, buildSignedRequest({ body }));
+    const delivery = send.mock.calls[0]?.[1] as ObservedChannelDelivery<SlackChannelState>;
+    const author = delivery.state?.triggeringUserId;
+    expect(author).toEqual(expect.any(String));
+
+    const adapter = withState(getAdapter(channel), THREAD_STATE);
+    const ctx = buildAdapterContext(adapter, callerAccessor(customAuth));
+    await adapter.deliver!({ message: "hello", state: { triggeringUserId: author } }, ctx);
+
+    expect(ctx.state.slackUsersByPrincipal).toEqual({ "okta|alice": author });
+  });
+
   it("uses an opaque run title for direct messages", async () => {
     const channel = slackChannel({
       credentials: { botToken: "xoxb-test" },
@@ -3637,9 +3885,7 @@ describe("slackChannel() HITL interaction pipeline", () => {
         principalType: "user",
       },
       inputResponses: [{ optionId: "approve", requestId: "approval_abc123" }],
-      state: {
-        approvalResponderUsers: { "slack:T_ACTOR:U_APPROVER": "U_APPROVER" },
-      },
+      state: { triggeringUserId: "U_APPROVER" },
     });
   });
 
@@ -3802,13 +4048,115 @@ describe("slackChannel() HITL interaction pipeline", () => {
 
     expect(onInputResponse).toHaveBeenCalledTimes(1);
     expect(send).toHaveBeenCalledTimes(1);
-    expect(send.mock.calls[0]?.[1]).toMatchObject({
-      auth: customAuth,
-      state: { approvalResponderUsers: { "employee:ada": "U_APPROVER" } },
-    });
+    const delivery = send.mock.calls[0]?.[1] as Extract<
+      ObservedChannelDelivery<SlackChannelState>,
+      { readonly inputResponses: readonly unknown[] }
+    >;
+    expect(delivery).toMatchObject({ auth: customAuth, state: { triggeringUserId: "U_APPROVER" } });
+
+    const adapter = withState(getAdapter(channel), THREAD_STATE);
+    const ctx = buildAdapterContext(adapter, callerAccessor(customAuth));
+    await adapter.deliver!({ inputResponses: delivery.inputResponses, state: delivery.state }, ctx);
+    expect(ctx.state.slackUsersByPrincipal).toEqual({ "employee:ada": "U_APPROVER" });
   });
 
-  it("persists the responder mapping for later approval candidate feedback", async () => {
+  it.each([
+    {
+      name: "onInteraction ctx.respond",
+      channel: (auth: SessionAuthContext) =>
+        slackChannel({
+          credentials: { botToken: "xoxb-test" },
+          async onInteraction(_action, ctx) {
+            await ctx.respond([{ optionId: "approve", requestId: "approval_abc123" }], { auth });
+          },
+        }),
+      request: () =>
+        buildSignedInteractionRequest({
+          type: "block_actions",
+          team: { id: "T01" },
+          user: { id: "U_APPROVER", username: "ada" },
+          channel: { id: "C01" },
+          message: { ts: "1700000000.000010", thread_ts: "1700000000.000001", blocks: [] },
+          actions: [{ action_id: "custom-approve", text: { type: "plain_text", text: "OK" } }],
+        }),
+    },
+    {
+      name: "onEvent ctx.respond",
+      channel: (auth: SessionAuthContext) =>
+        slackChannel({
+          credentials: { botToken: "xoxb-test" },
+          async onEvent(ctx) {
+            await ctx.respond([{ optionId: "approve", requestId: "approval_abc123" }], {
+              auth,
+              target: { channelId: "C01", threadTs: "1700000000.000001" },
+            });
+          },
+        }),
+      request: () =>
+        buildSignedRequest({
+          body: buildEventBody(
+            {
+              item: { channel: "C01", ts: "1700000000.000001", type: "message" },
+              reaction: "white_check_mark",
+              type: "reaction_added",
+              user: "U_APPROVER",
+            },
+            { eventId: "Ev_custom_approve", teamId: "T01" },
+          ),
+        }),
+    },
+  ])(
+    "sends a custom-auth responder's sign-in privately after $name",
+    async ({ channel: buildChannel, request }) => {
+      fetchMock.mockImplementation(
+        () =>
+          new Response(JSON.stringify({ ok: true, ts: "1700000001.000001" }), {
+            headers: { "content-type": "application/json" },
+          }),
+      );
+      const customAuth: SessionAuthContext = {
+        attributes: {},
+        authenticator: "employee-directory",
+        principalId: "employee:ada",
+        principalType: "user",
+      };
+      const channel = buildChannel(customAuth);
+      const { send } = await firePost(channel, request());
+      const delivery = send.mock.calls[0]?.[1] as Extract<
+        ObservedChannelDelivery<SlackChannelState>,
+        { readonly inputResponses: readonly unknown[] }
+      >;
+      const adapter = withState(getAdapter(channel), THREAD_STATE);
+      const ctx = buildAdapterContext(adapter, callerAccessor(delivery.auth));
+      await adapter.deliver!(
+        { inputResponses: delivery.inputResponses, state: delivery.state },
+        ctx,
+      );
+
+      await callEvent(
+        adapter,
+        makeEvent("authorization.required", {
+          attemptId: "attempt-1",
+          authorization: { url: "https://idp.example/sign-in" },
+          candidateId: "candidate-1",
+          description: "Sign in to approve.",
+          name: "approver-sign-in",
+          principalId: "employee:ada",
+          sequence: 1,
+          stepIndex: 0,
+          turnId: "turn-1",
+        }),
+        ctx,
+      );
+
+      const ephemeral = slackCalls(fetchMock, "chat.postEphemeral").map(([, init]) =>
+        parseSlackRequestBody(init),
+      );
+      expect(ephemeral).toEqual([expect.objectContaining({ channel: "C01", user: "U_APPROVER" })]);
+    },
+  );
+
+  it("persists the responder principal mapping for later approval candidate feedback", async () => {
     fetchMock.mockImplementation(
       () =>
         new Response(JSON.stringify({ ok: true, ts: "1700000001.000001" }), {
@@ -3822,7 +4170,7 @@ describe("slackChannel() HITL interaction pipeline", () => {
       { readonly inputResponses: readonly unknown[] }
     >;
     const adapter = withState(getAdapter(channel), THREAD_STATE);
-    const ctx = buildAdapterContext(adapter, stubAccessor());
+    const ctx = buildAdapterContext(adapter, callerAccessor(delivery.auth));
 
     await adapter.deliver!(
       {
@@ -3832,7 +4180,7 @@ describe("slackChannel() HITL interaction pipeline", () => {
       ctx,
     );
 
-    expect(ctx.state.approvalResponderUsers).toEqual({ "slack:T01:U_APPROVER": "U_APPROVER" });
+    expect(ctx.state.slackUsersByPrincipal).toEqual({ "slack:T01:U_APPROVER": "U_APPROVER" });
 
     await callEvent(
       adapter,
@@ -3868,7 +4216,7 @@ describe("slackChannel() HITL interaction pipeline", () => {
     expect(ephemeralBodies).toEqual([
       expect.objectContaining({
         channel: "C01",
-        markdown_text: "Checking whether you can approve this action…",
+        markdown_text: "Checking whether you can respond to this approval…",
         user: "U_APPROVER",
       }),
       expect.objectContaining({
@@ -4735,73 +5083,132 @@ describe("slackChannel().receive", () => {
   });
 });
 
-describe("constrainAuthorizationRequired", () => {
-  function buildFullContext() {
-    const postEphemeral = vi.fn().mockResolvedValue({ id: "eph1" });
-    const postDirectMessage = vi.fn().mockResolvedValue({ id: "dm1" });
-    const post = vi.fn().mockResolvedValue({ id: "ts1" });
-    const request = vi.fn().mockResolvedValue({ ok: true });
-    const state: SlackChannelState = {
-      channelId: "C123",
-      threadTs: "111.222",
-      teamId: null,
-      triggeringUserId: "U777",
-    };
-    const channel = {
-      thread: { postEphemeral, postDirectMessage, post } as Partial<SlackEventContext["thread"]>,
-      slack: { channelId: "C123", request } as Partial<SlackEventContext["slack"]>,
-      state,
-    } as SlackEventContext;
-    return { channel, post, postDirectMessage, postEphemeral, request, state };
+describe("Slack renderer chain", () => {
+  function chainWith(
+    renderers: readonly SlackRenderer[],
+    defaults: Partial<SlackRenderChain["events"]>,
+  ) {
+    return composeSlackRenderers(renderers, {
+      events: defaults,
+      received: vi.fn(),
+      taskCard: () => null,
+    });
   }
 
-  const eventData = {
-    authorization: { url: "https://connect.example.com/a/sca_1", userCode: "AAA-BBB" },
-    description: "Authorization required for notion",
-    name: "notion",
+  const channel = {
+    slack: {} as SlackEventContext["slack"],
+    state: { channelId: "C01", teamId: "T01", threadTs: "1.0", triggeringUserId: "U777" },
+    thread: {
+      postDirectMessage: vi.fn(),
+      postEphemeral: vi.fn(),
+      post: vi.fn(),
+    } as Partial<SlackEventContext["thread"]> as SlackEventContext["thread"],
+  } satisfies SlackEventContext;
+  const completed = {
+    finishReason: "stop" as const,
+    message: "Deployed.",
     sequence: 0,
     stepIndex: 0,
-    turnId: "turn_0",
+    turnId: "t1",
   };
 
-  it("hands the override only the private-delivery surface", async () => {
-    const { channel } = buildFullContext();
-    let received: SlackAuthorizationEventContext | undefined;
-    const constrained = constrainAuthorizationRequired((_data, authCtx) => {
-      received = authCtx;
+  it("runs renderers outermost first and hands changed data inward to eve's default", async () => {
+    const order: string[] = [];
+    const posted = vi.fn(async (data: { readonly message?: string }) => {
+      order.push(`default:${data.message ?? ""}`);
     });
+    const chain = chainWith(
+      [
+        {
+          events: {
+            async "message.completed"(data, _channel, _ctx, next) {
+              order.push("outer");
+              await next({ ...data, message: `${data.message ?? ""} [outer]` });
+              order.push("outer:after");
+            },
+          },
+        },
+        {
+          events: {
+            async "message.completed"(data, _channel, _ctx, next) {
+              order.push("inner");
+              await next({ ...data, message: `${data.message ?? ""} [inner]` });
+            },
+          },
+        },
+      ],
+      { "message.completed": posted },
+    );
 
-    await constrained(eventData, channel, {} as SessionContext);
+    await chain.events["message.completed"]!(completed, channel, {} as SessionContext);
 
-    expect(received).toBeDefined();
-    expect(Object.keys(received!).sort()).toEqual(["postDirectMessage", "postEphemeral", "state"]);
-    expect("thread" in received!).toBe(false);
-    expect("slack" in received!).toBe(false);
-    expect(received!.state.triggeringUserId).toBe("U777");
+    expect(order).toEqual(["outer", "inner", "default:Deployed. [outer] [inner]", "outer:after"]);
   });
 
-  it("delegates private delivery to the underlying thread", async () => {
-    const { channel, postDirectMessage, postEphemeral } = buildFullContext();
-    const constrained = constrainAuthorizationRequired(async (_data, authCtx) => {
-      await authCtx.postEphemeral("U777", "psst");
-      await authCtx.postDirectMessage("U777", "psst dm");
+  it("skips eve's default when a handler does not call next", async () => {
+    const posted = vi.fn();
+    const replaced = vi.fn();
+    const chain = chainWith([{ events: { "message.completed": replaced } }], {
+      "message.completed": posted,
     });
 
-    await constrained(eventData, channel, {} as SessionContext);
+    await chain.events["message.completed"]!(completed, channel, {} as SessionContext);
 
-    expect(postEphemeral).toHaveBeenCalledWith("U777", "psst");
-    expect(postDirectMessage).toHaveBeenCalledWith("U777", "psst dm");
+    expect(replaced).toHaveBeenCalledOnce();
+    expect(posted).not.toHaveBeenCalled();
   });
 
-  it("threads the event data and session context through unchanged", async () => {
-    const { channel } = buildFullContext();
-    const sessionCtx = {} as SessionContext;
-    const handler = vi.fn();
+  it("runs the rest of the chain once however often next is called", async () => {
+    const posted = vi.fn();
+    const chain = chainWith(
+      [
+        {
+          events: {
+            async "message.completed"(_data, _channel, _ctx, next) {
+              await Promise.all([next(), next()]);
+              await next();
+            },
+          },
+        },
+      ],
+      { "message.completed": posted },
+    );
 
-    await constrainAuthorizationRequired(handler)(eventData, channel, sessionCtx);
+    await chain.events["message.completed"]!(completed, channel, {} as SessionContext);
 
-    expect(handler).toHaveBeenCalledTimes(1);
-    expect(handler.mock.calls[0]?.[0]).toBe(eventData);
-    expect(handler.mock.calls[0]?.[2]).toBe(sessionCtx);
+    expect(posted).toHaveBeenCalledOnce();
+  });
+
+  it("gives a sign-in handler only private delivery while eve's default keeps the thread", async () => {
+    let authored: SlackAuthorizationEventContext | undefined;
+    const publicStatus = vi.fn();
+    const chain = chainWith(
+      [
+        {
+          events: {
+            async "authorization.required"(_data, authCtx, _ctx, next) {
+              authored = authCtx;
+              await authCtx.postEphemeral("U777", "Sign in privately");
+              await next();
+            },
+          },
+        },
+      ],
+      { "authorization.required": publicStatus },
+    );
+    const challenge = {
+      authorization: { url: "https://connect.example.com/a/sca_1" },
+      description: "Authorization required for notion",
+      name: "notion",
+      sequence: 0,
+      stepIndex: 0,
+      turnId: "turn_0",
+    };
+
+    await chain.events["authorization.required"]!(challenge, channel, {} as SessionContext);
+
+    expect(Object.keys(authored!).sort()).toEqual(["postDirectMessage", "postEphemeral", "state"]);
+    expect(channel.thread.postEphemeral).toHaveBeenCalledWith("U777", "Sign in privately");
+    expect(publicStatus).toHaveBeenCalledWith(challenge, channel, {});
   });
 });

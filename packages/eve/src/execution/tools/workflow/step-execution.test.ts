@@ -56,8 +56,9 @@ function context(user = "user-1"): WorkflowStepContext {
       context: { surface: "docs" },
       id: "session-1",
       auth: { current: auth, initiator: auth },
-      turn: { context: ["route: /billing"], id: "turn-1", sequence: 1 },
+      turn: { id: "turn-1", sequence: 1 },
     },
+    turn: { context: ["route: /billing"] },
     callId: "call-1",
     toolName: "devbox",
   };
@@ -84,7 +85,7 @@ describe("workflow step authorization", () => {
   it("restores application context in authored workflow steps", async () => {
     const result = await runStep((ctx) => ({
       session: ctx.session.context,
-      turn: ctx.session.turn.context,
+      turn: ctx.turn.context,
     }));
     expect(result).toMatchObject({
       kind: "result",

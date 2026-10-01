@@ -92,10 +92,23 @@ const BUILTIN_TOOL_COPY: Readonly<Record<string, BuiltinToolCopy>> = {
     singularNoun: "command",
     pluralNoun: "commands",
   },
+  connection_execute: {
+    verb: "Call",
+    pastVerb: "Called",
+    argKey: "",
+    extractItem: (input) => {
+      const connection = salientArg(input, "connection");
+      const tool = salientArg(input, "tool");
+      return connection === undefined || tool === undefined ? undefined : `${connection}.${tool}`;
+    },
+    singularNoun: "connection tool",
+    pluralNoun: "connection tools",
+  },
   connection_search: {
-    verb: "Discover",
-    pastVerb: "Discovered",
-    argKey: "keywords",
+    verb: "Search",
+    pastVerb: "Searched",
+    argKey: "query",
+    extractItem: (input) => salientArg(input, "connection"),
     singularNoun: "tool search",
     pluralNoun: "tool searches",
   },
@@ -277,12 +290,30 @@ export function presentTool(
 }
 
 /**
- * The name an agent task goes by. The generic self-delegation tool is
- * literally named `agent`, which reads as `subagent` to a person.
+ * The bundled self-modification subagent's compiled name: its extension
+ * namespace joined to `subagents/agent` by the compiler's `__` rule.
  */
+export const SELF_MODIFICATION_AGENT_NAME = "self-modification__agent";
+
+/**
+ * Tool names that read poorly to a person. The generic self-delegation tool is
+ * literally named `agent`, and the self-modification subagent carries its
+ * extension namespace.
+ */
+const AGENT_DISPLAY_NAMES: ReadonlyMap<string, string> = new Map([
+  ["agent", "subagent"],
+  [SELF_MODIFICATION_AGENT_NAME, "agent editor"],
+]);
+
+/** True for the bundled self-modification subagent's dispatch tool. */
+export function isSelfModificationAgent(toolName: string): boolean {
+  return toolBaseName(toolName) === SELF_MODIFICATION_AGENT_NAME;
+}
+
+/** The name an agent task goes by in the delegate row, task line, and task panel. */
 export function agentDisplayName(toolName: string): string {
   const baseName = toolBaseName(toolName);
-  return baseName === "agent" ? "subagent" : baseName;
+  return AGENT_DISPLAY_NAMES.get(baseName) ?? baseName;
 }
 
 /**

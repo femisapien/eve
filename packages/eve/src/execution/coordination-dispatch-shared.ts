@@ -1,10 +1,8 @@
 /** Shared owner-side dispatch context preparation. */
 
 import { buildAdapterContext } from "#channel/adapter-context.js";
-import type { ActivityObserverConfig } from "#channel/types.js";
 import { type ChannelAdapter, type ChannelAdapterContext } from "#channel/adapter.js";
 import {
-  ActivityObserverKey,
   AuthKey,
   CapabilitiesKey,
   ChannelInstrumentationKey,
@@ -23,14 +21,12 @@ import {
 } from "#runtime/sessions/runtime-context-keys.js";
 import { deserializeContext } from "#context/serialize.js";
 import type { HarnessSession } from "#harness/types.js";
-import { deriveRootTurnActivityWorkId } from "#execution/activity-work-id.js";
 import {
   assertUniqueCoordinationCallIds,
   getPendingCoordinationBatch,
   setPendingCoordinationBatch,
 } from "#harness/coordination.js";
 import { activeTurnId } from "#harness/active-turn-id.js";
-import type { ActivityWorkIdentityV1 } from "#protocol/activity.js";
 import type { RuntimeActionResult, RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
 import type { JsonObject } from "#shared/json.js";
 import type { ClientContextValue } from "#internal/client-context.js";
@@ -84,11 +80,8 @@ export interface PreparedCoordinationDispatch<PlanEntry = RuntimeWorkflowTaskReq
   /** Lineage of the session running this dispatch, when it is itself a delegated child. */
   readonly parentSession: SessionParent | undefined;
   readonly sessionContext: JsonObject;
-  /** The dispatching turn's `clientContext`, which workflow runs expose as `ctx.session.turn.context`. */
+  /** The dispatching turn's `clientContext`, which workflow runs expose as `ctx.turn.context`. */
   readonly turnContext: ClientContextValue | undefined;
-  readonly activityObserver?: ActivityObserverConfig & {
-    readonly workIdentity: ActivityWorkIdentityV1;
-  };
   readonly sandboxSessionId: string;
   readonly serializedContext: Record<string, unknown>;
   readonly plan: readonly PlanEntry[];
@@ -204,34 +197,10 @@ export async function prepareActionDispatch<PlanEntry>(input: {
     sessionContext: ctx.get(SessionContextKey) ?? {},
     turnContext: getTurnClientContextState(session.state, batch.event.turnId)?.value,
     plan,
-    activityObserver: resolvePreparedActivity(
-      ctx.get(ActivityObserverKey),
-      session,
-      batch.event.turnId,
-    ),
     sandboxSessionId,
     serializedContext: input.serializedContext,
     session,
     workflowAgents: resolveWorkflowAgentMetadata(ctx),
-  };
-}
-
-function resolvePreparedActivity(
-  activityObserver: ActivityObserverConfig | undefined,
-  session: HarnessSession,
-  turnId: string,
-): (ActivityObserverConfig & { readonly workIdentity: ActivityWorkIdentityV1 }) | undefined {
-  if (activityObserver === undefined) return undefined;
-  return {
-    sink: activityObserver.sink,
-    workIdentity: activityObserver.workIdentity ?? {
-      id: deriveRootTurnActivityWorkId({ sessionId: session.sessionId, turnId }),
-      kind: "root-turn",
-      rootSessionId: session.rootSessionId ?? session.sessionId,
-      rootTurnId: turnId,
-      sessionId: session.sessionId,
-      turnId,
-    },
   };
 }
 
