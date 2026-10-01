@@ -279,7 +279,14 @@ function toInputResolution(
   route: ProxyInputRequest,
   response: InputResponse | undefined,
 ): InputResolution {
-  const outcome = response === undefined ? "ignored" : "answered";
+  const outcome =
+    response === undefined
+      ? "ignored"
+      : route.kind !== "tool-approval"
+        ? "answered"
+        : response.optionId === "approve"
+          ? "approved"
+          : "denied";
   const resolution: InputResolution = { kind: route.kind, outcome, requestId };
   return response === undefined ? resolution : { ...resolution, response };
 }
@@ -301,7 +308,9 @@ function resolveMessageAgainstQuestions(input: {
   // Task and subagent questions carry no `ctx.ask()` metadata, so plain text
   // cannot resolve them, but they still make the message ambiguous.
   const pending = [...input.entries].filter(
-    ([requestId, route]) => route.kind === "question" && input.routable(requestId, route),
+    ([requestId, route]) =>
+      (route.kind === "question" || route.kind === "tool-approval") &&
+      input.routable(requestId, route),
   );
   const questions = pending.flatMap(([requestId, route]) => {
     const question = route.workflowAsk?.question ?? route.question;

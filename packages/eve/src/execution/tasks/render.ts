@@ -78,6 +78,11 @@ export function renderTaskReceipt(task: {
   return `${started} To send it another message, call ${task.tool} again with taskId ${task.id}.`;
 }
 
+/** The receipt for a call that waits for a person's approval before it runs. */
+export function renderGatedCallReceipt(taskId: string): string {
+  return `This call is waiting for a person's approval and has not run. It runs as task ${taskId} once they approve, and its result, or that they declined, will arrive in a <task_result> message.`;
+}
+
 /** The receipt for a call that reaches a resumable task by its `taskId`. */
 export function renderTaskSentReceipt(taskId: string): string {
   return `Sent to task ${taskId}. Its reply will arrive in a <task_result> message.`;

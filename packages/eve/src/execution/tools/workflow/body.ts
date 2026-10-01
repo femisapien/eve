@@ -11,6 +11,7 @@ import type {
 } from "#tools/workflow-definition.js";
 import {
   ask,
+  askForApproval,
   attachWorkflowToolRunContext,
   WorkflowToolRunAsks,
   type WorkflowToolRunContext,
@@ -25,11 +26,13 @@ import { normalizeSerializableError } from "#execution/workflow-errors.js";
 import { readRegisteredWorkflow } from "#execution/workflow-registry.js";
 import type { WorkflowToolRunEntry } from "#shared/action-types.js";
 import type { JsonObject, JsonValue } from "#shared/json.js";
-import type { ToolContext } from "#tools/definition.js";
+import type { ToolContext, ToolInputResponse } from "#tools/definition.js";
 
 export interface WorkflowBodyDefinition {
   /** Everything the run needs to open `ctx.agent` sessions for its caller, and `ctx.agents`. */
   readonly agentContext: AgentSessionContext;
+  /** Present when the call waits for a person's approval before its body runs. */
+  readonly approval?: { readonly key: string; readonly prompt: string };
   readonly callId: string;
   /** The entry point the run invokes, which decides the body's context. */
   readonly entry: WorkflowToolRunEntry;
@@ -172,6 +175,13 @@ async function executeCallBody(
   from: WorkflowToolRunRef,
 ): Promise<WorkflowToolRunOutcome> {
   try {
+    if (input.approval !== undefined) {
+      const declined = declineReason(await askForApproval(ctx, input.approval));
+      if (declined !== undefined) {
+        if (signals.runSignal.aborted) return toFailedOutcome(undefined, signals.runSignal);
+        return { error: { code: "TOOL_EXECUTION_DENIED", message: declined }, status: "failed" };
+      }
+    }
     const entryPoint = resolveWorkflowEntryPoint<WorkflowCallEntryPoint>(input);
     const result = entryPoint(input.executeInput ?? input.input, ctx);
     let output: JsonValue;
@@ -192,6 +202,20 @@ async function executeCallBody(
   } catch (error) {
     if (signals.interrupted) return { output: INTERRUPTED_OUTPUT, status: "completed" };
     return toFailedOutcome(error, signals.runSignal);
+  }
+}
+
+/** Why a gated call did not run, or `undefined` when a person approved it. */
+function declineReason(response: ToolInputResponse): string | undefined {
+  switch (response.status) {
+    case "answered":
+      return response.optionId === "approve"
+        ? undefined
+        : "A person declined this call, so it did not run.";
+    case "cancelled":
+      return "The approval request was withdrawn before anyone answered it, so the call did not run.";
+    case "unavailable":
+      return "Nobody here can approve this call, so it did not run.";
   }
 }
 

@@ -24,6 +24,11 @@ export interface HarnessToolDefinition {
   /** Optional JSON input substituted when this tool starts its workflow body. */
   readonly executeInput?: (input: unknown) => JsonValue;
   readonly frameworkAction?: "load-skill" | "task-cancel" | "task-wait";
+  /**
+   * Set for an authored tool from the agent's registry, which an approved call
+   * can run outside the model step by looking it up again.
+   */
+  readonly fromToolRegistry?: true;
   readonly inputSchema: FlexibleSchema;
   readonly name: string;
   readonly approval?: Approval;

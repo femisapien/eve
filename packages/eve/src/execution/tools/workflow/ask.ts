@@ -1,6 +1,7 @@
 import type { SessionAuth } from "#context/session-context.js";
 import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
 import type {
+  WorkflowToolAskRequest,
   WorkflowToolRunAskDecision,
   WorkflowToolRunRef,
 } from "#execution/tools/workflow/messages.js";
@@ -180,6 +181,42 @@ export function ask(
   request: ToolInputRequest,
   options: ToolInputRequestOptions = {},
 ): Promise<ToolInputResponse> {
+  return sendAsk(ctx, request, options, undefined);
+}
+
+/** The options a person picks from to approve or decline a gated call. */
+export const APPROVAL_OPTIONS = [
+  { id: "approve", label: "Approve" },
+  { id: "cancel", label: "Cancel" },
+] as const satisfies ToolInputRequest["options"];
+
+/**
+ * Asks a person to approve the run's call before its body runs. The request is
+ * a `tool-approval` for the call itself, answered like any other question.
+ */
+export function askForApproval(
+  ctx: Pick<ToolContext, "abortSignal">,
+  approval: { readonly key: string; readonly prompt: string },
+): Promise<ToolInputResponse> {
+  return sendAsk(
+    ctx,
+    {
+      allowFreeform: false,
+      display: "confirmation",
+      options: [...APPROVAL_OPTIONS],
+      prompt: approval.prompt,
+    },
+    {},
+    { key: approval.key },
+  );
+}
+
+function sendAsk(
+  ctx: Pick<ToolContext, "abortSignal">,
+  request: ToolInputRequest,
+  options: ToolInputRequestOptions,
+  approval: WorkflowToolAskRequest["approval"],
+): Promise<ToolInputResponse> {
   const context = readWorkflowToolRunContext(ctx, "ask");
   // A caller that can't reach a person resolves `ctx.ask()` as `unavailable`.
   if (context.agentContext.capabilities?.requestInput !== true) {
@@ -197,7 +234,7 @@ export function ask(
       kind: "request",
       from,
       replyTo,
-      request: { control, kind: "ask", request },
+      request: { ...(approval !== undefined && { approval }), control, kind: "ask", request },
     });
     sent.catch((error: unknown) => asks.fail(replyTo, error));
     // The withdrawal must not overtake the request it withdraws.

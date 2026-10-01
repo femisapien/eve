@@ -261,6 +261,8 @@ function createRegisteredHarnessToolDefinition(input: {
       def.owner.kind === "framework" && def.name === LOAD_SKILL_TOOL_NAME
         ? "load-skill"
         : undefined,
+    // Framework tools such as bash need the turn's sandbox, which an approved call runs without.
+    ...(def.owner.kind !== "framework" && { fromToolRegistry: true }),
     inputSchema: def.inputSchema ?? UNSPECIFIED_INPUT_SCHEMA,
     name: def.name,
     approval: def.approval,

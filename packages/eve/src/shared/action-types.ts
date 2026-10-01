@@ -154,6 +154,8 @@ export type RuntimeWorkflowTaskRequest = z.infer<typeof runtimeWorkflowTaskReque
 
 export const runtimeWorkflowTaskRequestSchema = z
   .object({
+    /** Present when a person must approve the call before its body runs. */
+    approval: z.object({ key: z.string(), prompt: z.string() }).strict().optional(),
     callId: z.string(),
     entry: workflowToolCallEntrySchema,
     executeInput: jsonValueSchema.optional(),

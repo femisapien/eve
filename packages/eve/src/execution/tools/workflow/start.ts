@@ -70,6 +70,7 @@ export async function startWorkflowToolCallRun(
   const { task, batchEvent, session } = input;
   return await startWorkflowToolRun({
     agentContext: input.agentContext,
+    ...(task.approval !== undefined && { approval: task.approval }),
     callId: task.callId,
     entry,
     executeInput: task.executeInput,

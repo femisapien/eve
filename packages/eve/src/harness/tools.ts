@@ -12,6 +12,8 @@ import { toModelSchema } from "#tools/schema.js";
 import { normalizeToolJsonOutput, normalizeToolModelOutput } from "#harness/tool-model-output.js";
 import type { ToolExecuteOptions } from "#tools/definition.js";
 import { isAsyncIterable } from "#shared/async-iterable.js";
+import { entryPointOf } from "#execution/tasks/tool-entry-point.js";
+import { CONNECTION_EXECUTE_TOOL_NAME } from "#execution/tools/connection-target.js";
 
 type NativeApprovalStatus = Exclude<ApprovalStatus, boolean>;
 
@@ -19,6 +21,7 @@ type ApprovalFn = (
   toolInput: unknown,
   callId: string,
   abortSignal: AbortSignal | undefined,
+  approvedTools: ReadonlySet<string>,
 ) => Promise<NativeApprovalStatus>;
 
 const toolApprovals = new WeakMap<object, ApprovalFn>();
@@ -239,19 +242,29 @@ function signInUnavailableMessage(toolName: string, signal: AuthorizationSignal)
   return `${toolName} needs a sign-in to ${connections.join(", ")}, and this version of eve cannot ask for one from a tool call. The call did not run.`;
 }
 
-const APPROVAL_UNAVAILABLE_REASON =
-  "This call needs a person's approval, and this version of eve cannot ask for one. The call did not run.";
+/**
+ * Why a call that needs a person's approval can't wait for one, or
+ * `undefined` when an approval task can run it once a person approves.
+ */
+function gateUnavailableReason(definition: HarnessToolDefinition): string | undefined {
+  if (typeof definition.approval === "object" && definition.approval.response !== undefined) {
+    return "This call needs a person's approval checked by a response policy, which this version of eve cannot ask for yet. The call did not run.";
+  }
+  if (definition.workflowId !== undefined && entryPointOf(definition) !== "serve") return undefined;
+  if (definition.workflowId === undefined && definition.fromToolRegistry === true) return undefined;
+  if (definition.name === CONNECTION_EXECUTE_TOOL_NAME) return undefined;
+  return "This call needs a person's approval, and this version of eve cannot ask for one for this kind of tool. The call did not run.";
+}
 
 function buildApprovalFn(definition: HarnessToolDefinition): ApprovalFn {
-  return async (toolInput, callId, abortSignal) => {
+  return async (toolInput, callId, abortSignal, approvedTools) => {
     if (definition.approval === undefined) return undefined;
 
     const toolInputRecord = isObject(toolInput) ? toolInput : undefined;
     const context = {
       ...buildCallbackContext(),
       abortSignal: abortSignal ?? new AbortController().signal,
-      // Nothing records approvals until gated calls run as tasks.
-      approvedTools: new Set<string>(),
+      approvedTools,
       callId,
       toolInput: toolInputRecord,
       toolName: definition.name,
@@ -261,15 +274,16 @@ function buildApprovalFn(definition: HarnessToolDefinition): ApprovalFn {
     const normalized =
       typeof status === "boolean" ? (status ? "user-approval" : "not-applicable") : status;
     const type = typeof normalized === "object" ? normalized.type : normalized;
-    return type === "user-approval"
-      ? { type: "denied", reason: APPROVAL_UNAVAILABLE_REASON }
-      : normalized;
+    if (type !== "user-approval") return normalized;
+    const reason = gateUnavailableReason(definition);
+    return reason === undefined ? "user-approval" : { type: "denied", reason };
   };
 }
 
 /** Builds the AI SDK 7 call-level approval policy for an assembled tool set. */
 export function buildToolApproval(
   tools: ToolSet,
+  approvedTools: ReadonlySet<string>,
   abortSignal?: AbortSignal,
 ): ToolApprovalConfiguration<ToolSet, Record<string, unknown>> {
   return async ({ toolCall }) => {
@@ -281,6 +295,7 @@ export function buildToolApproval(
       toolCall.input,
       toolCall.toolCallId,
       abortSignal,
+      approvedTools,
     )) as ToolApprovalStatus;
   };
 }

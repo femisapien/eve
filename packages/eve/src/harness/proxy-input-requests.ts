@@ -29,6 +29,8 @@ const PROXY_INPUT_REQUEST_KINDS = {
  * every decision the session makes for the run, in order.
  */
 export interface WorkflowAskRoute {
+  /** An approval's key, which the session records for `once()` when a person approves. */
+  readonly approvalKey?: string;
   readonly control: string;
   /** What a plain-text message may answer. */
   readonly question: ProxyInputQuestion;
@@ -344,7 +346,9 @@ function parseWorkflowAskRoute(value: unknown): WorkflowAskRoute | undefined {
   if (typeof control !== "string" || control.length === 0) return undefined;
   const question = parseProxyInputQuestion(Reflect.get(value, "question"));
   if (question === undefined) return undefined;
-  return { control, question };
+  const approvalKey = Reflect.get(value, "approvalKey");
+  if (approvalKey !== undefined && typeof approvalKey !== "string") return undefined;
+  return { ...(approvalKey !== undefined && { approvalKey }), control, question };
 }
 
 function parseRemoteAgentBinding(

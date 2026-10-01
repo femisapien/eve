@@ -13,6 +13,7 @@ import {
   type ApprovalStatus,
 } from "#approval/definition.js";
 import { loadContext } from "#context/container.js";
+import { getActiveRuntimeNode } from "#context/node.js";
 import { ConnectionRegistryKey } from "#context/providers/connection-key.js";
 import { defineDurableCallback } from "#tools/durable-callbacks.js";
 
@@ -98,7 +99,24 @@ async function requestConnectionApproval(
     toolInput: target.input,
     toolName: qualifiedToolName(target),
   });
+  const asksPerson =
+    status === true ||
+    status === "user-approval" ||
+    (typeof status === "object" && status.type === "user-approval");
+  // An approved call runs later against the agent's declared connections, so
+  // one resolved for this turn can't wait for a person.
+  if (asksPerson && !isDeclaredConnection(connection.connectionName)) {
+    return {
+      reason: `This call to ${connection.connectionName} needs a person's approval, and this version of eve cannot ask for one for a connection resolved at runtime. The call did not run.`,
+      type: "denied",
+    };
+  }
   return status;
+}
+
+function isDeclaredConnection(name: string): boolean {
+  const agent = getActiveRuntimeNode(loadContext()).agent;
+  return agent?.connections.some((connection) => connection.connectionName === name) === true;
 }
 
 async function authorizeConnectionApprovalResponse(

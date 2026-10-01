@@ -1,3 +1,4 @@
+import { readApprovedTools } from "#harness/approved-tools.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { GenerationSteering } from "#harness/generation-steering.js";
 import { interruptStreamOnFailure } from "#harness/interruptible-stream.js";
@@ -1160,7 +1161,11 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
         runtimeContext: telemetryRuntimeContext,
         stopWhen: isStepCount(1),
         telemetry: attempt?.telemetry,
-        toolApproval: buildToolApproval(modelTools, generation.signal),
+        toolApproval: buildToolApproval(
+          modelTools,
+          readApprovedTools(session.state),
+          generation.signal,
+        ),
         tools: effectiveTools,
       };
       const agent = new ToolLoopAgent(agentSettings);
@@ -2090,7 +2095,11 @@ async function handleStepResult(input: {
     messages: rawResponseMessages,
     providerExecutedOutcomeIds,
   });
-  const responseMessages = normalizedProviderHistory.messages;
+  // A gated call's result is its approval task's receipt, so its approval
+  // request never enters history.
+  const { gatedCallIds, messages: responseMessages } = takeGatedCalls(
+    normalizedProviderHistory.messages,
+  );
 
   const baseSession = setRequestEnvelopeTokens(
     {
@@ -2115,9 +2124,18 @@ async function handleStepResult(input: {
   const deferredToolCalls = ((result.toolCalls ?? []) as TypedToolCall<ToolSet>[])
     .filter((toolCall) => !invalidInputToolCallIds.has(toolCall.toolCallId))
     .filter((toolCall) => !blockedCallIds.has(toolCall.toolCallId))
-    .filter((toolCall) => isDeferredHarnessTool(input.coordinationTools.get(toolCall.toolName)))
+    .filter(
+      (toolCall) =>
+        gatedCallIds.has(toolCall.toolCallId) ||
+        isDeferredHarnessTool(input.coordinationTools.get(toolCall.toolName)),
+    )
     .filter((toolCall) => {
-      if (isDeferredHarnessTool(advertisedCoordinationTools.get(toolCall.toolName))) {
+      const advertised = advertisedCoordinationTools.get(toolCall.toolName);
+      if (
+        gatedCallIds.has(toolCall.toolCallId)
+          ? advertised !== undefined
+          : isDeferredHarnessTool(advertised)
+      ) {
         return true;
       }
       log.warn("deferred tool call blocked because tool is not advertised", {
@@ -2128,6 +2146,7 @@ async function handleStepResult(input: {
       return false;
     });
   const deferred = collectDeferredCalls({
+    gatedCallIds,
     session: baseSession,
     toolCalls: deferredToolCalls,
     tools: advertisedCoordinationTools,
@@ -2662,4 +2681,25 @@ async function runModelCallWithRetries<T>(
       await delay(delayMs, undefined, { signal });
     }
   }
+}
+
+/**
+ * The calls the AI SDK held for a person's approval, and the response without
+ * their approval requests. Automatic decisions already have results.
+ */
+function takeGatedCalls(messages: readonly ModelMessage[]): {
+  readonly gatedCallIds: ReadonlySet<string>;
+  readonly messages: ModelMessage[];
+} {
+  const gatedCallIds = new Set<string>();
+  const kept = messages.map((message): ModelMessage => {
+    if (message.role !== "assistant" || !Array.isArray(message.content)) return message;
+    const content = message.content.filter((part) => {
+      if (part.type !== "tool-approval-request") return true;
+      if (part.isAutomatic !== true) gatedCallIds.add(part.toolCallId);
+      return part.isAutomatic === true;
+    });
+    return content.length === message.content.length ? message : { ...message, content };
+  });
+  return { gatedCallIds, messages: kept };
 }

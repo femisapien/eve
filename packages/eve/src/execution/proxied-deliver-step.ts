@@ -1,3 +1,4 @@
+import { recordApprovedTools } from "#harness/approved-tools.js";
 import type { SessionInboxAddress } from "#execution/session-inbox/address.js";
 import { hasDelegatedSessionContext } from "#execution/delegated-session-context.js";
 import type { DeliverHookPayload, DeliverPayload } from "#channel/types.js";
@@ -173,6 +174,16 @@ async function routeProxiedDeliver(
       resolvedEvents.push(
         createInputResolvedEvent({ resolutions: [...child.resolutions.values()], ...child.event }),
       );
+    }
+    const approvalKey = child.workflowAsk?.approvalKey;
+    if (
+      approvalKey !== undefined &&
+      [...child.resolutions.values()].some((resolution) => resolution.outcome === "approved")
+    ) {
+      durableSession = {
+        ...durableSession,
+        state: recordApprovedTools(durableSession.state, [approvalKey]),
+      };
     }
     // Successfully forwarded request IDs are retired so later deliveries
     // cannot route through stale entries.

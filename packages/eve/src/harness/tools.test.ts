@@ -48,7 +48,7 @@ async function resolveApproval(
   session?: Session,
   options: { readonly abortSignal?: AbortSignal } = {},
 ): Promise<unknown> {
-  const approval = buildToolApproval(tools, options.abortSignal);
+  const approval = buildToolApproval(tools, new Set(), options.abortSignal);
   const activeSession = session ?? {
     auth: { current: null, initiator: null },
     sessionId: "session-1",

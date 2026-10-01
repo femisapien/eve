@@ -29,6 +29,11 @@ export interface WorkflowToolAuthorizationRequest {
 
 /** A question authored with `ask()` from `eve/workflow`, before owner normalization. */
 export interface WorkflowToolAskRequest {
+  /**
+   * Set when the run asks a person to approve its call rather than asking a
+   * question. An approval records `key` for the session's `once()` policies.
+   */
+  readonly approval?: { readonly key: string };
   /** The run's control hook, where the session sends its decision on the question. */
   readonly control: string;
   readonly kind: "ask";

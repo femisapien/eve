@@ -1,4 +1,5 @@
 import {
+  renderGatedCallReceipt,
   renderTaskReceipt,
   renderTaskSentReceipt,
   renderTooManyTasksError,
@@ -57,7 +58,10 @@ export async function startTaskRun(
   const { entry, session, task } = input;
   const { taskId } = entry;
   const dispatch = { ...input, taskId };
-  const receipt = startReceipt(dispatch, entry.entryPoint === "serve");
+  const receipt =
+    task.approval === undefined
+      ? startReceipt(dispatch, entry.entryPoint === "serve")
+      : toolResult(dispatch, renderGatedCallReceipt(taskId));
   const table = readTaskTable(session.state);
   const record = findTask(table, taskId);
   // Cancelled before the session could start it: there is nothing to run.

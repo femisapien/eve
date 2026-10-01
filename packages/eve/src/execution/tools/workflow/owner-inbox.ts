@@ -104,7 +104,7 @@ function normalizeInputRequest(
     case "authorization-request":
       throw new TypeError("A workflow authorization event cannot be normalized as human input.");
     case "ask":
-      return normalizeAskRequest(request.request, from, requestId);
+      return normalizeAskRequest(request.request, from, requestId, request.approval !== undefined);
     default:
       return request;
   }
@@ -114,13 +114,14 @@ function normalizeAskRequest(
   authored: ToolInputRequest,
   from: WorkflowToolRunRef,
   requestId: string,
+  approval: boolean,
 ): InputRequest {
   if (typeof authored.prompt !== "string" || authored.prompt.length === 0) {
     throw new TypeError("A workflow tool run request needs a non-empty `prompt`.");
   }
   const normalized: InputRequest = {
     action: { callId: from.callId, input: from.input, kind: "tool-call", toolName: from.toolName },
-    kind: "question",
+    kind: approval ? "tool-approval" : "question",
     prompt: authored.prompt,
     requestId,
   };

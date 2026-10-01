@@ -313,7 +313,7 @@ function clampInteger(value: unknown, min: number, max: number, fallback: number
 // connection_execute
 // ---------------------------------------------------------------------------
 
-async function executeConnectionTool(
+export async function executeConnectionTool(
   _closure: object,
   rawInput: unknown,
   ctx: ToolContext,

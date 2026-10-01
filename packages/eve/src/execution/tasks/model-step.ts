@@ -41,10 +41,13 @@ export function isTaskTool(definition: HarnessToolDefinition | undefined): boole
   );
 }
 
-/** Whether the agent can start tasks, so the task tools and system block are offered. */
+/**
+ * Whether the agent can start tasks, so the task tools and system block are
+ * offered. A call that waits for a person's approval starts a task too.
+ */
 export function offersTasks(tools: HarnessToolMap): boolean {
   for (const definition of tools.values()) {
-    if (startsTasks(definition)) return true;
+    if (startsTasks(definition) || definition.approval !== undefined) return true;
   }
   return false;
 }
@@ -109,6 +112,15 @@ export function commitCallEntry(session: HarnessSession, call: DeferredCall): Co
       return { entry: { entryPoint: "receive", taskId }, input, session };
     }
   }
+}
+
+/**
+ * How a call that waits for a person's approval enters its workflow: always as
+ * a task, whatever the tool's own entry point, so the model gets a receipt and
+ * the turn goes on while the approval is open.
+ */
+export function commitGatedCall(session: HarnessSession, call: DeferredCall): CommittedCallEntry {
+  return commitTask(session, call, "task", call.input);
 }
 
 function commitTask(
