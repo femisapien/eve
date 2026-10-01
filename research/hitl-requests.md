@@ -20,8 +20,8 @@ A request has one owner, and the owner decides what continues when the request i
   until the person answers, then makes the model call it was about to make.
 - **A question** (`ask_question`) is unchanged: it belongs to the `execute` call that asked.
 
-Every open request, whatever its kind, is one entry in one request table per session. Answers and
-sign-in callbacks resolve entries the same way, and cancel withdraws them all.
+Every open request, whatever its kind, is one entry in one request table per session. Every kind is
+added, removed, and withdrawn through that table, and cancel withdraws them all.
 
 Tasks are used only where a tool call is waiting, because only there does the call need a result
 before the conversation can go on. This removes the one state in which eve's history holds a tool
@@ -53,7 +53,7 @@ keeps both behaviors.
 | Term            | Meaning                                                                                                                                      |
 | --------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
 | request         | One question eve puts to a person: an approval, a budget question, or a sign-in challenge. Identified by `requestId`                         |
-| request table   | The one record in session state that holds every open request, whatever its kind (see One request table)                                     |
+| request table   | The one record in session state that holds every open request, whatever its kind (see Proposed: one request table)                           |
 | owner           | What a request belongs to and what continues when it is answered: a gate task, an `execute` call, or the turn                                |
 | held turn       | A turn that stays open while it has a working task or an open request it owns (`turn.waiting`)                                               |
 | steering        | A message from the turn's principal arriving during the turn (`execution/session/input-queue.ts:223-234`)                                    |
@@ -123,7 +123,7 @@ writer that has to respect it, and its PR leaves a known case open: a provider f
 approval resume drops the approval exchange.
 
 The rest share the other cause: an open request lives in one of six stores depending on its kind,
-each with its own reader, writer, and clearing rule (see One request table). A fix on one path
+each with its own reader, writer, and clearing rule (see Status quo). A fix on one path
 doesn't reach the others. #3891 is the clearest case. One park site omitted the response-policy
 flag, so the policy was skipped when an approval parked next to a workflow call. #3954 fixed that
 site, and every new park site still has to remember the flag.
@@ -133,56 +133,72 @@ removes the second: every kind of request is stored, answered, and withdrawn the
 
 ## Requests and owners
 
-### One request table
+### Status quo: six stores for open requests
 
-Today an open request lives in one of six places, depending on its kind:
+On `main` today, an open request lives in one of six places, depending on its kind:
 
-| Store                                                                  | Holds                                                                  |
-| ---------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `eve.runtime.pendingInputBatches` (`harness/pending-input-batches.ts`) | Approvals and root budget questions, with the held-back call           |
-| `eve.runtime.deferredStepInput` (same file)                            | Messages that arrived while a batch was open                           |
-| `eve.runtime.hitl.approvalState` (`harness/approval-candidates.ts`)    | Approval answers waiting on the response policy                        |
-| `eve.runtime.pendingAuthorization` (`harness/authorization.ts`)        | Plain-tool sign-ins                                                    |
-| `eve.runtime.proxyInputRequests` (`harness/proxy-input-requests.ts`)   | `ctx.ask` questions and child requests                                 |
-| The workflow run's own hook (`execution/tools/workflow/step.ts`)       | Sign-ins inside a workflow step; the run waits for the callback itself |
+| Store                                                                  | Holds                                                                                                                      |
+| ---------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `eve.runtime.pendingInputBatches` (`harness/pending-input-batches.ts`) | Approvals and root budget questions, with the held-back call                                                               |
+| `eve.runtime.deferredStepInput` (same file)                            | Messages that arrived while a batch was open                                                                               |
+| `eve.runtime.hitl.approvalState` (`harness/approval-candidates.ts`)    | Approval answers waiting on the response policy                                                                            |
+| `eve.runtime.pendingAuthorization` (`harness/authorization.ts`)        | Plain-tool sign-ins                                                                                                        |
+| `eve.runtime.proxyInputRequests` (`harness/proxy-input-requests.ts`)   | `ctx.ask` questions and child requests                                                                                     |
+| The workflow run itself (`execution/tools/workflow/step.ts`)           | Sign-ins inside a workflow step. The run waits for the callback on its own hook, and the session only publishes the events |
 
 Each store has its own reader, its own writer, and its own rule for what clears it. The session's
 idle check reads five of them by name before it allows a handoff
 (`execution/session/handoff-steps.ts:23-38`).
 
-Under this design, every open request is one entry in one table per session, whatever its kind:
+### Proposed: one request table
 
-| Field              | Meaning                                                                                                    |
-| ------------------ | ---------------------------------------------------------------------------------------------------------- |
-| `requestId`        | The key. Answers and callbacks name it                                                                     |
-| `kind`             | `approval`, `question`, `budget`, or `sign-in`                                                             |
-| `owner`            | What continues when the entry resolves: a gate task, an `execute` call's run, the turn, or a child session |
-| `turnId`, `taskId` | The turn that raised it, and the owning task if there is one                                               |
-| `prompt`           | What the person sees: the `InputRequest`, or the sign-in URL and code                                      |
-| `resolvedBy`       | `answer` for a person's response, `callback` for a sign-in                                                 |
+Every open request is one entry in one table per session, whatever its kind:
 
-An entry is added when a request is raised and removed when it is answered, withdrawn, or settled
-`unavailable`. An answer waiting on the response policy stays on its entry. There is no separate
-candidate store.
+| Field              | Meaning                                                                                                                                                                                                                 |
+| ------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `requestId`        | The key. Answers name it                                                                                                                                                                                                |
+| `kind`             | `tool-approval`, `question`, or `session-limit`, the existing `InputRequestKind` values (`shared/input.ts`); or `authorization`, the codebase's name for a sign-in (`authorization.required`, `AuthorizationChallenge`) |
+| `owner`            | What continues when the entry resolves: a gate task, an `execute` call's run, the turn, or a child session                                                                                                              |
+| `turnId`, `taskId` | The turn that raised it, and the owning task if there is one                                                                                                                                                            |
+| `prompt`           | What the person sees: the `InputRequest`, or the sign-in URL and code                                                                                                                                                   |
 
-**Answers and callbacks take the same path.** A person's answer and a sign-in callback both reach
-the session inbox. The session resolves the entry and passes the result to the owner on the owner's
-control hook, as it already does for `ctx.ask` answers (`execution/tools/workflow/messages.ts`).
-Plain-tool sign-in callbacks already reach the session; workflow-step sign-ins change to do the
-same, instead of being received by the run's own hook.
+How an entry comes and goes:
+
+| Kind                        | Added when                                                                                                                                                                    | Removed when                                                                      |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `tool-approval`, `question` | The owner asks with `ctx.ask`                                                                                                                                                 | The answer is accepted. With a response policy, that is once the policy allows it |
+| `session-limit`             | The turn is about to call the model over budget                                                                                                                               | The person picks Continue or Stop                                                 |
+| `authorization`             | The owner run reports `authorization.required` to the session, which it already does with an acknowledged message (`reportAuthorization`, `execution/tools/workflow/step.ts`) | The owner run reports the sign-in `authorized` or `failed`, the same way          |
+
+Any entry is also removed when it is withdrawn (cancel, turn failure, session end) or settled
+`unavailable`. The session handles the run's reports in a durable step already
+(`handleWorkflowToolRunRequest`, `execution/session-workflow-tool-run.ts:88-99`); adding and
+removing the entry happens in that step.
+
+**Sign-in callbacks stay where they are.** Every sign-in under this design happens inside a run: a
+tool's inside its gate task, and a responder's inside the run that asked (below). The provider keeps
+calling the run's own hook. Each attempt creates a fresh hook, known only to the run and disposed
+afterwards, and a completion stream keeps a retried step from exchanging the callback twice
+(`completeWorkflowStepAuthorization`). None of that changes. Routing callbacks through the session
+instead would make the session hold and resume per-attempt hook tokens, and simplify nothing.
+
+**The response policy runs in the run that asked.** #3929 (open) runs a `ctx.ask` response policy as
+a step in the asking workflow. A rejected answer, or one waiting on the responder's sign-in, leaves
+the question open. Gate tasks ask with `ctx.ask`, so approvals get the same behavior, and a
+responder's sign-in becomes a workflow-step sign-in like any other. Nothing is left for
+`pendingAuthorization` to hold.
 
 **Each call's sign-in is its own entry.** Three gated calls that each need a different sign-in make
-three entries with three owners. Finishing one resolves only that entry and runs only that call, so
+three entries with three owners. Finishing one removes only that entry and runs only that call, so
 it no longer re-runs a shared step that supersedes the other two (#2421).
 
 **Child requests appear in both tables.** The child's entry is owned by the child's task, run, or
-turn. The root's entry for the same `requestId` is owned by the child session, and resolving it sends
-the answer down. This is how child questions are relayed today.
+turn. The root's entry for the same `requestId` is owned by the child session, and an answer to it
+is sent down. This is how child questions are relayed today.
 
 Every delivery is classified against the table in the same order:
 
-1. **Answers and callbacks.** Each resolves its entry and goes to the owner, after the response
-   policy for an approval. It never steers.
+1. **Answers.** Each `inputResponses` entry goes to its request's owner. It never steers.
 2. **Text answers.** When the table holds exactly one entry a person can answer, a text message from
    the turn's principal that matches one of its options answers it and is consumed. A question that
    accepts free text takes any text (#4035). This is the rule `routeDeliverPayload`
@@ -190,7 +206,9 @@ Every delivery is classified against the table in the same order:
 3. **Steering.** Any other message from the turn's principal steers the held turn.
 4. **Everyone else.** A message from another principal waits for the turn to end.
 
-Cancel withdraws every entry. The idle check becomes one question: is the table empty?
+Cancel withdraws every entry and cancels each owner; a run waiting for a sign-in callback stops
+waiting when its signal aborts (`withAbort`, `execution/tools/workflow/step.ts`). The idle check
+becomes one question: is the table empty?
 
 ### Owners
 
@@ -275,13 +293,13 @@ Two things can stop a tool call before it runs, and eve learns about them at dif
 
 #### Approvals
 
-| Stage    | Today                                                                                                                                                                                                   | Under this design                                                                                                                                               |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Decide   | During `generate()`, the AI SDK calls eve's `toolApproval` callback (`buildToolApproval`, `harness/tools.ts`), which runs the tool's `approval` policy                                                  | eve runs the same policy itself when the model step returns the call. The policy gets the same context: `toolName`, `toolInput`, `callId`, and `approvedTools`  |
-| Ask      | The SDK adds an approval part to the call. eve holds the call back, records a pending batch, emits `input.requested`, and ends the turn                                                                 | eve starts `t1` and writes the receipt. `t1` asks with `ctx.ask`, which emits the same `input.requested`: kind `tool-approval`, options Approve and Deny        |
-| Answer   | The approval coordinator runs the response policy with the requester (`request.principal`) and the decision (`response.decision`). The policy can ask the responder to sign in (`ApprovalResponseAuth`) | The session runs the same response policy, with the same inputs, before it accepts the answer. A sign-in the policy asks for is raised before the answer counts |
-| Remember | An approved tool is recorded in `eve.runtime.hitl.approvedTools`, which `once()` reads                                                                                                                  | Same record, written when the session accepts an Approve                                                                                                        |
-| Run      | The SDK runs `execute` inside the next `generate()`, and only if the approval response is the last message                                                                                              | `t1` runs `execute` in a workflow step                                                                                                                          |
+| Stage    | Today                                                                                                                                                                                                   | Under this design                                                                                                                                                                                        |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Decide   | During `generate()`, the AI SDK calls eve's `toolApproval` callback (`buildToolApproval`, `harness/tools.ts`), which runs the tool's `approval` policy                                                  | eve runs the same policy itself when the model step returns the call. The policy gets the same context: `toolName`, `toolInput`, `callId`, and `approvedTools`                                           |
+| Ask      | The SDK adds an approval part to the call. eve holds the call back, records a pending batch, emits `input.requested`, and ends the turn                                                                 | eve starts `t1` and writes the receipt. `t1` asks with `ctx.ask`, which emits the same `input.requested`: kind `tool-approval`, options Approve and Deny                                                 |
+| Answer   | The approval coordinator runs the response policy with the requester (`request.principal`) and the decision (`response.decision`). The policy can ask the responder to sign in (`ApprovalResponseAuth`) | The response policy runs as a step in `t1`, with the same inputs, as #3929 does for `ctx.ask`. A sign-in it asks the responder for is a workflow-step sign-in. A rejected answer leaves the request open |
+| Remember | An approved tool is recorded in `eve.runtime.hitl.approvedTools`, which `once()` reads                                                                                                                  | Same record, written when the session accepts an Approve                                                                                                                                                 |
+| Run      | The SDK runs `execute` inside the next `generate()`, and only if the approval response is the last message                                                                                              | `t1` runs `execute` in a workflow step                                                                                                                                                                   |
 
 The built-in policies keep their meaning: `always()` always asks, `never()` never asks, `once()` asks
 until the tool has been approved once in the session, and `auto()` asks its evaluation model at the
@@ -293,7 +311,7 @@ Decide stage.
 | ------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Detect | The tool asks for a token with no credential. Its result carries an authorization signal (`readAuthorizationSignal`, `harness/inline-tool-authorization.ts`) | The same, inside a workflow step (`withWorkflowStepAuthorization`)                                 | The same. A plain tool still runs in the model step and finds out there                                                                                                |
 | Ask    | eve emits `authorization.required` with the sign-in URL or code, removes the call from history, and ends the turn                                            | eve emits `authorization.required`; the run suspends and the turn waits                            | eve writes the receipt and makes the call gate task `t1`, which runs the tool again in a workflow step. The step raises the same `authorization.required` and suspends |
-| Answer | The provider's callback; `authorization-resume` starts a new turn                                                                                            | The callback reaches the run's own hook; the step runs again (`completeWorkflowStepAuthorization`) | The callback reaches the session, which resolves the sign-in's entry and wakes `t1`; `t1`'s step runs again                                                            |
+| Answer | The provider's callback; `authorization-resume` starts a new turn                                                                                            | The callback reaches the run's own hook; the step runs again (`completeWorkflowStepAuthorization`) | The callback reaches `t1`'s own hook, as for workflow bodies today, and the step runs again. `t1` reports the sign-in done, and the session removes its entry          |
 | Run    | The tool runs again from the start, in the new turn                                                                                                          | The step runs the tool again from the start                                                        | `t1`'s step runs the tool again from the start                                                                                                                         |
 
 After a sign-in the tool runs again from the start, as it does today, so code before its `getToken`
@@ -313,9 +331,10 @@ except the gate task's body exists on `main`.
    (`research/eve-tasks.md` §7, "Start once" and "First call is free").
 2. **Ask.** For an approval, `t1` calls `ctx.ask` and the run suspends. The session emits
    `input.requested` with `t1`'s `taskId`.
-3. **Answer.** Alice's answer reaches the session inbox. The session runs the response policy,
-   accepts the answer, records it for `once()`, emits `input.resolved`, and sends it to `t1` on the
-   run's control hook (`execution/tools/workflow/messages.ts`). `ctx.ask` returns `approve`.
+3. **Answer.** Alice's answer reaches the session inbox, and the session sends it to `t1` on the
+   run's control hook (`execution/tools/workflow/messages.ts`). If the tool has a response policy,
+   `t1` runs it as a step (#3929). Once the answer is allowed, the session removes the entry, records
+   the grant for `once()`, and emits `input.resolved`, and `ctx.ask` returns `approve`.
 4. **Run.** `t1` calls the tool's own `execute` inside a workflow step, with the input from step 1.
    The step restores the requesting turn's session, auth, and connections first, as workflow tools
    already do (`buildBaseToolContext`, `execution/tools/workflow/step-execution.ts`). If the tool
@@ -472,19 +491,19 @@ Response readers (`send().result()`, MCP) already stop at `turn.waiting` while r
    task owns it.
 4. A gated call runs only in its gate task, after every request it raised is answered.
 5. The approval policy runs once per call, at the gate. The response policy runs once per answer,
-   where the session accepts it.
+   as a step in the run that asked.
 6. Only a person's answer grants. Model output never answers a request.
 7. Every open request, sign-ins included, is one entry in the session's request table, and every
    delivery is classified against that table in one order.
 
 ## Where each piece lives
 
-| Piece         | Where                                                                                          | What changes                                                                                                                                                                            |
-| ------------- | ---------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Gate          | Where deferred calls are collected today (`collectDeferredCalls`, `harness/tool-loop.ts:2855`) | One new outcome: start a gate task                                                                                                                                                      |
-| Gate task     | A framework-provided `task()` body on public workflow API, like `ask_question` and `sleep`     | New. It asks with `ctx.ask` or `requireAuth`, then runs the tool's `execute`                                                                                                            |
-| Budget check  | `enforceSessionUsageLimit`, before every model call                                            | Parks the turn on the session inbox instead of ending it                                                                                                                                |
-| Request table | New. One record in session state, replacing the six stores listed in One request table         | Every request kind is added, resolved, and withdrawn here. `routeDeliverPayload` classifies deliveries against it, and the response policy runs here before an answer reaches its owner |
+| Piece         | Where                                                                                          | What changes                                                                                                     |
+| ------------- | ---------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Gate          | Where deferred calls are collected today (`collectDeferredCalls`, `harness/tool-loop.ts:2855`) | One new outcome: start a gate task                                                                               |
+| Gate task     | A framework-provided `task()` body on public workflow API, like `ask_question` and `sleep`     | New. It asks with `ctx.ask` or `requireAuth`, then runs the tool's `execute`                                     |
+| Budget check  | `enforceSessionUsageLimit`, before every model call                                            | Parks the turn on the session inbox instead of ending it                                                         |
+| Request table | New. One record in session state, replacing the stores listed in Status quo                    | Every request kind is added, removed, and withdrawn here. `routeDeliverPayload` classifies deliveries against it |
 
 ## What this removes
 
@@ -500,10 +519,11 @@ Response readers (`send().result()`, MCP) already stop at `turn.waiting` while r
   records a message while a batch is pending and ends the turn again (`harness/tool-loop.ts:877-940`).
 - `authorization-resume`, challenges that survive intervening turns
   (`execution/session/program.ts:332-343`), and `projectCompletedSiblingCalls`.
-- The six stores for open requests (`eve.runtime.pendingInputBatches`, `deferredStepInput`,
-  `hitl.approvalState`, `pendingAuthorization`, `proxyInputRequests`, and the workflow run's own
-  sign-in hook), replaced by the request table. `eve.runtime.hitl.approvedTools` stays: it records
-  grants for `once()`, not open requests.
+- The separate stores for open requests (`eve.runtime.pendingInputBatches`, `deferredStepInput`,
+  `hitl.approvalState`, `pendingAuthorization`, and `proxyInputRequests`), replaced by the request
+  table. A run's per-attempt sign-in hook stays as the place the provider calls back, but the open
+  request lives in the table. `eve.runtime.hitl.approvedTools` stays: it records grants for
+  `once()`, not open requests.
 
 ## Accepted costs
 
@@ -565,13 +585,12 @@ Each question says what is known, what isn't, and what depends on the answer.
    - Depends on it: step 4 of "Inside the gate task". If a workflow step can't run them, gated calls
      need a runner inside the session instead.
    - How to answer: the spike, with one plain, one MCP, and one dynamic tool behind an approval.
-2. **Where does the response policy run?**
-   - Known: today the approval coordinator runs it before an answer counts. The request table has no
-     policy step, so as it stands an answer from anyone would count. #3929 (open) adds policy checks
-     to `ctx.ask` answers.
-   - Not known: whether #3929 lands in a shape gate tasks can use.
-   - Options: use #3929, or have the session look up the tool's `approval.response` for gate requests
-     only.
+2. **Does #3929 land?**
+   - Known: #3929 (open) runs a `ctx.ask` response policy as a step in the asking run, including a
+     sign-in it asks the responder for. This design relies on it for approvals.
+   - If it doesn't land: the session has to run the policy itself, and a responder's sign-in needs a
+     callback path into the session. That is what `pendingAuthorization` does today, so it would
+     stay as a second place sign-ins are held.
 3. **Should text answer an approval that has a response policy?**
    - Known: today only a structured answer can settle such an approval, never text. Linear always
      sends replies as text, so those approvals can't be answered from Linear (#3680).
