@@ -350,6 +350,7 @@ async function runSessionLoop(
           continue;
         case "cancel-turn":
           await cancelDescendantTurnsStep({
+            serializedContext: cursor.serializedContext,
             sessionState: cursor.sessionState,
           });
           await cancelWorkingTasks(cursor, "turn_cancelled");

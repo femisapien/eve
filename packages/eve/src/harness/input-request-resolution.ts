@@ -1,4 +1,4 @@
-import type { PendingInputBatchEvent } from "#harness/pending-input-batches.js";
+import type { StepCoordinates as PendingInputBatchEvent } from "#harness/session-machine/view.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
 
 const IGNORED_INPUT_REASON = "Ignored because the user continued without responding.";

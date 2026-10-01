@@ -1,3 +1,4 @@
+import { readDurableSession } from "#execution/durable-session-read.js";
 import { sleep } from "#compiled/@workflow/core/index.js";
 
 import type { DeliverHookPayload, SessionCapabilities, TurnCaller } from "#channel/types.js";
@@ -43,7 +44,7 @@ import type {
   TurnStepPayload,
 } from "#execution/session/turn-step-types.js";
 import { turnStep } from "#execution/session/turn-step.js";
-import { activeTurnId } from "#harness/active-turn-id.js";
+import { activeTurnId, storedProjection, turnPosition } from "#harness/session-machine/view.js";
 import { coalesceDeliveries } from "#harness/messages.js";
 import { TurnCancelledError } from "#harness/turn-cancellation.js";
 import { decodeSessionInboxPayload } from "#execution/session-inbox/protocol.js";
@@ -254,6 +255,7 @@ export class SessionExecution {
     // A child a run opened before the cancel appears before its task settles as cancelled.
     await this.handleBoundaryMessages(turn.takeBoundaryMessages("agent-started"));
     await cancelDescendantTurnsStep({
+      serializedContext: cursor.serializedContext,
       sessionState: cursor.sessionState,
     });
     await cancelWorkingTasks(cursor, "turn_cancelled");
@@ -487,7 +489,9 @@ class ActiveTurn {
     this.input = input;
     this.caller = owner.caller;
     this.identity = { callerCallId: owner.caller?.callId, principal: owner.principal };
-    this.expectedTurnId = activeTurnId(input.cursor.sessionState.emissionState);
+    this.expectedTurnId = activeTurnId(
+      turnPosition(storedProjection(readDurableSession(input.cursor.sessionState).state)),
+    );
     this.unsubscribe = input.inbox.onInterrupt((payload) => {
       if (this.cancelsThisTurn(payload)) this.abort();
     });

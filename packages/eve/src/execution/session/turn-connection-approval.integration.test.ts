@@ -18,7 +18,7 @@ import {
 import { CallbackBaseUrlKey, setPendingAuthorization } from "#harness/authorization.js";
 import { ConnectionAuthorizationRequiredError } from "#connections/errors.js";
 import { defineInteractiveAuthorization } from "#shared/connection-types.js";
-import { getPendingInputBatches } from "#harness/pending-input-batches.js";
+import { suspendedSteps } from "#harness/session-machine/view.js";
 import type { HarnessSession } from "#harness/types.js";
 import { defineOpenAPIConnection } from "#public/definitions/connections/openapi.js";
 import { getCompiledRuntimeAgentBundle } from "#runtime/sessions/compiled-agent-cache.js";
@@ -373,7 +373,7 @@ describe("turn connection approval restoration", () => {
       delivery: { kind: "deliver", payloads: [{ message: "Prepare Alice's first note." }] },
     });
     const first = await fixture.step();
-    const firstBatch = getPendingInputBatches(readDurableSession(first.sessionState).state)[0]!;
+    const firstBatch = suspendedSteps(readDurableSession(first.sessionState).state)[0]!;
     fixture.doStream.mockImplementationOnce(() => modelResponse("save-2"));
     await fixture.step({
       delivery: {
@@ -382,9 +382,9 @@ describe("turn connection approval restoration", () => {
       },
     });
     const second = await fixture.step();
-    const batches = getPendingInputBatches(readDurableSession(second.sessionState).state);
+    const batches = suspendedSteps(readDurableSession(second.sessionState).state);
     expect(batches).toHaveLength(2);
-    expect(batches[1]!.event!.turnId).not.toBe(firstBatch.event!.turnId);
+    expect(batches[1]!.event.turnId).not.toBe(firstBatch.event.turnId);
     clearDurableDynamicCallbacks(sessionId);
     await fixture.step({
       delivery: {
@@ -404,7 +404,7 @@ describe("turn connection approval restoration", () => {
     });
     clearDurableDynamicCallbacks(sessionId);
     const resumed = await fixture.step();
-    expect(fixture.policyTurns).toEqual(batches.map((batch) => batch.event!.turnId));
+    expect(fixture.policyTurns).toEqual(batches.map((batch) => batch.event.turnId));
     expect(fixture.response).toHaveBeenCalledTimes(2);
     expect(
       getApprovalAuditState(readDurableSession(resumed.sessionState).state).settlements,
@@ -420,7 +420,7 @@ describe("turn connection approval restoration", () => {
         delivery: { kind: "deliver", payloads: [{ message: "Prepare Alice's note." }] },
       });
       const parked = await fixture.step();
-      const request = getPendingInputBatches(readDurableSession(parked.sessionState).state)[0]!
+      const request = suspendedSteps(readDurableSession(parked.sessionState).state)[0]!
         .requests[0]!;
       if (cold) clearDurableDynamicCallbacks(sessionId);
       await fixture.step({
@@ -458,7 +458,7 @@ describe("turn connection approval restoration", () => {
       delivery: { kind: "deliver", payloads: [{ message: "Prepare Alice's notes." }] },
     });
     const parked = await fixture.step();
-    const requests = getPendingInputBatches(readDurableSession(parked.sessionState).state).flatMap(
+    const requests = suspendedSteps(readDurableSession(parked.sessionState).state).flatMap(
       (batch) => batch.requests,
     );
     await fixture.step({
@@ -503,7 +503,7 @@ describe("turn connection approval restoration", () => {
         delivery: { kind: "deliver", payloads: [{ message: "Prepare Alice's second note." }] },
       });
       const second = await fixture.step();
-      const batches = getPendingInputBatches(readDurableSession(second.sessionState).state);
+      const batches = suspendedSteps(readDurableSession(second.sessionState).state);
       expect(batches).toHaveLength(2);
       expect(
         batches.map(
@@ -532,7 +532,7 @@ describe("turn connection approval restoration", () => {
       const older = batches[0]!.requests[0]!;
       // Each approval is authorized against its originating turn's connections;
       // the older call then fails because "notes" is gone when it runs.
-      expect(fixture.policyTurns).toEqual(batches.map((batch) => batch.event!.turnId));
+      expect(fixture.policyTurns).toEqual(batches.map((batch) => batch.event.turnId));
       expect(fixture.events).toContainEqual(
         expect.objectContaining({
           type: "action.result",
@@ -554,8 +554,7 @@ describe("turn connection approval restoration", () => {
       delivery: { kind: "deliver", payloads: [{ message: "Prepare Alice's note." }] },
     });
     const parked = await fixture.step();
-    const request = getPendingInputBatches(readDurableSession(parked.sessionState).state)[0]!
-      .requests[0]!;
+    const request = suspendedSteps(readDurableSession(parked.sessionState).state)[0]!.requests[0]!;
     fixture.removeConnection();
     await fixture.step({
       delivery: {
@@ -586,8 +585,7 @@ describe("turn connection approval restoration", () => {
       delivery: { kind: "deliver", payloads: [{ message: "Prepare Alice's note." }] },
     });
     const parked = await fixture.step();
-    const request = getPendingInputBatches(readDurableSession(parked.sessionState).state)[0]!
-      .requests[0]!;
+    const request = suspendedSteps(readDurableSession(parked.sessionState).state)[0]!.requests[0]!;
     fixture.removeConnection();
     await fixture.step({
       delivery: {
@@ -601,7 +599,7 @@ describe("turn connection approval restoration", () => {
     expect(fixture.response).not.toHaveBeenCalled();
     expect(fixture.fetch).not.toHaveBeenCalled();
     const state = readDurableSession(refused.sessionState).state;
-    expect(getPendingInputBatches(state)[0]!.requests[0]!.requestId).toBe(request.requestId);
+    expect(suspendedSteps(state)[0]!.requests[0]!.requestId).toBe(request.requestId);
     expect(getApprovalAuditState(state).candidateHistory).toEqual([
       expect.objectContaining({
         status: "rejected",
@@ -631,8 +629,7 @@ describe("turn connection approval restoration", () => {
       delivery: { kind: "deliver", payloads: [{ message: "Prepare Alice's note for Bob." }] },
     });
     const parked = await fixture.step();
-    const request = getPendingInputBatches(readDurableSession(parked.sessionState).state)[0]!
-      .requests[0]!;
+    const request = suspendedSteps(readDurableSession(parked.sessionState).state)[0]!.requests[0]!;
 
     const signInStart = fixture.events.length;
     await fixture.step({
@@ -690,7 +687,7 @@ describe("turn connection approval restoration", () => {
       delivery: { kind: "deliver", payloads: [{ message: "Prepare Alice's note for Bob." }] },
     });
     const parked = await fixture.step();
-    const batch = getPendingInputBatches(readDurableSession(parked.sessionState).state)[0]!;
+    const batch = suspendedSteps(readDurableSession(parked.sessionState).state)[0]!;
     const request = batch.requests[0]!;
     const ingested = await fixture.step({
       delivery: {
@@ -738,7 +735,7 @@ describe("turn connection approval restoration", () => {
         ],
       },
     });
-    expect(fixture.policyTurns).toEqual([batch.event!.turnId]);
+    expect(fixture.policyTurns).toEqual([batch.event.turnId]);
     expect(fixture.response).toHaveBeenCalledOnce();
     expect(fixture.fetch).toHaveBeenCalledOnce();
     const events = fixture.events.slice(start);
@@ -756,7 +753,7 @@ describe("turn connection approval restoration", () => {
         delivery: { kind: "deliver", payloads: [{ message: "Save hello in notes." }] },
       });
       const parked = await fixture.step();
-      const request = getPendingInputBatches(readDurableSession(parked.sessionState).state)[0]!
+      const request = suspendedSteps(readDurableSession(parked.sessionState).state)[0]!
         .requests[0]!;
       expect(request.action.toolName).toBe("connection_execute");
       expect(request.prompt).toBe("Approve Notes: Save note?");
@@ -786,7 +783,7 @@ describe("turn connection approval restoration", () => {
         getApprovalAuditState(readDurableSession(resumed.sessionState).state).settlements,
       ).toEqual([expect.objectContaining({ outcome: "allowed", requestId: request.requestId })]);
       expect(fixture.fetch).toHaveBeenCalledOnce();
-      expect(getPendingInputBatches(readDurableSession(resumed.sessionState).state)).toEqual([]);
+      expect(suspendedSteps(readDurableSession(resumed.sessionState).state)).toEqual([]);
       expect(resumed.serializedContext).not.toHaveProperty("eve.pendingConnectionCalls");
       expect(fixture.events.filter((event) => event.type === "turn.started")).toHaveLength(2);
       // The connection call is reported as a nested action of the approved call.
@@ -832,8 +829,7 @@ describe("turn connection approval restoration", () => {
       delivery: { kind: "deliver", payloads: [{ message: "Save hello in notes." }] },
     });
     const parked = await fixture.step();
-    const request = getPendingInputBatches(readDurableSession(parked.sessionState).state)[0]!
-      .requests[0]!;
+    const request = suspendedSteps(readDurableSession(parked.sessionState).state)[0]!.requests[0]!;
     await fixture.step({
       delivery: {
         kind: "deliver",
@@ -859,8 +855,7 @@ describe("turn connection approval restoration", () => {
       delivery: { kind: "deliver", payloads: [{ message: "Save hello in notes." }] },
     });
     const parked = await fixture.step();
-    const request = getPendingInputBatches(readDurableSession(parked.sessionState).state)[0]!
-      .requests[0]!;
+    const request = suspendedSteps(readDurableSession(parked.sessionState).state)[0]!.requests[0]!;
     await fixture.step({
       delivery: {
         kind: "deliver",

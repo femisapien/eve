@@ -10,9 +10,9 @@ import { setPendingAuthorization } from "#harness/authorization.js";
 import { z } from "zod";
 import { ContextContainer, contextStorage } from "#context/container.js";
 import { SessionKey } from "#context/keys.js";
-import { getHarnessEmissionState } from "#harness/emission.js";
-import { getPendingCoordinationBatch } from "#harness/coordination.js";
-import { getPendingInputBatches } from "#harness/pending-input-batches.js";
+import { createProjectionRecorder } from "#internal/testing/session-projection-recorder.js";
+import { runtimeWait, storedProjection, suspendedSteps } from "#harness/session-machine/view.js";
+import { openInputs } from "#protocol/session-projection.js";
 import { createToolLoopHarness } from "#harness/tool-loop.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import type { HarnessSession, StepInput, StepResult } from "#harness/types.js";
@@ -21,7 +21,7 @@ import { always } from "#tools/approval/policies.js";
 import { bindDynamicConnections } from "#execution/dynamic-connections.js";
 import { ConnectionRegistryKey } from "#context/providers/connection-key.js";
 import { ConnectionRegistryImpl } from "#runtime/connections/registry.js";
-import { createTurnStartedEvent } from "#protocol/message.js";
+import { createTurnStartedEvent, createAuthorizationRequiredEvent } from "#protocol/message.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
 
 // The harness runs outside a workflow body here, where run attributes cannot
@@ -146,6 +146,7 @@ function fixture(
     workflowId: "diagnostic-workflow",
   });
   const restoredTurns: string[] = [];
+  const recorder = createProjectionRecorder();
   const harness = createToolLoopHarness({
     prepareApprovalTurn: async (event) => {
       const ctx = new ContextContainer();
@@ -175,13 +176,14 @@ function fixture(
     resolveModel: async () => model,
     handleEvent: async (event) => {
       events.push(event);
+      recorder.record(event);
     },
   });
   async function step(input?: StepInput): Promise<StepResult> {
     const before = events.length;
     const beforeCalls = modelCalls;
-    const emission = getHarnessEmissionState(session.state);
-    const ctx = new ContextContainer();
+    const emission = recorder.position;
+    const ctx = recorder.enter(new ContextContainer());
     ctx.set(SessionKey, {
       sessionId: session.sessionId,
       auth: { current: null, initiator: null },
@@ -196,9 +198,9 @@ function fixture(
       next: typeof result.next === "function" ? "continue" : result.next,
       settledTurn: result.settledTurn,
       historyLastRole: session.history.at(-1)?.role,
-      emission: getHarnessEmissionState(session.state),
-      deferred: session.state?.["eve.runtime.deferredStepInput"],
-      pending: getPendingInputBatches(session.state).map((batch) => ({
+      emission: recorder.position,
+      deferred: suspendedSteps(session.state) && session.state?.["eve.harness.turnState"],
+      pending: suspendedSteps(session.state).map((batch) => ({
         owner: batch.event,
         requests: batch.requests.map((r) => ({
           id: r.requestId,
@@ -229,10 +231,18 @@ function fixture(
     get session() {
       return session;
     },
+    record(event: UnstampedMessageStreamEvent) {
+      events.push(event);
+      recorder.record(event);
+    },
     updateSession(update: (session: HarnessSession) => HarnessSession) {
       session = update(session);
     },
-    pending: () => getPendingInputBatches(session.state).flatMap((b) => b.requests),
+    // What the session asks and still awaits: approvals and the budget prompt.
+    pending: () =>
+      openInputs(storedProjection(session.state))
+        .filter((input) => input.callId === undefined && input.taskId === undefined)
+        .map((input) => input.request),
     async gate(...names: string[]) {
       script.push(calls(...names));
       await drive({ message: `Prepare ${names.join(" and ")}.` });
@@ -245,8 +255,8 @@ function fixture(
       return { inputResponses: [{ requestId: request.requestId, optionId }] };
     },
     async finishRuntime() {
-      const batch = getPendingCoordinationBatch(session.state);
-      if (!batch) throw new Error("Expected actual pending coordination batch");
+      const batch = runtimeWait(session.state);
+      if (!batch) throw new Error("Expected calls the runtime runs");
       return drive({
         runtimeActionResults: batch.tasks.map((r) => ({
           kind: "tool-result" as const,
@@ -419,17 +429,17 @@ for (const variant of ["fail", "invalid"]) {
   });
 }
 
-it("settles both independent approval batches and a deferred follow-up [control]", async () => {
+it("executes both approved batches before the model handles their accompanying message", async () => {
   const f = fixture("control-resolve-multiple");
   await f.gate("gateA");
   f.script.push(calls("gateB"));
   await f.drive({ message: "Also prepare B." });
-  f.script.push("First approved.", "Second approved.", calls("read"), "FINAL");
+  f.script.push(calls("read"), "FINAL");
   const result = await f.drive({
     inputResponses: [...f.respond("gateA").inputResponses!, ...f.respond("gateB").inputResponses!],
     message: "Then read the status.",
   });
-  expect(f.executions.filter((x) => x.startsWith("gate"))).toHaveLength(2);
+  expect(f.executions).toEqual(["gateA", "gateB", "read"]);
   expect(f.pending()).toHaveLength(0);
   expect(result.settledTurn?.output).toBe("FINAL");
 });
@@ -633,6 +643,7 @@ it("does not announce waiting while a candidate needs sign-in, then completes on
   const challenges = [
     {
       candidateId: candidate.candidateId,
+      attemptId: "notes-attempt",
       name: "notes",
       hookUrl: "https://example.com/callback",
       challenge: { url: "https://example.com/sign-in" },
@@ -649,6 +660,16 @@ it("does not announce waiting while a candidate needs sign-in, then completes on
       { challenges },
     ),
   }));
+  f.record(
+    createAuthorizationRequiredEvent({
+      attemptId: "notes-attempt",
+      candidateId: candidate.candidateId,
+      name: "notes",
+      description: "Connect notes",
+      webhookUrl: "https://example.com/callback",
+      ...suspendedSteps(f.session.state)[0]!.event,
+    }),
+  );
   const start = f.events.length;
   await f.drive();
   expect(f.events.slice(start)).toEqual([]);
@@ -745,7 +766,7 @@ it("resumes a complete batch while another batch has only a partial approval [co
   f.script.push(calls("gateB"));
   await f.drive({ message: "Prepare another independent B." });
   const independentB = f.pending().at(-1)!;
-  const independentTurn = getPendingInputBatches(f.session.state)[1]!.event!.turnId;
+  const independentTurn = suspendedSteps(f.session.state)[1]!.event.turnId;
 
   // When one delivery answers A and the independent B.
   f.script.push("Independent B approved.");

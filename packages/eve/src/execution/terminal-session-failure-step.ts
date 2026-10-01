@@ -1,7 +1,7 @@
 import { publishTerminalSessionEvent } from "#execution/publish-session-events.js";
 import { summarizeKnownError } from "#harness/semantic-errors/index.js";
 import { createLogger, formatError } from "#internal/logging.js";
-import { createSessionFailedEvent } from "#protocol/message.js";
+import { sessionFailed } from "#harness/session-machine/transitions.js";
 
 const log = createLogger("execution.workflow-entry");
 
@@ -41,7 +41,7 @@ export async function emitTerminalSessionFailureStep(input: {
 
   await publishTerminalSessionEvent({
     errorId: typeof details.errorId === "string" ? details.errorId : undefined,
-    event: createSessionFailedEvent({ code, details, message, sessionId }),
+    event: sessionFailed({ code, details, message, sessionId }),
     sessionWritable: input.sessionWritable,
     serializedContext: input.serializedContext,
     turnId: input.turnId,

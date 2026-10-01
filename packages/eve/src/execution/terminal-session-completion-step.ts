@@ -1,5 +1,5 @@
 import { publishTerminalSessionEvent } from "#execution/publish-session-events.js";
-import { createSessionCompletedEvent } from "#protocol/message.js";
+import { sessionCompleted } from "#harness/session-machine/transitions.js";
 
 /** Emits a terminal `session.completed` outside a turn. */
 export async function emitTerminalSessionCompletionStep(input: {
@@ -8,5 +8,5 @@ export async function emitTerminalSessionCompletionStep(input: {
 }): Promise<void> {
   "use step";
 
-  await publishTerminalSessionEvent({ ...input, event: createSessionCompletedEvent() });
+  await publishTerminalSessionEvent({ ...input, event: sessionCompleted() });
 }

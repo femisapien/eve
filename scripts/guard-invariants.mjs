@@ -126,6 +126,12 @@
  *             `execution/legacy-remote-agent/`. Only the ingress files that
  *             route protocol-1 callers into it may import it, so deleting the
  *             directory removes protocol 1 without a search.
+ *   rule 49 — Only the session machine (`harness/session-machine/**`)
+ *             builds lifecycle events and writes `TurnState`. Every change to
+ *             a turn, request, sign-in, task, or call outcome is a transition
+ *             that returns its events, so nothing changes without readers
+ *             hearing it. The model step's streamed content (its calls and
+ *             their inline results) is built where it streams.
  *
  * Baselines for rules with pre-existing violations live in
  * `guard-invariants-baseline.json`. Counts and allowlists in that file
@@ -226,6 +232,7 @@ function isTsLike(relPath) {
  *   rule46: Violation[];
  *   rule47: Violation[];
  *   rule48: Violation[];
+ *   rule49: Violation[];
  *   symlinks: string[];
  * }} state
  */
@@ -260,6 +267,7 @@ async function scanRepo(state) {
     checkRule46(posix, lines, state.rule46);
     checkRule47(posix, lines, state.rule47);
     checkRule48(posix, lines, state.rule48);
+    checkRule49(posix, lines, state.rule49);
   }
 }
 
@@ -498,6 +506,56 @@ function checkRule48(posix, lines, violations) {
       message:
         "imports remote agent protocol 1 outside its ingress files. Route protocol-1 behavior through execution/legacy-remote-agent/ from an existing ingress so the legacy path stays removable in one place.",
     });
+  });
+}
+
+// ---------- Rule 49: the session machine owns lifecycle ----------
+
+const SESSION_MACHINE_DIR = "packages/eve/src/harness/session-machine/";
+const LIFECYCLE_EVENT_BUILDER_RE =
+  /\bcreate(?:Session(?:Started|Waiting|Failed|Completed)|Turn(?:Started|Completed|Failed|Cancelled|Waiting)|MessageReceived|Step(?:Started|Failed)|Input(?:Requested|Resolved)|Authorization(?:Required|Completed)|Approval(?:Candidate|Settled)|Task(?:Started|Settled)|ContextCleared|ResultCompleted)Event\b/;
+const CALL_EVENT_BUILDER_RE = /\bcreateAction(?:Result|sRequested)Event\b/;
+/** Where the model step streams its calls, their inline results, and the calls they made. */
+const STREAM_CONTENT_FILES = new Set([
+  "packages/eve/src/harness/emission.ts",
+  "packages/eve/src/harness/nested-actions.ts",
+  "packages/eve/src/harness/step-hooks.ts",
+  "packages/eve/src/harness/stream-actions.ts",
+]);
+const MACHINE_PRIVATE_IMPORT_RE = /["']#harness\/session-machine\/(?:state|events)\.js["']/;
+
+/**
+ * @param {string} posix
+ * @param {string[]} lines
+ * @param {Violation[]} violations
+ */
+function checkRule49(posix, lines, violations) {
+  if (!posix.startsWith("packages/eve/src/") || posix.startsWith(SESSION_MACHINE_DIR)) return;
+  if (posix.endsWith(".test.ts") || posix.includes("/test/")) return;
+  if (posix.startsWith("packages/eve/src/protocol/")) return;
+  if (posix.startsWith("packages/eve/src/internal/testing/")) return;
+  lines.forEach((line, idx) => {
+    const builder = LIFECYCLE_EVENT_BUILDER_RE.exec(line)?.[0];
+    const callBuilder = STREAM_CONTENT_FILES.has(posix)
+      ? undefined
+      : CALL_EVENT_BUILDER_RE.exec(line)?.[0];
+    if (builder !== undefined || callBuilder !== undefined) {
+      violations.push({
+        rule: 49,
+        file: posix,
+        line: idx + 1,
+        message: `uses ${builder ?? callBuilder} outside harness/session-machine/. Only the session machine builds lifecycle events: return them from a transition and publish what it returns with \`applyTransition\`.`,
+      });
+    }
+    if (MACHINE_PRIVATE_IMPORT_RE.test(line)) {
+      violations.push({
+        rule: 49,
+        file: posix,
+        line: idx + 1,
+        message:
+          "imports the session machine's private state or event builders. Read execution state through `#harness/session-machine/view.js`; change it with a transition.",
+      });
+    }
   });
 }
 
@@ -1558,6 +1616,7 @@ async function main() {
     rule46: /** @type {Violation[]} */ ([]),
     rule47: /** @type {Violation[]} */ ([]),
     rule48: /** @type {Violation[]} */ ([]),
+    rule49: /** @type {Violation[]} */ ([]),
     symlinks: /** @type {string[]} */ ([]),
   };
 
@@ -1675,6 +1734,7 @@ async function main() {
   // Rule 47
   violations.push(...state.rule47);
   violations.push(...state.rule48);
+  violations.push(...state.rule49);
 
   if (violations.length === 0) {
     process.stdout.write("[eve:guard:invariants] ok — all mechanical lints passed.\n");

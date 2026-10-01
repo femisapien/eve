@@ -302,7 +302,7 @@ export function setPendingAuthorization(
   const active = resolveActiveAuthorizationChallenges(value.challenges);
   const pending = getPendingAuthorization(sessionState);
   const previous = pending?.challenges ?? [];
-  const superseded = getSupersededAuthorizationChallenges(sessionState, active);
+  const superseded = supersededChallenges(previous, active);
   return {
     ...sessionState,
     [PENDING_AUTHORIZATION_KEY]: {
@@ -327,12 +327,11 @@ export function resolveActiveAuthorizationChallenges(
   );
 }
 
-/** Existing same-scope attempts replaced by newer attempts for the same principal. */
-export function getSupersededAuthorizationChallenges(
-  sessionState: Record<string, unknown> | undefined,
+/** The attempts in `previous` that `replacements` replace: same connection, same principal. */
+export function supersededChallenges(
+  previous: readonly AuthorizationChallenge[],
   replacements: readonly AuthorizationChallenge[],
 ): readonly AuthorizationChallenge[] {
-  const previous = getPendingAuthorization(sessionState)?.challenges ?? [];
   return previous.filter((candidate) =>
     replacements.some(
       (replacement) =>

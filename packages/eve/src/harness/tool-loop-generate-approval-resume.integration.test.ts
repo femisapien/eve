@@ -29,13 +29,32 @@ import {
   TurnDynamicToolMetadataKey,
   StepDynamicToolMetadataKey,
 } from "#context/keys.js";
-import { setHarnessEmissionState } from "#harness/emission.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import type { InputRequest } from "#shared/input.js";
-import { appendPendingInputBatch, getApprovedTools } from "#harness/input-requests.js";
 import type { HarnessModelMessage } from "#harness/messages.js";
-import { getPendingInputBatches } from "#harness/pending-input-batches.js";
-import { createToolLoopHarness } from "#harness/tool-loop.js";
+import { createToolLoopHarness as createHarness } from "#harness/tool-loop.js";
+import { enterSessionProjection } from "#harness/session-machine/current.js";
+import type { StepFn } from "#harness/types.js";
+import {
+  foldingHandler,
+  grantedKeys,
+  parkedSteps,
+  withOpenTurn,
+  withParkedStep,
+} from "#internal/testing/session-machine.js";
+
+/** Runs each harness call as a durable step: a context that enters, and folds, the projection. */
+function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
+  const harness = createHarness({ ...config, handleEvent: foldingHandler(config.handleEvent) });
+  const step: StepFn = async (session, input) => {
+    const ctx =
+      (contextStorage.getStore() as ContextContainer | undefined) ?? createApprovalContext();
+    enterSessionProjection(ctx, session.state);
+    const result = await contextStorage.run(ctx, () => harness(session, input));
+    return { ...result, next: typeof result.next === "function" ? step : result.next };
+  };
+  return step;
+}
 import { setTurnUsageState } from "#harness/turn-tag-state.js";
 import type { HarnessSession, ToolLoopHarnessConfig } from "#harness/types.js";
 import { once } from "#tools/approval/policies.js";
@@ -117,23 +136,20 @@ function createPendingApprovalSession(
   history?: readonly HarnessModelMessage[],
   responseAuthorization = false,
 ): HarnessSession {
-  return appendPendingInputBatch({
+  return withParkedStep(createBaseSession(history), {
+    event: { sequence: 1, stepIndex: 0, turnId: "turn-1" },
+    messages: [{ content: [toolCall, approvalRequest], role: "assistant" }],
     requests: [pendingApprovalInputRequest],
     responseAuthRequiredRequestIds: responseAuthorization
       ? [approvalRequest.approvalId]
       : undefined,
-    responseMessages: [
-      {
-        content: [toolCall, approvalRequest],
-        role: "assistant",
-      },
-    ],
-    session: createBaseSession(history),
   });
 }
 
 function createTwoPendingApprovalSession(): HarnessSession {
-  return appendPendingInputBatch({
+  return withParkedStep(createPendingApprovalSession(), {
+    event: { sequence: 2, stepIndex: 0, turnId: "turn-2" },
+    messages: [{ content: [secondToolCall, secondApprovalRequest], role: "assistant" }],
     requests: [
       {
         action: {
@@ -153,13 +169,6 @@ function createTwoPendingApprovalSession(): HarnessSession {
         requestId: secondApprovalRequest.approvalId,
       },
     ],
-    responseMessages: [
-      {
-        content: [secondToolCall, secondApprovalRequest],
-        role: "assistant",
-      },
-    ],
-    session: createPendingApprovalSession(),
   });
 }
 
@@ -223,6 +232,7 @@ function createMemoryInstructionPreamble(
 
 function createModel(): MockLanguageModelV4 {
   return new MockLanguageModelV4({
+    doStream: textStreamResult("The command returned /workspace."),
     doGenerate: {
       content: [{ text: "The command returned /workspace.", type: "text" }],
       finishReason: { raw: undefined, unified: "stop" },
@@ -334,7 +344,7 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       );
       expect(resolveStepDynamicTools).toHaveBeenCalledOnce();
 
-      expect(getApprovedTools(result.session)).toEqual(new Set(["bash:pwd"]));
+      expect(grantedKeys(result.session)).toEqual(new Set(["bash:pwd"]));
       expect(execute).toHaveBeenCalledOnce();
       expect(staticExecute).not.toHaveBeenCalled();
     },
@@ -453,14 +463,9 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       resolveModel: async (): Promise<LanguageModel> => model,
       tools: new Map(),
     } satisfies ToolLoopHarnessConfig;
-    const session = setHarnessEmissionState(
+    const session = withOpenTurn(
       createPendingApprovalSession(undefined, testCase.responseAuthorization),
-      {
-        sequence: 1,
-        sessionStarted: true,
-        stepIndex: 1,
-        turnId: "turn-1",
-      },
+      { sequence: 1, stepIndex: 1, turnId: "turn-1" },
     );
     const runStep = createToolLoopHarness(config);
 
@@ -484,17 +489,25 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       expect(first.next).toBeNull();
     }
 
+    // The approving step's tools are restored at its coordinates, its approved call runs with
+    // their persisted binding, and only then does the next model step resolve its own.
     expect(order).toEqual(
       testCase.responseAuthorization
         ? [
-            "resolve:turn-1:1",
+            "resolve:turn-1:0",
             "authorize:persisted-response",
-            "step.started:persisted-execute",
             "execute:persisted-execute",
+            "resolve:turn-1:2",
+            "step.started:current-execute",
           ]
-        : ["resolve:turn-1:1", "step.started:persisted-execute", "execute:persisted-execute"],
+        : [
+            "resolve:turn-1:0",
+            "execute:persisted-execute",
+            "resolve:turn-1:2",
+            "step.started:current-execute",
+          ],
     );
-    expect(handler).toHaveBeenCalledOnce();
+    expect(handler).toHaveBeenCalledTimes(2);
     if (testCase.responseAuthorization) {
       expect(approvalResponseCallback).toHaveBeenCalledWith(
         { version: "persisted-response" },
@@ -508,9 +521,10 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       toolCall.input,
       expect.objectContaining({ callId: toolCall.toolCallId }),
     );
+    // The model step that follows resolved its own step tools.
     const metadata = ctx.get(StepDynamicToolMetadataKey) ?? [];
     expect(metadata[0]?.callbacks?.execute).toEqual({
-      closure: { version: "persisted-execute" },
+      closure: { version: "current-execute" },
     });
   });
 
@@ -586,12 +600,8 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
         ],
       },
     );
-    if (typeof first.next !== "function") {
-      throw new TypeError("Expected the deferred approval to schedule another harness step.");
-    }
-    const result = await first.next(first.session);
-
-    expect(model.doGenerateCalls).toHaveLength(2);
+    const result = first;
+    expect(model.doStreamCalls).toHaveLength(1);
     expect(execute).toHaveBeenCalledTimes(2);
     expect(execute).toHaveBeenNthCalledWith(
       1,
@@ -647,8 +657,8 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
     );
     expect(requested.map((request) => request.action.callId)).toEqual([thirdToolCall.toolCallId]);
     expect(result.next).toBeNull();
-    const pendingCallIds = getPendingInputBatches(result.session.state).flatMap((batch) =>
-      batch.requests.map((request) => request.action.callId),
+    const pendingCallIds = parkedSteps(result.session).flatMap((step) =>
+      step.requests.map((request) => request.action.callId),
     );
     expect(pendingCallIds).toEqual([secondToolCall.toolCallId, thirdToolCall.toolCallId]);
   });
@@ -660,13 +670,7 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       toolName: "bash",
     };
     const execute = vi.fn(async () => "/workspace");
-    // Batches settle one per step, so the model is called between them. It
-    // proposes the third call only once both pending prompts are gone.
-    const responses = [
-      textStreamResult("Ran pwd."),
-      toolCallStreamResult(thirdToolCall),
-      textStreamResult("All done."),
-    ];
+    const responses = [toolCallStreamResult(thirdToolCall), textStreamResult("All done.")];
     const model = new MockLanguageModelV4({
       doStream: async () => {
         const next = responses.shift();
@@ -694,10 +698,7 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
         ],
       }),
     );
-    // The second batch's denial replays on a deferred step; drain until the turn settles.
-    if (typeof first.next !== "function") {
-      throw new TypeError("Expected the deferred approval response to schedule another step.");
-    }
+
     let result = first;
     while (typeof result.next === "function") {
       const { next, session } = result;
@@ -752,7 +753,7 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       message: "Then summarize it.",
     });
 
-    expect(execute).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledOnce();
     const resumed = await runStep(limited.session, {
       inputResponses: [
         {
@@ -766,18 +767,9 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       toolCall.input,
       expect.objectContaining({ toolCallId: toolCall.toolCallId }),
     );
-    expect(typeof resumed.next).toBe("function");
-    if (typeof resumed.next !== "function") {
-      throw new TypeError("Expected the deferred message to run after approval execution.");
-    }
-    await resumed.next(resumed.session);
-
-    expect(model.doStreamCalls).toHaveLength(2);
-    expect(model.doStreamCalls[0]?.prompt.at(-1)?.role).toBe("tool");
-    expect(model.doStreamCalls[1]?.prompt.at(-1)).toMatchObject({
-      content: [{ text: "Then summarize it.", type: "text" }],
-      role: "user",
-    });
+    expect(resumed.settledTurn).toBeDefined();
+    expect(model.doStreamCalls).toHaveLength(1);
+    expect(JSON.stringify(model.doStreamCalls[0]?.prompt)).toContain("Then summarize it.");
   });
 
   it("persists the approved pre-model tool result without an event handler", async () => {
@@ -791,14 +783,14 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       },
     );
 
-    expect(model.doGenerateCalls).toHaveLength(1);
-    expect(model.doStreamCalls).toHaveLength(0);
+    expect(model.doGenerateCalls).toHaveLength(0);
+    expect(model.doStreamCalls).toHaveLength(1);
     expect(execute).toHaveBeenCalledExactlyOnceWith(
       toolCall.input,
       expect.objectContaining({ toolCallId: toolCall.toolCallId }),
     );
 
-    const providerPrompt = model.doGenerateCalls[0]?.prompt ?? [];
+    const providerPrompt = model.doStreamCalls[0]?.prompt ?? [];
     expect(findPart(providerPrompt, "tool-result")).toMatchObject({
       output: { type: "text", value: "canonical:/workspace" },
       toolCallId: toolCall.toolCallId,
@@ -807,16 +799,14 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
 
     expect(result.session.history.map((message) => message.role)).toEqual([
       "user",
+      // The notice the park committed.
+      "user",
       "assistant",
-      "tool",
       "tool",
       "assistant",
     ]);
     expect(findPart(result.session.history, "tool-call")).toEqual(toolCall);
-    expect(findPart(result.session.history, "tool-approval-response")).toMatchObject({
-      approvalId: approvalRequest.approvalId,
-      approved: true,
-    });
+    expect(findPart(result.session.history, "tool-approval-response")).toBeUndefined();
     expect(findPart(result.session.history, "tool-result")).toMatchObject({
       output: { type: "text", value: "canonical:/workspace" },
       toolCallId: toolCall.toolCallId,
@@ -847,14 +837,13 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
         toolName: "bash",
         type: "tool-result" as const,
       };
-      const session = appendPendingInputBatch({
-        requests: [pendingApprovalInputRequest],
-        // The parked shape when a gated call shares a step with an ungated one.
-        responseMessages: [
+      // The parked shape when a gated call shares a step with an ungated one.
+      const session = withParkedStep(createBaseSession(), {
+        messages: [
           { content: [toolCall, approvalRequest, siblingCall], role: "assistant" },
           { content: [siblingResult], role: "tool" },
         ],
-        session: createBaseSession(),
+        requests: [pendingApprovalInputRequest],
       });
       const ctx = new ContextContainer();
       const runtimeContextAnnouncement = "Available skills\n- policy: Tenant policy";
@@ -865,7 +854,7 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
 
       const result = await contextStorage.run(ctx, () =>
         runStep(
-          setHarnessEmissionState(
+          withOpenTurn(
             restoredAnchor
               ? setTurnClientContextState(session, {
                   insertionIndex: 0,
@@ -873,12 +862,7 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
                   turnId: "turn-1",
                 })
               : session,
-            {
-              sequence: 1,
-              sessionStarted: true,
-              stepIndex: 1,
-              turnId: "turn-1",
-            },
+            { sequence: 1, stepIndex: 1, turnId: "turn-1" },
           ),
           { inputResponses: [{ optionId: "approve", requestId: approvalRequest.approvalId }] },
         ),
@@ -889,7 +873,7 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
         expect.objectContaining({ toolCallId: toolCall.toolCallId }),
       );
 
-      const providerPrompt = model.doGenerateCalls[0]?.prompt ?? [];
+      const providerPrompt = model.doStreamCalls[0]?.prompt ?? [];
       const answered = new Set<string>();
       const called: string[] = [];
       for (const message of providerPrompt) {
@@ -901,8 +885,10 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       }
       expect(called).toEqual([toolCall.toolCallId, siblingCall.toolCallId]);
       expect(called.filter((id) => !answered.has(id))).toEqual([]);
-      expect(providerPrompt.at(-1)?.role).toBe("tool");
-      expect(ctx.get(HistoryStateKey)).toEqual({});
+      expect(JSON.stringify(providerPrompt)).toContain("Tenant policy");
+      expect(ctx.get(HistoryStateKey)).toMatchObject({
+        availableSkills: runtimeContextAnnouncement,
+      });
       expect(result.session.history.at(-1)).toMatchObject({
         content: [{ text: "The command returned /workspace.", type: "text" }],
         role: "assistant",
@@ -945,14 +931,14 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       },
     );
 
-    expect(model.doGenerateCalls).toHaveLength(1);
+    expect(model.doStreamCalls).toHaveLength(1);
     expect(execute).toHaveBeenCalledExactlyOnceWith(
       toolCall.input,
       expect.objectContaining({ toolCallId: toolCall.toolCallId }),
     );
 
     // The provider prompt keeps the intervening turn before the restored batch.
-    const providerPrompt = model.doGenerateCalls[0]?.prompt ?? [];
+    const providerPrompt = model.doStreamCalls[0]?.prompt ?? [];
     const interveningIndex = providerPrompt.findIndex(
       (message) =>
         message.role === "user" && JSON.stringify(message.content).includes("Any update"),
@@ -971,21 +957,19 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       toolName: toolCall.toolName,
     });
 
-    // Committed history: intervening exchange first, then the restored batch, exactly once.
+    // Committed history: intervening exchange and the pending-approval notice first, then the
+    // restored batch, exactly once.
     expect(result.session.history.map((message) => message.role)).toEqual([
       "user",
       "user",
       "assistant",
+      "user",
       "assistant",
-      "tool",
       "tool",
       "assistant",
     ]);
     expect(findPart(result.session.history, "tool-call")).toEqual(toolCall);
-    expect(findPart(result.session.history, "tool-approval-response")).toMatchObject({
-      approvalId: approvalRequest.approvalId,
-      approved: true,
-    });
+    expect(findPart(result.session.history, "tool-approval-response")).toBeUndefined();
     expect(result.session.history.at(-1)).toMatchObject({
       content: [{ text: "The command returned /workspace.", type: "text" }],
       role: "assistant",

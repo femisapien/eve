@@ -1,0 +1,105 @@
+import type { ModelMessage } from "ai";
+
+import {
+  clearPendingAuthorization,
+  getPendingAuthorization,
+  setPendingAuthorization,
+  type AuthorizationChallenge,
+} from "#harness/authorization.js";
+import {
+  clearProxyInputRequestsWhere,
+  getProxyInputRequests,
+} from "#harness/proxy-input-requests.js";
+import { validateHarnessModelMessages } from "#harness/messages.js";
+import type { HarnessSession, HarnessSessionBase, SessionStateMap } from "#harness/types.js";
+import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
+import type { SessionProjection } from "#protocol/session-projection.js";
+import { readTurnState, writeTurnState, type TurnState } from "./state.js";
+import type { SessionView } from "./view.js";
+
+// The save side of the machine. A transition returns the events that report what changed and
+// the execution state that follows; `applyTransition` publishes the events in order (the publish
+// sink folds each into the projection) and writes the rest. Nothing else writes `TurnState`.
+// A private record lives only while the projection shows its owner open, so closing an owner is
+// one event: a transition reports it, and the save drops the record here.
+
+/** What a transition returns. Nothing else changes session state. */
+export interface Transition {
+  readonly turn: TurnState;
+  readonly events: readonly UnstampedMessageStreamEvent[];
+  /** Messages the transition commits to the end of history. */
+  readonly commit?: readonly ModelMessage[];
+  /** The transition empties history, as `clear` does. */
+  readonly clearsHistory?: true;
+  /** Sign-ins the transition asks for; the save records their attempts. */
+  readonly signIns?: readonly AuthorizationChallenge[];
+}
+
+/** Publishes one event; `messages` is the conversation hooks see with it. */
+export type Publish = (
+  event: UnstampedMessageStreamEvent,
+  messages?: readonly ModelMessage[],
+) => Promise<void>;
+
+export function sessionView(
+  projection: SessionProjection,
+  state: SessionStateMap | undefined,
+): SessionView {
+  return {
+    projection,
+    relayedRequestIds: new Set(getProxyInputRequests(state).keys()),
+    signIns: getPendingAuthorization(state)?.challenges ?? [],
+    turn: readTurnState(state),
+  };
+}
+
+/**
+ * Publishes a transition's events, then saves what it changed. A transition that changes history
+ * needs a session restored with it.
+ */
+export async function applyTransition<T extends HarnessSessionBase>(
+  session: T,
+  transition: Transition,
+  publish: Publish,
+  messages?: readonly ModelMessage[],
+): Promise<T> {
+  for (const event of transition.events) await publish(event, messages);
+  const state =
+    transition.signIns === undefined
+      ? session.state
+      : setPendingAuthorization(session.state, { challenges: transition.signIns });
+  const next = writeTurnState({ ...session, state }, transition.turn);
+  const commit = transition.commit ?? [];
+  if (transition.clearsHistory !== true && commit.length === 0) return next;
+  if (!("history" in session)) {
+    throw new Error("A transition that changes history needs the session's history.");
+  }
+  const { history: previous } = session as T & Pick<HarnessSession, "history">;
+  const history = transition.clearsHistory
+    ? []
+    : validateHarnessModelMessages([...previous, ...commit]);
+  return { ...next, history };
+}
+
+/** Drops the private records whose owner the projection shows closed. */
+export function dropClosedRecords<T extends HarnessSessionBase>(
+  session: T,
+  projection: SessionProjection,
+): T {
+  return clearProxyInputRequestsWhere(session, (_route, requestId) => {
+    const input = projection.inputs[requestId];
+    return input === undefined || input.status === "settled";
+  });
+}
+
+const APPROVAL_STATE_KEY = "eve.runtime.hitl.approvalState";
+
+/**
+ * Drops what a cleared context owned beside `TurnState`: sign-in attempts and responders'
+ * approval progress. `clear` reported each close; relay routes for live tasks stay.
+ */
+export function discardClearedRecords<T extends HarnessSessionBase>(session: T): T {
+  const { [APPROVAL_STATE_KEY]: _approvals, ...state } =
+    clearPendingAuthorization(session.state) ?? {};
+  return { ...session, state: Object.keys(state).length > 0 ? state : undefined };
+}
