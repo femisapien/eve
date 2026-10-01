@@ -1,6 +1,11 @@
 import type { FilePart, TextPart, UserContent } from "ai";
 
-import type { SessionAuthContext, SessionCallback, TurnPolicy } from "#channel/types.js";
+import type {
+  SessionAuthContext,
+  SessionCallback,
+  SessionCapabilities,
+  TurnPolicy,
+} from "#channel/types.js";
 import type { Session } from "#channel/session.js";
 import { parseSessionCallback } from "#channel/session-callback.js";
 import { hasInternalRefScheme } from "#internal/attachments/url-refs.js";
@@ -36,7 +41,6 @@ import { parseJsonObject, type JsonObject } from "#shared/json.js";
 import { parseTurnPolicyField } from "#eve-channel/turn-policy-request.js";
 import {
   type ParsedCreateBody,
-  parseCapabilitiesField,
   parseSessionContextField,
   validateMessageFreeCreate,
 } from "#eve-channel/create-request.js";
@@ -373,6 +377,30 @@ function parseProtocolVersionField(value: unknown): number | Response {
     },
     { status: 409 },
   );
+}
+
+function parseCapabilitiesField(value: unknown): SessionCapabilities | Response | undefined {
+  if (value === undefined) return undefined;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    return Response.json(
+      { error: "Expected 'capabilities' to be an object.", ok: false },
+      { status: 400 },
+    );
+  }
+
+  const keys = Object.keys(value);
+  const requestInput = Reflect.get(value, "requestInput");
+  if (
+    keys.some((key) => key !== "requestInput") ||
+    (requestInput !== undefined && typeof requestInput !== "boolean")
+  ) {
+    return Response.json(
+      { error: "Expected 'capabilities.requestInput' to be a boolean when provided.", ok: false },
+      { status: 400 },
+    );
+  }
+
+  return requestInput === undefined ? {} : { requestInput };
 }
 
 function parseMessageField(value: unknown): string | UserContent | undefined | Response {
