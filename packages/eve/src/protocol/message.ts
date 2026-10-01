@@ -27,7 +27,7 @@ export const EVE_STREAM_TAIL_INDEX_HEADER = "x-eve-stream-tail-index";
 export const EVE_STREAM_VERSION_HEADER = "x-eve-stream-version";
 export const EVE_MESSAGE_STREAM_CONTENT_TYPE = "application/x-ndjson; charset=utf-8";
 export const EVE_MESSAGE_STREAM_FORMAT = "ndjson";
-export const EVE_MESSAGE_STREAM_VERSION = "26";
+export const EVE_MESSAGE_STREAM_VERSION = "27";
 
 /** Version of transport control records understood by this eve release. */
 export const EVE_STREAM_CONTROL_VERSION = "1";
@@ -72,6 +72,11 @@ export interface StepCompletedProviderMetadata {
 export interface MessageStreamEventMeta {
   /** Server-issued message delivery identities, retained across the turn's workflow steps. */
   readonly deliveryIds?: readonly string[];
+  /**
+   * The answer deliveries that caused this event, when answers rather than a message did. A
+   * reader of one answer's response skips events a sibling answer caused.
+   */
+  readonly answerDeliveryIds?: readonly string[];
   /** ISO-8601 emission time. */
   readonly at: string;
   /**
@@ -91,7 +96,11 @@ export interface MessageStreamEventMeta {
  * approval gate: it never executed, so it is neither a success nor a
  * runtime failure.
  */
-export type ActionResultStatus = "completed" | "failed" | "rejected";
+/**
+ * How a call ended. `cancelled` is a call eve stopped before it finished: its turn was
+ * cancelled, the context was cleared, or it needed a sign-in. `error.code` says which.
+ */
+export type ActionResultStatus = "completed" | "failed" | "rejected" | "cancelled";
 
 /**
  * Stable failure payload projected onto `action.result`.
@@ -186,6 +195,11 @@ export interface SessionStartedStreamEvent {
  */
 export interface TurnStartedStreamEvent {
   data: {
+    /**
+     * The earlier turn whose parked work this turn resumes, such as the turn that asked for the
+     * approvals or the sign-in it continues; `null` for a fresh turn. Absent from older writers.
+     */
+    continuesTurnId?: string | null;
     sequence: number;
     trace?: RuntimeTraceContext;
     turnId: string;
@@ -286,6 +300,12 @@ export interface ApprovalSettledStreamEvent {
  */
 export interface InputRequestedStreamEvent {
   data: {
+    /**
+     * The call a relayed request serves: the task or workflow call whose run, or whose child
+     * session, asks. A relayed request carries that call's coordinates. Absent for the
+     * session's own requests, whose approvals name their call in `request.action`.
+     */
+    callId?: string;
     requests: readonly InputRequest[];
     sequence: number;
     stepIndex: number;
@@ -311,6 +331,8 @@ export interface InputResolution {
   readonly outcome: InputResolutionOutcome;
   readonly requestId: string;
   readonly response?: InputResponse;
+  /** The turn that runs an approved call: the open turn, or the one the approval opens. */
+  readonly resumeTurnId?: string;
 }
 
 /**
@@ -617,6 +639,8 @@ export interface TurnCompletedStreamEvent {
  */
 export interface TurnWaitingStreamEvent {
   data: {
+    /** See {@link SessionWaitingStreamEvent}. Lists deliveries only while the turn waits on input. */
+    processedDeliveryIds?: readonly string[];
     sequence: number;
     turnId: string;
   };
@@ -703,6 +727,11 @@ export interface AuthorizationRequiredStreamEvent {
   data: {
     /** Stable identity of this exact authorization attempt. */
     attemptId?: string;
+    /**
+     * The calls this sign-in stopped. Each settled `cancelled` with `AUTHORIZATION_REQUIRED`
+     * just before, and the model calls it again once the sign-in completes.
+     */
+    callIds?: readonly string[];
     authorization?: ConnectionAuthorizationChallenge;
     candidateId?: string;
     description: string;
@@ -774,6 +803,12 @@ export interface SessionWaitingStreamEvent {
   data: {
     /** Channel-local continuation token, or the immutable session ID for an ID-only session. */
     continuationToken: string;
+    /**
+     * Accepted deliveries whose response this boundary completes, so a reader of one delivery's
+     * response ends here. Written on every boundary, `[]` when none; a boundary without it comes
+     * from an older writer, whose readers end at the first boundary.
+     */
+    processedDeliveryIds?: readonly string[];
     wait: "next-user-message";
   };
   type: "session.waiting";
@@ -923,6 +958,7 @@ export function createSessionStartedEvent(input?: {
  * Creates the `turn.started` event for one prepared runtime turn.
  */
 export function createTurnStartedEvent(input: {
+  readonly continuesTurnId?: string | null;
   readonly sequence: number;
   readonly trace?: RuntimeTraceContext;
   readonly turnId: string;
@@ -931,6 +967,7 @@ export function createTurnStartedEvent(input: {
     sequence: input.sequence,
     turnId: input.turnId,
   };
+  if (input.continuesTurnId !== undefined) data.continuesTurnId = input.continuesTurnId;
 
   if (input.trace !== undefined) {
     data.trace = input.trace;
@@ -1213,6 +1250,7 @@ export function createActionInputAppendedEvent(input: {
  */
 export function createAuthorizationRequiredEvent(input: {
   readonly attemptId?: string;
+  readonly callIds?: readonly string[];
   readonly authorization?: ConnectionAuthorizationChallenge;
   readonly candidateId?: string;
   readonly description: string;
@@ -1233,6 +1271,9 @@ export function createAuthorizationRequiredEvent(input: {
   };
   if (input.attemptId !== undefined) {
     data.attemptId = input.attemptId;
+  }
+  if (input.callIds !== undefined && input.callIds.length > 0) {
+    data.callIds = input.callIds;
   }
   if (input.authorization !== undefined) {
     data.authorization = input.authorization;
@@ -1322,6 +1363,7 @@ export function createApprovalSettledEvent(
  * Creates the `input.requested` event for one pending HITL batch.
  */
 export function createInputRequestedEvent(input: {
+  readonly callId?: string;
   readonly requests: readonly InputRequest[];
   readonly sequence: number;
   readonly stepIndex: number;
@@ -1334,6 +1376,7 @@ export function createInputRequestedEvent(input: {
     stepIndex: input.stepIndex,
     turnId: input.turnId,
   };
+  if (input.callId !== undefined) data.callId = input.callId;
   if (input.taskId !== undefined) data.taskId = input.taskId;
   return { data, type: "input.requested" };
 }
@@ -1366,15 +1409,19 @@ export function createInputResolvedEvent(input: {
 export function createActionResultEvent(input: {
   readonly presentation?: ActionPresentationByCallId;
   readonly rejected?: boolean;
+  /** eve stopped the call before it finished; see {@link ActionResultStatus}. */
+  readonly stopped?: ActionResultError;
   readonly result: RuntimeActionResult;
   readonly sequence: number;
   readonly stepIndex: number;
   readonly turnId: string;
 }): ActionResultStreamEvent {
   const outcome =
-    input.rejected === true
-      ? { error: buildActionResultError(input.result), status: "rejected" as const }
-      : normalizeActionResultOutcome(input.result);
+    input.stopped !== undefined
+      ? { error: input.stopped, status: "cancelled" as const }
+      : input.rejected === true
+        ? { error: buildActionResultError(input.result), status: "rejected" as const }
+        : normalizeActionResultOutcome(input.result);
 
   return {
     data: {
@@ -1844,12 +1891,21 @@ export function createSessionCompletedEvent(): SessionCompletedStreamEvent {
 export function stampMessageStreamEvent(
   event: UnstampedMessageStreamEvent,
   deliveryIds?: readonly string[],
+  answerDeliveryIds?: readonly string[],
 ): MessageStreamEvent {
-  const meta: { at: string; id: string; deliveryIds?: readonly string[] } = {
+  const meta: {
+    at: string;
+    id: string;
+    deliveryIds?: readonly string[];
+    answerDeliveryIds?: readonly string[];
+  } = {
     at: new Date().toISOString(),
     id: createEventId(),
   };
   if (deliveryIds !== undefined && deliveryIds.length > 0) meta.deliveryIds = deliveryIds;
+  if (answerDeliveryIds !== undefined && answerDeliveryIds.length > 0) {
+    meta.answerDeliveryIds = answerDeliveryIds;
+  }
   return {
     ...event,
     meta,
@@ -1867,6 +1923,11 @@ function normalizeActionResultOutcome(result: RuntimeActionResult): {
   readonly error?: ActionResultError;
   readonly status: ActionResultStatus;
 } {
+  const outputError = readActionResultOutputError(result.output);
+  // A policy's automatic denial is a denial, like a person's, not a failure.
+  if (outputError?.code === "TOOL_EXECUTION_DENIED") {
+    return { error: outputError, status: "rejected" };
+  }
   if (result.isError === true) {
     return {
       error: buildActionResultError(result),
@@ -1874,7 +1935,6 @@ function normalizeActionResultOutcome(result: RuntimeActionResult): {
     };
   }
 
-  const outputError = readActionResultOutputError(result.output);
   if (outputError !== undefined) {
     return {
       error: outputError,
