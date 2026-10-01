@@ -158,11 +158,20 @@ export function createJustBashSandboxProvider(
       await createNamedRoot(artifact, rootPath, name);
       return await openHandle(context, rootPath, options);
     },
-    async delete(context, { name, tag }) {
-      await rm(namedRootPath(context.storagePath, tag, name), {
-        force: true,
-        recursive: true,
-      });
+    async delete(context, { name, tag }, condition) {
+      const rootPath = namedRootPath(context.storagePath, tag, name);
+      let lastUsedAt: number;
+      try {
+        lastUsedAt = (await stat(rootPath)).mtimeMs;
+      } catch (error) {
+        if (error instanceof Error && "code" in error && error.code === "ENOENT") return false;
+        throw error;
+      }
+      // `find` touches the root before opening it, so a call since the listing shows here.
+      if (condition !== undefined && lastUsedAt >= condition.idleBefore) return false;
+      if (condition?.inUse?.() === true) return false;
+      await rm(rootPath, { force: true, recursive: true });
+      return true;
     },
     async find(context, artifactValue, { name, tag }) {
       requirePreparedJustBashArtifact(artifactValue);

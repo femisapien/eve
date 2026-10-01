@@ -60,18 +60,28 @@ export function createVercelNamedSessions(deps: {
     async create(context, options, artifact, { name, tag }) {
       return await deps.openSession(context, options, artifact, name, { tag });
     },
-    async delete(_context, { name }) {
+    async delete(_context, { name }, condition) {
       const sandbox = await getNamedVercelSandbox({
         createOptions: deps.createOptions,
         sandboxModule: await deps.loadSandboxModule(),
         sandboxName: name,
       });
-      if (sandbox === null) return;
+      if (sandbox === null) return false;
+      // Re-read just before deleting: a call that resumed it since the listing shows here.
+      if (
+        condition !== undefined &&
+        (isRunningStatus(sandbox.status) ||
+          vercelLastUsedAt(sandbox) >= condition.idleBefore ||
+          condition.inUse?.() === true)
+      ) {
+        return false;
+      }
       await deleteVercelSandbox({
         createOptions: deps.createOptions,
         loadDeleteSandboxModule: deps.loadDeleteSandboxModule,
         sandbox,
       });
+      return true;
     },
     async find(_context, _artifact, { name }) {
       const sandboxModule = await deps.loadSandboxModule();
@@ -81,7 +91,7 @@ export function createVercelNamedSessions(deps: {
         sandboxName: name,
       });
       if (sandbox === null) return null;
-      const running = sandbox.status === "running" || sandbox.status === "pending";
+      const running = isRunningStatus(sandbox.status);
       try {
         // Running a command resumes a stopped persistent sandbox from its snapshot.
         await ensureVercelSandboxBaseRuntime(sandbox);
@@ -114,10 +124,24 @@ export function createVercelNamedSessions(deps: {
         summaries.push({
           lastUsedAt: Math.max(sandbox.updatedAt, sandbox.statusUpdatedAt ?? 0),
           name: sandbox.name,
-          running: sandbox.status === "running" || sandbox.status === "pending",
+          running: isRunningStatus(sandbox.status),
         });
       }
       return summaries;
     },
   };
+}
+
+function isRunningStatus(status: string): boolean {
+  return status === "running" || status === "pending";
+}
+
+function vercelLastUsedAt(sandbox: VercelSandbox): number {
+  return Math.max(toEpochMs(sandbox.updatedAt), toEpochMs(sandbox.statusUpdatedAt));
+}
+
+// The SDK types these as Dates; tolerate epoch numbers from older responses.
+function toEpochMs(value: Date | number | undefined): number {
+  if (value === undefined) return 0;
+  return typeof value === "number" ? value : value.getTime();
 }

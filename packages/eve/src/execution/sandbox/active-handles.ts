@@ -40,6 +40,20 @@ export function trackActiveSandboxHandle(input: {
 }
 
 /**
+ * Drops a deleted sandbox's handle from shutdown tracking. Only removes the
+ * entry when it is still `handle`: a later handle for the same provider and
+ * session may have replaced it, and that one must stay tracked.
+ */
+export function untrackActiveSandboxHandle(input: {
+  readonly providerName: string;
+  readonly handle: ShutdownCapableSandboxHandle;
+  readonly sessionId: string;
+}): void {
+  const key = createActiveSandboxHandleKey(input.providerName, input.sessionId);
+  if (activeSandboxHandles.get(key) === input.handle) activeSandboxHandles.delete(key);
+}
+
+/**
  * Stops every tracked sandbox by invoking its runtime-shutdown hook in
  * parallel, then clears the registry. Failures are logged and never
  * thrown so one misbehaving sandbox cannot block server shutdown.

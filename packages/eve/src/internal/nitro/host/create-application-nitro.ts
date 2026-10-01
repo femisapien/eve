@@ -39,7 +39,11 @@ import {
   OPTIONAL_ENGINE_PACKAGES_BY_BACKEND_NAME,
 } from "#internal/nitro/host/optional-engine-dependency-plugin.js";
 import { addNitroRoutingImportSpecifierPlugin } from "#internal/nitro/host/nitro-routing-import-specifier-plugin.js";
-import { registerScheduleTaskHandlers } from "#internal/nitro/host/schedule-task-routes.js";
+import {
+  registerScheduleTaskHandlers,
+  registerToolSessionSandboxSweepTask,
+  shouldScheduleToolSessionSandboxSweep,
+} from "#internal/nitro/host/schedule-task-routes.js";
 import type {
   PreparedApplicationHost,
   PreparedDevelopmentApplicationHost,
@@ -854,7 +858,11 @@ export async function createProductionApplicationNitro(
   configureSharedApplicationNitro(nitro, preparedHost);
   configureNitroStepPlugins(nitro, join(preparedHost.workflowBuildDir, "steps.mjs"));
 
-  if (preparedHost.scheduleRegistrations.length > 0) {
+  const sweepToolSessionSandboxes = shouldScheduleToolSessionSandboxSweep({
+    preset,
+    providerName: preparedHost.compileResult.manifest.sandbox.providerName,
+  });
+  if (preparedHost.scheduleRegistrations.length > 0 || sweepToolSessionSandboxes) {
     applyEveCronHandlerRoute(nitro);
     const artifactsConfig = createProductionNitroArtifactsConfig(preparedHost.appRoot);
     registerScheduleTaskHandlers(nitro, {
@@ -864,6 +872,14 @@ export async function createProductionApplicationNitro(
       ),
       registrations: preparedHost.scheduleRegistrations,
     });
+    if (sweepToolSessionSandboxes) {
+      registerToolSessionSandboxSweepTask(nitro, {
+        artifactsConfig,
+        sweepModulePath: resolvePackageSourceFilePath(
+          "src/internal/nitro/routes/tool-session-sandbox-sweep-task.ts",
+        ),
+      });
+    }
   }
 
   await configureProductionNitroRoutes(nitro, preparedHost);
