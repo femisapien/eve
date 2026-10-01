@@ -1,5 +1,5 @@
 import { buildBaseToolContext } from "#context/build-base-tool-context.js";
-import { loadContext } from "#context/container.js";
+import { contextStorage } from "#context/container.js";
 import { ToolStubsKey } from "#context/keys.js";
 import { executeToolStub } from "#execution/tool-stubs.js";
 import type { SessionAuthContext } from "#channel/types.js";
@@ -30,7 +30,7 @@ export function createToolExecuteWithAuth<TInput>(input: ToolExecuteWithAuthInpu
       requireAuth: auth.requireAuth,
     };
     return auth.run(() => {
-      const toolStubs = loadContext().get(ToolStubsKey);
+      const toolStubs = contextStorage.getStore()?.get(ToolStubsKey);
       if (toolStubs === undefined) return input.execute(toolInput, ctx);
       return executeToolStub({
         ctx,
