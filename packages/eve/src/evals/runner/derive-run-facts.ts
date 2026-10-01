@@ -3,6 +3,7 @@ import type {
   MessageStreamEvent,
   TaskSettledStreamEvent,
 } from "#protocol/message.js";
+import { callStatus, foldSession, initialSessionProjection } from "#protocol/session-projection.js";
 import { LOAD_SKILL_TOOL_NAME } from "#runtime/skills/fragment-context.js";
 import type { InputRequest } from "#shared/input.js";
 import type { JsonObject, JsonValue } from "#shared/json.js";
@@ -105,11 +106,9 @@ export function deriveRunFacts(
       }
 
       case "action.result": {
-        const { result, status } = event.data;
+        const { result } = event.data;
         if (result.kind === "tool-result") {
-          const call = ensureToolCall(result.callId, result.toolName, {});
-          call.output = result.output;
-          call.status = status;
+          ensureToolCall(result.callId, result.toolName, {}).output = result.output;
         }
         break;
       }
@@ -158,6 +157,12 @@ export function deriveRunFacts(
     }
   }
 
+  // A call's status is the projection's, so a task call reads its outcome, not its receipt.
+  const projection = events.reduce(foldSession, initialSessionProjection());
+  for (const [callId, call] of toolCallsByCallId) {
+    call.status = evalActionStatus(callStatus(projection, callId));
+  }
+
   const subagentCalls = deriveSubagentCalls({
     agentCalls,
     agentSessions,
@@ -175,6 +180,19 @@ export function deriveRunFacts(
     reasoningBlockCount,
     failureCode,
   };
+}
+
+function evalActionStatus(status: ReturnType<typeof callStatus>): EveEvalToolCall["status"] {
+  switch (status) {
+    case "completed":
+    case "failed":
+    case "rejected":
+    case "cancelled":
+      return status;
+    // No outcome reached the stream: running, awaiting input, or ended without one.
+    default:
+      return "pending";
+  }
 }
 
 /**
