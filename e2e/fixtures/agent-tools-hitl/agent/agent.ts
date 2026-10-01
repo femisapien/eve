@@ -11,6 +11,8 @@ const REPLY_DIRECTIVE = /reply with exactly ([A-Z0-9-]+)/iu;
 const APPROVAL_FOLLOWUP_DIRECTIVE =
   /call the (gate|read-status) tool exactly once with marker "([^"]+)"/iu;
 const ASK_QUESTION_DIRECTIVE = /call the ask_question tool exactly once with question "([^"]+)"/iu;
+const SCHEDULES_DIRECTIVE =
+  /call the (schedules_read|schedules_create) tool exactly once(?: with name "([^"]+)")?/iu;
 
 /**
  * Scripted mock for the world suites: untagged evals in this fixture phrase
@@ -32,6 +34,19 @@ function respond(request: MockModelRequest): MockModelResponse | string {
     const output = [...request.toolResults]
       .reverse()
       .find((result) => result.name === approvalFollowup[1])?.output;
+    return JSON.stringify(output ?? "Missing tool result");
+  }
+
+  const schedules = SCHEDULES_DIRECTIVE.exec(message);
+  if (schedules?.[1] !== undefined) {
+    const roles = request.messages.map((entry) => entry.role);
+    if (roles.lastIndexOf("tool") < roles.lastIndexOf("user")) {
+      const input = schedules[2] === undefined ? {} : { name: schedules[2] };
+      return { toolCalls: [{ name: schedules[1], input }] };
+    }
+    const output = [...request.toolResults]
+      .reverse()
+      .find((result) => result.name === schedules[1])?.output;
     return JSON.stringify(output ?? "Missing tool result");
   }
 
