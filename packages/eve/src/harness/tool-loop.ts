@@ -1765,6 +1765,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
         code: turnFailure.code,
         continuationToken: session.continuationToken,
         message: turnFailure.message,
+        usage: getSessionUsage(session),
       });
       return {
         next: null,
