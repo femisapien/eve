@@ -334,9 +334,43 @@ describe("planMcpInput", () => {
     ).toEqual({
       approve: { login: { action: "accept" } },
       kind: "sign-in",
-      message: "Sign in",
-      url: "https://idp.example.com/a",
+      links: [{ message: "Sign in", url: "https://idp.example.com/a" }],
     });
+  });
+
+  it("plans one sign-in for several URL elicitations, as mcpChannel sends per connection", () => {
+    expect(
+      planMcpInput({
+        inputRequests: {
+          "auth/github": {
+            method: "elicitation/create",
+            params: { mode: "url", url: "https://github.example/authorize" },
+          },
+          "auth/linear": {
+            method: "elicitation/create",
+            params: { message: "Sign in to Linear", mode: "url", url: "https://linear.example/a" },
+          },
+        },
+      }),
+    ).toEqual({
+      approve: { "auth/github": { action: "accept" }, "auth/linear": { action: "accept" } },
+      kind: "sign-in",
+      links: [
+        { url: "https://github.example/authorize" },
+        { message: "Sign in to Linear", url: "https://linear.example/a" },
+      ],
+    });
+  });
+
+  it("refuses a mix of a URL and a form elicitation", () => {
+    expect(
+      planMcpInput({
+        inputRequests: {
+          a: { method: "elicitation/create", params: { mode: "url", url: "https://x.example" } },
+          b: { method: "elicitation/create", params: { mode: "form", requestedSchema: {} } },
+        },
+      }).kind,
+    ).toBe("unsupported");
   });
 
   it("rejects a javascript: URL elicitation", () => {
