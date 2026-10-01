@@ -35,6 +35,7 @@ function setup(sandboxModule: object) {
     createOptions: { teamId: "team", projectId: "project", token: "token" },
     createSandbox: async ({ createOptions, sandboxModule: module }) =>
       await (module as any).Sandbox.create(createOptions),
+    loadDeleteSandboxModule: async () => sandboxModule as never,
     loadSandboxModule: async () => sandboxModule as never,
   });
   const named = getNamedSandboxSessions(implementation as never);
@@ -80,6 +81,34 @@ describe("Vercel named sandbox sessions", () => {
     ).rejects.toBeInstanceOf(SandboxNameConflictError);
   });
 
+  it("maps the API's 400 for a taken name to SandboxNameConflictError, but not other 400s", async () => {
+    const taken = Object.assign(new Error("Status code 400 is not ok"), {
+      json: {
+        error: {
+          code: "bad_request",
+          message:
+            "A sandbox with the name 'eve-ts-abc' already exists for this project. Use GET /sandboxes/:name to resume it or delete it first.",
+        },
+      },
+      response: { status: 400 },
+    });
+    const invalid = Object.assign(new Error("Status code 400 is not ok: invalid runtime"), {
+      response: { status: 400 },
+    });
+    const Sandbox = {
+      create: vi.fn().mockRejectedValueOnce(taken).mockRejectedValueOnce(invalid),
+      get: vi.fn(async () => null),
+    };
+    const { context, named } = setup({ Sandbox });
+
+    await expect(
+      named.create(context, undefined, { snapshotId: "snap" }, address),
+    ).rejects.toBeInstanceOf(SandboxNameConflictError);
+    await expect(
+      named.create(context, undefined, { snapshotId: "snap" }, address),
+    ).rejects.not.toBeInstanceOf(SandboxNameConflictError);
+  });
+
   it("finds by name and reports whether it was already running", async () => {
     const stopped = mockSandbox(address.name, "stopped");
     const Sandbox = { create: vi.fn(), get: vi.fn(async () => stopped) };
@@ -108,5 +137,36 @@ describe("Vercel named sandbox sessions", () => {
       { lastUsedAt: 50, name: "a", running: false },
       { lastUsedAt: 30, name: "b", running: true },
     ]);
+  });
+
+  it("re-reads before a conditional delete and keeps a sandbox used or resumed since", async () => {
+    const recent = Object.assign(mockSandbox(address.name, "stopped"), {
+      statusUpdatedAt: new Date(500),
+      updatedAt: new Date(100),
+    });
+    const resumed = Object.assign(mockSandbox(address.name, "running"), {
+      updatedAt: new Date(10),
+    });
+    const idle = Object.assign(mockSandbox(address.name, "stopped"), {
+      delete: vi.fn(async () => undefined),
+      updatedAt: new Date(10),
+    });
+    const Sandbox = {
+      get: vi
+        .fn()
+        .mockResolvedValueOnce(recent)
+        .mockResolvedValueOnce(resumed)
+        .mockResolvedValue(idle),
+    };
+    const { context, named } = setup({ Sandbox });
+
+    expect(await named.delete(context, address, { idleBefore: 200 })).toBe(false);
+    expect(await named.delete(context, address, { idleBefore: 200 })).toBe(false);
+    expect(await named.delete(context, address, { idleBefore: 200, inUse: () => true })).toBe(
+      false,
+    );
+    expect(idle.delete).not.toHaveBeenCalled();
+    expect(await named.delete(context, address, { idleBefore: 200 })).toBe(true);
+    expect(idle.delete).toHaveBeenCalled();
   });
 });

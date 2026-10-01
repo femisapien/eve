@@ -15,7 +15,9 @@ import type { CompiledToolBehavior } from "#tools/behavior.js";
 import {
   sweepToolSessionSandboxes,
   TOOL_SESSION_SANDBOX_EXPIRY_MS,
+  ToolSessionSandboxPersistenceError,
 } from "#execution/tool-session/sandbox.js";
+import { ToolSessionError } from "#shared/tool-session-error.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import { mockSandbox, type MockSandbox } from "#internal/testing/mocks/mock-sandbox.js";
 import { defineState } from "#public/definitions/state.js";
@@ -67,16 +69,37 @@ function createNamedProvider(options: { readonly named?: boolean } = {}) {
   let findBarrier: { count: number; release: () => void; wait: Promise<void> } | undefined;
   let now = 1_000;
 
-  const handle = (name: string, stored: StoredSandbox): SandboxProviderHandle => ({
-    sandbox: stored.mock.session,
-    async onRuntimeShutdown() {},
-    async onSessionDelete() {
-      events.push(`delete:${name}`);
-      store.delete(name);
-    },
-    async onSessionStop() {},
-  });
+  // A handle stops working once stopped, like a provider session that ended.
+  const handle = (name: string, stored: StoredSandbox): SandboxProviderHandle => {
+    let stopped = false;
+    const session = new Proxy(stored.mock.session, {
+      get(target, property, receiver) {
+        const value = Reflect.get(target, property, receiver);
+        if (typeof value !== "function") return value;
+        return (...args: unknown[]) => {
+          if (stopped) throw new Error(`stale handle for ${name}`);
+          return value.apply(target, args);
+        };
+      },
+    });
+    return {
+      sandbox: session,
+      async onRuntimeShutdown() {
+        events.push(`shutdown:${name}`);
+      },
+      async onSessionDelete() {
+        events.push(`delete:${name}`);
+        store.delete(name);
+      },
+      async onSessionStop() {
+        events.push(`stop:${name}`);
+        stopped = true;
+        stored.running = false;
+      },
+    };
+  };
   const started: string[] = [];
+  let onList: (() => Promise<void>) | undefined;
 
   const provider = defineSandboxProvider({
     name: "memory-named",
@@ -88,15 +111,22 @@ function createNamedProvider(options: { readonly named?: boolean } = {}) {
         async resume() {
           throw new Error("tool sessions never resume from persisted state");
         },
+        // Like Docker: the sandbox derives from the session id, and a start with
+        // an id that already has one reuses it.
         async start(context) {
           started.push(context.session.id);
-          const stored: StoredSandbox = {
-            lastUsedAt: now,
-            mock: mockSandbox({ id: context.session.id }),
-            running: true,
-            tag: "",
-          };
-          return { handle: handle(`unnamed:${context.session.id}`, stored), state: null };
+          const name = `unnamed:${context.session.id}`;
+          let stored = store.get(name);
+          if (stored === undefined) {
+            stored = {
+              lastUsedAt: now,
+              mock: mockSandbox({ id: context.session.id }),
+              running: true,
+              tag: "",
+            };
+            store.set(name, stored);
+          }
+          return { handle: handle(name, stored), state: null };
         },
       };
       const named: SandboxProviderNamedSessions<undefined, null> | undefined =
@@ -119,8 +149,21 @@ function createNamedProvider(options: { readonly named?: boolean } = {}) {
                 events.push(`create:${name}`);
                 return handle(name, stored);
               },
-              async delete(_context, { name }) {
+              async delete(_context, { name }, condition) {
+                const stored = store.get(name);
+                if (stored === undefined) return false;
+                if (
+                  condition !== undefined &&
+                  (stored.running ||
+                    stored.lastUsedAt >= condition.idleBefore ||
+                    condition.inUse?.() === true)
+                ) {
+                  events.push(`kept:${name}`);
+                  return false;
+                }
+                events.push(`swept:${name}`);
                 store.delete(name);
+                return true;
               },
               async find(_context, _artifact, { name }) {
                 events.push(`find:${name}`);
@@ -138,13 +181,16 @@ function createNamedProvider(options: { readonly named?: boolean } = {}) {
                 return { handle: handle(name, stored), running };
               },
               async list(_context, tag) {
-                return [...store.entries()]
+                const summaries = [...store.entries()]
                   .filter(([, stored]) => stored.tag === `${tag.key}:${tag.value}`)
                   .map(([name, stored]) => ({
                     lastUsedAt: stored.lastUsedAt,
                     name,
                     running: stored.running,
                   }));
+                // Whatever runs here happens after the listing and before any delete.
+                await onList?.();
+                return summaries;
               },
             };
       return named === undefined ? implementation : withNamedSandboxSessions(implementation, named);
@@ -187,6 +233,13 @@ function createNamedProvider(options: { readonly named?: boolean } = {}) {
     },
     advance(ms: number) {
       now += ms;
+    },
+    /** Runs `fn` once, after the sweep lists sandboxes and before it deletes any. */
+    afterList(fn: () => Promise<void>) {
+      onList = async () => {
+        onList = undefined;
+        await fn();
+      };
     },
     /** Simulates the provider stopping idle sandboxes. */
     stopAll() {
@@ -389,17 +442,36 @@ describe("invokeTool: context", () => {
     }
   });
 
-  it("returns the tool's own error as failed with an error id", async () => {
+  it("returns an unexpected error as a generic message with the error id it logged", async () => {
     const runtime = runtimeWith([
       tool("boom", () => {
-        throw new Error("no such path: /tmp/x");
+        throw new Error("connect ECONNREFUSED 10.0.0.7:5432 password=hunter2");
       }),
     ]);
 
     const result = await call(runtime, "boom", {});
 
-    expect(result).toMatchObject({ message: "no such path: /tmp/x", status: "failed" });
-    expect(result.status === "failed" && result.errorId).toBeTruthy();
+    expect(result.status).toBe("failed");
+    if (result.status !== "failed") return;
+    expect(result.errorId).toBeTruthy();
+    expect(result.message).toBe(
+      `Tool "boom" failed: tool execution failed. The error is logged with id ${result.errorId}.`,
+    );
+    expect(result.message).not.toContain("hunter2");
+    expect(result.message).not.toContain("10.0.0.7");
+  });
+
+  it("returns eve's own tool-session diagnostics verbatim", async () => {
+    const runtime = runtimeWith([
+      tool("diagnose", () => {
+        throw new ToolSessionError('Tool "diagnose" cannot do that in a tool session.');
+      }),
+    ]);
+
+    expect(await call(runtime, "diagnose", {})).toMatchObject({
+      message: 'Tool "diagnose" cannot do that in a tool session.',
+      status: "failed",
+    });
   });
 
   it("gives defineState its initial value and refuses updates, naming the tool", async () => {
@@ -516,6 +588,27 @@ describe("invokeTool: approval", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  it("runs the response policy on a supplied answer even when the request policy lets the call run", async () => {
+    const execute = vi.fn(() => "deployed");
+    const response = vi.fn(() => ({ reason: "Bob may not answer.", status: "rejected" }) as const);
+    const runtime = runtimeWith([
+      approvalTool(execute, { request: () => "not-applicable", response }),
+    ]);
+
+    const answered = await call(runtime, "deploy", {}, { approval: { approved: true }, auth: bob });
+    expect(answered).toEqual({ reason: "Bob may not answer.", status: "denied" });
+    expect(response).toHaveBeenCalledTimes(1);
+    expect(execute).not.toHaveBeenCalled();
+
+    // A declined answer is honored too, and without an answer the pass-through runs.
+    const plain = runtimeWith([approvalTool(execute, () => "not-applicable")]);
+    expect(await call(plain, "deploy", {}, { approval: { approved: false } })).toMatchObject({
+      status: "denied",
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect((await call(plain, "deploy", {})).status).toBe("completed");
+  });
+
   it("honors request-policy denial and pass-through", async () => {
     const runtime = runtimeWith([
       tool("blocked", vi.fn(), { approval: () => ({ reason: "Read-only mode.", type: "denied" }) }),
@@ -584,17 +677,17 @@ describe("invokeTool: sign-in", () => {
   });
 });
 
-describe("invokeTool: sandbox", () => {
-  const writeTool = tool("write", async (input: { path: string; text: string }, ctx) => {
-    const sandbox = await ctx.getSandbox();
-    await sandbox.writeTextFile({ content: input.text, path: input.path });
-    return "written";
-  });
-  const readTool = tool("read", async (input: { path: string }, ctx) => {
-    const sandbox = await ctx.getSandbox();
-    return await sandbox.readTextFile({ path: input.path });
-  });
+const writeTool = tool("write", async (input: { path: string; text: string }, ctx) => {
+  const sandbox = await ctx.getSandbox();
+  await sandbox.writeTextFile({ content: input.text, path: input.path });
+  return "written";
+});
+const readTool = tool("read", async (input: { path: string }, ctx) => {
+  const sandbox = await ctx.getSandbox();
+  return await sandbox.readTextFile({ path: input.path });
+});
 
+describe("invokeTool: sandbox", () => {
   it("opens no sandbox when the tool never asks for one", async () => {
     const provider = createNamedProvider();
     const runtime = runtimeWith([tool("pure", () => "x")], provider.registry);
@@ -733,15 +826,123 @@ describe("invokeTool: sandbox", () => {
     expect(provider.store.size).toBe(1);
   });
 
-  it("falls back to a call-scoped sandbox when the provider has no named lookup", async () => {
+  it("refuses a keyed sandbox on a provider without named lookup, with a named error", async () => {
     const provider = createNamedProvider({ named: false });
-    const runtime = runtimeWith([writeTool], provider.registry);
+    const runtime = runtimeWith([writeTool, tool("pure", () => "x")], provider.registry);
 
     const result = await call(runtime, "write", { path: "/workspace/a.txt", text: "x" });
 
-    expect(result.sandbox?.state).toBe("created");
-    expect(provider.started).toHaveLength(1);
-    expect(provider.events).toContain(`delete:unnamed:${provider.started[0]}`);
+    expect(result.status).toBe("failed");
+    expect(result.status === "failed" && result.message).toBe(
+      new ToolSessionSandboxPersistenceError("memory-named").message,
+    );
+    expect(provider.started).toEqual([]);
+    // A keyed tool that never opens the sandbox is unaffected.
+    expect((await call(runtime, "pure", {})).status).toBe("completed");
+  });
+
+  it("gives concurrent one-off fallback calls their own sandboxes, so one ending deletes only its own", async () => {
+    const provider = createNamedProvider({ named: false });
+    let releaseSecond!: () => void;
+    const secondMayFinish = new Promise<void>((resolve) => {
+      releaseSecond = resolve;
+    });
+    let firstOpened!: () => void;
+    const opened = new Promise<void>((resolve) => {
+      firstOpened = resolve;
+    });
+    const runtime = runtimeWith(
+      [
+        tool("quick", async (_input, ctx) => {
+          await (await ctx.getSandbox()).writeTextFile({ content: "1", path: "/workspace/q" });
+          return "quick";
+        }),
+        tool("slow", async (_input, ctx) => {
+          const sandbox = await ctx.getSandbox();
+          await sandbox.writeTextFile({ content: "2", path: "/workspace/s" });
+          firstOpened();
+          await secondMayFinish;
+          // Still usable after the other call ended and deleted its sandbox.
+          return await sandbox.readTextFile({ path: "/workspace/s" });
+        }),
+      ],
+      provider.registry,
+    );
+
+    // The same nonce derives the same tool session id for both calls.
+    const slow = call(runtime, "slow", {}, { key: undefined, oneOffNonce: "nonce-1" });
+    await opened;
+    const quick = await call(runtime, "quick", {}, { key: undefined, oneOffNonce: "nonce-1" });
+    releaseSecond();
+
+    expect(quick).toMatchObject({ sandbox: { state: "created" }, status: "completed" });
+    expect(await slow).toMatchObject({ output: "2", status: "completed" });
+    expect(new Set(provider.started).size).toBe(2);
+    expect(provider.events.filter((event) => event.startsWith("delete:"))).toHaveLength(2);
+    expect(provider.store.size).toBe(0);
+  });
+
+  it("reopens the sandbox after stop(): get, stop, get, execute", async () => {
+    const provider = createNamedProvider();
+    const runtime = runtimeWith(
+      [
+        tool("cycle", async (_input, ctx) => {
+          const first = await ctx.getSandbox();
+          await first.writeTextFile({ content: "kept", path: "/workspace/k.txt" });
+          await first.stop();
+          const second = await ctx.getSandbox();
+          return {
+            fresh: second !== first,
+            text: await second.readTextFile({ path: "/workspace/k.txt" }),
+          };
+        }),
+      ],
+      provider.registry,
+    );
+
+    const keyed = await call(runtime, "cycle", {});
+    expect(keyed).toMatchObject({
+      output: { fresh: true, text: "kept" },
+      sandbox: { state: "created" },
+      status: "completed",
+    });
+    expect(provider.store.size).toBe(1);
+
+    const oneOff = await call(runtime, "cycle", {}, { key: undefined });
+    expect(oneOff).toMatchObject({ output: { fresh: true, text: "kept" }, status: "completed" });
+    expect(provider.store.size).toBe(1);
+  });
+
+  it("still deletes a one-off sandbox the tool stopped, without reopening it", async () => {
+    const provider = createNamedProvider();
+    const runtime = runtimeWith(
+      [
+        tool("stopper", async (_input, ctx) => {
+          await (await ctx.getSandbox()).stop();
+          return "stopped";
+        }),
+      ],
+      provider.registry,
+    );
+
+    const result = await call(runtime, "stopper", {}, { key: undefined });
+
+    expect(result.status).toBe("completed");
+    expect(provider.store.size).toBe(0);
+    expect(provider.events.filter((event) => event.startsWith("find:"))).toHaveLength(1);
+  });
+
+  it("drops a deleted one-off sandbox from shutdown tracking", async () => {
+    const provider = createNamedProvider();
+    const runtime = runtimeWith([writeTool], provider.registry);
+
+    await call(runtime, "write", { path: "/workspace/a.txt", text: "x" }, { key: undefined });
+    await call(runtime, "write", { path: "/workspace/a.txt", text: "x" }, { key: "kept" });
+    await shutdownActiveSandboxHandles();
+
+    const shutdowns = provider.events.filter((event) => event.startsWith("shutdown:"));
+    // Only the keyed sandbox is still tracked; the deleted one-off is not retained.
+    expect(shutdowns).toEqual([`shutdown:${[...provider.store.keys()][0]}`]);
   });
 });
 
@@ -766,6 +967,76 @@ describe("sweepToolSessionSandboxes", () => {
 
     expect(result.deleted).toHaveLength(1);
     expect(result.failed).toEqual([]);
+    expect(provider.store.size).toBe(1);
+  });
+
+  it("keeps a sandbox a call resumed between the listing and the delete", async () => {
+    const provider = createNamedProvider();
+    const runtime = runtimeWith([writeTool, readTool], provider.registry);
+    await call(runtime, "write", { path: "/workspace/a.txt", text: "still here" });
+    provider.advance(TOOL_SESSION_SANDBOX_EXPIRY_MS + 1);
+    provider.stopAll();
+    // The listing sees an expired, stopped sandbox; then a call resumes it and the provider stops it again.
+    provider.afterList(async () => {
+      await call(runtime, "read", { path: "/workspace/a.txt" });
+      provider.stopAll();
+    });
+
+    const result = await sweepToolSessionSandboxes({
+      compiledArtifactsSource: createBundledRuntimeCompiledArtifactsSource(),
+      now: provider.now,
+      registry: provider.registry,
+    });
+
+    expect(result.deleted).toEqual([]);
+    expect(provider.events.some((event) => event.startsWith("kept:"))).toBe(true);
+    expect(await call(runtime, "read", { path: "/workspace/a.txt" })).toMatchObject({
+      output: "still here",
+      sandbox: { state: "resumed" },
+    });
+  });
+
+  it("keeps a sandbox a call in this process holds, even when the provider record looks idle", async () => {
+    const provider = createNamedProvider();
+    let opened!: () => void;
+    const isOpen = new Promise<void>((resolve) => {
+      opened = resolve;
+    });
+    let finish!: () => void;
+    const mayFinish = new Promise<void>((resolve) => {
+      finish = resolve;
+    });
+    const runtime = runtimeWith(
+      [
+        writeTool,
+        tool("hold", async (_input, ctx) => {
+          const sandbox = await ctx.getSandbox();
+          opened();
+          await mayFinish;
+          return await sandbox.readTextFile({ path: "/workspace/a.txt" });
+        }),
+      ],
+      provider.registry,
+    );
+    await call(runtime, "write", { path: "/workspace/a.txt", text: "held" });
+    provider.advance(TOOL_SESSION_SANDBOX_EXPIRY_MS + 1);
+    const held = call(runtime, "hold", {});
+    await isOpen;
+    // Make the provider's own record look expired, so only the lease protects it.
+    for (const stored of provider.store.values()) {
+      stored.running = false;
+      stored.lastUsedAt = 0;
+    }
+
+    const result = await sweepToolSessionSandboxes({
+      compiledArtifactsSource: createBundledRuntimeCompiledArtifactsSource(),
+      now: provider.now,
+      registry: provider.registry,
+    });
+    finish();
+
+    expect(result.deleted).toEqual([]);
+    expect(await held).toMatchObject({ output: "held", status: "completed" });
     expect(provider.store.size).toBe(1);
   });
 

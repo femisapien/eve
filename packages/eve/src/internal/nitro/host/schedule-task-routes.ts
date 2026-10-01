@@ -99,6 +99,55 @@ function addScheduleTaskVirtualHandler(
   appendScheduledTask(nitro, input.registration.cron, input.registration.taskName);
 }
 
+/** Weekly (Sundays 04:17 UTC): the tool-session sandbox sweep's 7-day interval. */
+export const TOOL_SESSION_SANDBOX_SWEEP_CRON = "17 4 * * 0";
+
+/** Nitro task name of the framework's tool-session sandbox sweep. */
+export const TOOL_SESSION_SANDBOX_SWEEP_TASK_NAME = "eve.tool-session-sandbox-sweep";
+
+/**
+ * Registers the weekly sweep that deletes tool-session sandboxes unused past
+ * their expiry, as a framework-owned Nitro scheduled task beside the authored
+ * schedules. `sweepModulePath` is the module exporting
+ * `runToolSessionSandboxSweepTask`.
+ */
+export function registerToolSessionSandboxSweepTask(
+  nitro: ScheduleTaskNitro,
+  input: { readonly artifactsConfig: NitroArtifactsConfig; readonly sweepModulePath: string },
+): void {
+  nitro.options.experimental.tasks = true;
+  const taskName = TOOL_SESSION_SANDBOX_SWEEP_TASK_NAME;
+  const virtualId = `${EVE_SCHEDULE_TASK_VIRTUAL_ID_PREFIX}${taskName}`;
+  const description = "Delete tool-session sandboxes unused past their expiry.";
+  nitro.options.tasks[taskName] = { description, handler: virtualId };
+  // A plain task object, for the same reason as authored schedules: no `nitro/task` at runtime.
+  nitro.options.virtual[virtualId] = [
+    `import { runToolSessionSandboxSweepTask } from ${stringifyEsmImportSpecifier(input.sweepModulePath)};`,
+    `const config = ${JSON.stringify(input.artifactsConfig)};`,
+    `export default {`,
+    `  meta: { description: ${JSON.stringify(description)} },`,
+    `  async run() {`,
+    `    return { result: await runToolSessionSandboxSweepTask(config) };`,
+    `  },`,
+    `};`,
+  ].join("\n");
+  appendScheduledTask(nitro, TOOL_SESSION_SANDBOX_SWEEP_CRON, taskName);
+}
+
+/**
+ * Whether a production build schedules the tool-session sandbox sweep. Only
+ * providers with named sandboxes keep tool-session sandboxes between calls:
+ * Vercel Sandbox always, and just-bash only off Vercel, where its storage is
+ * not a function's ephemeral disk.
+ */
+export function shouldScheduleToolSessionSandboxSweep(input: {
+  readonly preset: "vercel" | undefined;
+  readonly providerName: string | undefined;
+}): boolean {
+  if (input.providerName === "vercel") return true;
+  return input.providerName === "just-bash" && input.preset !== "vercel";
+}
+
 function appendScheduledTask(nitro: ScheduleTaskNitro, cron: string, taskName: string): void {
   const existingScheduleTasks = nitro.options.scheduledTasks[cron];
 

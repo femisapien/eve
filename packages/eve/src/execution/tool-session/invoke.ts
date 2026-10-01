@@ -50,6 +50,7 @@ import { BundleKey } from "#runtime/sessions/runtime-context-keys.js";
 import type { CompiledRuntimeAgentBundle } from "#runtime/sessions/compiled-agent-cache.js";
 import { isAsyncIterable } from "#shared/async-iterable.js";
 import { toErrorMessage } from "#shared/errors.js";
+import { isToolSessionError } from "#shared/tool-session-error.js";
 import { isObject } from "#shared/guards.js";
 import { createUlid } from "#shared/ulid.js";
 import type { ToolExecuteOptions } from "#tools/definition.js";
@@ -154,6 +155,7 @@ export async function invokeToolInSession(
 
   const sandbox = await createToolSessionSandbox({
     compiledArtifactsSource: runtime.compiledArtifactsSource,
+    lifetime: oneOffNonce === undefined ? "keyed" : "one-off",
     nodeId: runtime.nodeId,
     registry: runtime.sandboxRegistry,
     sessionId,
@@ -181,9 +183,9 @@ export async function invokeToolInSession(
     );
   } finally {
     try {
-      await sandbox.release({ oneOff: oneOffNonce !== undefined });
+      await sandbox.release();
     } catch (error) {
-      logError(log, "failed to delete a one-off tool-session sandbox", error, {
+      logError(log, "failed to release a tool-session sandbox", error, {
         sessionId,
         toolName: name,
       });
@@ -250,17 +252,21 @@ async function runCall(input: {
       return failedFromError(error, definition.name, "approval policy failed");
     }
     if (status.kind === "denied") return denied(status.reason);
-    if (status.kind === "user-approval") {
-      if (options.approval === undefined) return { callId, status: "approval-required" };
-      const answered = await authorizeApprovalAnswer({
-        approved: options.approval.approved,
-        callId,
-        definition,
-        input: input.input,
-        responder: options.auth,
-      });
-      if (answered !== undefined) return answered;
+    if (status.kind === "user-approval" && options.approval === undefined) {
+      return { callId, status: "approval-required" };
     }
+  }
+  // A supplied answer is always checked, even when the request policy let the
+  // call through: the response policy decides who may answer, not whether to ask.
+  if (options.approval !== undefined) {
+    const answered = await authorizeApprovalAnswer({
+      approved: options.approval.approved,
+      callId,
+      definition,
+      input: input.input,
+      responder: options.auth,
+    });
+    if (answered !== undefined) return answered;
   }
 
   const executeOptions: ToolExecuteOptions = {
@@ -444,7 +450,15 @@ function failed(message: string): CallOutcome {
   return { errorId: createErrorId(), message, status: "failed" };
 }
 
+/**
+ * Logs the error under a fresh id and returns that id with a generic message.
+ * An unexpected error's text can carry paths, hosts, or secrets, so only eve's
+ * own tool-session diagnostics ({@link ToolSessionError}) are returned verbatim.
+ */
 function failedFromError(error: unknown, toolName: string, what: string): CallOutcome {
   const errorId = logError(log, `tool session ${what}`, error, { toolName });
-  return { errorId, message: toErrorMessage(error), status: "failed" };
+  const message = isToolSessionError(error)
+    ? error.message
+    : `Tool "${toolName}" failed: ${what}. The error is logged with id ${errorId}.`;
+  return { errorId, message, status: "failed" };
 }

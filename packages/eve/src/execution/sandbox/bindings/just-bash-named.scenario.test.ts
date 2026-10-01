@@ -53,7 +53,14 @@ describe("just-bash named sandbox sessions", () => {
     ]);
     expect(await named.list(storage, { key: "eve", value: "other" })).toEqual([]);
 
-    await named.delete(storage, address);
+    // A conditional delete keeps a sandbox used since the cutoff, or one a call holds.
+    const lastUsedAt = listed[0]!.lastUsedAt;
+    expect(await named.delete(storage, address, { idleBefore: lastUsedAt })).toBe(false);
+    expect(
+      await named.delete(storage, address, { idleBefore: lastUsedAt + 1, inUse: () => true }),
+    ).toBe(false);
+    expect(await named.delete(storage, address, { idleBefore: lastUsedAt + 1 })).toBe(true);
     expect(await named.find(context, artifact, address)).toBeNull();
+    expect(await named.delete(storage, address)).toBe(false);
   });
 });

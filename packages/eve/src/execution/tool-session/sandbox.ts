@@ -1,7 +1,7 @@
-import { getNamedSandboxSessions } from "#execution/sandbox/named-sessions.js";
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 import type { InvokeToolSandboxReport } from "#channel/invoke-tool.js";
+import { untrackActiveSandboxHandle } from "#execution/sandbox/active-handles.js";
 import { ensureSandboxAccess, type SandboxStartOverride } from "#execution/sandbox/ensure.js";
 import { createSandboxProviderHost } from "#execution/sandbox/provider-host.js";
 import { resolveSandboxCacheDirectory } from "#internal/application/paths.js";
@@ -19,10 +19,12 @@ import {
   type SandboxProviderHandle,
 } from "#shared/sandbox-provider.js";
 import {
+  getNamedSandboxSessions,
   isSandboxNameConflictError,
   type SandboxProviderNamedSession,
   type SandboxProviderTag,
 } from "#execution/sandbox/named-sessions.js";
+import { ToolSessionError } from "#shared/tool-session-error.js";
 
 const log = createLogger("tool-session.sandbox");
 
@@ -34,7 +36,7 @@ export const TOOL_SESSION_SANDBOX_TAG: SandboxProviderTag = { key: "eve", value:
 /** Default idle time after which the sweep deletes a tool-session sandbox (Vercel's snapshot expiry). */
 export const TOOL_SESSION_SANDBOX_EXPIRY_MS = 30 * DAY_MS;
 
-/** How often {@link sweepToolSessionSandboxes} is meant to run. */
+/** How often {@link sweepToolSessionSandboxes} runs. */
 export const TOOL_SESSION_SANDBOX_SWEEP_INTERVAL_MS = 7 * DAY_MS;
 
 /**
@@ -62,19 +64,82 @@ export function toolSessionSandboxName(input: {
 
 type OpenedState = InvokeToolSandboxReport["state"];
 
+/** How long a tool session's sandbox must outlive the call. */
+export type ToolSessionSandboxLifetime = "keyed" | "one-off";
+
+/**
+ * Raised when a keyed tool session opens a sandbox on a provider that cannot
+ * find a sandbox again by name. Such a provider derives its sandbox from the
+ * session id alone, so concurrent calls with one key would share a sandbox that
+ * each call deletes when it ends. One-off sessions still work there.
+ */
+export class ToolSessionSandboxPersistenceError extends ToolSessionError {
+  readonly providerName: string;
+
+  constructor(providerName: string) {
+    super(
+      `Sandbox provider "${providerName}" cannot keep a sandbox between tool-session calls, ` +
+        "so a tool session with a key cannot open one. Call without a key for a sandbox that " +
+        "lasts one call, or use a provider with named sandboxes, such as Vercel Sandbox or just-bash.",
+    );
+    this.name = "ToolSessionSandboxPersistenceError";
+    this.providerName = providerName;
+  }
+}
+
+// Sandbox names held by in-flight calls in this process, with a holder count.
+// The sweep skips them, and re-checks right before each delete.
+const sandboxLeases = new Map<string, number>();
+
+function acquireSandboxLease(name: string): () => void {
+  sandboxLeases.set(name, (sandboxLeases.get(name) ?? 0) + 1);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const holders = (sandboxLeases.get(name) ?? 1) - 1;
+    if (holders <= 0) sandboxLeases.delete(name);
+    else sandboxLeases.set(name, holders);
+  };
+}
+
+function isSandboxLeased(name: string): boolean {
+  return sandboxLeases.has(name);
+}
+
+interface NamedStartHooks {
+  /** Takes this call's lease on a named sandbox before it is looked up. */
+  readonly lease: (name: string) => void;
+  readonly onState: (state: OpenedState) => void;
+}
+
 /**
  * Finds the named sandbox, or creates it. Creation races across instances
  * because a provider's get-then-create is not atomic, so a create that fails
  * with a name conflict looks the name up again and reuses the winner.
+ *
+ * A provider without named lookup gets a sandbox private to this call: its
+ * session id carries `isolatedSessionId`, so no other call derives the same
+ * sandbox, and the call deletes it when it ends. A keyed session there fails
+ * with {@link ToolSessionSandboxPersistenceError} instead.
  */
 export const startNamedToolSessionSandbox =
-  (onState: (state: OpenedState) => void): SandboxStartOverride =>
+  (
+    hooks: NamedStartHooks,
+    fallback: { readonly isolatedSessionId: string; readonly lifetime: ToolSessionSandboxLifetime },
+  ): SandboxStartOverride =>
   async ({ artifact, context, options, provider }) => {
     const named = getNamedSandboxSessions(provider.implementation);
     if (named === undefined) {
-      // No named lookup: the sandbox cannot be found again, so it lives for this call only.
-      const started = await provider.implementation.start(context, options, artifact);
-      onState("created");
+      if (fallback.lifetime === "keyed") {
+        throw new ToolSessionSandboxPersistenceError(provider.providerName);
+      }
+      const isolated = {
+        ...context,
+        session: { ...context.session, id: fallback.isolatedSessionId },
+      };
+      const started = await provider.implementation.start(isolated, options, artifact);
+      hooks.onState("created");
       return { created: true, handle: withCallScopedLifetime(started.handle) };
     }
     const name = toolSessionSandboxName({
@@ -82,12 +147,13 @@ export const startNamedToolSessionSandbox =
       providerName: provider.providerName,
       sessionId: context.session.id,
     });
+    hooks.lease(name);
     const address = { name, tag: TOOL_SESSION_SANDBOX_TAG };
     const found = await named.find(context, artifact, address);
-    if (found !== null) return reuse(found, onState);
+    if (found !== null) return reuse(found, hooks.onState);
     try {
       const handle = await named.create(context, options, artifact, address);
-      onState("created");
+      hooks.onState("created");
       return { created: true, handle };
     } catch (error) {
       if (!isSandboxNameConflictError(error)) throw error;
@@ -98,7 +164,7 @@ export const startNamedToolSessionSandbox =
           { cause: error },
         );
       }
-      return reuse(winner, onState);
+      return reuse(winner, hooks.onState);
     }
   };
 
@@ -118,8 +184,11 @@ function withCallScopedLifetime(handle: SandboxProviderHandle): SandboxProviderH
 /** Sandbox access for one tool call, plus what the call did with it. */
 export interface ToolSessionSandbox {
   readonly access: SandboxAccess;
-  /** Deletes the sandbox if this call opened one that must not outlive it. */
-  release(input: { readonly oneOff: boolean }): Promise<void>;
+  /**
+   * Ends the call's hold on its sandbox, and deletes the sandbox if it must not
+   * outlive the call: a one-off session's, or a call-scoped fallback's.
+   */
+  release(): Promise<void>;
   /** Present once the call opened the sandbox. */
   report(): InvokeToolSandboxReport | undefined;
 }
@@ -130,6 +199,7 @@ export interface ToolSessionSandbox {
  */
 export async function createToolSessionSandbox(input: {
   readonly compiledArtifactsSource: RuntimeCompiledArtifactsSource;
+  readonly lifetime: ToolSessionSandboxLifetime;
   readonly nodeId: string;
   readonly registry: RuntimeSandboxRegistry;
   readonly sessionId: string;
@@ -137,6 +207,11 @@ export async function createToolSessionSandbox(input: {
   let state: OpenedState | undefined;
   let report: InvokeToolSandboxReport | undefined;
   let callScoped = false;
+  let releaseLease: (() => void) | undefined;
+  // The latest handle this call opened, kept so release can delete a stopped sandbox.
+  let latest: { readonly handle: SandboxProviderHandle; readonly providerName: string } | undefined;
+  // One isolated id per call, so reopening after stop() finds the same fallback sandbox.
+  const isolatedSessionId = `${input.sessionId}.call-${randomBytes(8).toString("hex")}`;
   const inner = await ensureSandboxAccess({
     compiledArtifactsSource: input.compiledArtifactsSource,
     nodeId: input.nodeId,
@@ -144,18 +219,29 @@ export async function createToolSessionSandbox(input: {
     registry: input.registry,
     sessionId: input.sessionId,
     startSandbox: async (start) => {
-      const started = await startNamedToolSessionSandbox((value) => {
-        state = value;
-      })(start);
+      const started = await startNamedToolSessionSandbox(
+        {
+          lease: (name) => {
+            releaseLease ??= acquireSandboxLease(name);
+          },
+          onState: (value) => {
+            state = value;
+          },
+        },
+        { isolatedSessionId, lifetime: input.lifetime },
+      )(start);
       callScoped = callScopedHandles.has(started.handle);
+      latest = { handle: started.handle, providerName: start.provider.providerName };
       return started;
     },
     state: null,
   });
 
   let opening: Promise<SandboxSession | null> | undefined;
-  // Whether this call holds an open sandbox the tool has not deleted itself.
+  // Whether this call opened a sandbox the tool has not deleted itself.
   let live = false;
+  // Whether that sandbox is open now, rather than stopped by the tool.
+  let open = false;
   const access: SandboxAccess = {
     ...inner,
     get() {
@@ -163,8 +249,9 @@ export async function createToolSessionSandbox(input: {
         const startedAt = performance.now();
         const attempt = inner.get().then((sandbox) => {
           if (sandbox !== null && state !== undefined) {
-            report = { ms: Math.round(performance.now() - startedAt), state };
+            report ??= { ms: Math.round(performance.now() - startedAt), state };
             live = true;
+            open = true;
           }
           return sandbox;
         });
@@ -175,19 +262,42 @@ export async function createToolSessionSandbox(input: {
       }
       return opening;
     },
+    async stop() {
+      // The stopped session is unusable; the next get() reopens the sandbox.
+      opening = undefined;
+      open = false;
+      await inner.stop();
+    },
     async delete(options) {
       await inner.delete?.(options);
       opening = undefined;
       live = false;
+      open = false;
     },
   };
 
   return {
     access,
-    async release({ oneOff }) {
-      if (!live || (!oneOff && !callScoped)) return;
-      live = false;
-      await inner.delete?.();
+    async release() {
+      try {
+        if (!live || (input.lifetime !== "one-off" && !callScoped)) return;
+        live = false;
+        if (open) {
+          open = false;
+          await inner.delete?.();
+          return;
+        }
+        // Stopped by the tool: delete through the last handle instead of reopening it.
+        if (latest === undefined) return;
+        await latest.handle.onSessionDelete();
+        untrackActiveSandboxHandle({
+          handle: latest.handle,
+          providerName: latest.providerName,
+          sessionId: input.sessionId,
+        });
+      } finally {
+        releaseLease?.();
+      }
     },
     report: () => report,
   };
@@ -204,7 +314,13 @@ export interface ToolSessionSandboxSweepResult {
 /**
  * Deletes tool-session sandboxes unused for longer than `expiryMs` (30 days by
  * default). A tool session has no end to delete its sandbox, so this bounds
- * retention. Meant to run every {@link TOOL_SESSION_SANDBOX_SWEEP_INTERVAL_MS}.
+ * retention. Production builds schedule it weekly as the
+ * `eve.tool-session-sandbox-sweep` Nitro task.
+ *
+ * Calls in this process hold a lease the sweep honors. Across instances the
+ * provider's re-read just before deleting is the guard; a call that resumes a
+ * 30-day-idle sandbox in the instant between that re-read and the delete can
+ * still lose it, and then fails with the tool's own error, as after expiry.
  */
 export async function sweepToolSessionSandboxes(input: {
   readonly compiledArtifactsSource: RuntimeCompiledArtifactsSource;
@@ -235,10 +351,17 @@ export async function sweepToolSessionSandboxes(input: {
   const deleted: string[] = [];
   const failed: string[] = [];
   for (const summary of await named.list(context, TOOL_SESSION_SANDBOX_TAG)) {
-    if (summary.running || summary.lastUsedAt >= cutoff) continue;
+    if (summary.running || summary.lastUsedAt >= cutoff || isSandboxLeased(summary.name)) continue;
     try {
-      await named.delete(context, { name: summary.name, tag: TOOL_SESSION_SANDBOX_TAG });
-      deleted.push(summary.name);
+      // The listing may be stale by now: a call can have resumed the sandbox since.
+      // The provider re-reads it right before deleting, and the lease is checked
+      // again at that point, so a sandbox a call holds or has just used is kept.
+      const removed = await named.delete(
+        context,
+        { name: summary.name, tag: TOOL_SESSION_SANDBOX_TAG },
+        { idleBefore: cutoff, inUse: () => isSandboxLeased(summary.name) },
+      );
+      if (removed) deleted.push(summary.name);
     } catch (error) {
       failed.push(summary.name);
       log.warn("failed to delete an expired tool-session sandbox", {

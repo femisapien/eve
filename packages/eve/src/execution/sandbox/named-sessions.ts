@@ -48,6 +48,14 @@ export interface SandboxProviderNamedSessionSummary {
   readonly running: boolean;
 }
 
+/** Keeps a named sandbox that is still in use; see {@link SandboxProviderNamedSessions.delete}. */
+export interface SandboxProviderNamedDeleteCondition {
+  /** Epoch milliseconds; a sandbox used at or after this is kept. */
+  readonly idleBefore: number;
+  /** Asked last, right before the delete; `true` keeps the sandbox. */
+  readonly inUse?: () => boolean;
+}
+
 /**
  * Sandboxes addressed by a caller-chosen name instead of persisted session
  * state. Tool sessions keep no record, so every call finds its sandbox by name.
@@ -66,7 +74,19 @@ export interface SandboxProviderNamedSessions<
     artifact: Readonly<PreparedArtifact>,
     input: SandboxProviderNamedAddress,
   ): Promise<SandboxProviderHandle<Session>>;
-  delete(context: SandboxProviderStorageContext, input: SandboxProviderNamedAddress): Promise<void>;
+  /**
+   * Deletes the named sandbox. With `condition`, the provider re-reads the
+   * sandbox immediately before deleting and keeps it, returning `false`, when
+   * it is running, was used at or after `condition.idleBefore`, or
+   * `condition.inUse()` says a call holds it, so a sweep
+   * that listed it earlier does not delete one a call has since resumed.
+   * Returns whether a sandbox was deleted.
+   */
+  delete(
+    context: SandboxProviderStorageContext,
+    input: SandboxProviderNamedAddress,
+    condition?: SandboxProviderNamedDeleteCondition,
+  ): Promise<boolean>;
   find(
     context: SandboxProviderSessionContext,
     artifact: Readonly<PreparedArtifact>,
