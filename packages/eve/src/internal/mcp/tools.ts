@@ -19,6 +19,7 @@ import {
   hashToolArguments,
   type McpRequestStateCodec,
   type McpRequestStatePayload,
+  type McpSignInRequest,
 } from "#internal/mcp/request-state.js";
 import type { ToolModelOutput } from "#tools/model-output.js";
 
@@ -135,7 +136,11 @@ async function callMcpTool(
   if (!tools.has(name)) throw new ProtocolError(INVALID_PARAMS, `Tool ${name} not found`);
   const args = params.arguments ?? {};
 
-  const rawKey = ctx.mcpReq._meta?.[MCP_TOOL_SESSION_META_KEY];
+  // The key is honored only from a client that declared the extension; any
+  // other client gets the one-off fallback, whatever its `_meta` carries.
+  const rawKey = clientDeclaresExtension(server, context, ctx, MCP_TOOL_SESSIONS_EXTENSION)
+    ? ctx.mcpReq._meta?.[MCP_TOOL_SESSION_META_KEY]
+    : undefined;
   if (rawKey !== undefined && typeof rawKey !== "string") {
     return toolError("invalid_input", `_meta["${MCP_TOOL_SESSION_META_KEY}"] must be a string.`);
   }
@@ -165,8 +170,17 @@ async function callMcpTool(
     if (state.kind === "approval") {
       const answer = readApprovalAnswer(ctx.mcpReq.inputResponses);
       if (answer !== undefined) options.approval = answer;
-    } else if (state.approval !== undefined) {
-      options.approval = state.approval;
+    } else {
+      if (state.approval !== undefined) options.approval = state.approval;
+      // Nothing runs until every requested sign-in has an answer: a grant
+      // that already exists does not stand in for the person's reply.
+      const answers = readSignInAnswers(ctx.mcpReq.inputResponses, state.signIns ?? []);
+      if (answers === "declined") {
+        return toolError("denied", `The sign-in for the tool "${name}" was declined.`);
+      }
+      if (answers === "missing") {
+        return await reissueSignIn(context, state);
+      }
     }
   }
 
@@ -230,6 +244,66 @@ export function readApprovalAnswer(
   if (view.action === "decline" || view.action === "cancel") return { approved: false };
   const approved = view.content?.approved;
   return typeof approved === "boolean" ? { approved } : undefined;
+}
+
+/**
+ * Checks the answers to a sign-in round against the connections it asked
+ * about. Any decline or cancel declines the round; any connection without an
+ * accept leaves it unanswered, and the caller is asked again.
+ */
+export function readSignInAnswers(
+  responses: McpJsonObject | undefined,
+  signIns: readonly McpSignInRequest[],
+): "accepted" | "declined" | "missing" {
+  let missing = signIns.length === 0;
+  for (const signIn of signIns) {
+    const view = inputResponse(responses, `${MCP_AUTHORIZATION_KEY_PREFIX}${signIn.name}`);
+    if (view.kind !== "elicit") {
+      missing = true;
+      continue;
+    }
+    if (view.action === "decline" || view.action === "cancel") return "declined";
+    if (view.action !== "accept") missing = true;
+  }
+  return missing ? "missing" : "accepted";
+}
+
+/** The same sign-in questions, under a freshly minted state for the same call. */
+async function reissueSignIn(
+  context: McpToolsContext,
+  state: McpRequestStatePayload,
+): Promise<McpToolCallResult> {
+  if (context.requestState.kind === "missing") {
+    return toolError("internal", context.requestState.reason);
+  }
+  const requestState = await context.requestState.codec.mint(state);
+  return signInRequired(state.callId, state.signIns ?? [], requestState);
+}
+
+function signInRequired(
+  callId: string,
+  signIns: readonly McpSignInRequest[],
+  requestState: string,
+): McpToolCallResult {
+  return {
+    _meta: {
+      [MCP_AUTHORIZATION_META_KEY]: {
+        callId,
+        connections: signIns.map((entry) => entry.name),
+      },
+    },
+    inputRequests: Object.fromEntries(
+      signIns.map((entry) => [
+        `${MCP_AUTHORIZATION_KEY_PREFIX}${entry.name}`,
+        {
+          method: "elicitation/create",
+          params: { message: signInMessage(entry), mode: "url", url: entry.url },
+        },
+      ]),
+    ),
+    requestState,
+    resultType: "input_required",
+  };
 }
 
 async function toMcpToolResult(
@@ -323,32 +397,20 @@ async function toMcpToolResult(
       if (context.requestState.kind === "missing") {
         return withSandbox(toolError("internal", context.requestState.reason));
       }
-      const requestState = await context.requestState.codec.mint(
-        statePayload(context, call, "authorization", result.callId, result.oneOffNonce),
-      );
-      return withSandbox({
-        _meta: {
-          [MCP_AUTHORIZATION_META_KEY]: {
-            callId: result.callId,
-            connections: result.challenges.map((entry) => entry.name),
-          },
-        },
-        inputRequests: Object.fromEntries(
-          result.challenges.map((entry) => [
-            `${MCP_AUTHORIZATION_KEY_PREFIX}${entry.name}`,
-            {
-              method: "elicitation/create",
-              params: {
-                message: signInMessage(entry),
-                mode: "url",
-                url: entry.challenge.url,
-              },
-            },
-          ]),
-        ),
-        requestState,
-        resultType: "input_required",
+      const signIns: McpSignInRequest[] = result.challenges.map((entry) => {
+        const signIn: { -readonly [K in keyof McpSignInRequest]: McpSignInRequest[K] } = {
+          name: entry.name,
+          url: entry.challenge.url as string,
+        };
+        if (entry.challenge.userCode !== undefined) signIn.userCode = entry.challenge.userCode;
+        return signIn;
       });
+      const payload = {
+        ...statePayload(context, call, "authorization", result.callId, result.oneOffNonce),
+        signIns,
+      };
+      const requestState = await context.requestState.codec.mint(payload);
+      return withSandbox(signInRequired(result.callId, signIns, requestState));
     }
   }
 }
@@ -395,8 +457,8 @@ function statePayload(
   return payload;
 }
 
-function signInMessage(entry: InvokeToolAuthorizationChallenge): string {
-  const code = entry.challenge.userCode === undefined ? "" : ` Code: ${entry.challenge.userCode}`;
+function signInMessage(entry: McpSignInRequest): string {
+  const code = entry.userCode === undefined ? "" : ` Code: ${entry.userCode}`;
   return `Sign in to ${entry.name} to continue.${code}`;
 }
 
@@ -416,15 +478,35 @@ function clientSupports(
   ctx: McpRequestHandlerExtra,
   mode: "form" | "url",
 ): boolean {
-  const declared =
-    context.era === "modern"
-      ? ctx.mcpReq.envelope?.[CLIENT_CAPABILITIES_META_KEY]
-      : server.server.getClientCapabilities();
+  const declared = declaredClientCapabilities(server, context, ctx);
   if (!isJsonObject(declared)) return false;
   const elicitation = declared.elicitation;
   if (!isJsonObject(elicitation)) return false;
   if (mode === "url") return elicitation.url !== undefined;
   return elicitation.form !== undefined || elicitation.url === undefined;
+}
+
+function declaredClientCapabilities(
+  server: McpServer,
+  context: McpToolsContext,
+  ctx: McpRequestHandlerExtra,
+): unknown {
+  return context.era === "modern"
+    ? ctx.mcpReq.envelope?.[CLIENT_CAPABILITIES_META_KEY]
+    : server.server.getClientCapabilities();
+}
+
+/** Whether the request's declared client capabilities name an extension. */
+function clientDeclaresExtension(
+  server: McpServer,
+  context: McpToolsContext,
+  ctx: McpRequestHandlerExtra,
+  extension: string,
+): boolean {
+  const declared = declaredClientCapabilities(server, context, ctx);
+  if (!isJsonObject(declared)) return false;
+  const extensions = declared.extensions;
+  return isJsonObject(extensions) && isJsonObject(extensions[extension]);
 }
 
 function toolError(

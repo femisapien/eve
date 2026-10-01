@@ -101,6 +101,12 @@ export interface McpServerFeature<TAuth = SessionAuthContext | null> {
    */
   readonly capabilities?: McpJsonObject;
   register(server: McpServer, context: McpServerFeatureContext<TAuth>): void;
+  /**
+   * The subset of `uris` this feature can notify about, for a
+   * `subscriptions/listen` `resourceSubscriptions` filter. A URI no feature
+   * claims is dropped before the SDK acknowledges the filter.
+   */
+  filterResourceSubscriptions?(uris: readonly string[]): Promise<readonly string[]>;
 }
 
 type InferSchemaOutput<TSchema> =
@@ -181,6 +187,9 @@ interface McpStreamableHttpServerOptions<TAuth> {
  */
 const MCP_MAX_SUBSCRIPTIONS_PER_HANDLER = 1;
 
+/** Most resource URIs one `subscriptions/listen` filter may name. */
+export const MCP_MAX_RESOURCE_SUBSCRIPTIONS = 100;
+
 /**
  * Creates a dual-era, stateless MCP HTTP request handler.
  *
@@ -218,8 +227,13 @@ export function createMcpStreamableHttpServer<TAuth = SessionAuthContext | null>
     const inspected = await inspectRequestBody(request);
     if (inspected.tooLarge) return requestBodyTooLargeResponse();
     if (inspected.invalidJson) return invalidJsonResponse();
-    const parsedBody = inspected.value;
+    let parsedBody = inspected.value;
     if (parsedBody === undefined) return await handler.fetch(request);
+    if (isListenRequest(parsedBody)) {
+      const narrowed = await narrowListenRequest(parsedBody, options.features ?? []);
+      if (narrowed instanceof Response) return narrowed;
+      parsedBody = narrowed;
+    }
 
     const preflightFailure = await preflightModernRequest(request, parsedBody);
     if (preflightFailure !== undefined) return preflightFailure;
@@ -232,11 +246,65 @@ export function createMcpStreamableHttpServer<TAuth = SessionAuthContext | null>
   };
 }
 
-function isListenRequest(body: unknown): boolean {
+function isListenRequest(body: unknown): body is Readonly<Record<string, unknown>> {
   return isPlainRecord(body) && body.method === "subscriptions/listen";
 }
 
 const LISTEN_ACK_METHOD = "notifications/subscriptions/acknowledged";
+
+/**
+ * Bounds and narrows a listen request's `resourceSubscriptions` before the
+ * SDK, which acknowledges whatever URIs it is given. Over
+ * {@link MCP_MAX_RESOURCE_SUBSCRIPTIONS} answers `-32602`. Otherwise only
+ * the URIs some feature can notify about are kept, so the ack lists exactly
+ * the subscriptions that are honored. Malformed filters pass through for the
+ * SDK to refuse.
+ */
+async function narrowListenRequest<TAuth>(
+  body: Readonly<Record<string, unknown>>,
+  features: readonly McpServerFeature<TAuth>[],
+): Promise<unknown> {
+  const params = body.params;
+  if (!isPlainRecord(params) || !isPlainRecord(params.notifications)) return body;
+  const requested = params.notifications.resourceSubscriptions;
+  if (!Array.isArray(requested)) return body;
+  if (!requested.every((uri): uri is string => typeof uri === "string")) return body;
+  if (requested.length > MCP_MAX_RESOURCE_SUBSCRIPTIONS) {
+    return Response.json(
+      {
+        error: {
+          code: -32_602,
+          message: `resourceSubscriptions may name at most ${MCP_MAX_RESOURCE_SUBSCRIPTIONS} URIs (got ${requested.length}).`,
+        },
+        id: isJsonRpcId(body.id) ? body.id : null,
+        jsonrpc: "2.0",
+      },
+      { status: 200 },
+    );
+  }
+  const unique = [...new Set(requested)];
+  const supported = new Set<string>();
+  for (const feature of features) {
+    if (feature.filterResourceSubscriptions === undefined) continue;
+    for (const uri of await feature.filterResourceSubscriptions(unique)) supported.add(uri);
+  }
+  const resourceSubscriptions = unique.filter((uri) => supported.has(uri));
+  const { resourceSubscriptions: _dropped, ...notifications } = params.notifications;
+  return {
+    ...body,
+    params: {
+      ...params,
+      notifications:
+        resourceSubscriptions.length === 0
+          ? notifications
+          : { ...notifications, resourceSubscriptions },
+    },
+  };
+}
+
+function isJsonRpcId(value: unknown): value is number | string {
+  return typeof value === "number" || typeof value === "string";
+}
 
 /**
  * Passes a `subscriptions/listen` SSE stream through until the event carrying

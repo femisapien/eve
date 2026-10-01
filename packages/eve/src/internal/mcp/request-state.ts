@@ -41,6 +41,20 @@ export interface McpRequestStatePayload {
   readonly nonce?: string;
   /** The person's approval answer, carried into a sign-in round that follows it. */
   readonly approval?: { readonly approved: boolean };
+  /**
+   * The sign-ins an `authorization` round asked for, so a retry that leaves
+   * one unanswered gets the same questions back without running the tool.
+   * The URLs already went to the client in `inputRequests`.
+   */
+  readonly signIns?: readonly McpSignInRequest[];
+}
+
+/** One sign-in an `authorization` round asks the client to complete. */
+export interface McpSignInRequest {
+  /** The connection name; the input request key is `dev.eve/authorization:<name>`. */
+  readonly name: string;
+  readonly url: string;
+  readonly userCode?: string;
 }
 
 /** A resolved deployment secret, or why there is none. */
@@ -137,7 +151,21 @@ function isRequestStatePayload(value: unknown): value is McpRequestStatePayload 
     if (typeof approval !== "object" || approval === null) return false;
     if (typeof approval.approved !== "boolean") return false;
   }
+  if (payload.kind === "authorization") {
+    if (!Array.isArray(payload.signIns) || payload.signIns.length === 0) return false;
+    if (!payload.signIns.every(isSignInRequest)) return false;
+  } else if (payload.signIns !== undefined) {
+    return false;
+  }
   return true;
+}
+
+function isSignInRequest(value: unknown): value is McpSignInRequest {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+  const entry = value as Record<string, unknown>;
+  if (typeof entry.name !== "string" || entry.name.length === 0) return false;
+  if (typeof entry.url !== "string" || entry.url.length === 0) return false;
+  return entry.userCode === undefined || typeof entry.userCode === "string";
 }
 
 /** `sha256` (hex) of the canonical JSON of a call's arguments. */

@@ -94,7 +94,8 @@ export interface McpSkillEntry {
  *
  * - A skill is served when its entry file reads, fits the 512 KiB file cap,
  *   and the skill stays within SEP-2640's 512 files and 16 MiB. Otherwise it
- *   is absent everywhere: lists, `skills/get`, reads, and directory reads.
+ *   is absent everywhere: `skills/list`, `skills/get`, `resources/list`,
+ *   reads, directory reads, and subscriptions.
  * - A supporting file over the cap is not served: `resources/read` refuses
  *   it, and the skill's `resources` and directory listings leave it out, so
  *   every view of the skill agrees on its files and the rest stays verifiable.
@@ -110,13 +111,71 @@ export function createMcpSkillsFeature(source: McpSkillSource): McpServerFeature
   return {
     capabilities: MCP_SKILLS_CAPABILITIES,
     register(server, { era }) {
-      registerSkillHandlers(server, source);
-      if (era === "legacy") registerLegacySubscriptions(server);
+      // `register` runs once per request, so the catalog is per request.
+      const catalog = createSkillCatalog(source);
+      registerSkillHandlers(server, catalog);
+      if (era === "legacy") registerLegacySubscriptions(server, catalog);
+    },
+    async filterResourceSubscriptions(uris) {
+      const catalog = createSkillCatalog(source);
+      const readable: string[] = [];
+      for (const uri of uris) {
+        if ((await catalog.file(uri)) !== undefined) readable.push(uri);
+      }
+      return readable;
     },
   };
 }
 
-function registerSkillHandlers(server: McpServer, source: McpSkillSource): void {
+/**
+ * The one eligibility rule every surface reads: a skill is served exactly
+ * when {@link snapshotSkill} builds it, and a file exactly when that
+ * snapshot holds it. Snapshots are memoized for one request, so the lists,
+ * gets, reads, and subscriptions of a request agree.
+ */
+interface SkillCatalog {
+  served(): Promise<SkillSnapshot[]>;
+  skill(name: string): Promise<SkillSnapshot | undefined>;
+  /** The served file a `skill://` URI names, or `undefined`. */
+  file(uri: string): Promise<{ readonly path: string; readonly file: SnapshotFile } | undefined>;
+}
+
+function createSkillCatalog(source: McpSkillSource): SkillCatalog {
+  let skills: Promise<AgentSkillDescription[]> | undefined;
+  const snapshots = new Map<string, Promise<SkillSnapshot | undefined>>();
+  const listed = async () => await (skills ??= listSkills(source));
+  const snapshot = (skill: AgentSkillDescription) => {
+    let pending = snapshots.get(skill.name);
+    if (pending === undefined) {
+      pending = snapshotSkill(source, skill);
+      snapshots.set(skill.name, pending);
+    }
+    return pending;
+  };
+  const catalog: SkillCatalog = {
+    async served() {
+      const result: SkillSnapshot[] = [];
+      for (const skill of await listed()) {
+        const built = await snapshot(skill);
+        if (built !== undefined) result.push(built);
+      }
+      return result;
+    },
+    async skill(name) {
+      const skill = (await listed()).find((entry) => entry.name === name);
+      return skill === undefined ? undefined : await snapshot(skill);
+    },
+    async file(uri) {
+      const parsed = parseSkillUri(uri);
+      if (parsed?.path === undefined) return undefined;
+      const file = (await catalog.skill(parsed.skill))?.files.get(parsed.path);
+      return file === undefined ? undefined : { file, path: parsed.path };
+    },
+  };
+  return catalog;
+}
+
+function registerSkillHandlers(server: McpServer, catalog: SkillCatalog): void {
   const low = server.server;
 
   low.setRequestHandler(
@@ -124,11 +183,7 @@ function registerSkillHandlers(server: McpServer, source: McpSkillSource): void 
     { params: z.looseObject({ cursor: z.string().optional() }) },
     async (params) => {
       rejectCursor(params.cursor);
-      const skills: McpSkillEntry[] = [];
-      for (const skill of await listSkills(source)) {
-        const snapshot = await snapshotSkill(source, skill);
-        if (snapshot !== undefined) skills.push(snapshot.entry);
-      }
+      const skills = (await catalog.served()).map((snapshot) => snapshot.entry);
       return { skills, ...MCP_SKILLS_CACHE_HINT };
     },
   );
@@ -138,11 +193,10 @@ function registerSkillHandlers(server: McpServer, source: McpSkillSource): void 
     { params: z.looseObject({ uri: z.string() }) },
     async (params) => {
       const parsed = parseSkillUri(params.uri);
-      const skill =
+      const snapshot =
         parsed !== undefined && parsed.path === SKILL_ENTRY_FILE_NAME
-          ? await findSkill(source, parsed.skill)
+          ? await catalog.skill(parsed.skill)
           : undefined;
-      const snapshot = skill === undefined ? undefined : await snapshotSkill(source, skill);
       if (snapshot === undefined) {
         throw new ProtocolError(ProtocolErrorCode.InvalidParams, `Unknown skill: ${params.uri}`, {
           uri: params.uri,
@@ -158,8 +212,7 @@ function registerSkillHandlers(server: McpServer, source: McpSkillSource): void 
     async (params) => {
       rejectCursor(params.cursor);
       const parsed = parseSkillUri(params.uri);
-      const skill = parsed === undefined ? undefined : await findSkill(source, parsed.skill);
-      const snapshot = skill === undefined ? undefined : await snapshotSkill(source, skill);
+      const snapshot = parsed === undefined ? undefined : await catalog.skill(parsed.skill);
       const resources =
         snapshot === undefined || parsed === undefined
           ? undefined
@@ -171,18 +224,13 @@ function registerSkillHandlers(server: McpServer, source: McpSkillSource): void 
 
   low.setRequestHandler("resources/list", async (request) => {
     rejectCursor(request.params?.cursor);
-    const resources = [];
-    for (const skill of await listSkills(source)) {
-      const entry = await readEntryDocument(source, skill);
-      if (entry === undefined) continue;
-      resources.push({
-        uri: skillFileUri(skill.name, SKILL_ENTRY_FILE_NAME),
-        name: skill.name,
-        description: entry.description,
-        mimeType: mimeTypeFor(SKILL_ENTRY_FILE_NAME),
-        size: entry.bytes.byteLength,
-      });
-    }
+    const resources = (await catalog.served()).map((snapshot) => ({
+      uri: snapshot.entry.uri,
+      name: snapshot.name,
+      description: snapshot.description,
+      mimeType: mimeTypeFor(SKILL_ENTRY_FILE_NAME),
+      size: snapshot.files.get(SKILL_ENTRY_FILE_NAME)?.bytes.byteLength ?? 0,
+    }));
     return { resources, ...MCP_SKILLS_CACHE_HINT };
   });
 
@@ -196,14 +244,10 @@ function registerSkillHandlers(server: McpServer, source: McpSkillSource): void 
     if (typeof uri !== "string") {
       throw new ProtocolError(ProtocolErrorCode.InvalidParams, "params.uri must be a string.");
     }
-    const parsed = parseSkillUri(uri);
-    const skill = parsed === undefined ? undefined : await findSkill(source, parsed.skill);
-    const file =
-      skill === undefined || parsed === undefined || parsed.path === undefined
-        ? undefined
-        : await readServedFile(source, skill, parsed.path);
-    if (file === undefined) throw new ResourceNotFoundError(uri);
-    const mimeType = servedMimeType(parsed?.path ?? "", file);
+    const served = await catalog.file(uri);
+    if (served === undefined) throw new ResourceNotFoundError(uri);
+    const { file } = served;
+    const mimeType = file.mimeType;
     const contents =
       file.text === undefined
         ? { uri, mimeType, blob: Buffer.from(file.bytes).toString("base64") }
@@ -215,14 +259,20 @@ function registerSkillHandlers(server: McpServer, source: McpSkillSource): void 
 /**
  * 2025-era clients subscribe with `resources/subscribe`, which the declared
  * `resources.subscribe` obliges. The fallback is stateless and skills never
- * change within a deployment, so subscribing succeeds and never notifies.
+ * change within a deployment, so subscribing to a served skill file succeeds
+ * and never notifies; any other URI is not found.
  * 2026-07-28 clients subscribe through `subscriptions/listen` instead.
  */
-function registerLegacySubscriptions(server: McpServer): void {
+function registerLegacySubscriptions(server: McpServer, catalog: SkillCatalog): void {
   for (const method of ["resources/subscribe", "resources/unsubscribe"] as const) {
     server.server.setRequestHandler(method, async (request) => {
-      if (typeof request.params?.uri !== "string") {
+      const uri = request.params?.uri;
+      if (typeof uri !== "string") {
         throw new ProtocolError(ProtocolErrorCode.InvalidParams, "params.uri must be a string.");
+      }
+      // Only a served skill file can be subscribed to, as on the listen path.
+      if (method === "resources/subscribe" && (await catalog.file(uri)) === undefined) {
+        throw new ResourceNotFoundError(uri);
       }
       return {};
     });
@@ -297,13 +347,6 @@ async function listSkills(source: McpSkillSource): Promise<AgentSkillDescription
     .sort((left, right) => compare(left.name, right.name));
 }
 
-async function findSkill(
-  source: McpSkillSource,
-  name: string,
-): Promise<AgentSkillDescription | undefined> {
-  return (await listSkills(source)).find((skill) => skill.name === name);
-}
-
 /**
  * The paths a skill serves: its entry file as `SKILL.md`, whatever case it
  * was authored in, and every other listed file as is. `undefined` when the
@@ -336,17 +379,6 @@ interface EntryDocument extends ServedFile {
   readonly text: string;
   readonly description: string;
   readonly frontmatter: JsonObject;
-}
-
-async function readServedFile(
-  source: McpSkillSource,
-  skill: AgentSkillDescription,
-  path: string,
-): Promise<ServedFile | undefined> {
-  const paths = servedPaths(skill);
-  if (paths === undefined || !paths.includes(path)) return undefined;
-  if (path === SKILL_ENTRY_FILE_NAME) return await readEntryDocument(source, skill);
-  return await readFileWithinCap(source, skill.name, path);
 }
 
 async function readFileWithinCap(
@@ -458,17 +490,34 @@ function toJsonValue(value: unknown): JsonValue | undefined {
     const object: Record<string, JsonValue> = {};
     for (const [key, item] of Object.entries(value)) {
       const json = toJsonValue(item);
-      if (json !== undefined) object[key] = json;
+      // `defineProperty`, not assignment: a `__proto__` key is authored
+      // metadata, and assignment would set the prototype and drop it.
+      if (json !== undefined) defineJsonMember(object, key, json);
     }
     return object;
   }
   return undefined;
 }
 
+function defineJsonMember(object: Record<string, JsonValue>, key: string, value: JsonValue): void {
+  Object.defineProperty(object, key, {
+    configurable: true,
+    enumerable: true,
+    value,
+    writable: true,
+  });
+}
+
+interface SnapshotFile extends ServedFile {
+  readonly mimeType: string;
+}
+
 interface SkillSnapshot {
+  readonly name: string;
+  readonly description: string;
   readonly entry: McpSkillEntry;
-  /** Served files by path, sorted by path. */
-  readonly files: ReadonlyMap<string, { readonly mimeType: string }>;
+  /** Served files by path, sorted by path, with the bytes every surface serves. */
+  readonly files: ReadonlyMap<string, SnapshotFile>;
 }
 
 /** Reads every file of a skill to build its entry. `undefined` when it is not served. */
@@ -484,13 +533,13 @@ async function snapshotSkill(
     path === SKILL_ENTRY_FILE_NAME ? document : await readFileWithinCap(source, skill.name, path),
   );
   const resources: McpSkillResource[] = [];
-  const served = new Map<string, { readonly mimeType: string }>();
+  const served = new Map<string, SnapshotFile>();
   let total = 0;
   for (const [index, file] of files.entries()) {
     const path = paths[index];
     if (file === undefined || path === undefined) continue;
     total += file.bytes.byteLength;
-    served.set(path, { mimeType: servedMimeType(path, file) });
+    served.set(path, { ...file, mimeType: servedMimeType(path, file) });
     resources.push({
       uri: skillFileUri(skill.name, path),
       digest: `sha256:${createHash("sha256").update(file.bytes).digest("hex")}`,
@@ -499,6 +548,8 @@ async function snapshotSkill(
   }
   if (total > MCP_SKILL_MAX_TOTAL_BYTES) return undefined;
   return {
+    name: skill.name,
+    description: document.description,
     entry: {
       uri: skillFileUri(skill.name, SKILL_ENTRY_FILE_NAME),
       frontmatter: document.frontmatter,
@@ -511,7 +562,7 @@ async function snapshotSkill(
 /** Direct children of a directory of a served skill; `undefined` if it is not a directory. */
 function listDirectory(
   skill: string,
-  files: ReadonlyMap<string, { readonly mimeType: string }>,
+  files: ReadonlyMap<string, SnapshotFile>,
   directory: string | undefined,
 ): { uri: string; name: string; mimeType: string }[] | undefined {
   const prefix = directory === undefined ? "" : `${directory}/`;
