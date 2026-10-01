@@ -46,7 +46,8 @@ vi.mock("nitro/builder", () => ({
   createNitro: createNitroMock,
 }));
 
-vi.mock("./schedule-task-routes.js", () => ({
+vi.mock("./schedule-task-routes.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./schedule-task-routes.js")>()),
   registerScheduleTaskHandlers,
 }));
 
