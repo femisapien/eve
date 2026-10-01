@@ -2127,8 +2127,25 @@ describe("createToolLoopHarness", () => {
     const runStep = createToolLoopHarness(createTestConfig(emit));
 
     const parked = await runStep(createLimitReachedSession(), { message: "Hi again" });
+    const beforeQueued = events.length;
     const reparked = await runStep(parked.session, { message: "also do this other thing" });
 
+    expect(events.slice(beforeQueued).map((event) => event.type)).toEqual([
+      "turn.started",
+      "message.received",
+      "turn.waiting",
+    ]);
+    expect(
+      events.slice(beforeQueued).find((event) => event.type === "message.received")?.data,
+    ).toMatchObject({
+      message: "also do this other thing",
+      turnId: "turn_1",
+    });
+    expect(events.at(-1)).toMatchObject({
+      type: "turn.waiting",
+      data: { on: "input", turnId: "turn_1" },
+    });
+    expect(reparked.held).toEqual({ kind: "request" });
     expect(vi.mocked(ToolLoopAgent)).not.toHaveBeenCalled();
     expect(reparked.next).toBeNull();
     expect(events.filter((event) => event.type === "input.requested")).toHaveLength(1);
@@ -2138,6 +2155,11 @@ describe("createToolLoopHarness", () => {
     });
 
     expect(vi.mocked(ToolLoopAgent)).toHaveBeenCalledTimes(1);
+    expect(events.filter((event) => event.type === "message.received")).toHaveLength(2);
+    expect(events.filter((event) => event.type === "turn.started")).toHaveLength(2);
+    expect(
+      events.find((event) => event.type === "step.started" && event.data.turnId === "turn_1"),
+    ).toBeDefined();
     expect(resumed.session.history).toContainEqual({
       content: "also do this other thing",
       kind: "user" as const,

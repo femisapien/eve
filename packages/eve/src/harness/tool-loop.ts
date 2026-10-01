@@ -108,6 +108,7 @@ import {
   emitTurnEpilogue,
   emitTurnPreamble,
   getHarnessEmissionState,
+  isHarnessBetweenTurns,
   setHarnessEmissionState,
 } from "#harness/emission.js";
 import { extractToolApprovalInputRequests } from "#harness/input-extraction.js";
@@ -155,6 +156,7 @@ import {
 import {
   createFrameworkUserMessage,
   createUserMessage,
+  createTurnInputMessages,
   frameworkMessageKindForStepInput,
   normalizeModelMessages,
   normalizeUserContent,
@@ -907,8 +909,81 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
             }
           : pending.session;
 
-      // The turn's request is still open (a partial answer, a refused responder,
-      // or a message waiting behind a budget prompt), so the turn stays held.
+      // A session-limit prompt ends its turn. A message queued behind it still
+      // needs its own turn boundary, even though it cannot reach the model yet.
+      if (isHarnessBetweenTurns(parkedSession)) {
+        if (emit && pending.deferredMessage === true && hasStepInput(input)) {
+          const deferredInput = createTurnInputMessages(effectiveStepInput);
+          if (store !== undefined) {
+            prepareDynamicInstructionPreamble(
+              store,
+              projectHistory(parkedSession.history, parkedSession.state),
+            );
+            prepareMemoryPreamble(store, {
+              history: parkedSession.history,
+              input: deferredInput,
+              projector: config.historyProjector,
+              state: parkedSession.state,
+            });
+          }
+          let instructionMessages: UserModelMessage[] = [];
+          let memoryCommit: ReturnType<typeof drainMemoryCommit> = undefined;
+          try {
+            const traceContext = await preparePreambleTrace();
+            emissionState = await emitTurnPreamble(
+              emit,
+              preambleStepInput ?? {},
+              emissionState,
+              projectHistory([...parkedSession.history, ...deferredInput], parkedSession.state),
+              config.runtimeIdentity,
+              traceContext,
+            );
+          } catch (error) {
+            instructionMessages =
+              store === undefined ? [] : drainDynamicInstructionUserMessages(store);
+            memoryCommit = store === undefined ? undefined : drainMemoryCommit(store);
+            session = {
+              ...parkedSession,
+              history: validateHarnessModelMessages([
+                ...parkedSession.history,
+                ...(memoryCommit?.recalledMessages ?? []),
+                ...instructionMessages,
+              ]),
+              state: memoryCommit?.state ?? parkedSession.state,
+            };
+            return failBoundaryEvent(error, {
+              sessionStarted: true,
+              sequence: emissionState.sequence,
+              stepIndex: 0,
+              turnId: activeTurnId(emissionState),
+            });
+          }
+          instructionMessages =
+            store === undefined ? [] : drainDynamicInstructionUserMessages(store);
+          memoryCommit = store === undefined ? undefined : drainMemoryCommit(store);
+          parkedSession = {
+            ...parkedSession,
+            history: validateHarnessModelMessages([
+              ...parkedSession.history,
+              ...(memoryCommit?.recalledMessages ?? []),
+              ...instructionMessages,
+            ]),
+            state: memoryCommit?.state ?? parkedSession.state,
+          };
+          emissionState = await holdTurnForRequest(emit, emissionState, parkedSession);
+          return {
+            held: { kind: "request" },
+            next: null,
+            session: setHarnessEmissionState(parkedSession, emissionState),
+          };
+        }
+        if (coordinated.kind === "responses-completed") {
+          await emit?.(createSessionWaitingEvent(getSessionUsage(parkedSession)));
+        }
+        return { next: null, session: parkedSession };
+      }
+
+      // Requests raised inside an open turn keep that turn held.
       if (emit) {
         emissionState = await holdTurnForRequest(emit, emissionState, parkedSession);
         parkedSession = setHarnessEmissionState(parkedSession, emissionState);
@@ -1013,8 +1088,12 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
         const traceContext = await preparePreambleTrace();
         emissionState = await emitTurnPreamble(
           emit,
-          // A deferred message replays on a later step, which announces it then.
-          pending.deferredMessage === true
+          // A message deferred behind a between-turn budget prompt was announced
+          // when its turn started; approval resumes that turn, not a new one.
+          pending.deferredMessage === true ||
+            (pending.limitContinuation !== undefined &&
+              emissionState.turnId !== "" &&
+              input?.message === undefined)
             ? { ...preambleStepInput, message: undefined }
             : (preambleStepInput ?? {}),
           emissionState,
