@@ -296,7 +296,7 @@ Two things can stop a tool call before it runs, and eve learns about them at dif
 | Stage    | Today                                                                                                                                                                                                   | Under this design                                                                                                                                                                                        |
 | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Decide   | During `generate()`, the AI SDK calls eve's `toolApproval` callback (`buildToolApproval`, `harness/tools.ts`), which runs the tool's `approval` policy                                                  | eve runs the same policy itself when the model step returns the call. The policy gets the same context: `toolName`, `toolInput`, `callId`, and `approvedTools`                                           |
-| Ask      | The SDK adds an approval part to the call. eve holds the call back, records a pending batch, emits `input.requested`, and ends the turn                                                                 | eve starts `t1` and writes the receipt. `t1` asks with `ctx.ask`, which emits the same `input.requested`: kind `tool-approval`, options Approve and Deny                                                 |
+| Ask      | The SDK adds an approval part to the call. eve holds the call back, records a pending batch, emits `input.requested`, and ends the turn                                                                 | eve starts `t1` and writes the receipt. `t1` asks with `ctx.ask`, which emits the same `input.requested`: kind `tool-approval`, options Approve and Cancel                                               |
 | Answer   | The approval coordinator runs the response policy with the requester (`request.principal`) and the decision (`response.decision`). The policy can ask the responder to sign in (`ApprovalResponseAuth`) | The response policy runs as a step in `t1`, with the same inputs, as #3929 does for `ctx.ask`. A sign-in it asks the responder for is a workflow-step sign-in. A rejected answer leaves the request open |
 | Remember | An approved tool is recorded in `eve.runtime.hitl.approvedTools`, which `once()` reads                                                                                                                  | Same record, written when the session accepts an Approve                                                                                                                                                 |
 | Run      | The SDK runs `execute` inside the next `generate()`, and only if the approval response is the last message                                                                                              | `t1` runs `execute` in a workflow step                                                                                                                                                                   |
@@ -359,18 +359,40 @@ async task(input, ctx) {
 }
 ```
 
-If Alice denies, `ctx.ask` returns `deny` at step 3, the body returns a "not run" result without
+If Alice picks Cancel, `ctx.ask` returns `cancel` at step 3, the body returns a "not run" result without
 calling the tool, and steps 5 and 6 deliver it the same way.
 
 ### If Alice writes something else
 
-What the model should do if Alice writes something else in walkthrough row 3:
+At walkthrough row 3 the request table holds one entry, `a1`, the approval `t1` raised. Its two
+options are id `approve` with label "Approve", and id `cancel` with label "Cancel"
+(`harness/input-extraction.ts:98-100`).
 
-| Alice writes                 | The model                                                                           |
-| ---------------------------- | ----------------------------------------------------------------------------------- |
-| "approve"                    | Is not called. The text answers the one open request, and the flow goes on at row 5 |
-| "actually, send it to Carol" | Cancels `t1` with `task_cancel` and calls `send_email` again, which starts `t2`     |
-| "did it send?"               | Answers from the receipt in its history: not yet, it's waiting for approval         |
+A message is a **text answer** only if all of these hold:
+
+- it comes from the turn's principal, Alice;
+- the table holds exactly one entry a person can answer;
+- that entry has no response policy;
+- the trimmed text matches one of its options, ignoring case: by id (`approve`, `cancel`), by label
+  ("Approve", "Cancel"), or by number (`1`, `2`), using today's matcher (`channel/resolve-text.ts`).
+
+A text answer is turned into an answer for that entry and consumed: it is not written to history,
+and the model is not called for it. Any other message from Alice **steers**: it is written to
+history, and the model is called with it in the same turn. A message from anyone else **waits** for
+the turn to end.
+
+| Message                                                     | eve reads it as                                  | The turn                                         | The model                                                                                                                                                               |
+| ----------------------------------------------------------- | ------------------------------------------------ | ------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Alice: "approve" (or "Approve", "1")                        | A text answer: Approve for `a1`                  | Stays open. `t1` runs `send_email`               | Not called until the task result arrives, as in row 5                                                                                                                   |
+| Alice: "cancel" (or "2")                                    | A text answer: Cancel for `a1`                   | Stays open until `t1` settles with "not run"     | Called with the task result, says the email wasn't sent; the turn ends if nothing else is working                                                                       |
+| Alice: "no", or "deny"                                      | Steering. Neither matches an option              | Stays open; `a1` stays open                      | Called with the message. Calls `task_cancel(t1)`, which withdraws `a1`; the call never runs                                                                             |
+| Alice: "actually, send it to Carol"                         | Steering                                         | Stays open; `a1` stays open until the model acts | Calls `task_cancel(t1)`, which withdraws `a1`, then calls `send_email` for Carol. That starts `t2` with a new receipt and request `a2`, and the turn stays open on `t2` |
+| Alice: "did it send?"                                       | Steering                                         | Stays open; `a1` stays open                      | Answers from the receipt and the `[Tasks]` note: not yet, it's waiting for approval                                                                                     |
+| Alice: "approve", while a second approval `a2` is also open | Steering. With two entries, text answers neither | Stays open; both stay open                       | Asks which one she means, or points her to the buttons                                                                                                                  |
+| Bob: "approve"                                              | Waits. Bob isn't the turn's principal            | Unchanged                                        | Not called for it. Bob's message starts his own turn after `turn_1` ends                                                                                                |
+
+Bob can still answer `a1` with a structured answer, such as a button. If the tool has a response
+policy, it decides whether Bob may.
 
 ### History is append-only
 
