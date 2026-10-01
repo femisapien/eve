@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { contextStorage, ContextContainer } from "#context/container.js";
 import { AuthKey, SessionKey, type SessionAuthContext } from "#context/keys.js";
@@ -11,6 +11,7 @@ import type { ResolvedConnectionDefinition } from "#runtime/types.js";
 import { ConnectionAuthorizationTokensKey } from "#runtime/connections/authorization-tokens.js";
 import {
   isMcpAuthRequiredError,
+  isMcpInputRequiredOutcome,
   McpConnectionClient,
   passesToolFilter,
   resolveHeaders,
@@ -67,6 +68,11 @@ function makeConnection(
     ...overrides,
   };
 }
+
+const EXPECTED_CLIENT_CAPABILITIES = {
+  elicitation: { form: {}, url: {} },
+  extensions: { "dev.eve/tool-sessions": {} },
+};
 
 describe("McpConnectionClient", () => {
   beforeEach(() => {
@@ -196,6 +202,7 @@ describe("McpConnectionClient", () => {
     await expect(mcpClient.connect()).resolves.toBe(client);
     expect(createMCPClient).toHaveBeenCalledTimes(1);
     expect(createMCPClient).toHaveBeenCalledWith({
+      capabilities: EXPECTED_CLIENT_CAPABILITIES,
       protocolVersionDiscovery: undefined,
       transport: {
         fetch: expect.any(Function),
@@ -224,6 +231,7 @@ describe("McpConnectionClient", () => {
 
     await expect(mcpClient.connect()).resolves.toBe(client);
     expect(createMCPClient).toHaveBeenNthCalledWith(1, {
+      capabilities: EXPECTED_CLIENT_CAPABILITIES,
       protocolVersionDiscovery: undefined,
       transport: {
         fetch: expect.any(Function),
@@ -233,6 +241,7 @@ describe("McpConnectionClient", () => {
       },
     });
     expect(createMCPClient).toHaveBeenNthCalledWith(2, {
+      capabilities: EXPECTED_CLIENT_CAPABILITIES,
       protocolVersionDiscovery: undefined,
       transport: {
         fetch: expect.any(Function),
@@ -259,6 +268,7 @@ describe("McpConnectionClient", () => {
     await expect(mcpClient.connect()).resolves.toBe(client);
     expect(createMCPClient).toHaveBeenCalledTimes(2);
     expect(createMCPClient).toHaveBeenNthCalledWith(2, {
+      capabilities: EXPECTED_CLIENT_CAPABILITIES,
       protocolVersionDiscovery: undefined,
       transport: {
         fetch: expect.any(Function),
@@ -283,6 +293,7 @@ describe("McpConnectionClient", () => {
     await expect(mcpClient.connect()).resolves.toBe(client);
     expect(createMCPClient).toHaveBeenCalledTimes(2);
     expect(createMCPClient).toHaveBeenNthCalledWith(2, {
+      capabilities: EXPECTED_CLIENT_CAPABILITIES,
       protocolVersionDiscovery: undefined,
       transport: {
         fetch: expect.any(Function),
@@ -309,6 +320,7 @@ describe("McpConnectionClient", () => {
     await expect(mcpClient.connect()).resolves.toBe(client);
     expect(createMCPClient).toHaveBeenCalledTimes(2);
     expect(createMCPClient).toHaveBeenNthCalledWith(2, {
+      capabilities: EXPECTED_CLIENT_CAPABILITIES,
       protocolVersionDiscovery: undefined,
       transport: {
         fetch: expect.any(Function),
@@ -330,6 +342,7 @@ describe("McpConnectionClient", () => {
     await expect(mcpClient.connect()).rejects.toBe(error);
     expect(createMCPClient).toHaveBeenCalledTimes(1);
     expect(createMCPClient).toHaveBeenCalledWith({
+      capabilities: EXPECTED_CLIENT_CAPABILITIES,
       protocolVersionDiscovery: undefined,
       transport: {
         fetch: expect.any(Function),
@@ -873,5 +886,175 @@ describe("resolveHeaders with an active context (principal resolution + cache)",
 
     expect(headers).toEqual({ Authorization: "Bearer shared-app-token" });
     expect(received).toEqual({ type: "app" });
+  });
+});
+
+describe("McpConnectionClient forwarding and input_required", () => {
+  const globalFetch = vi.fn(
+    async (_request: Parameters<typeof fetch>[0], _init?: Parameters<typeof fetch>[1]) =>
+      new Response(null),
+  );
+
+  beforeEach(() => {
+    createMCPClient.mockReset();
+    globalFetch.mockReset();
+    vi.stubGlobal("fetch", globalFetch);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function transportFetch(): typeof fetch {
+    const options = createMCPClient.mock.calls[0]?.[0] as
+      | { readonly transport: { readonly fetch: typeof fetch } }
+      | undefined;
+    if (options === undefined) throw new Error("createMCPClient was not called");
+    return options.transport.fetch;
+  }
+
+  function sentHeaders(call = 0): Headers {
+    const init = globalFetch.mock.calls[call]?.[1] as RequestInit | undefined;
+    return new Headers(init?.headers);
+  }
+
+  function sentBody(call = 0): { params: Record<string, unknown> } {
+    const init = globalFetch.mock.calls[call]?.[1] as RequestInit | undefined;
+    return JSON.parse(String(init?.body)) as { params: Record<string, unknown> };
+  }
+
+  const listBody = JSON.stringify({ id: 1, jsonrpc: "2.0", method: "tools/list", params: {} });
+
+  it("adds the eve-forwarded-principal header when forwardPrincipal is true", async () => {
+    createMCPClient.mockResolvedValue({ close: vi.fn() });
+    const mcpClient = new McpConnectionClient(makeConnection({ forwardPrincipal: true }));
+    const caller = userAuth("u-1");
+
+    await contextStorage.run(ctxWithAuth(caller), async () => {
+      await mcpClient.connect();
+      await transportFetch()("https://mcp.example.com", {
+        body: listBody,
+        headers: { "x-existing": "1" },
+        method: "POST",
+      });
+    });
+
+    const headers = sentHeaders();
+    expect(headers.get("x-existing")).toBe("1");
+    const header = headers.get("eve-forwarded-principal");
+    expect(header).toMatch(/^[A-Za-z0-9_-]+$/u);
+    expect(JSON.parse(Buffer.from(header!, "base64url").toString("utf8"))).toEqual({
+      current: caller,
+    });
+  });
+
+  it("omits the header when the turn has no authenticated caller", async () => {
+    createMCPClient.mockResolvedValue({ close: vi.fn() });
+    const mcpClient = new McpConnectionClient(makeConnection({ forwardPrincipal: true }));
+
+    await contextStorage.run(ctxWithAuth(null), async () => {
+      await mcpClient.connect();
+      await transportFetch()("https://mcp.example.com", { body: listBody, method: "POST" });
+    });
+
+    expect(sentHeaders().has("eve-forwarded-principal")).toBe(false);
+  });
+
+  it.each([false, undefined])("omits the header when forwardPrincipal is %s", async (forward) => {
+    createMCPClient.mockResolvedValue({ close: vi.fn() });
+    const mcpClient = new McpConnectionClient(makeConnection({ forwardPrincipal: forward }));
+
+    await contextStorage.run(ctxWithAuth(userAuth("u-1")), async () => {
+      await mcpClient.connect();
+      await transportFetch()("https://mcp.example.com", { body: listBody, method: "POST" });
+    });
+
+    expect(globalFetch).toHaveBeenCalledOnce();
+    expect(sentHeaders().has("eve-forwarded-principal")).toBe(false);
+  });
+
+  /** A fake SDK tool whose execute sends tools/call over the transport fetch. */
+  function mockToolClient() {
+    const execute = vi.fn(async () => {
+      const response = await transportFetch()("https://mcp.example.com", {
+        body: JSON.stringify({
+          id: 7,
+          jsonrpc: "2.0",
+          method: "tools/call",
+          params: { arguments: {}, name: "danger" },
+        }),
+        method: "POST",
+      });
+      const message = (await response.json()) as { result: Record<string, unknown> };
+      if (message.result["resultType"] === "input_required") {
+        throw new Error("Unexpected result type");
+      }
+      return message.result;
+    });
+    createMCPClient.mockResolvedValue({
+      close: vi.fn(),
+      listTools: vi.fn().mockResolvedValue({
+        tools: [{ inputSchema: { properties: {}, type: "object" }, name: "danger" }],
+      }),
+      toolsFromDefinitions: vi.fn().mockReturnValue({ danger: { execute } }),
+    });
+    return execute;
+  }
+
+  function jsonResponse(value: unknown): Response {
+    return new Response(JSON.stringify(value), {
+      headers: { "content-type": "application/json" },
+    });
+  }
+
+  it("returns an input_required outcome when the server asks for input", async () => {
+    mockToolClient();
+    const inputRequests = {
+      approve: {
+        method: "elicitation/create",
+        params: {
+          message: "Proceed?",
+          requestedSchema: { properties: { ok: { type: "boolean" } }, type: "object" },
+        },
+      },
+    };
+    globalFetch.mockImplementation(async () =>
+      jsonResponse({
+        id: 7,
+        jsonrpc: "2.0",
+        result: { inputRequests, requestState: "s1", resultType: "input_required" },
+      }),
+    );
+    const mcpClient = new McpConnectionClient(makeConnection());
+
+    const result = await contextStorage.run(ctxWithAuth(null), () =>
+      mcpClient.executeTool("danger", {}, { callId: "call-1" }),
+    );
+
+    expect(isMcpInputRequiredOutcome(result)).toBe(true);
+    expect(result).toMatchObject({ inputRequests, requestState: "s1" });
+    expect(result).not.toHaveProperty("status");
+  });
+
+  it("passes options.inputRetry through to the retried tools/call", async () => {
+    mockToolClient();
+    globalFetch.mockImplementation(async () =>
+      jsonResponse({ id: 7, jsonrpc: "2.0", result: { content: [], isError: false } }),
+    );
+    const mcpClient = new McpConnectionClient(makeConnection());
+    const inputResponses = { approve: { action: "accept", content: { ok: true } } };
+
+    const result = await contextStorage.run(ctxWithAuth(null), () =>
+      mcpClient.executeTool(
+        "danger",
+        {},
+        { callId: "call-1", inputRetry: { inputResponses, requestState: "s1" } },
+      ),
+    );
+
+    expect(isMcpInputRequiredOutcome(result)).toBe(false);
+    expect(result).toEqual({ content: [], isError: false });
+    expect(globalFetch).toHaveBeenCalledOnce();
+    expect(sentBody().params).toMatchObject({ inputResponses, name: "danger", requestState: "s1" });
   });
 });
