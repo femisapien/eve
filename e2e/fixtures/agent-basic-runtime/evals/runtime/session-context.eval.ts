@@ -3,7 +3,7 @@ import { equals } from "eve/evals/expect";
 
 export default defineEval({
   description:
-    "Session context and per-turn client context reach tools, including prewarmed sessions.",
+    "Session context and per-turn client context reach tools and the stream, including prewarmed sessions.",
   async test(t) {
     const sessionContext = { surface: "docs", preferences: { compact: true } };
     const firstContext = { page: "/docs/redirects" };
@@ -27,6 +27,7 @@ export default defineEval({
       const sessionId = first.sessionId;
       first.expectOk();
       first.event("session.started", { count: 1 });
+      first.event("message.received", { data: { clientContext: firstContext } });
       first.calledTool("read_session_context");
       first.messageIncludes(JSON.stringify({ session: sessionContext, turn: firstContext }));
 
@@ -45,6 +46,9 @@ export default defineEval({
         { clientContext: ["route: /docs/redirects", "selection: lines 4-9"] },
       );
       second.expectOk();
+      second.event("message.received", {
+        data: { clientContext: ["route: /docs/redirects", "selection: lines 4-9"] },
+      });
       second.calledTool("read_session_context");
       second.messageIncludes(
         JSON.stringify({
@@ -65,6 +69,9 @@ export default defineEval({
         { clientContext: "Alice is reading the docs." },
       );
       fourth.expectOk();
+      fourth.event("message.received", {
+        data: { clientContext: "Alice is reading the docs." },
+      });
       fourth.calledTool("read_session_context");
       fourth.messageIncludes(
         JSON.stringify({ session: sessionContext, turn: "Alice is reading the docs." }),
