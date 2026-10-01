@@ -87,6 +87,7 @@ async function routeProxiedDeliver(
   // resolved by an earlier payload is hidden from later ones; its run takes
   // one answer, and later messages must reach the parent instead.
   const resolvedQuestions = new Set<string>();
+  const forwardedDeliveryIds: string[] = [];
 
   for (const [sourcePayloadIndex, payload] of sourceDelivery.payloads.entries()) {
     const routed = routeDeliverPayload({
@@ -132,6 +133,7 @@ async function routeProxiedDeliver(
         for (const metadata of sourceDelivery.deliveryMetadata ?? []) {
           if (metadata.payloadIndex === sourcePayloadIndex) {
             child.metadata.push({ ...metadata, payloadIndex: childPayloadIndex });
+            forwardedDeliveryIds.push(metadata.deliveryId);
           }
         }
       }
@@ -197,6 +199,7 @@ async function routeProxiedDeliver(
       sessionWritable: input.sessionWritable,
     },
     resolvedEvents,
+    { deliveryIds: forwardedDeliveryIds },
   );
   if (parentAction !== undefined) return { ...context, ...parentAction };
   const orderedParentPayloads = [...parentPayloads].sort(([a], [b]) => a - b);

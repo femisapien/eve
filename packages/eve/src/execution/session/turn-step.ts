@@ -26,6 +26,7 @@ import {
   SessionDynamicToolRuntimeRevisionKey,
   StaticModelReferenceKey,
   TurnDeliveryIdsKey,
+  AnswerDeliveryIdsKey,
 } from "#context/keys.js";
 import { BundleKey, ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
@@ -54,12 +55,17 @@ import type {
 } from "#execution/session/turn-step-types.js";
 import { resolveSessionStepResult } from "#execution/session/turn-step-result.js";
 import { withSessionStateDelta } from "#execution/session/state-delta.js";
-import { createSessionEventSink } from "#execution/publish-session-events.js";
+import {
+  acceptDeliveries,
+  createSessionEventSink,
+  deliveriesAwaitBoundary,
+} from "#execution/publish-session-events.js";
 import { createTurnEventHandler } from "#execution/session/turn-event-handler.js";
 import { derivePendingState } from "#execution/session/pending-turn-state.js";
 import {
   createAuthorizationCompletedEvent,
   createSessionStartedEvent,
+  createSessionWaitingEvent,
   createTurnStartedEvent,
 } from "#protocol/message.js";
 import { authorizationEventFields } from "#harness/authorization-event-fields.js";
@@ -305,6 +311,21 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
         ctx.set(TurnDeliveryIdsKey, [ctx.require(ChannelDeliveryKey).deliveryId]);
       }
     }
+    // Every accepted delivery is listed by the boundary that completes its response, ignored
+    // ones included. An answer's events carry its own delivery, not the parked turn's message.
+    const acceptedIds =
+      rawDelivery?.deliveryMetadata?.map((entry) => entry.deliveryId) ??
+      (!initialEmissionState.sessionStarted && ctx.get(ChannelDeliveryKey) !== undefined
+        ? [ctx.require(ChannelDeliveryKey).deliveryId]
+        : []);
+    acceptDeliveries(ctx, acceptedIds);
+    if (
+      rawDelivery !== undefined &&
+      !rawDelivery.payloads.some((payload) => payload.message !== undefined) &&
+      rawDelivery.payloads.some((payload) => (payload.inputResponses?.length ?? 0) > 0)
+    ) {
+      ctx.setVirtualContext(AnswerDeliveryIdsKey, acceptedIds);
+    }
 
     if (runtimeResults !== undefined) {
       if (runtimeResults.acceptedAtMsByCallId !== undefined) {
@@ -334,6 +355,9 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
         }),
       );
       await instrumentation?.flush();
+      if (deliveriesAwaitBoundary(ctx)) {
+        await contextStorage.run(ctx, () => handleEvent(createSessionWaitingEvent()));
+      }
       const aliased = reconcileSessionContinuationToken(ctx, initialSession);
       const nextSerializedContext = serializeContext(ctx);
       const nextState =
@@ -566,6 +590,9 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
       });
     }
 
+    if (deliveriesAwaitBoundary(ctx)) {
+      await contextStorage.run(ctx, () => handleEvent(createSessionWaitingEvent()));
+    }
     // Re-stamp the current address after handlers add a continuation alias.
     const aliased = dropClosedRecords(
       reconcileSessionContinuationToken(ctx, stepResult.session),

@@ -261,7 +261,17 @@ export class ClientSession {
         })) {
         eventCount += 1;
         if (deliveryId !== undefined) {
-          const matches = event.meta?.deliveryIds?.includes(deliveryId) === true;
+          // A boundary that lists the deliveries it completes ends exactly this one's response.
+          const processed = processedDeliveryIds(event);
+          if (processed !== undefined) {
+            if (!processed.includes(deliveryId)) continue;
+            yield event;
+            reachedBoundary = true;
+            break;
+          }
+          const matches =
+            event.meta?.deliveryIds?.includes(deliveryId) === true ||
+            event.meta?.answerDeliveryIds?.includes(deliveryId) === true;
           const terminal = event.type === "session.failed" || event.type === "session.completed";
           if (!matches && terminal && (!started || event.type === "session.completed")) {
             throw new Error(
@@ -269,7 +279,9 @@ export class ClientSession {
             );
           }
           if (!started && !matches) continue;
-          if (!terminal && event.meta?.deliveryIds !== undefined && !matches) continue;
+          const attributed =
+            event.meta?.deliveryIds !== undefined || event.meta?.answerDeliveryIds !== undefined;
+          if (!terminal && attributed && !matches) continue;
           started = true;
         }
         reachedBoundary = segment.observe(event);
@@ -468,4 +480,11 @@ function createMessageBody(
   if (requireMessage && body.message === undefined) return null;
   if (body.message === undefined && body.inputResponses === undefined) return null;
   return body;
+}
+
+/** The deliveries a boundary completes, or `undefined` from an older writer or a non-boundary. */
+function processedDeliveryIds(event: MessageStreamEvent): readonly string[] | undefined {
+  return event.type === "session.waiting" || event.type === "turn.waiting"
+    ? (event.data as { processedDeliveryIds?: readonly string[] } | undefined)?.processedDeliveryIds
+    : undefined;
 }

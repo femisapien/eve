@@ -72,6 +72,11 @@ export interface StepCompletedProviderMetadata {
 export interface MessageStreamEventMeta {
   /** Server-issued message delivery identities, retained across the turn's workflow steps. */
   readonly deliveryIds?: readonly string[];
+  /**
+   * The answer deliveries that caused this event, when answers rather than a message did. A
+   * reader of one answer's response skips events a sibling answer caused.
+   */
+  readonly answerDeliveryIds?: readonly string[];
   /** ISO-8601 emission time. */
   readonly at: string;
   /**
@@ -611,6 +616,8 @@ export interface TurnCompletedStreamEvent {
  */
 export interface TurnWaitingStreamEvent {
   data: {
+    /** See {@link SessionWaitingStreamEvent}. Lists deliveries only while the turn waits on input. */
+    processedDeliveryIds?: readonly string[];
     sequence: number;
     turnId: string;
   };
@@ -773,6 +780,12 @@ export interface SessionWaitingStreamEvent {
   data: {
     /** Channel-local continuation token, or the immutable session ID for an ID-only session. */
     continuationToken: string;
+    /**
+     * Accepted deliveries whose response this boundary completes, so a reader of one delivery's
+     * response ends here. Written on every boundary, `[]` when none; a boundary without it comes
+     * from an older writer, whose readers end at the first boundary.
+     */
+    processedDeliveryIds?: readonly string[];
     wait: "next-user-message";
   };
   type: "session.waiting";
@@ -1852,12 +1865,21 @@ export function createSessionCompletedEvent(): SessionCompletedStreamEvent {
 export function stampMessageStreamEvent(
   event: UnstampedMessageStreamEvent,
   deliveryIds?: readonly string[],
+  answerDeliveryIds?: readonly string[],
 ): MessageStreamEvent {
-  const meta: { at: string; id: string; deliveryIds?: readonly string[] } = {
+  const meta: {
+    at: string;
+    id: string;
+    deliveryIds?: readonly string[];
+    answerDeliveryIds?: readonly string[];
+  } = {
     at: new Date().toISOString(),
     id: createEventId(),
   };
   if (deliveryIds !== undefined && deliveryIds.length > 0) meta.deliveryIds = deliveryIds;
+  if (answerDeliveryIds !== undefined && answerDeliveryIds.length > 0) {
+    meta.answerDeliveryIds = answerDeliveryIds;
+  }
   return {
     ...event,
     meta,

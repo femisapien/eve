@@ -98,7 +98,7 @@ The stream is newline-delimited JSON (NDJSON), one event per line:
 | `turn.failed`             | The turn failed; carries `{ code, message, details? }`.                                                                                                                                               |
 | `turn.cancelled`          | The turn was cancelled before finishing; always followed by `session.waiting`.                                                                                                                        |
 | `turn.started`            | A turn opened; carries `turnId`, `sequence`, and `continuesTurnId`, the earlier turn whose parked work it resumes, or `null` for a fresh turn.                                                        |
-| `session.waiting`         | The session parked and is ready for the next message.                                                                                                                                                 |
+| `session.waiting`         | The session parked and is ready for the next message; carries `processedDeliveryIds`, the accepted deliveries whose response it completes.                                                            |
 | `session.failed`          | The session failed.                                                                                                                                                                                   |
 | `session.completed`       | The session reached a terminal end.                                                                                                                                                                   |
 

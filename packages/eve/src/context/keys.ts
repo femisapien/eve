@@ -106,6 +106,15 @@ export const ChannelDeliveryKey = new ContextKey<ChannelDeliveryMetadata>("eve.c
  * publish sink is its only writer; see `protocol/session-projection.ts`.
  */
 export const SessionProjectionKey = new ContextKey<SessionProjection>("eve.sessionProjection");
+/**
+ * Accepted deliveries whose response hasn't reached a boundary. The publish sink lists them on
+ * the next boundary that completes them and clears them.
+ */
+export const PendingBoundaryDeliveryIdsKey = new ContextKey<readonly string[]>(
+  "eve.pendingBoundaryDeliveryIds",
+);
+/** The answer deliveries the current step handles, stamped on the events they cause. */
+export const AnswerDeliveryIdsKey = new ContextKey<readonly string[]>("eve.answerDeliveryIds");
 /** Accepted messages whose response owns the current turn's durable stream events. */
 export const TurnDeliveryIdsKey = new ContextKey<readonly string[]>("eve.turnDeliveryIds");
 /** Last framework announcements recorded in the retained session history. */

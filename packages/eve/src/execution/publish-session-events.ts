@@ -2,7 +2,13 @@ import { buildAdapterContext } from "#channel/adapter-context.js";
 import { callAdapterEventHandler, type ChannelAdapterContext } from "#channel/adapter.js";
 import { type ContextContainer, contextStorage } from "#context/container.js";
 import { dispatchStreamEventHooks } from "#context/hook-lifecycle.js";
-import { ParentSessionKey, SessionProjectionKey, TurnDeliveryIdsKey } from "#context/keys.js";
+import {
+  AnswerDeliveryIdsKey,
+  ParentSessionKey,
+  PendingBoundaryDeliveryIdsKey,
+  SessionProjectionKey,
+  TurnDeliveryIdsKey,
+} from "#context/keys.js";
 import { withContextScope } from "#context/run-step.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
 import * as activityCohort from "#execution/activity-cohort.js";
@@ -24,6 +30,7 @@ import type { HandleEventFn, HarnessSession } from "#harness/types.js";
 import { bindSessionInstrumentation } from "#instrumentation/runtime.js";
 import { createLogger } from "#internal/logging.js";
 import {
+  createSessionWaitingEvent,
   encodeMessageStreamEvent,
   stampMessageStreamEvent,
   type MessageStreamEvent,
@@ -32,8 +39,11 @@ import {
 import {
   foldSession,
   initialSessionProjection,
+  openInputs,
+  openSignIns,
   pruneSessionProjection,
   type SessionProjection,
+  type SessionTurn,
 } from "#protocol/session-projection.js";
 import { BundleKey, ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
 
@@ -82,19 +92,38 @@ export async function publishSessionEvents(
 export async function relaySessionEvents(
   target: SessionStepState,
   events: readonly UnstampedMessageStreamEvent[],
+  answers?: ForwardedAnswers,
 ): Promise<PublishedSessionEvents> {
-  return await publishFromStep(target, "relayed", events);
+  return await publishFromStep(target, "relayed", events, answers);
+}
+
+/**
+ * Answers this session forwarded to a child session or a workflow run. Their events carry the
+ * answers' deliveries, and their responses complete here: at once between turns, or at the open
+ * turn's next boundary.
+ */
+export interface ForwardedAnswers {
+  readonly deliveryIds: readonly string[];
 }
 
 async function publishFromStep(
   target: SessionStepState,
   origin: SessionEventOrigin,
   events: readonly UnstampedMessageStreamEvent[],
+  answers?: ForwardedAnswers,
 ): Promise<PublishedSessionEvents> {
-  if (events.length === 0) {
+  const forwarded = answers?.deliveryIds ?? [];
+  if (events.length === 0 && forwarded.length === 0) {
     return { serializedContext: target.serializedContext, sessionState: target.sessionState };
   }
   const ctx = await deserializeContext(target.serializedContext);
+  if (forwarded.length > 0) {
+    ctx.setVirtualContext(AnswerDeliveryIdsKey, forwarded);
+    acceptDeliveries(ctx, forwarded);
+    if (readSessionProjection(ctx).activeTurnId === undefined) {
+      events = [...events, createSessionWaitingEvent()];
+    }
+  }
   const { session } = await withSessionEventEmitter(
     {
       ctx,
@@ -248,8 +277,9 @@ function openSessionEventStream(input: {
           );
       setChannelContext(ctx, { ...adapter, state: { ...adapterCtx.state } });
       const stamped = stampMessageStreamEvent(
-        routed,
+        withProcessedDeliveries(ctx, routed),
         origin === "own" ? ctx.get(TurnDeliveryIdsKey) : undefined,
+        ctx.get(AnswerDeliveryIdsKey),
       );
       await writer.write(encodeMessageStreamEvent(stamped));
       recordPublishedEvent(ctx, stamped);
@@ -277,6 +307,63 @@ function recordPublishedEvent(ctx: ContextContainer, event: MessageStreamEvent):
     SessionProjectionKey,
     event.type === "session.waiting" ? pruneSessionProjection(folded) : folded,
   );
+}
+
+/**
+ * Lists on a boundary the accepted deliveries whose response it completes. A turn that waits on
+ * its tasks hasn't answered yet, and neither has a session waiting on a sign-in callback the
+ * last turn asked for, since the callback resumes that work; otherwise every pending delivery is
+ * complete.
+ */
+function withProcessedDeliveries(
+  ctx: ContextContainer,
+  event: UnstampedMessageStreamEvent,
+): UnstampedMessageStreamEvent {
+  if (event.type !== "session.waiting" && event.type !== "turn.waiting") return event;
+  const projection = readSessionProjection(ctx);
+  const holds =
+    event.type === "turn.waiting"
+      ? openInputs(projection).length === 0 && openSignIns(projection).length === 0
+      : awaitsSignInCallback(projection);
+  const pending = ctx.get(PendingBoundaryDeliveryIdsKey) ?? [];
+  if (!holds) ctx.delete(PendingBoundaryDeliveryIdsKey);
+  return {
+    ...event,
+    data: { ...event.data, processedDeliveryIds: holds ? [] : pending },
+  } as UnstampedMessageStreamEvent;
+}
+
+/** The last turn asked for a sign-in whose callback resumes its work. */
+function awaitsSignInCallback(projection: SessionProjection): boolean {
+  const lastTurn = Object.values(projection.turns).reduce<SessionTurn | undefined>(
+    (latest, turn) => (latest === undefined || turn.sequence > latest.sequence ? turn : latest),
+    undefined,
+  );
+  return openSignIns(projection).some(
+    (attempt) => attempt.awaitsCallback === true && attempt.turnId === lastTurn?.turnId,
+  );
+}
+
+/**
+ * Whether a step that ends between turns still owes accepted deliveries a boundary: it
+ * consumed them, an ignored message or an answer that left the session waiting, without
+ * publishing one. Every accepted delivery reaches a boundary that lists it.
+ */
+export function deliveriesAwaitBoundary(ctx: ContextContainer): boolean {
+  const projection = readSessionProjection(ctx);
+  return (
+    (ctx.get(PendingBoundaryDeliveryIdsKey)?.length ?? 0) > 0 &&
+    projection.activeTurnId === undefined &&
+    projection.ended !== true &&
+    !awaitsSignInCallback(projection)
+  );
+}
+
+/** Adds accepted deliveries to those the next completing boundary lists. */
+export function acceptDeliveries(ctx: ContextContainer, deliveryIds: readonly string[]): void {
+  if (deliveryIds.length === 0) return;
+  const pending = ctx.get(PendingBoundaryDeliveryIdsKey) ?? [];
+  ctx.set(PendingBoundaryDeliveryIdsKey, [...new Set([...pending, ...deliveryIds])]);
 }
 
 /** The session's projection as of the last event it published. */

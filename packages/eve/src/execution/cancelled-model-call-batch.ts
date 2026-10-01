@@ -1,5 +1,9 @@
 import { contextStorage, type ContextContainer } from "#context/container.js";
-import { SessionProjectionKey, TurnDeliveryIdsKey } from "#context/keys.js";
+import {
+  PendingBoundaryDeliveryIdsKey,
+  SessionProjectionKey,
+  TurnDeliveryIdsKey,
+} from "#context/keys.js";
 import { preserveSerializedSessionDynamicModelSelection } from "#context/serialized-dynamic-model-selection.js";
 import { serializeContext } from "#context/serialize.js";
 import { preserveCancelledTurnMessage } from "#execution/cancelled-turn-message.js";
@@ -34,6 +38,8 @@ export async function createCancelledModelCallBatchResult(input: {
   const checkpointContext = {
     ...(input.checkpoint?.serializedContext ?? input.beforeBatchContext),
     [SessionProjectionKey.name]: interruptedContext[SessionProjectionKey.name],
+    // The deliveries the batch accepted still owe their response a boundary: the cancel's.
+    [PendingBoundaryDeliveryIdsKey.name]: interruptedContext[PendingBoundaryDeliveryIdsKey.name],
     [TurnDeliveryIdsKey.name]: interruptedContext[TurnDeliveryIdsKey.name],
   };
 
