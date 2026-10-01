@@ -1,5 +1,5 @@
 import { contextStorage, type ContextContainer } from "#context/container.js";
-import { TurnDeliveryIdsKey } from "#context/keys.js";
+import { SessionProjectionKey, TurnDeliveryIdsKey } from "#context/keys.js";
 import { preserveSerializedSessionDynamicModelSelection } from "#context/serialized-dynamic-model-selection.js";
 import { serializeContext } from "#context/serialize.js";
 import { preserveCancelledTurnMessage } from "#execution/cancelled-turn-message.js";
@@ -30,8 +30,10 @@ export async function createCancelledModelCallBatchResult(input: {
           preserveCancelledTurnMessage(checkpointSession, input.stepInput),
         )
       : checkpointSession;
+  // The stream keeps every event the cancelled batch published, so the projection does too.
   const checkpointContext = {
     ...(input.checkpoint?.serializedContext ?? input.beforeBatchContext),
+    [SessionProjectionKey.name]: interruptedContext[SessionProjectionKey.name],
     [TurnDeliveryIdsKey.name]: interruptedContext[TurnDeliveryIdsKey.name],
   };
 

@@ -18,6 +18,7 @@ import type {
   SessionTurn,
 } from "#channel/types.js";
 import { ContextKey } from "#context/key.js";
+import type { SessionProjection } from "#protocol/session-projection.js";
 import {
   SESSION_INBOX_CONTEXT_KEY,
   type SessionInboxAddress,
@@ -100,6 +101,11 @@ export const ScheduleIdKey = new ContextKey<string>("eve.scheduleId");
 /** Display title derived from the session's initial input. */
 export const SessionTitleKey = new ContextKey<string>("eve.sessionTitle");
 export const ChannelDeliveryKey = new ContextKey<ChannelDeliveryMetadata>("eve.channelDelivery");
+/**
+ * The session's lifecycle, folded from every event it publishes, its own and relayed ones. The
+ * publish sink is its only writer; see `protocol/session-projection.ts`.
+ */
+export const SessionProjectionKey = new ContextKey<SessionProjection>("eve.sessionProjection");
 /** Accepted messages whose response owns the current turn's durable stream events. */
 export const TurnDeliveryIdsKey = new ContextKey<readonly string[]>("eve.turnDeliveryIds");
 /** Last framework announcements recorded in the retained session history. */

@@ -2,7 +2,7 @@ import { buildAdapterContext } from "#channel/adapter-context.js";
 import { callAdapterEventHandler, type ChannelAdapterContext } from "#channel/adapter.js";
 import { type ContextContainer, contextStorage } from "#context/container.js";
 import { dispatchStreamEventHooks } from "#context/hook-lifecycle.js";
-import { ParentSessionKey, TurnDeliveryIdsKey } from "#context/keys.js";
+import { ParentSessionKey, SessionProjectionKey, TurnDeliveryIdsKey } from "#context/keys.js";
 import { withContextScope } from "#context/run-step.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
 import * as activityCohort from "#execution/activity-cohort.js";
@@ -29,6 +29,12 @@ import {
   type MessageStreamEvent,
   type UnstampedMessageStreamEvent,
 } from "#protocol/message.js";
+import {
+  foldSession,
+  initialSessionProjection,
+  pruneSessionProjection,
+  type SessionProjection,
+} from "#protocol/session-projection.js";
 import { BundleKey, ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
 
 const log = createLogger("execution.publish-session-events");
@@ -242,6 +248,7 @@ function openSessionEventStream(input: {
         origin === "own" ? ctx.get(TurnDeliveryIdsKey) : undefined,
       );
       await writer.write(encodeMessageStreamEvent(stamped));
+      recordPublishedEvent(ctx, stamped);
       if (origin === "own") {
         void observeSessionActivity({ ctx, event: stamped, sessionId: input.sessionId });
       }
@@ -253,6 +260,24 @@ function openSessionEventStream(input: {
     },
     release,
   };
+}
+
+/**
+ * Folds a published event into the session's stored projection. Every event the session
+ * publishes passes here once, after it reached the stream, so the projection is exactly the fold
+ * of the session's stream. A boundary prunes what closed.
+ */
+function recordPublishedEvent(ctx: ContextContainer, event: MessageStreamEvent): void {
+  const folded = foldSession(ctx.get(SessionProjectionKey) ?? initialSessionProjection(), event);
+  ctx.set(
+    SessionProjectionKey,
+    event.type === "session.waiting" ? pruneSessionProjection(folded) : folded,
+  );
+}
+
+/** The session's projection as of the last event it published. */
+export function readSessionProjection(ctx: ContextContainer): SessionProjection {
+  return ctx.get(SessionProjectionKey) ?? initialSessionProjection();
 }
 
 type TerminalSessionEvent = Extract<
