@@ -1,5 +1,5 @@
 ---
-issue: https://vercel.slack.com/archives/C0BJZ4MHG92/p1790302243007379
+issue: https://github.com/vercel/eve/pull/3797
 status: implemented
 last_updated: "2026-09-29"
 ---
@@ -18,4 +18,4 @@ Expose `useEveAgent({ sessionContext: { surface: "docs" } })` across frontend bi
 - Carry turn context across steps of that turn and into workflow tools launched by it, then discard it at turn completion.
 - Keep application context separate from authenticated identity. Session context stays out of model prompts; `clientContext` retains its existing model context messages. No agent schema, type registry, or generated application types are introduced.
 
-The transport feeds the existing session bootstrap and durable context serialization. Turn context travels with the existing ephemeral client-context state. Workflow dispatch snapshots it for the launching turn. See the [follow-up discussion](https://vercel.slack.com/archives/C0BJZ4MHG92/p1790350250470029).
+The transport feeds the existing session bootstrap and durable context serialization. Turn context travels with the existing ephemeral client-context state. Workflow dispatch snapshots it for the launching turn.
