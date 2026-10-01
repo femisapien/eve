@@ -396,18 +396,110 @@ policy, it decides whether Bob may.
 
 ### History is append-only
 
-History is never edited after a write. After the walkthrough it holds, in the order written: Alice's
-message, the `send_email` call, the receipt, the reply, Alice's second message, the calendar call and
-its result, the reply, the task result, and the final reply.
+One example runs through both halves. Alice's agent has a `turn.started` instruction with role
+`user` that writes the current time, the setup from #3899. Alice asks it to email the report to Bob
+at 10:00 and clicks Approve at 10:02. Turn 1's own timestamp is left out of the listings.
 
-This is how every task result reaches the model on `main`: `appendTaskContext` appends one
-`task.result` message and the `[Tasks]` note at a step boundary and never touches the receipt
+#### Status quo: the waiting call is held out, then spliced back in
+
+A call waiting for approval has no result, and the provider rejects a call with no result. So eve
+keeps the call out of history while it waits and writes it back when the answer comes.
+
+When turn 1 parks at 10:00, history holds:
+
+```text
+user       "email the report to Bob"
+user       [Pending approvals] send_email                   (harness/tool-loop.ts:2567-2582)
+```
+
+The model's `send_email` call is not in history. It sits in `pendingInputBatches`, outside the
+conversation.
+
+At 10:02, Alice's Approve starts turn 2. eve writes the timestamp, the held-back call, and an
+approval response:
+
+```text
+user       "email the report to Bob"
+user       [Pending approvals] send_email
+user       "Current time: 10:02"                            turn 2, placed before the call
+assistant  tool-call send_email (c1)                        turn 1's call, written in turn 2
+tool       tool-approval-response (approved)                must be last
+```
+
+The AI SDK runs `send_email` only if the approval response is the last message
+(`collectToolApprovals`), then appends the result. That rule forces the order above. The 10:02
+timestamp has to go before a call the model made at 10:00 (`harness/tool-loop.ts:1101-1107`), so
+history is no longer in the order things happened.
+
+Until #3903, the memory-recall path just appended the timestamp. That is #3899:
+
+```text
+assistant  tool-call send_email (c1)
+tool       tool-approval-response (approved)
+user       "Current time: 10:02"                            now last
+```
+
+The AI SDK found no approval at the tail and never ran `send_email`. The provider then rejected the
+request: "No tool output found for function call c1". Nothing was wrong with the timestamp or with
+memory. The writer just didn't know where it was allowed to append.
+
+Every writer has to know the same rule:
+
+- Current-turn context is sent as a system message instead of being written to history
+  (`harness/current-messages.ts:53-57`).
+- A message that arrives with the approval answer is held until the next step
+  (`harness/input-requests.ts:124`).
+- A denial also writes an `execution-denied` result, because the AI SDK strips old approval
+  responses when it builds the provider prompt (`harness/hitl/approval-input-requests.ts:242-251`).
+- Plain-tool sign-in edits history the other way. It removes the interrupted call
+  (`projectCompletedSiblingCalls`, `harness/inline-tool-authorization.ts:62-89`).
+
+The issues in the first row of the issue table come from writers that broke this rule. Each fix
+(#2656, #2919, #3595, #3903) taught one more writer about it.
+
+#### Proposed: every write is complete when it's made
+
+The same agent, the same approval, plus the walkthrough's steering message at 10:01:
+
+```text
+user       "email the report to Bob"                        10:00
+assistant  tool-call send_email (c1)                        10:00, same step as its receipt
+tool       tool-result c1: "Task t1 is waiting for approval to run send_email. It has not run."
+assistant  "I've asked for approval."
+user       "also, what's on my calendar?"                   10:01, steering
+assistant  tool-call calendar.list (c2)
+tool       tool-result c2: [...]
+assistant  "You have ..."
+                                                            10:02, Approve: nothing is written
+user       [task.result] t1 completed: sent                 (appendTaskContext)
+assistant  "Sent the report to Bob."
+```
+
+The answer continues `turn_1`, so `turn.started` doesn't fire again and no 10:02 timestamp is
+written. If another writer added one, it would go at the end like everything else. The call
+already has its result, so no message has a position it must keep.
+
+Each line was appended when it happened, and nothing was held back, moved, or removed afterwards.
+The task result arrives the way every task result does on `main`: `appendTaskContext` appends one
+`task.result` message and the `[Tasks]` note at a step boundary, and never touches the receipt
 (`execution/tasks/model-step.ts:145-168`).
 
-Nothing is stitched. Holding the call back, writing it back with an approval response, removing an
-interrupted call, and ordering preamble messages around the tail all go away. Replacing the receipt
-with the real result later would be a history rewrite: it brings back ordering rules, invalidates the
-provider's prompt cache from that point, and hides from the model what it was told while it waited.
+What this simplifies:
+
+- **No position rules.** Any writer can append at any time: steering, memory recall, turn
+  instructions, context. The tail guard, the preamble reordering, and the deferred input go away
+  (see What this removes). The #3899 class of bug has no place to happen.
+- **No conversation state outside history.** The held-back call in `pendingInputBatches` and the
+  call removed for sign-in no longer exist.
+- **History is in the order things happened.** Alice's 10:01 message comes after the 10:00 call,
+  where it belongs.
+- **History is what the model saw.** History holds no approval parts, so nothing is stripped on the
+  way to the provider. Apart from the AI SDK's usual message conversion, the model's next prompt is
+  the stored history.
+
+The receipt stays, even after the real result arrives. Swapping it for the result would rewrite
+history: the ordering rules would come back, the provider's prompt cache would be invalidated from
+that point, and the model would lose what it was told while it waited.
 
 ## Budget questions
 
