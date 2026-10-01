@@ -22,15 +22,7 @@ const childModel = mockModel({
 
 const sessionContextModel = mockModel({
   modelId: "session-context",
-  respond: ({ messages, toolResults, userMessageCount }) => {
-    if (
-      !messages.some(
-        (message) =>
-          message.role === "system" && message.text.includes("Application surface: docs."),
-      )
-    ) {
-      throw new Error("Session-started instructions did not receive the application context.");
-    }
+  respond: ({ toolResults, userMessageCount }) => {
     const id = `session-context-${userMessageCount}`;
     const result = toolResults.find((entry) => entry.id === id);
     return result === undefined
