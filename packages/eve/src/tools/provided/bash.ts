@@ -1,3 +1,4 @@
+import { markProvidedTool } from "#tools/provided/provided-tool.js";
 import { executeBashOnSandbox, type BashInput } from "#execution/sandbox/bash.js";
 import { toolLabel } from "#tools/tool-label.js";
 import { defineTool, type ToolDefinition } from "#tools/definition.js";
@@ -49,14 +50,16 @@ export const BASH_OUTPUT_SCHEMA = defineJsonSchema<BashToolOutput>({
  * sandbox dependencies remain lazily loaded inside the execution layer, so the
  * top-level import here does not force those backends to initialize eagerly.
  */
-export const bash: ToolDefinition<BashToolInput, BashToolOutput> = defineTool({
-  label: { start: (input) => toolLabel("Run", input.command) },
-  description: "Execute a shell command in the shared workspace environment.",
-  async execute(input, ctx) {
-    return await executeBashOnSandbox(await ctx.getSandbox(), input as BashInput);
-  },
-  inputSchema: BASH_INPUT_SCHEMA,
-  outputSchema: BASH_OUTPUT_SCHEMA,
-});
+export const bash: ToolDefinition<BashToolInput, BashToolOutput> = markProvidedTool(
+  defineTool({
+    label: { start: (input) => toolLabel("Run", input.command) },
+    description: "Execute a shell command in the shared workspace environment.",
+    async execute(input, ctx) {
+      return await executeBashOnSandbox(await ctx.getSandbox(), input as BashInput);
+    },
+    inputSchema: BASH_INPUT_SCHEMA,
+    outputSchema: BASH_OUTPUT_SCHEMA,
+  }),
+);
 
 export default bash;

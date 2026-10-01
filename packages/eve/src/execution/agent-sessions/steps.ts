@@ -248,6 +248,7 @@ async function startLocalSession(
       sessionId: context.parent.sessionId,
     },
     source: target.source,
+    toolStubSet: context.toolStubSet,
   });
   const childRuntime = createWorkflowRuntime({
     compiledArtifactsSource: bundle.compiledArtifactsSource,

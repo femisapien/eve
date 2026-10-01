@@ -4,6 +4,25 @@ import { parseCreateBody } from "#eve-channel/request.js";
 import { REMOTE_AGENT_PROTOCOL_VERSION } from "#protocol/remote-agent-protocol.js";
 
 describe("parseCreateBody", () => {
+  it("accepts a tool stub set name with or without a message", () => {
+    expect(parseCreateBody({ stubs: "two-workflows" })).toMatchObject({ stubs: "two-workflows" });
+    expect(parseCreateBody({ message: "Hi", stubs: "two-workflows" })).toMatchObject({
+      message: "Hi",
+      stubs: "two-workflows",
+    });
+  });
+
+  it("rejects a stub set name that is not a non-empty string", async () => {
+    for (const stubs of ["", 3, ["two-workflows"]]) {
+      const response = parseCreateBody({ stubs });
+      expect(response).toBeInstanceOf(Response);
+      expect(await (response as Response).json()).toEqual({
+        error: "Expected 'stubs' to be a non-empty tool stub set name.",
+        ok: false,
+      });
+    }
+  });
+
   it("accepts a conversation session without a message", () => {
     expect(parseCreateBody({})).toEqual({
       callback: undefined,

@@ -90,6 +90,9 @@ export function parseCreateBody(input: Record<string, unknown>): ParsedCreateBod
   const outputSchema = parseOutputSchemaField(payload.outputSchema);
   if (outputSchema instanceof Response) return outputSchema;
 
+  const stubs = parseStubsField(payload.stubs);
+  if (stubs instanceof Response) return stubs;
+
   const messageFreeRejection = validateMessageFreeCreate({
     callback,
     hasClientContext: payload.clientContext !== undefined,
@@ -115,6 +118,7 @@ export function parseCreateBody(input: Record<string, unknown>): ParsedCreateBod
   };
   if (message !== undefined) result.message = message;
   if (typeof rawOperationId === "string") result.operationId = rawOperationId;
+  if (stubs !== undefined) result.stubs = stubs;
   if (protocolVersion !== undefined) result.protocolVersion = protocolVersion;
   if (protocolVersion === LEGACY_REMOTE_AGENT_PROTOCOL_VERSION) {
     result.legacyRemoteAgentCaller = legacy.taskId === undefined ? {} : { taskId: legacy.taskId };
@@ -360,6 +364,17 @@ function parseProtocolVersionField(value: unknown): number | Response {
     },
     { status: 409 },
   );
+}
+
+function parseStubsField(value: unknown): string | Response | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.length === 0) {
+    return Response.json(
+      { error: "Expected 'stubs' to be a non-empty tool stub set name.", ok: false },
+      { status: 400 },
+    );
+  }
+  return value;
 }
 
 function parseCapabilitiesField(value: unknown): SessionCapabilities | Response | undefined {

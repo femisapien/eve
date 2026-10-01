@@ -24,6 +24,8 @@ import { workflowIdForHandling } from "#runtime/subagents/workflow-reference.js"
 import { findRegisteredRuntimeTool } from "#runtime/tools/registry.js";
 import type { ResolvedToolDefinition } from "#runtime/types.js";
 import { createToolExecuteWithAuth } from "#execution/tool-auth.js";
+import { withToolStub } from "#execution/tool-stubs.js";
+import { isProvidedToolExecute } from "#tools/provided/provided-tool.js";
 import {
   createPreparedWorkflowToolHarnessDefinition,
   createWorkflowToolHarnessDefinition,
@@ -265,6 +267,7 @@ function createRegisteredHarnessToolDefinition(input: {
     endsTurn: def.endsTurn,
     executeInput: def.executeInput,
     execute: resolveAuthoredExecute({
+      owner: def.owner,
       rawExecute,
       scope: def.name,
     }),
@@ -288,9 +291,13 @@ function createRegisteredHarnessToolDefinition(input: {
  * - Source-backed tools are wrapped by {@link createToolExecuteWithAuth},
  *   which builds a token-aware context. Providers passed to
  *   `ctx.getToken(provider)` use tool-qualified auth scopes.
+ * - Application and extension tools are wrapped by {@link withToolStub}, so an
+ *   eval session with a stub set runs the stub. Framework tools and tools eve
+ *   provides, wherever an app mounts them, run as usual.
  * - Tools without `execute` (provider-managed) stay `undefined`.
  */
 function resolveAuthoredExecute(input: {
+  readonly owner: ResolvedToolDefinition["owner"];
   readonly rawExecute: ResolvedToolDefinition["execute"];
   readonly scope: string;
 }): HarnessToolDefinition["execute"] {
@@ -299,5 +306,11 @@ function resolveAuthoredExecute(input: {
     return undefined;
   }
   const authored = rawExecute as (toolInput: unknown, ctx: unknown) => unknown;
-  return createToolExecuteWithAuth({ execute: authored, scope });
+  return createToolExecuteWithAuth({
+    execute:
+      input.owner.kind === "framework" || isProvidedToolExecute(rawExecute)
+        ? authored
+        : withToolStub(authored),
+    scope,
+  });
 }
