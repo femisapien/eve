@@ -1,7 +1,7 @@
 ---
 issue: "TBD (no tracking issue yet; evidence issues listed under Motivation)"
 status: draft
-last_updated: "2026-09-30"
+last_updated: "2026-10-01"
 ---
 
 # HITL requests: held turns, and gated calls as tasks
@@ -105,7 +105,7 @@ special case added for it, whether or not it has since been patched on `main`. O
 | **A message lands after the approval response**, so the approval is dropped or the provider rejects a call with no result | #2594, #2699, #2826, #2874, #3594, #3771, #3899, #3943 |                                                                                    | History is append-only, and a call is written together with its result or receipt. No message has a position it must keep                                                                                                                                                                                                                                   |
 | **Resume loses turn context**: the turn id, the answering principal, turn-scoped connections, or a user message           | #3705, #3760 (and #3771 above)                         |                                                                                    | The answer continues the same turn, so nothing is rebuilt                                                                                                                                                                                                                                                                                                   |
 | **Several approvals wait on each other**: one batch resolves per step                                                     | #3494, #3711, #4024                                    |                                                                                    | There are no batches. Each gated call has its own task and runs when its own request is answered                                                                                                                                                                                                                                                            |
-| **A message is misread** as an answer, a dismissal, deferred input, or a new turn                                         | #2466, #2469, #3421 (and #2699, #3494, #3711 above)    | #3680, #4035                                                                       | One classifier handles every delivery in one order, and an open approval no longer changes how the model is called (#2466 and #2469 came from restricting tools while one was open). #3680 needs text to answer policy-guarded requests (open question 3). #4035 is how free-text questions work                                                            |
+| **A message is misread** as an answer, a dismissal, deferred input, or a new turn                                         | #2466, #2469, #3421 (and #2699, #3494, #3711 above)    | #3680, #4035                                                                       | One classifier handles every delivery in one order, and an open approval no longer changes how the model is called (#2466 and #2469 came from restricting tools while one was open). #3680 needs text to answer policy-guarded requests (open question 2). #4035 is how free-text questions work                                                            |
 | **Pending state is split**, and cancel, steer, or settle clears only part of it                                           | #2421, #2442, #3414, #3458, #3887 (and #2874 above)    |                                                                                    | One request table holds every open request, and cancel withdraws all of it. The harness store where #2442 and #3414 went stale is gone. A task's sign-in keeps the parent's turn open, so the next turn that dropped it in #3887 never starts. Each call's sign-in is its own entry, so finishing one doesn't re-run a step shared with the others (#2421). |
 | **Child and task relays drift** from the root path                                                                        | #2520, #3589, #3784, #3990 (and #3458 above)           | (#3680 above)                                                                      | Relayed requests use the same request table, settle events, publication path, and "nobody can answer" rule as local ones (see Stream events)                                                                                                                                                                                                                |
 | **Events are missing or not reduced**, so clients and channels get stuck                                                  | #3757, #3911 (and #2520, #3705, #3784, #3990 above)    |                                                                                    | Every park emits `turn.waiting`, and approval state has one source, the `input.*` events.                                                                                                                                                                                                                                                                   |
@@ -182,8 +182,8 @@ afterwards, and a completion stream keeps a retried step from exchanging the cal
 (`completeWorkflowStepAuthorization`). None of that changes. Routing callbacks through the session
 instead would make the session hold and resume per-attempt hook tokens, and simplify nothing.
 
-**The response policy runs in the run that asked.** #3929 (open) runs a `ctx.ask` response policy as
-a step in the asking workflow. A rejected answer, or one waiting on the responder's sign-in, leaves
+**The response policy runs in the run that asked.** This builds on #3929 (open), which runs a
+`ctx.ask` response policy as a step in the asking workflow; the approvals slice lands after it. A rejected answer, or one waiting on the responder's sign-in, leaves
 the question open. Gate tasks ask with `ctx.ask`, so approvals get the same behavior, and a
 responder's sign-in becomes a workflow-step sign-in like any other. Nothing is left for
 `pendingAuthorization` to hold.
@@ -565,10 +565,14 @@ Response readers (`send().result()`, MCP) already stop at `turn.waiting` while r
 
 ## Migration
 
-Pre-1.0: breaking, no dual path. On load, eve settles each approval parked under the old model as
-withdrawn: it writes the held-back call with a result saying the approval expired in an upgrade, and
-drops the `[Pending approvals]` note. Open plain-tool challenges and budget questions from before the
-upgrade are dropped the same way; the next call or model step raises a new one.
+Pre-1.0: breaking, no dual path. Sessions parked under the old model are not rewritten. The handoff
+check refuses to move a session that still holds an old approval, sign-in, or budget key, so it
+finishes on the deployment that can still answer it.
+
+Rollout: #4133 removes the current state first. Until a slice restores its kind, an approval that
+asks a person is denied, a plain-tool sign-in fails the call, and over budget the turn fails. The
+slices then land in order: the request table, approvals, sign-ins, budget questions, child relays,
+and clients and channels. The release is held until all of them land.
 
 Clients change too. `useEveAgent` and `EveAgentStore` show an approval's state from the tool part's
 `eve` metadata today; they move to `input.requested`, `input.resolved`, and `task.settled`.
@@ -607,13 +611,7 @@ Each question says what is known, what isn't, and what depends on the answer.
    - Depends on it: step 4 of "Inside the gate task". If a workflow step can't run them, gated calls
      need a runner inside the session instead.
    - How to answer: the spike, with one plain, one MCP, and one dynamic tool behind an approval.
-2. **Does #3929 land?**
-   - Known: #3929 (open) runs a `ctx.ask` response policy as a step in the asking run, including a
-     sign-in it asks the responder for. This design relies on it for approvals.
-   - If it doesn't land: the session has to run the policy itself, and a responder's sign-in needs a
-     callback path into the session. That is what `pendingAuthorization` does today, so it would
-     stay as a second place sign-ins are held.
-3. **Should text answer an approval that has a response policy?**
+2. **Should text answer an approval that has a response policy?**
    - Known: today only a structured answer can settle such an approval, never text. Linear always
      sends replies as text, so those approvals can't be answered from Linear (#3680).
    - Option: treat a text answer like a structured one, with the message's sender as the responder,
