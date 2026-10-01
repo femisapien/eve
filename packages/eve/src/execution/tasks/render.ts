@@ -1,9 +1,10 @@
 import type { TaskCancelResult, TaskWaitResult } from "#execution/tasks/calls.js";
+import { formatDuration } from "#shared/format-duration.js";
 
 // Every string the model reads about tasks lives in this file.
 
 export const TASK_WAIT_DESCRIPTION =
-  "Wait silently until any of your tasks has a result, a new message arrives, or timeoutSeconds pass. Call it when you have nothing to say until a result arrives. It returns after the first result, which follows in a <task_result> message; call it again to wait for the rest. Waiting never stops a task.";
+  "Call task_wait sparingly, only when you deliberately want to withhold a message from the user while waiting for a task result. Tasks keep running and their results reach you without calling task_wait. If the user should hear from you now, reply instead. Wait silently until any of your tasks has a result, a new message arrives, or timeoutSeconds pass. It returns after the first result, which follows in a <task_result> message; wait again only if you still want to withhold a reply until another result arrives. Waiting never stops a task.";
 
 export const TASK_WAIT_TIMEOUT_DESCRIPTION =
   "Optional. Seconds to wait before returning without a result. Omit it to wait for a result or a new message, which is almost always right. Don't use short timeouts to check on tasks: results reach you without checking.";
@@ -276,19 +277,6 @@ export function renderTasksNote(input: {
 
 function listedTaskAttributes(task: ListedTask): string {
   return `id="${escapeAttribute(task.id)}" tool="${escapeAttribute(task.tool)}"`;
-}
-
-function formatDuration(ms: number): string {
-  if (ms < 1_000) return `${String(Math.max(0, Math.round(ms)))}ms`;
-  const totalSeconds = Math.round(ms / 1_000);
-  const hours = Math.floor(totalSeconds / 3_600);
-  const minutes = Math.floor((totalSeconds % 3_600) / 60);
-  const seconds = totalSeconds % 60;
-  const parts: string[] = [];
-  if (hours > 0) parts.push(`${String(hours)}h`);
-  if (minutes > 0) parts.push(`${String(minutes)}m`);
-  if (seconds > 0) parts.push(`${String(seconds)}s`);
-  return parts.join(" ");
 }
 
 function joinList(items: readonly string[]): string {

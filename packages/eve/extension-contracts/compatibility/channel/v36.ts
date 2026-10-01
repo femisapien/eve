@@ -1,10 +1,14 @@
-// Existing callbacks remain valid when the runtime supplies session.context.
-import { defineChannel, POST } from "#public/channels/index.js";
+import { defineChannel } from "#public/channels/index.js";
+
+// Epoch 36 authorization events had no `principalId`; it is additive.
 export default defineChannel({
-  routes: [
-    POST("/continue/:sessionId", async (_, { attachSession, params }) => {
-      const result = await attachSession(params.sessionId!).send("Continue.", { auth: null });
-      return Response.json(result);
-    }),
-  ],
+  routes: [],
+  events: {
+    "authorization.required"(event) {
+      console.info("sign-in required", { name: event.name, url: event.authorization?.url });
+    },
+    "authorization.completed"(event) {
+      console.info("sign-in completed", { name: event.name, outcome: event.outcome });
+    },
+  },
 });

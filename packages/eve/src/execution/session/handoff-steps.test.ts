@@ -1,7 +1,7 @@
 import { createTestSessionState } from "#internal/testing/session-state.js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import type { SessionCheckpoint } from "#execution/session/handoff.js";
+import { SESSION_CHECKPOINT_VERSION, type SessionCheckpoint } from "#execution/session/handoff.js";
 import { validateSessionCheckpointStep } from "#execution/session/handoff-steps.js";
 import { BundleKey } from "#runtime/sessions/runtime-context-keys.js";
 
@@ -27,7 +27,7 @@ describe("validateSessionCheckpointStep", () => {
     readDurableSessionMock.mockReturnValue({});
     const checkpoint = createCheckpoint();
 
-    await validateSessionCheckpointStep({ checkpoint });
+    await expect(validateSessionCheckpointStep({ checkpoint })).resolves.toEqual({ kind: "valid" });
 
     expect(require).toHaveBeenCalledWith(BundleKey);
     expect(readDurableSessionMock).toHaveBeenCalledWith(checkpoint.sessionState);
@@ -55,16 +55,17 @@ describe("validateSessionCheckpointStep", () => {
     );
   });
 
-  it.each([5, 6, 7, 8, 10])(
-    "rejects checkpoint version %s before reading nested state",
+  it.each([5, 6, 7, 8, 9, 11])(
+    "reports checkpoint version %s as incompatible before reading nested state",
     async (version) => {
       const checkpoint = createCheckpoint();
       // Simulate an incompatible checkpoint received over the wire.
       Object.assign(checkpoint, { version });
 
-      await expect(validateSessionCheckpointStep({ checkpoint })).rejects.toThrow(
-        `Unsupported session checkpoint version ${version}`,
-      );
+      await expect(validateSessionCheckpointStep({ checkpoint })).resolves.toEqual({
+        kind: "incompatible",
+        reason: "checkpoint-version",
+      });
       expect(deserializeContextMock).not.toHaveBeenCalled();
       expect(readDurableSessionMock).not.toHaveBeenCalled();
     },
@@ -84,7 +85,7 @@ describe("validateSessionCheckpointStep", () => {
 
 function createCheckpoint(): SessionCheckpoint {
   return {
-    version: 9,
+    version: SESSION_CHECKPOINT_VERSION,
     sessionTimeoutMs: false,
     serializedContext: {},
     sessionState: createTestSessionState({

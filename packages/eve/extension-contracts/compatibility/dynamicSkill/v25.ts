@@ -1,11 +1,12 @@
-// Existing callbacks remain valid when the runtime supplies session.context.
 import { defineDynamic, defineSkill } from "#public/skills/index.js";
+
+// Epoch 25 authorization events had no `principalId`; it is additive.
 export default defineDynamic({
   events: {
-    "turn.started": (_, ctx) =>
+    "turn.started": (_event, ctx) =>
       defineSkill({
-        description: "Review the active request.",
-        markdown: `Review evidence for session ${ctx.session.id}.`,
+        description: `Review evidence for session ${ctx.session.id}.`,
+        markdown: "# Evidence review\n\nCheck every claim against its source.",
       }),
   },
 });

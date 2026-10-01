@@ -4,7 +4,7 @@ import {
   type WorkflowToolEntryPoint,
 } from "#tools/workflow-definition.js";
 import { readWorkflowFunctionId } from "#internal/workflow/reference.js";
-import { TASK_ID_INPUT } from "#execution/tasks/task-id-input.js";
+import { TASK_ID_INPUT, withTaskIdSchema } from "#execution/tasks/task-id-input.js";
 import { isObject } from "#shared/guards.js";
 import type { JsonObject } from "#shared/json.js";
 import { isDisabledToolSentinel } from "#tools/definition.js";
@@ -24,8 +24,11 @@ import {
 } from "#tools/workflow-program-input.js";
 import {
   serializeInputSchema,
+  serializeModelInputSchema,
   serializeOutputSchema,
+  toInputSchema,
   type ToolSchemaSource,
+  UNSPECIFIED_INPUT_SCHEMA,
 } from "#tools/schema.js";
 import { normalizeApproval } from "#internal/authored-definition/approval.js";
 import { shouldRebindDynamicCallbacks } from "#internal/dynamic-tool-rebind.js";
@@ -48,6 +51,8 @@ type NormalizedAuthoredTool = Readonly<
     readonly hasApproval: boolean;
     readonly hasExecute: boolean;
     readonly hasModelOutputProjection: boolean;
+    /** The input schema as eve sends it to a model, from the live authored schema. */
+    readonly modelInputSchema: JsonObject;
     readonly workflow?: CompiledWorkflowEntry;
     readonly workflowProgram?: WorkflowProgramOptions;
   }
@@ -117,10 +122,16 @@ export function normalizeToolDefinition(value: unknown, message: string): Normal
       `${message} Workflow executors require defineWorkflowTool() from "eve/tools". Replace defineTool() or the bare tool object with defineWorkflowTool().`,
     );
   }
+  if (workflow !== undefined && record.endsTurn !== undefined) {
+    throw new Error(
+      `${message} "endsTurn" is not supported on defineWorkflowTool(). Workflow tools resume the turn when they finish; use defineTool() for a tool that ends the turn.`,
+    );
+  }
   expectOnlyKnownKeys(
     record,
     [
       "availableInSubagents",
+      "endsTurn",
       "label",
       "auth",
       "description",
@@ -153,10 +164,21 @@ export function normalizeToolDefinition(value: unknown, message: string): Normal
         ? undefined
         : expectBoolean(record.availableInSubagents, message),
     description: expectString(record.description, message),
+    endsTurn:
+      record.endsTurn === undefined || typeof record.endsTurn === "boolean"
+        ? record.endsTurn
+        : (expectFunction(record.endsTurn, message) as (
+            output: unknown,
+          ) => boolean | Promise<boolean>),
     hasApproval: record.approval !== undefined,
     hasExecute,
     hasModelOutputProjection: record.toModelOutput !== undefined,
     inputSchema,
+    modelInputSchema: modelInputSchemaOf(
+      record.inputSchema,
+      // An agent dispatch runs as a `serve` task, as a `serve` workflow tool does.
+      workflow?.entryPoint === "serve" || behavior?.handling?.kind === "dispatch",
+    ),
   };
   if (behavior !== undefined) {
     definition.behavior = behavior;
@@ -224,6 +246,15 @@ function readCompiledWorkflowEntry(
     );
   }
   return { entryPoint, workflowId };
+}
+
+/**
+ * Only the live authored schema tells whether eve closes its objects for the
+ * model, so the model-facing form is captured while the module is loaded.
+ */
+function modelInputSchemaOf(source: unknown, serve: boolean): JsonObject {
+  const schema = toInputSchema(source as ToolSchemaSource | undefined) ?? UNSPECIFIED_INPUT_SCHEMA;
+  return serializeModelInputSchema(serve ? withTaskIdSchema(schema) : schema);
 }
 
 /** eve adds `taskId` to a `serve` tool's model input, so the tool's own input can't use it. */

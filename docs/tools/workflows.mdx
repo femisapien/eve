@@ -337,6 +337,13 @@ described in [Tasks](/docs/tools/tasks). What differs:
   different caller than the one that started the task. `getToken`, `requireAuth`, and connections
   in a step use the current call's auth. `ctx.agents` lists the
   agents the current call may open, including dynamic agents selected in its turn.
+- **Body state spans callers:** variables the body keeps between calls, such as `plan` in the
+  example, may hold what an earlier call from another caller produced. Key per-caller data on
+  the whole principal in `ctx.session.auth.current`: `authenticator`, `issuer`, `principalType`,
+  and `principalId` together, because a `principalId` is unique only within its authenticator and
+  issuer. Anonymous callers, whose `current` is `null` or whose `principalType` is `"anonymous"`,
+  share one identity, so don't keep per-person data for them. Any caller in the session can
+  continue or cancel the task; see [Tasks](/docs/tools/tasks#ownership-and-limits).
 - **Agents belong to the call that opened them:** a session the body opens with `ctx.agent` while
   serving a call is that call's child. Its `session.parent` names the call's `callId` and turn, and
   its trace continues from the call's tool span. The session keeps that lineage for its later
@@ -395,7 +402,7 @@ async function readRepository(ctx: WorkflowStepToolContext, repository: string) 
 }
 ```
 
-Connections discovered through `connection_search`, ordinary tools, and workflow steps use the same
+Connection tools called through `connection_execute`, ordinary tools, and workflow steps use the same
 authorization machinery for requester identity, token caching, callback completion, and rejection
 after sign-in. The execution runtime owns the wait: an agent returns to its model after authorization,
 while a workflow retries the interrupted step and continues the authored body.

@@ -1,7 +1,8 @@
 import type { ModelMessage } from "ai";
 
 import { contextStorage } from "#context/container.js";
-import { ActivityRootTurnIdKey } from "#context/keys.js";
+import type { SessionAuthContext } from "#channel/types.js";
+import { AuthKey, SessionKey } from "#context/keys.js";
 import type { InputRequest } from "#shared/input.js";
 import type { HarnessSession, SessionStateMap, StepInput } from "#harness/types.js";
 import { coalesceTurnInputs } from "#harness/messages.js";
@@ -28,10 +29,13 @@ export interface PendingInputBatchEvent {
  * assistant turn's requests plus its withheld model output.
  */
 export interface PendingInputBatch {
-  readonly toolReplayIdentities?: Readonly<Record<string, string>>;
   readonly event?: PendingInputBatchEvent;
-  readonly activityRootTurnId?: string;
   readonly requests: readonly InputRequest[];
+  /**
+   * Auth of the caller whose turn parked the batch, captured when it parked;
+   * `null` when that caller was unauthenticated.
+   */
+  readonly requester?: SessionAuthContext | null;
   readonly responseAuthRequiredRequestIds?: readonly string[];
   readonly responseMessages: readonly ModelMessage[];
 }
@@ -137,9 +141,8 @@ function setPendingInputBatches(
   } else {
     state[PENDING_INPUT_BATCHES_KEY] = batches.map((batch) => ({
       event: batch.event,
-      activityRootTurnId: batch.activityRootTurnId,
+      requester: batch.requester,
       responseAuthRequiredRequestIds: batch.responseAuthRequiredRequestIds,
-      toolReplayIdentities: batch.toolReplayIdentities,
       requests: [...batch.requests],
       responseMessages: [...batch.responseMessages],
     }));
@@ -153,9 +156,7 @@ function setPendingInputBatches(
  * batches stay open and independently answerable.
  */
 export function appendPendingInputBatch(input: {
-  readonly toolReplayIdentities?: Readonly<Record<string, string>>;
   readonly event?: PendingInputBatchEvent;
-  readonly activityRootTurnId?: string;
   readonly requests: readonly InputRequest[];
   readonly responseAuthRequiredRequestIds?: readonly string[];
   readonly responseMessages: readonly ModelMessage[];
@@ -165,34 +166,33 @@ export function appendPendingInputBatch(input: {
     ...getPendingInputBatches(input.session.state),
     {
       event: input.event,
-      activityRootTurnId:
-        input.activityRootTurnId ?? contextStorage.getStore()?.get(ActivityRootTurnIdKey),
+      requester: currentRequester(),
       responseAuthRequiredRequestIds: input.responseAuthRequiredRequestIds,
-      toolReplayIdentities: input.toolReplayIdentities,
       requests: input.requests,
       responseMessages: input.responseMessages,
     },
   ]);
 }
 
-export function activityRootTurnIdForInputResponses(
-  state: SessionStateMap | undefined,
-  requestIds: ReadonlySet<string>,
-): string | undefined {
-  return getPendingInputBatches(state).find((batch) =>
-    batch.requests.some((request) => requestIds.has(request.requestId)),
-  )?.activityRootTurnId;
+/**
+ * Every anonymous caller shares one synthetic identity, so an anonymous
+ * requester can't be told apart from another anonymous responder: record none.
+ */
+function currentRequester(): SessionAuthContext | null {
+  const context = contextStorage.getStore();
+  const auth = context?.get(AuthKey) ?? context?.get(SessionKey)?.auth.current ?? null;
+  return auth?.principalType === "anonymous" ? null : auth;
 }
 
-export function activityRequestIdsForRootTurn(
+/** The requester recorded on the pending batch that holds `requestId`. */
+export function pendingInputRequester(
   state: SessionStateMap | undefined,
-  rootTurnId: string,
-): readonly string[] {
-  return getPendingInputBatches(state).flatMap((batch) =>
-    batch.activityRootTurnId === rootTurnId
-      ? batch.requests.map((request) => request.requestId)
-      : [],
+  requestId: string,
+): SessionAuthContext | null {
+  const batch = getPendingInputBatches(state).find((candidate) =>
+    candidate.requests.some((request) => request.requestId === requestId),
   );
+  return batch?.requester ?? null;
 }
 
 // ---------------------------------------------------------------------------

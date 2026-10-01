@@ -47,7 +47,6 @@ function createMockInbox(reads: readonly ScriptedRead[]): SessionInbox {
     onDelivery() {
       return () => {};
     },
-    onAgentStarted: () => () => {},
     onInterrupt() {
       return () => {};
     },
@@ -315,14 +314,12 @@ describe("nextTurnDelivery", () => {
       .mockResolvedValueOnce({
         kind: "continue",
         remainder: undefined,
-        serializedContext: {},
-        sessionState: retiredState,
+        stateDelta: { sessionState: { kind: "value", value: retiredState } },
       })
       .mockResolvedValueOnce({
         kind: "continue",
         remainder: { kind: "deliver", payloads: [{ message: "parent turn" }] },
-        serializedContext: {},
-        sessionState: retiredState,
+        stateDelta: {},
       });
 
     const next = await nextTurnDelivery({
@@ -368,13 +365,10 @@ function authenticatedDelivery(message: string, auth: SessionAuthContext): Deliv
 
 function batchingInputFor(bufferedDeliveries: DeliverHookPayload[]) {
   const input = waitInput(createMockInbox([]));
-  vi.mocked(routeDeliverToChildren).mockImplementation(
-    async ({ delivery, serializedContext, sessionState }) => ({
-      kind: "continue",
-      remainder: delivery,
-      serializedContext,
-      sessionState,
-    }),
-  );
+  vi.mocked(routeDeliverToChildren).mockImplementation(async ({ delivery }) => ({
+    kind: "continue",
+    remainder: delivery,
+    stateDelta: {},
+  }));
   return { ...input, queue: queueOf(...bufferedDeliveries) };
 }

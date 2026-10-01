@@ -71,7 +71,7 @@ import {
   hasPendingInputBatch,
   appendPendingInputBatch,
 } from "#harness/input-requests.js";
-import { getDeferredStepInput } from "#harness/pending-input-batches.js";
+import { getDeferredStepInput, getPendingInputBatches } from "#harness/pending-input-batches.js";
 import { getPendingCoordinationBatch, pendingCoordinationCallIds } from "#harness/coordination.js";
 import { PendingSkillAnnouncementKey } from "#context/dynamic-skill-lifecycle.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
@@ -306,6 +306,65 @@ function createTestConfig(
     ]),
     ...overrides,
   };
+}
+
+function mockApprovalAlongsideWorkflowTask(): void {
+  const gateToolCall = {
+    input: { action: "run" },
+    toolCallId: "gate-1",
+    toolName: "add",
+    type: "tool-call" as const,
+  };
+  const delegateToolCall = {
+    input: { message: "probe" },
+    toolCallId: "delegate-1",
+    toolName: "delegate",
+    type: "tool-call" as const,
+  };
+  setupMockAgent({
+    content: [
+      gateToolCall,
+      { approvalId: "approval-gate", toolCallId: "gate-1", type: "tool-approval-request" },
+      delegateToolCall,
+    ],
+    finishReason: "tool-calls",
+    response: {
+      messages: [
+        {
+          content: [
+            gateToolCall,
+            { approvalId: "approval-gate", toolCallId: "gate-1", type: "tool-approval-request" },
+            delegateToolCall,
+          ],
+          role: "assistant",
+        },
+      ],
+    },
+    responseMessages: [
+      {
+        content: [
+          {
+            output: { type: "text", value: "/workspace" },
+            toolCallId: "call-1",
+            toolName: "bash",
+            type: "tool-result",
+          },
+        ],
+        role: "tool",
+      },
+      {
+        content: [
+          gateToolCall,
+          { approvalId: "approval-gate", toolCallId: "gate-1", type: "tool-approval-request" },
+          delegateToolCall,
+        ],
+        role: "assistant",
+      },
+    ],
+    text: "",
+    toolCalls: [gateToolCall, delegateToolCall],
+    toolResults: [],
+  });
 }
 
 function createDelegationToolMap(): ToolLoopHarnessConfig["tools"] {
@@ -912,6 +971,31 @@ describe("createToolLoopHarness", () => {
     expect(ToolLoopAgent).not.toHaveBeenCalled();
   });
 
+  it("emits settled prose history with turn.completed", async () => {
+    setupMockAgent({
+      finishReason: "stop",
+      response: { messages: [{ content: "Hello!", role: "assistant" }] },
+      text: "Hello!",
+      toolCalls: [],
+      toolResults: [],
+    });
+    const completedHistory: Array<readonly ModelMessage[]> = [];
+    const handleEvent: HarnessEmitFn = async (event, messages) => {
+      if (event.type === "turn.completed") completedHistory.push(messages ?? []);
+    };
+
+    await createToolLoopHarness(createTestConfig(handleEvent))(createTestSession(), {
+      message: "Hi",
+    });
+
+    expect(completedHistory).toEqual([
+      [
+        { content: "Hi", kind: "user", role: "user" },
+        { content: "Hello!", role: "assistant" },
+      ],
+    ]);
+  });
+
   it("parks when model finishes with stop", async () => {
     setupMockAgent({
       finishReason: "stop",
@@ -1446,63 +1530,28 @@ describe("createToolLoopHarness", () => {
     ]);
   });
 
-  it("parks on both batches when one step carries a workflow task and an approval", async () => {
-    const gateToolCall = {
-      input: { action: "run" },
-      toolCallId: "gate-1",
-      toolName: "add",
-      type: "tool-call" as const,
-    };
-    const delegateToolCall = {
-      input: { message: "probe" },
-      toolCallId: "delegate-1",
-      toolName: "delegate",
-      type: "tool-call" as const,
-    };
-    setupMockAgent({
-      content: [
-        gateToolCall,
-        { approvalId: "approval-gate", toolCallId: "gate-1", type: "tool-approval-request" },
-        delegateToolCall,
-      ],
-      finishReason: "tool-calls",
-      response: {
-        messages: [
-          {
-            content: [
-              gateToolCall,
-              { approvalId: "approval-gate", toolCallId: "gate-1", type: "tool-approval-request" },
-              delegateToolCall,
-            ],
-            role: "assistant",
-          },
-        ],
-      },
-      responseMessages: [
-        {
-          content: [
-            {
-              output: { type: "text", value: "/workspace" },
-              toolCallId: "call-1",
-              toolName: "bash",
-              type: "tool-result",
-            },
-          ],
-          role: "tool",
-        },
-        {
-          content: [
-            gateToolCall,
-            { approvalId: "approval-gate", toolCallId: "gate-1", type: "tool-approval-request" },
-            delegateToolCall,
-          ],
-          role: "assistant",
-        },
-      ],
-      text: "",
-      toolCalls: [gateToolCall, delegateToolCall],
-      toolResults: [],
+  it("records a response policy for an approval parked alongside a workflow task", async () => {
+    mockApprovalAlongsideWorkflowTask();
+    const delegation = createDelegationToolMap();
+    const tools = new Map(delegation);
+    tools.set("add", {
+      ...delegation.get("add")!,
+      approval: { request: () => "user-approval", response: () => ({ status: "allowed" }) },
     });
+    const runStep = createToolLoopHarness(createTestConfig(undefined, { tools }));
+
+    const parked = await runStep(createPendingBashApprovalSession(), {
+      inputResponses: [{ optionId: "approve", requestId: "approval-1" }],
+    });
+
+    expect(getPendingCoordinationBatch(parked.session.state)).toBeDefined();
+    expect(getPendingInputBatches(parked.session.state)).toEqual([
+      expect.objectContaining({ responseAuthRequiredRequestIds: ["approval-gate"] }),
+    ]);
+  });
+
+  it("parks on both batches when one step carries a workflow task and an approval", async () => {
+    mockApprovalAlongsideWorkflowTask();
 
     const { emit, events } = createEventCollector();
     const runStep = createToolLoopHarness(
@@ -2182,6 +2231,7 @@ describe("createToolLoopHarness", () => {
     const agentCall = vi.mocked(ToolLoopAgent).mock.calls[0]?.[0] as
       | {
           toolApproval?: (options: {
+            messages: readonly unknown[];
             toolCall: { input: unknown; toolCallId: string; toolName: string };
           }) => Promise<unknown>;
         }
@@ -2190,6 +2240,7 @@ describe("createToolLoopHarness", () => {
     await expect(
       contextStorage.run(ctx, () =>
         agentCall!.toolApproval?.({
+          messages: [],
           toolCall: {
             input: { line: "victoria" },
             toolCallId: "call_1",
@@ -2387,6 +2438,197 @@ describe("createToolLoopHarness", () => {
       { content: '{"title":"Done"}', role: "assistant" },
     ]);
     expect(result.session.outputSchema).toBeUndefined();
+  });
+
+  describe("endsTurn tools", () => {
+    const reacted = { type: "text", value: "reacted" } as const;
+    const tools = new Map([
+      ...createTestConfig().tools,
+      [
+        "react",
+        {
+          description: "Reacts to the message.",
+          endsTurn: true,
+          execute: vi.fn().mockResolvedValue("reacted"),
+          inputSchema: jsonSchema({ type: "object" }),
+          name: "react",
+        },
+      ],
+    ]);
+
+    function stepCalling(
+      calls: readonly {
+        readonly executeOutput?: unknown;
+        readonly name: string;
+        readonly output: { readonly type: "error-text" | "text"; readonly value: string };
+      }[],
+    ): Record<string, unknown> {
+      const toolCalls = calls.map((call, index) => ({
+        input: {},
+        toolCallId: `call-${index}`,
+        toolName: call.name,
+      }));
+      return {
+        finishReason: "tool-calls",
+        response: {
+          messages: [
+            {
+              content: [
+                { text: "Reacting now.", type: "text" },
+                ...toolCalls.map((toolCall) => ({ ...toolCall, type: "tool-call" })),
+              ],
+              role: "assistant",
+            },
+            {
+              content: calls.map((call, index) => ({
+                output: call.output,
+                toolCallId: `call-${index}`,
+                toolName: call.name,
+                type: "tool-result",
+              })),
+              role: "tool",
+            },
+          ],
+        },
+        text: "Reacting now.",
+        toolCalls,
+        toolResults: calls.flatMap((call, index) =>
+          call.output.type === "error-text"
+            ? []
+            : [
+                {
+                  input: {},
+                  output: call.executeOutput ?? call.output.value,
+                  toolCallId: `call-${index}`,
+                  toolName: call.name,
+                },
+              ],
+        ),
+      };
+    }
+
+    function toolsWithReactEndsTurn(endsTurn: (output: unknown) => boolean | Promise<boolean>) {
+      return new Map([...tools, ["react", { ...tools.get("react")!, endsTurn }]]);
+    }
+
+    it("ends the turn without a reply when every call in the step ends the turn", async () => {
+      setupMockAgent(stepCalling([{ name: "react", output: reacted }]));
+      const { emit, events } = createEventCollector();
+      const runStep = createToolLoopHarness(createTestConfig(emit, { tools }));
+
+      const result = await runStep(createTestSession(), { message: "Thanks, that fixed it!" });
+
+      expect(result.next).toBeNull();
+      expect(result.settledTurn).toEqual({ output: "" });
+      // The narration before the call stays interim, so no channel posts it.
+      expect(
+        events.flatMap((event) =>
+          event.type === "message.completed" ? [event.data.finishReason] : [],
+        ),
+      ).toEqual(["tool-calls"]);
+      expect(getCompatibilityEventTypes(events).slice(-2)).toEqual([
+        "turn.completed",
+        "session.waiting",
+      ]);
+      expect(result.session.history.at(-1)).toMatchObject({ role: "tool" });
+    });
+
+    it.each([
+      {
+        calls: [{ name: "react", output: { type: "error-text", value: "Reaction rejected." } }],
+        case: "the call fails",
+      },
+      {
+        calls: [
+          { name: "react", output: reacted },
+          { name: "add", output: { type: "text", value: "42" } },
+        ],
+        case: "another tool shares the step",
+      },
+      {
+        calls: [{ name: "react", output: reacted }],
+        case: "the session is delegated",
+        delegated: true,
+      },
+      {
+        calls: [{ name: "react", output: reacted }],
+        case: "the turn requests structured output",
+        outputSchema: { properties: {}, type: "object" },
+      },
+    ] as const)("continues the turn when $case", async ({ calls, ...options }) => {
+      setupMockAgent(stepCalling(calls));
+      const runStep = createToolLoopHarness(createTestConfig(undefined, { tools }));
+      const ctx = new ContextContainer();
+      if ("delegated" in options) setDelegatedParent(ctx);
+      const outputSchema = "outputSchema" in options ? options.outputSchema : undefined;
+
+      const result = await contextStorage.run(ctx, () =>
+        runStep(createTestSession({ outputSchema }), { message: "Thanks, that fixed it!" }),
+      );
+
+      expect(result.next).toBe(runStep);
+      expect(result.settledTurn).toBeUndefined();
+    });
+
+    it.each([
+      {
+        case: "a root session",
+        description:
+          "Reacts to the message.\n\nCalling this tool ends your turn once it succeeds: do not write a reply or call other tools in the same step. If it fails, you will see the error and can continue.",
+      },
+      { case: "a delegated session", delegated: true, description: "Reacts to the message." },
+      {
+        case: "a structured-output turn",
+        description: "Reacts to the message.",
+        outputSchema: { properties: {}, type: "object" },
+      },
+      { case: "an endsTurn function", description: "Reacts to the message.", endsTurnFn: true },
+    ] as const)("appends the turn-ending note only for endsTurn: true: $case", async (row) => {
+      setupMockAgent({
+        finishReason: "stop",
+        response: { messages: [{ content: "Glad it helped!", role: "assistant" }] },
+        text: "Glad it helped!",
+        toolCalls: [],
+        toolResults: [],
+      });
+      const runStep = createToolLoopHarness(
+        createTestConfig(undefined, {
+          tools: "endsTurnFn" in row ? toolsWithReactEndsTurn(() => true) : tools,
+        }),
+      );
+      const ctx = new ContextContainer();
+      if ("delegated" in row) setDelegatedParent(ctx);
+      const outputSchema = "outputSchema" in row ? row.outputSchema : undefined;
+
+      await contextStorage.run(ctx, () =>
+        runStep(createTestSession({ outputSchema }), { message: "Thanks, that fixed it!" }),
+      );
+
+      const agentTools = vi.mocked(ToolLoopAgent).mock.calls[0]?.[0]?.tools;
+      expect(agentTools?.react?.description).toBe(row.description);
+      expect(agentTools?.add?.description).toBe("Adds numbers");
+    });
+
+    it.each([true, false, "throws"] as const)(
+      "passes the execute output to an endsTurn function, which %s",
+      async (decision) => {
+        const endsTurn = vi.fn(async () => {
+          if (decision === "throws") throw new Error("lookup failed");
+          return decision;
+        });
+        setupMockAgent(
+          stepCalling([{ executeOutput: { emoji: "tada" }, name: "react", output: reacted }]),
+        );
+        const runStep = createToolLoopHarness(
+          createTestConfig(undefined, { tools: toolsWithReactEndsTurn(endsTurn) }),
+        );
+
+        const result = await runStep(createTestSession(), { message: "Thanks, that fixed it!" });
+
+        expect(endsTurn).toHaveBeenCalledExactlyOnceWith({ emoji: "tada" });
+        expect(result.next).toBe(decision === true ? null : runStep);
+      },
+    );
   });
 
   it("parks a conversation when requested structured output is not fulfilled", async () => {
