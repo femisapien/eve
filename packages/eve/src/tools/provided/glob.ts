@@ -1,8 +1,8 @@
-import { markProvidedTool } from "#tools/provided/provided-tool.js";
 import { type GlobInput, executeGlobOnSandbox } from "#execution/sandbox/glob-tool.js";
 import { toolLabel } from "#tools/tool-label.js";
 import { defineTool, type ToolDefinition } from "#tools/definition.js";
 import { defineJsonSchema } from "#tools/schema.js";
+import { markProvidedTool } from "#tools/provided/provided-tool.js";
 
 export interface GlobToolInput {
   limit?: number;
@@ -62,23 +62,22 @@ export const GLOB_OUTPUT_SCHEMA = defineJsonSchema<GlobToolOutput>({
 /**
  * Framework-owned executor that delegates to the default sandbox.
  */
-export const glob: ToolDefinition<GlobToolInput, GlobToolOutput> = markProvidedTool(
-  defineTool({
-    label: { start: (input) => toolLabel("Find", input.pattern) },
-    description: [
-      "Fast file pattern matching tool that works with any codebase size.",
-      "",
-      "Usage:",
-      '- Supports glob patterns like "**/*.js" or "src/**/*.ts".',
-      "- Returns matching file paths.",
-      "- Call this tool in parallel when you know there are multiple patterns to search for.",
-    ].join("\n"),
-    async execute(input, ctx) {
-      return await executeGlobOnSandbox(await ctx.getSandbox(), input as GlobInput);
-    },
-    inputSchema: GLOB_INPUT_SCHEMA,
-    outputSchema: GLOB_OUTPUT_SCHEMA,
-  }),
-);
+export const glob: ToolDefinition<GlobToolInput, GlobToolOutput> = defineTool({
+  label: { start: (input) => toolLabel("Find", input.pattern) },
+  description: [
+    "Fast file pattern matching tool that works with any codebase size.",
+    "",
+    "Usage:",
+    '- Supports glob patterns like "**/*.js" or "src/**/*.ts".',
+    "- Returns matching file paths.",
+    "- Call this tool in parallel when you know there are multiple patterns to search for.",
+  ].join("\n"),
+  async execute(input, ctx) {
+    return await executeGlobOnSandbox(await ctx.getSandbox(), input as GlobInput);
+  },
+  inputSchema: GLOB_INPUT_SCHEMA,
+  outputSchema: GLOB_OUTPUT_SCHEMA,
+});
+markProvidedTool(glob);
 
 export default glob;

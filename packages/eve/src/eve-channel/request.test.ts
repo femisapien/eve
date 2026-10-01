@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { parseCreateBody } from "#eve-channel/request.js";
+import { parseCreateBody, parseSessionMessageBody } from "#eve-channel/request.js";
 import { REMOTE_AGENT_PROTOCOL_VERSION } from "#protocol/remote-agent-protocol.js";
 
 describe("parseCreateBody", () => {
@@ -66,5 +66,20 @@ describe("parseCreateBody", () => {
     await expect((response as Response).json()).resolves.toMatchObject({
       error: expect.stringContaining("does not accept"),
     });
+  });
+});
+
+describe("parseSessionMessageBody", () => {
+  it("rejects a tool stub set on a later message or response", async () => {
+    for (const body of [
+      { message: "And now?", stubs: "two-workflows" },
+      { inputResponses: [{ optionId: "approve", requestId: "r1" }], stubs: "two-workflows" },
+    ]) {
+      const response = parseSessionMessageBody(body);
+      expect(response).toBeInstanceOf(Response);
+      expect(await (response as Response).json()).toMatchObject({
+        error: expect.stringContaining("'stubs' is accepted only when creating a session."),
+      });
+    }
   });
 });

@@ -9,7 +9,7 @@ Use stubs when a tool needs credentials, network access, or live data, or when i
 
 ## Write a stub set
 
-A stub set is one file in `evals/stubs/` that default-exports `defineToolStubs(...)` from `eve/evals`. The file path names the set: `evals/stubs/two-workflows.ts` is the set `"two-workflows"`, and `evals/stubs/billing/refunds.ts` is `"billing/refunds"`.
+A stub set is one file in `evals/stubs/` that default-exports `defineToolStubs(...)` from `eve/evals`. The file path names the set: `evals/stubs/two-workflows.ts` is the set `"two-workflows"`, and `evals/stubs/billing/refunds.ts` is `"billing/refunds"`. Every `.ts` file under `evals/stubs/` is a set, so keep shared helpers outside that directory.
 
 ```ts title="evals/stubs/two-workflows.ts"
 import { defineToolStubs } from "eve/evals";
@@ -74,6 +74,7 @@ The state lives in the memory of the local eval server:
 - It survives approval pauses and later turns in the session.
 - A retried step can apply a stub's write twice.
 - A server restart loses it.
+- eve keeps every root session's state until the server stops.
 
 ## Which tools a set replaces
 
@@ -82,7 +83,8 @@ In a session with a stub set:
 - **Authored tools** in `agent/tools/`, tools from [extensions](../extensions), and [dynamic tools](../guides/dynamic-capabilities) run their stub.
 - **Connection tools** reach the model through `connection_search` and `connection_execute`. Stub them by those names; the stub receives the same input the model sent, such as `{ connection, tool, input }` for `connection_execute`.
 - **Tools eve provides** run as usual, including when your app mounts them from `agent/tools/`: `bash`, `read_file`, `write_file`, `glob`, `grep`, `web_fetch`, `load_skill`, and `no_reply`.
-- **Workflow tools**, such as `ask_question`, `sleep`, and tools defined with `defineWorkflowTool`, and the `agent` tool run as usual. Provider-executed tools such as `web_search` run as usual.
+- **Workflow tools** and **subagents** are outside the swap, because they run outside the model step. eve's own workflow tools, such as `ask_question` and `sleep`, run as usual, and local subagents use the session's set. Your own `defineWorkflowTool` tools and [remote agents](../subagents) run for real, so keep them out of stubbed evals.
+- Provider-executed tools such as `web_search` run as usual.
 
 When the model calls a tool that the set must replace but has no stub for, the turn fails before the real `execute` runs. The turn ends with `turn.failed` and code `TOOL_STUB_MISSING`, and the message names the set and the tool:
 
@@ -90,7 +92,9 @@ When the model calls a tool that the set must replace but has no stub for, the t
 Tool stub set "two-workflows" has no stub for "schedules_delete", so the turn failed without running the real tool. Add "schedules_delete" to `tools` in evals/stubs/two-workflows.ts.
 ```
 
-The session stays open, so the eval can continue it or assert on the failure with `turn.event("turn.failed", { data: { code: "TOOL_STUB_MISSING" } })`.
+A missing stub inside a local subagent fails the subagent's turn, and the parent receives a failed agent result. Assert `t.noFailedActions()` to catch it.
+
+The step's other tool calls still ran, including their stubs' state writes, but the step's messages do not enter session history. The session stays open, so the eval can continue it or assert on the failure with `turn.event("turn.failed", { data: { code: "TOOL_STUB_MISSING" } })`.
 
 ## Errors at session create
 

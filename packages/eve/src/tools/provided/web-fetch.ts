@@ -1,8 +1,8 @@
-import { markProvidedTool } from "#tools/provided/provided-tool.js";
 import { type WebFetchInput, executeWebFetchTool } from "#execution/web-fetch/execute.js";
 import { toolLabel } from "#tools/tool-label.js";
 import { defineTool, type ToolDefinition } from "#tools/definition.js";
 import { defineJsonSchema } from "#tools/schema.js";
+import { markProvidedTool } from "#tools/provided/provided-tool.js";
 
 export interface WebFetchToolInput {
   format?: "markdown" | "text" | "html";
@@ -51,26 +51,25 @@ export const WEB_FETCH_OUTPUT_SCHEMA = defineJsonSchema<WebFetchToolOutput>({
   additionalProperties: false,
 });
 
-export const webFetch: ToolDefinition<WebFetchToolInput, WebFetchToolOutput> = markProvidedTool(
-  defineTool({
-    label: { start: (input) => toolLabel("Fetch", input.url) },
-    description: [
-      "Fetch a webpage and return its content in the requested format. Use this to retrieve and analyze content from URLs.",
-      "",
-      "Usage notes:",
-      "- The URL must be a fully-formed valid URL starting with https://",
-      "- HTML responses are automatically converted to markdown or plain text based on the requested format",
-      '- Format options: "markdown" (default), "text", or "html"',
-      "- Default timeout is 30 seconds (max 120 seconds)",
-      "- Maximum response size is 5 MB; content is further capped at the shared tool-output budget (50 KB / 2000 lines)",
-      "- This tool is read-only and does not modify any files",
-    ].join("\n"),
-    async execute(input, ctx) {
-      return await executeWebFetchTool(input as WebFetchInput, { abortSignal: ctx.abortSignal });
-    },
-    inputSchema: WEB_FETCH_INPUT_SCHEMA,
-    outputSchema: WEB_FETCH_OUTPUT_SCHEMA,
-  }),
-);
+export const webFetch: ToolDefinition<WebFetchToolInput, WebFetchToolOutput> = defineTool({
+  label: { start: (input) => toolLabel("Fetch", input.url) },
+  description: [
+    "Fetch a webpage and return its content in the requested format. Use this to retrieve and analyze content from URLs.",
+    "",
+    "Usage notes:",
+    "- The URL must be a fully-formed valid URL starting with https://",
+    "- HTML responses are automatically converted to markdown or plain text based on the requested format",
+    '- Format options: "markdown" (default), "text", or "html"',
+    "- Default timeout is 30 seconds (max 120 seconds)",
+    "- Maximum response size is 5 MB; content is further capped at the shared tool-output budget (50 KB / 2000 lines)",
+    "- This tool is read-only and does not modify any files",
+  ].join("\n"),
+  async execute(input, ctx) {
+    return await executeWebFetchTool(input as WebFetchInput, { abortSignal: ctx.abortSignal });
+  },
+  inputSchema: WEB_FETCH_INPUT_SCHEMA,
+  outputSchema: WEB_FETCH_OUTPUT_SCHEMA,
+});
+markProvidedTool(webFetch);
 
 export default webFetch;

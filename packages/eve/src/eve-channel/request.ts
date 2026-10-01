@@ -141,6 +141,16 @@ export function parseSessionMessageBody(
   const { payload } = splitLegacyTaskFields(input);
   const tokenRejection = rejectSessionContinuationToken(payload);
   if (tokenRejection !== null) return tokenRejection;
+  if (payload.stubs !== undefined) {
+    return Response.json(
+      {
+        error:
+          "'stubs' is accepted only when creating a session. Later messages and responses use the session's set.",
+        ok: false,
+      },
+      { status: 400 },
+    );
+  }
 
   const message = parseMessageField(payload.message);
   if (message instanceof Response) return message;

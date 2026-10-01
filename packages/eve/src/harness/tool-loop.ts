@@ -1785,6 +1785,30 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       return limitResult;
     }
 
+    // A turn-failing tool error ends the turn before a later model call can
+    // read the tool error and work around it. An approved call runs before the
+    // model call, so its failure also wins over a failed model call.
+    const failTurnFromTool = async (): Promise<StepResult | undefined> => {
+      const turnFailure = ctx === undefined ? undefined : readTurnFailure(ctx);
+      if (turnFailure === undefined) return undefined;
+      if (!emit) throw turnFailure;
+      log.warn("a tool failed the turn", {
+        code: turnFailure.code,
+        sessionId: session.sessionId,
+        turnId: emissionState.turnId,
+      });
+      emissionState = await emitRecoverableFailedTurn(emit, emissionState, {
+        code: turnFailure.code,
+        continuationToken: session.continuationToken,
+        message: turnFailure.message,
+      });
+      return {
+        next: null,
+        session: setHarnessEmissionState({ ...session, outputSchema: undefined }, emissionState),
+        settledTurn: { isError: true, output: turnFailure.message },
+      };
+    };
+
     let result: HarnessStepResult;
     try {
       result = await runOneModelCall({
@@ -1797,6 +1821,9 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       if (generation.interrupted) {
         return finishSteeredStep();
       }
+
+      const toolTurnFailureBeforeError = await failTurnFromTool();
+      if (toolTurnFailureBeforeError !== undefined) return toolTurnFailureBeforeError;
 
       // Stage order: drop a gateway-rejected provider tool first, then
       // reissue an empty response; see runModelCallRecoveryPipeline for
@@ -1998,26 +2025,8 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       "$eve.tool_count": config.tools.size,
     });
 
-    // A turn-failing tool error ends the turn here, before a later model call
-    // can read the tool error and work around it.
-    const turnFailure = ctx === undefined ? undefined : readTurnFailure(ctx);
-    if (turnFailure !== undefined && emit) {
-      log.warn("a tool failed the turn", {
-        code: turnFailure.code,
-        sessionId: session.sessionId,
-        turnId: emissionState.turnId,
-      });
-      emissionState = await emitRecoverableFailedTurn(emit, emissionState, {
-        code: turnFailure.code,
-        continuationToken: session.continuationToken,
-        message: turnFailure.message,
-      });
-      return {
-        next: null,
-        session: setHarnessEmissionState({ ...session, outputSchema: undefined }, emissionState),
-        settledTurn: { isError: true, output: turnFailure.message },
-      };
-    }
+    const toolTurnFailure = await failTurnFromTool();
+    if (toolTurnFailure !== undefined) return toolTurnFailure;
 
     // --- Handle result ------------------------------------------------------
 

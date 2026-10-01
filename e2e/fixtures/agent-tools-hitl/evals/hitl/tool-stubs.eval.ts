@@ -43,6 +43,26 @@ export default [
     },
   }),
   defineEval({
+    description: "Tool stubs: an approved dynamic tool runs its stub.",
+    tags: TAGS,
+    timeoutMs: 120_000,
+    async test(t) {
+      const parked = await t.send(
+        'Alice is widening an access scope. Call the dynamic_scoped_approval tool exactly once with scope "ledger-scope-2P6".',
+        { stubs: "gate-ledger" },
+      );
+      parked.calledTool("dynamic_scoped_approval", { status: "pending", count: 1 });
+
+      const approved = await parked.session.respondAll("approve");
+      approved.expectOk();
+      approved.calledTool("dynamic_scoped_approval", {
+        status: "completed",
+        output: { scope: "ledger-scope-2P6", stubbed: true },
+        count: 1,
+      });
+    },
+  }),
+  defineEval({
     description: "Tool stubs: a denied call never reaches the stub.",
     tags: TAGS,
     timeoutMs: 120_000,

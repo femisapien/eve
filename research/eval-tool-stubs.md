@@ -138,7 +138,9 @@ model calls schedules_read
   and provider-executed tools such as `web_search` are outside the swap.
 - **Unknown sets fail at session create.** The error lists the sets eve found
   in `evals/stubs/`.
-- **Subagents inherit the set** and share the root session's state.
+- **Local subagents inherit the set** and share the root session's state. A
+  missing stub in a subagent fails that subagent's turn, and the parent
+  receives a failed agent result. Remote agents run for real.
 - **The model sees nothing.** `stubs` is never sent to the model, and the
   real tool definitions are unchanged.
 
@@ -149,7 +151,8 @@ connection tools through `connection_search` and `connection_execute`.
 
 Out of scope for this proposal:
 
-- workflow tools and agent tools, which run outside the model step;
+- workflow tools and agent tools, which run outside the model step; an
+  authored workflow tool or a remote agent runs for real in a stubbed session;
 - provider-executed tools, such as `web_search`;
 - combining several stub sets in one session;
 - marking stubbed calls in `action.result` events or traces;

@@ -109,6 +109,36 @@ describe("turn-failing tool errors", () => {
     });
   });
 
+  it("throw to callers that run the harness without an event handler", async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: async () => ({
+        content: [
+          { type: "tool-call", toolCallId: "call-1", toolName: "check_draft", input: "{}" },
+        ],
+        finishReason: { unified: "tool-calls", raw: undefined },
+        usage,
+        warnings: [],
+      }),
+    });
+    const step = createToolLoopHarness({
+      resolveModel: async () => model,
+      tools: new Map([
+        [
+          "check_draft",
+          tool("check_draft", async () => {
+            throw new TurnFailingToolError("TOOL_STUB_MISSING", "No stub for check_draft.");
+          }),
+        ],
+      ]),
+    });
+
+    await expect(
+      contextStorage.run(new ContextContainer(), () =>
+        step(session("check_draft"), { message: "Check Alice's draft." }),
+      ),
+    ).rejects.toMatchObject({ code: "TOOL_STUB_MISSING", name: "TurnFailingToolError" });
+  });
+
   it("leave ordinary tool errors to the model", async () => {
     const { events, result } = await runTurn(
       tool("check_draft", async () => {
