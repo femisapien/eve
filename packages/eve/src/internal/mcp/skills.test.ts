@@ -6,12 +6,16 @@ import type { AgentDescription } from "#channel/agent-description.js";
 import { MAX_SKILL_FILE_BYTES, SkillReadError } from "#channel/skill-files.js";
 import {
   createMcpSkillsFeature,
+  isValidSkillDescription,
+  isValidSkillName,
+  MCP_SKILL_MAX_TOTAL_BYTES,
   MCP_SKILLS_CACHE_HINT,
   MCP_SKILLS_EXTENSION,
   type McpSkillSource,
   parseSkillUri,
 } from "#internal/mcp/skills.js";
 import { createMcpStreamableHttpServer } from "#internal/mcp/streamable-http-server.js";
+import { parseFrontmatter } from "#internal/helpers/gray-matter.js";
 
 const PROTOCOL_VERSION = "2026-07-28";
 
@@ -426,6 +430,198 @@ describe("MCP skills (SEP-2640)", () => {
     expect((listed.result?.skills as unknown[] | undefined)?.length).toBe(3);
     const read = await legacy("resources/read", { uri: "skill://usage-triage/../flat/SKILL.md" });
     expect(read.error?.code).toBe(-32602);
+  });
+
+  describe("eligibility shared by every endpoint", () => {
+    const fullFile = "x".repeat(MAX_SKILL_FILE_BYTES);
+    const entry = (name: string, description = "A skill.") =>
+      `---\nname: ${name}\ndescription: ${JSON.stringify(description)}\n---\nBody\n`;
+    const longName = `a${"-b".repeat(31)}a`; // 64 characters
+    const tooLongName = `${longName}c`;
+    const bigFiles = Object.fromEntries(
+      Array.from({ length: 33 }, (_, index) => [
+        `assets/part-${String(index).padStart(2, "0")}.txt`,
+        fullFile,
+      ]),
+    );
+    const skills: Readonly<Record<string, FakeSkill>> = {
+      ok: { description: "Fine.", files: { "SKILL.md": entry("ok"), "notes.md": "n\n" } },
+      // 33 supporting files of 512 KiB each: every file fits, the skill does not.
+      "too-many-bytes": {
+        description: "Over 16 MiB in total.",
+        files: { "SKILL.md": entry("too-many-bytes"), ...bigFiles },
+      },
+      // Entry over the cap next to a small supporting file.
+      "oversize-entry": {
+        description: "Entry too big.",
+        files: {
+          "SKILL.md": `${entry("oversize-entry")}${"y".repeat(MAX_SKILL_FILE_BYTES)}`,
+          "references/small.md": "small\n",
+        },
+      },
+      // Entry that is not text.
+      "binary-entry": {
+        description: "Binary entry.",
+        files: { "SKILL.md": PNG_BYTES, "notes.md": "n\n" },
+      },
+      [longName]: {
+        description: "Longest name.",
+        files: { "SKILL.md": entry(longName), "a.md": "a" },
+      },
+      [tooLongName]: {
+        description: "Name too long.",
+        files: { "SKILL.md": entry(tooLongName), "a.md": "a" },
+      },
+      Hello_World: { description: "Hello.", files: { "SKILL.md": "Hello.\n", "a.md": "a" } },
+      UPPER: { description: "Upper.", files: { "SKILL.md": "Upper.\n", "a.md": "a" } },
+      "-leading": { description: "Leading.", files: { "SKILL.md": "Lead.\n", "a.md": "a" } },
+      "trailing-": { description: "Trailing.", files: { "SKILL.md": "Trail.\n", "a.md": "a" } },
+      "double--hyphen": { description: "Double.", files: { "SKILL.md": "Double.\n", "a.md": "a" } },
+      // Empty description from eve's lowering (no frontmatter to supply one).
+      "empty-lowered": { description: "", files: { "SKILL.md": "No description.\n", "a.md": "a" } },
+      "blank-lowered": { description: "   ", files: { "SKILL.md": "Blank.\n", "a.md": "a" } },
+      // Authored descriptions at and over the boundary.
+      "empty-authored": {
+        description: "Fallback that must not be used.",
+        files: { "SKILL.md": entry("empty-authored", ""), "a.md": "a" },
+      },
+      "max-description": {
+        description: "x",
+        files: { "SKILL.md": entry("max-description", "d".repeat(1024)), "a.md": "a" },
+      },
+      "max-description-astral": {
+        description: "x",
+        files: { "SKILL.md": entry("max-description-astral", "😀".repeat(1024)), "a.md": "a" },
+      },
+      "long-description": {
+        description: "x",
+        files: { "SKILL.md": entry("long-description", "d".repeat(1025)), "a.md": "a" },
+      },
+      "long-lowered": {
+        description: "d".repeat(1025),
+        files: { "SKILL.md": "Long.\n", "a.md": "a" },
+      },
+    };
+    const served = [longName, "max-description", "max-description-astral", "ok"].sort();
+
+    it("checks Agent Skills name and description bounds", () => {
+      for (const name of ["a", "a1", "pdf-processing", "0-9", longName]) {
+        expect(isValidSkillName(name), name).toBe(true);
+      }
+      for (const name of [
+        "",
+        tooLongName,
+        "Hello_World",
+        "UPPER",
+        "-leading",
+        "trailing-",
+        "double--hyphen",
+        "has space",
+        "dot.name",
+        "ünicode",
+      ]) {
+        expect(isValidSkillName(name), name).toBe(false);
+      }
+      expect(isValidSkillDescription("x")).toBe(true);
+      expect(isValidSkillDescription("d".repeat(1024))).toBe(true);
+      expect(isValidSkillDescription("😀".repeat(1024))).toBe(true);
+      expect(isValidSkillDescription("")).toBe(false);
+      expect(isValidSkillDescription("  \n")).toBe(false);
+      expect(isValidSkillDescription("d".repeat(1025))).toBe(false);
+    });
+
+    it("serves the same skill set from skills/list, skills/get, resources/list, resources/read, and directory reads", async () => {
+      expect(Object.keys(bigFiles).length * MAX_SKILL_FILE_BYTES).toBeGreaterThan(
+        MCP_SKILL_MAX_TOTAL_BYTES,
+      );
+      const call = handler(fakeSource(skills));
+
+      const listed = await call("skills/list");
+      expect(
+        ((listed.result?.skills ?? []) as { uri: string }[]).map((skill) => skill.uri),
+      ).toEqual(served.map((name) => `skill://${name}/SKILL.md`));
+      const resources = await call("resources/list");
+      expect(((resources.result?.resources ?? []) as { uri: string }[]).map((r) => r.uri)).toEqual(
+        served.map((name) => `skill://${name}/SKILL.md`),
+      );
+
+      for (const [name, skill] of Object.entries(skills)) {
+        const isServed = served.includes(name);
+        const root = `skill://${encodeURIComponent(name)}`;
+        const got = await call("skills/get", { uri: `${root}/SKILL.md` });
+        expect(got.error === undefined, `skills/get ${name}`).toBe(isServed);
+        const directory = await call("resources/directory/read", { uri: root });
+        expect(directory.error === undefined, `directory ${name}`).toBe(isServed);
+        for (const path of Object.keys(skill.files)) {
+          const read = await call("resources/read", { uri: `${root}/${path}` });
+          expect(read.error === undefined, `resources/read ${name}/${path}`).toBe(isServed);
+          if (!isServed) expect(read.error?.code).toBe(-32602);
+        }
+      }
+    });
+
+    it("serves the boundary description verbatim and agrees with skills/get", async () => {
+      const call = handler(fakeSource(skills));
+      const got = await call("skills/get", { uri: "skill://max-description-astral/SKILL.md" });
+      const frontmatter = ((got.result?.skill ?? {}) as { frontmatter: { description: string } })
+        .frontmatter;
+      expect(frontmatter.description).toBe("😀".repeat(1024));
+      const read = await call("resources/read", {
+        uri: "skill://max-description-astral/SKILL.md",
+      });
+      const text = ((read.result?.contents ?? []) as { text: string }[])[0]?.text ?? "";
+      expect(parseFrontmatter(text).data).toEqual(frontmatter);
+    });
+  });
+
+  describe("frontmatter keys named __proto__", () => {
+    const protoYaml = `__proto__: top\nmetadata:\n  __proto__: data\n  ok: value\n`;
+    const skills: Readonly<Record<string, FakeSkill>> = {
+      // Authored frontmatter that is served verbatim.
+      verbatim: {
+        description: "Verbatim.",
+        files: { "SKILL.md": `---\nname: verbatim\ndescription: Keys.\n${protoYaml}---\nBody\n` },
+      },
+      // No name, so the served frontmatter is rewritten.
+      rewritten: {
+        description: "Rewritten.",
+        files: { "SKILL.md": `---\ndescription: Keys.\n${protoYaml}---\nBody\n` },
+      },
+    };
+
+    for (const name of ["verbatim", "rewritten"]) {
+      it(`keeps own __proto__ keys, top-level and nested, in the ${name} case`, async () => {
+        const call = handler(fakeSource(skills));
+        const uri = `skill://${name}/SKILL.md`;
+        const got = await call("skills/get", { uri });
+        const skill = got.result?.skill as {
+          frontmatter: Record<string, unknown>;
+          resources: { digest: string }[];
+        };
+        const expected = JSON.parse(
+          `{"name":${JSON.stringify(name)},"description":"Keys.","__proto__":"top","metadata":{"__proto__":"data","ok":"value"}}`,
+        ) as Record<string, unknown>;
+        expect(Object.keys(skill.frontmatter)).toEqual(Object.keys(expected));
+        expect(Object.keys(skill.frontmatter.metadata as object)).toEqual(["__proto__", "ok"]);
+        expect(skill.frontmatter).toEqual(expected);
+
+        // skills/list carries the same frontmatter.
+        const listed = await call("skills/list");
+        const entry = (
+          (listed.result?.skills ?? []) as { uri: string; frontmatter: unknown }[]
+        ).find((candidate) => candidate.uri === uri);
+        expect(entry?.frontmatter).toEqual(expected);
+
+        // And it agrees with the served document and its digest.
+        const read = await call("resources/read", { uri });
+        const text = ((read.result?.contents ?? []) as { text: string }[])[0]?.text ?? "";
+        expect(sha256(text)).toBe(skill.resources[0]?.digest);
+        const served = parseFrontmatter(text).data as Record<string, unknown>;
+        expect(Object.keys(served)).toEqual(Object.keys(expected));
+        expect(Object.keys(served.metadata as object)).toEqual(["__proto__", "ok"]);
+        expect(served).toEqual(expected);
+      });
+    }
   });
 
   it("parses skill URIs strictly", () => {
