@@ -1,6 +1,8 @@
 import type { EveAuthorizationPart, EveMessageData } from "#client/message-reducer-types.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
-import type { JsonValue } from "#shared/json.js";
+import type { ConversationTask, ConversationTaskCall } from "#protocol/session-projection.js";
+
+export type { ConversationTask, ConversationTaskCall };
 
 export interface ConversationTurn {
   readonly turnId: string;
@@ -18,30 +20,6 @@ export interface ConversationInput {
   readonly status: "open" | "responded" | "settled";
   readonly response?: InputResponse;
   readonly outcome?: string;
-}
-
-/** One call that started or reached a task, settled by its `task.settled`. */
-export interface ConversationTaskCall {
-  readonly callId: string;
-  readonly turnId: string;
-  readonly status: "working" | "completed" | "failed" | "cancelled";
-  /** The call's result; present only when `status` is `"completed"`. */
-  readonly output?: JsonValue;
-  /** Why the call failed; present only when `status` is `"failed"`. */
-  readonly error?: { readonly message: string };
-}
-
-export interface ConversationTask {
-  readonly taskId: string;
-  /** The tool whose call started the task. */
-  readonly name: string;
-  /**
-   * `"agent"` when a subagent's tool, local or remote, started the task; `"tool"` for an authored
-   * tool, including one that opens sessions with `ctx.agent`.
-   */
-  readonly kind: "agent" | "tool";
-  /** Calls in the order they started or reached the task. */
-  readonly calls: Readonly<Record<string, ConversationTaskCall>>;
 }
 
 export type AgentObservation =
