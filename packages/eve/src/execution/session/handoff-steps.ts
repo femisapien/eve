@@ -31,7 +31,7 @@ export function isSessionStateIdleForHandoff(sessionState: DurableSessionState):
   // a malformed value as absent; that must not authorize a handoff.
   if (state?.["eve.runtime.pendingCoordinationBatch"] !== undefined) return false;
   const humanInput = HumanInput.read(state);
-  if (humanInput.openRequestIds().size > 0 || humanInput.relayedRequestIds().size > 0) return false;
+  if ("held" in humanInput.next() || humanInput.relayedRequestIds().size > 0) return false;
   return workflowToolRuns.length === 0;
 }
 

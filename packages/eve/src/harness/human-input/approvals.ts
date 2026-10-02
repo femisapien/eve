@@ -27,6 +27,8 @@ export interface OpenApproval {
   readonly approvalKey: string;
   /** An answer that arrived before the rest of the step's approvals were answered. */
   readonly answer?: InputResponse;
+  /** Its tool's `approval.response` policy decides who may answer (see candidates). */
+  readonly responsePolicy?: true;
 }
 
 /** The state the approval rules read and change. */
@@ -57,6 +59,7 @@ export function openApprovals<S extends ApprovalState>(
     readonly requests: readonly InputRequest[];
     readonly requester: SessionAuthContext | null;
     readonly approvalKeys: Readonly<Record<string, string>>;
+    readonly responsePolicyRequestIds: readonly string[];
   },
 ): Reduced<S> {
   // Every anonymous caller shares one identity, so an anonymous requester
@@ -70,6 +73,9 @@ export function openApprovals<S extends ApprovalState>(
       kind: "tool-approval",
       request,
       requester,
+      ...(input.responsePolicyRequestIds.includes(request.requestId) && {
+        responsePolicy: true as const,
+      }),
     };
     requests[request.requestId] = approval;
   }
@@ -97,24 +103,43 @@ export function answerApprovals<S extends ApprovalState>(
 }
 
 /**
- * A message arrived while approvals wait. Plain text that matches their
- * options answers the approvals it matches, and the turn doesn't read it. Any
- * other message steers the turn past them: the approvals nobody answered are
- * ignored, and the answers already given stand.
+ * A typed reply answers the open approvals whose options it names, and the
+ * turn doesn't read it. Approvals a response policy guards are never answered
+ * by text: the policy needs to know who answered. Returns `undefined` when the
+ * reply answers nothing.
+ */
+export function answerApprovalsByText<S extends ApprovalState>(
+  state: S,
+  text: string,
+): Reduced<S> | undefined {
+  const answerable = openApprovalsOf(state).filter(
+    (approval) => approval.answer === undefined && approval.responsePolicy !== true,
+  );
+  if (answerable.length === 0) return undefined;
+  const typed = resolveTextToResponses(
+    text,
+    answerable.map((approval) => approval.request),
+  );
+  if (typed.length === 0) return undefined;
+  const answered = answerApprovals(state, typed);
+  return { ...answered, events: [{ type: "message.answered" }, ...answered.events] };
+}
+
+/**
+ * A message that answers nothing steers the turn past its approvals: the
+ * approvals nobody answered are ignored, and the answers already given stand.
  *
  * Only the turn's own person reaches a held turn with a message; the runtime
  * queues anyone else's for the next turn.
  */
-export function receiveMessage<S extends ApprovalState>(state: S, text: string): Reduced<S> {
-  const open = openApprovalsOf(state);
-  if (open.length === 0) return { events: [], state };
-  const typed = resolveTextToResponses(
-    text,
-    open.filter((approval) => approval.answer === undefined).map((approval) => approval.request),
-  );
-  if (typed.length === 0) return resolveApprovals(state);
-  const answered = answerApprovals(state, typed);
-  return { ...answered, events: [{ type: "message.answered" }, ...answered.events] };
+export function steerPastApprovals<S extends ApprovalState>(state: S): Reduced<S> {
+  return openApprovalsOf(state).length === 0 ? { events: [], state } : resolveApprovals(state);
+}
+
+/** Whether a response policy decides who may answer this open approval. */
+export function isPolicyGated(state: ApprovalState, requestId: string): boolean {
+  const open = state.requests[requestId];
+  return isOpenApproval(open) && open.responsePolicy === true;
 }
 
 /** The turn was cancelled: every open approval is cancelled, and its call never runs. */

@@ -80,9 +80,7 @@ export async function settleCancelledTurn(
   const { published, result: usage } = await publishFromSessionStep(step, {
     origin: "own",
     async publish(emit) {
-      const { ending, history } = await applyHumanInputEvents(emit, own);
-      // The turn already ends as cancelled; a failure here has no turn left to fail.
-      if (ending?.kind === "failed") throw new Error(ending.message);
+      const { history } = await applyHumanInputEvents(emit, own);
       cancelledResults = history;
       const emissionState = getHarnessEmissionState(durableState);
       return await emitCancelledTurn(emit, emissionState, getSessionUsage(step.durableSession));

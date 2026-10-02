@@ -15,9 +15,7 @@ import { resumeHook } from "#internal/workflow/runtime.js";
 import { createTurnWaitingEvent, type UnstampedMessageStreamEvent } from "#protocol/message.js";
 
 /** How human input ended the turn, for the session workflow to carry out. */
-export type HumanInputEnding =
-  | { readonly kind: "cancelled" }
-  | { readonly kind: "failed"; readonly code: string; readonly message: string };
+export type HumanInputEnding = { readonly kind: "cancelled" };
 
 /**
  * Applies what human input reported to a session step outside the harness:
@@ -45,9 +43,6 @@ export async function applyHumanInputEvents(
       case "turn.cancelled":
         ending ??= { kind: "cancelled" };
         continue;
-      case "turn.failed":
-        ending ??= { code: event.code, kind: "failed", message: event.message };
-        continue;
       case "turn.held": {
         if (session === undefined) throw new Error("A held turn needs the session it holds.");
         const turn = getHarnessEmissionState(session.state);
@@ -72,6 +67,8 @@ export async function applyHumanInputEvents(
       case "note":
       case "message.answered":
       case "calls.approved":
+      case "calls.stopped":
+      case "sign-in.completed":
       case "responder.check":
       case "answer.forwarded":
       case "budget.granted":

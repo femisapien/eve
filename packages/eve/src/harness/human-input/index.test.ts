@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { SessionAuthContext } from "#channel/types.js";
+import type { AuthorizationChallenge } from "#harness/authorization.js";
 import {
   HumanInput,
   type HumanInputEvent,
@@ -9,9 +10,11 @@ import {
   type RelayRoute,
   type RequestAt,
 } from "#harness/human-input/index.js";
+import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
 
 const AT = { sequence: 1, stepIndex: 0, turnId: "turn_1" };
+const NOW = 1_000_000;
 
 const BUDGET: InputRequest = {
   action: { callId: "s:limit:input:12", input: {}, kind: "tool-call", toolName: "session-limit" },
@@ -30,7 +33,7 @@ function asked(request: InputRequest = BUDGET): HumanInput {
 }
 
 function answer(optionId: string, requestId = BUDGET.requestId): Intake {
-  return { responder: null, responses: [{ optionId, requestId }], type: "answered" };
+  return { responder: null, responses: [{ optionId, requestId }], now: NOW, type: "answered" };
 }
 
 function resolvedWith(outcome: string, response?: unknown) {
@@ -95,9 +98,14 @@ function waiting(...requests: InputRequest[]): HumanInput {
   return HumanInput.read(undefined).interrupt(requested(requests)).humanInput;
 }
 
-function published(events: readonly HumanInputEvent[], type: string) {
+function published<T extends UnstampedMessageStreamEvent["type"]>(
+  events: readonly HumanInputEvent[],
+  type: T,
+): Extract<UnstampedMessageStreamEvent, { type: T }>[] {
   return events.flatMap((event) =>
-    event.type === "publish" && event.event.type === type ? [event.event] : [],
+    event.type === "publish" && event.event.type === type
+      ? [event.event as Extract<UnstampedMessageStreamEvent, { type: T }>]
+      : [],
   );
 }
 
@@ -111,21 +119,6 @@ describe("HumanInput", () => {
 
     expect(humanInput.next()).toEqual({ run: "model" });
     expect(humanInput.write({ other: 1 })).toEqual({ other: 1 });
-  });
-
-  it("fails a turn that needs a person until that case is rebuilt", () => {
-    const { events, humanInput } = HumanInput.read(undefined).interrupt({
-      at: AT,
-      callIds: ["call-1"],
-      challenges: [],
-      requester: null,
-      type: "authorization.required",
-    });
-
-    expect(events).toEqual([
-      expect.objectContaining({ code: "HUMAN_INPUT_UNAVAILABLE", type: "turn.failed" }),
-    ]);
-    expect(humanInput.next()).toEqual({ run: "model" });
   });
 
   describe("tool approvals", () => {
@@ -151,21 +144,11 @@ describe("HumanInput", () => {
       );
     });
 
-    it("fails the turn for an approval whose tool defines a response policy", () => {
-      const { events, humanInput } = HumanInput.read(undefined).interrupt(
-        requested([approval("a")], { responsePolicyRequestIds: ["a"] }),
-      );
-
-      expect(events).toEqual([
-        expect.objectContaining({ code: "HUMAN_INPUT_UNAVAILABLE", type: "turn.failed" }),
-      ]);
-      expect(humanInput.next()).toEqual({ run: "model" });
-    });
-
     it("keeps a partial answer and holds the turn until every approval of the step is answered", () => {
       const partial = waiting(approval("a"), approval("b")).intake({
         responder: ALICE,
         responses: [{ optionId: "approve", requestId: "a" }],
+        now: NOW,
         type: "answered",
       });
 
@@ -175,6 +158,7 @@ describe("HumanInput", () => {
       const rest = HumanInput.read(partial.humanInput.write(undefined)).intake({
         responder: ALICE,
         responses: [{ optionId: "approve", requestId: "b" }],
+        now: NOW,
         type: "answered",
       });
 
@@ -217,6 +201,7 @@ describe("HumanInput", () => {
           { optionId: "deny", requestId: "deny" },
           { optionId: "maybe", requestId: "x" },
         ],
+        now: NOW,
         type: "answered",
       });
 
@@ -284,6 +269,7 @@ describe("HumanInput", () => {
           { optionId: "approve", requestId: "a" },
           { optionId: "cancel", requestId: "a" },
         ],
+        now: NOW,
         type: "answered",
       });
 
@@ -313,6 +299,7 @@ describe("HumanInput", () => {
       const partial = waiting(approval("a"), approval("b")).intake({
         responder: ALICE,
         responses: [{ optionId: "approve", requestId: "a" }],
+        now: NOW,
         type: "answered",
       }).humanInput;
 
@@ -414,6 +401,7 @@ describe("HumanInput", () => {
         .humanInput.intake({
           responder: ALICE,
           responses: [{ optionId: "approve", requestId: "a" }],
+          now: NOW,
           type: "answered",
         }).humanInput;
 
@@ -827,5 +815,437 @@ describe("relayed requests", () => {
     expect(answered.intake(withdraw).events).toEqual([
       { control: "bob-control", requestId: "q", type: "question.withdrawn" },
     ]);
+  });
+});
+
+const BOB: SessionAuthContext = { ...ALICE, principalId: "bob" };
+const CAROL: SessionAuthContext = { ...ALICE, principalId: "carol" };
+
+function challenge(
+  attemptId: string,
+  overrides: Partial<AuthorizationChallenge> = {},
+): AuthorizationChallenge {
+  return {
+    attemptId,
+    challenge: { url: `https://idp.example/authorize/${attemptId}` },
+    hookUrl: `https://agent.example/callback/${attemptId}`,
+    name: "weather",
+    principal: { id: "alice", issuer: "test", type: "user" },
+    principalId: "alice",
+    requester: ALICE,
+    resume: { nonce: attemptId },
+    ...overrides,
+  };
+}
+
+function signInRequired(
+  challenges: readonly AuthorizationChallenge[],
+  callIds: readonly string[] = ["call-weather"],
+): Interrupt {
+  return { at: AT, callIds, challenges, requester: ALICE, type: "authorization.required" };
+}
+
+function callback(attemptId: string, connectionName = "weather"): Intake {
+  return {
+    attemptId,
+    callback: { method: "GET", params: { code: "ok" } },
+    connectionName,
+    outcome: "authorized",
+    type: "authorization.completed",
+  };
+}
+
+function outcomes(events: readonly HumanInputEvent[]) {
+  return published(events, "authorization.completed").map((event) => ({
+    attemptId: event.data.attemptId,
+    outcome: event.data.outcome,
+    reason: event.data.reason,
+  }));
+}
+
+describe("sign-ins", () => {
+  it("opens one sign-in per challenge, stops the calls that asked, and holds the turn", () => {
+    const { events, humanInput } = HumanInput.read(undefined).interrupt(
+      signInRequired([challenge("a1")]),
+    );
+
+    expect(events[0]).toEqual({ callIds: ["call-weather"], type: "calls.stopped" });
+    expect(published(events, "authorization.required")).toEqual([
+      expect.objectContaining({
+        data: expect.objectContaining({
+          attemptId: "a1",
+          name: "weather",
+          principalId: "alice",
+          webhookUrl: "https://agent.example/callback/a1",
+        }),
+      }),
+    ]);
+    const stored = HumanInput.read(humanInput.write(undefined));
+    expect(stored.next()).toEqual({ held: "input" });
+    expect(stored.awaitedSignIns()).toEqual(["a1"]);
+    // Only a callback closes a sign-in, so no answer is routed to it.
+    expect(stored.openRequestIds()).toEqual(new Set());
+  });
+
+  it("replaces an older attempt of the same sign-in, and keeps other people's", () => {
+    const open = HumanInput.read(undefined).interrupt(
+      signInRequired([
+        challenge("first"),
+        challenge("bobs", { principal: { id: "bob", issuer: "test", type: "user" } }),
+        challenge("connector", { grant: "vercel-connect:github", name: "github-tool" }),
+      ]),
+    ).humanInput;
+
+    // The same name, or another scope of the same grant, for the same person is one sign-in.
+    const { events, humanInput } = open.interrupt(
+      signInRequired([
+        challenge("second"),
+        challenge("again", { grant: "vercel-connect:github", name: "github-connection" }),
+      ]),
+    );
+
+    expect(outcomes(events)).toEqual([
+      {
+        attemptId: "first",
+        outcome: "failed",
+        reason: "Superseded by a newer authorization attempt.",
+      },
+      {
+        attemptId: "connector",
+        outcome: "failed",
+        reason: "Superseded by a newer authorization attempt.",
+      },
+    ]);
+    expect(humanInput.awaitedSignIns()).toEqual(["bobs", "second", "again"]);
+  });
+
+  it("keeps only the latest attempt of one sign-in asked twice in a step", () => {
+    const { events, humanInput } = HumanInput.read(undefined).interrupt(
+      signInRequired([challenge("older"), challenge("newer")], ["call-1", "call-2"]),
+    );
+
+    expect(published(events, "authorization.required")).toHaveLength(1);
+    expect(humanInput.awaitedSignIns()).toEqual(["newer"]);
+  });
+
+  it("completes a sign-in on its callback and resumes as the person who started it", () => {
+    const open = HumanInput.read(undefined).interrupt(
+      signInRequired([challenge("a1"), challenge("c1", { name: "calendar" })]),
+    ).humanInput;
+
+    const first = open.intake(callback("a1"));
+
+    expect(outcomes(first.events)).toEqual([
+      { attemptId: "a1", outcome: "authorized", reason: undefined },
+    ]);
+    expect(first.events).toContainEqual({
+      requester: ALICE,
+      result: {
+        attemptId: "a1",
+        callback: { method: "GET", params: { code: "ok" } },
+        hookUrl: "https://agent.example/callback/a1",
+        instanceId: undefined,
+        name: "weather",
+        principal: { id: "alice", issuer: "test", type: "user" },
+        resume: { nonce: "a1" },
+      },
+      type: "sign-in.completed",
+    });
+    // The turn holds until every sign-in it waits on completes.
+    expect(first.humanInput.next()).toEqual({ held: "input" });
+    expect(first.humanInput.intake(callback("c1", "calendar")).humanInput.next()).toEqual({
+      run: "model",
+    });
+  });
+
+  it("ignores a callback for an attempt that is no longer open", () => {
+    const open = HumanInput.read(undefined).interrupt(signInRequired([challenge("a1")])).humanInput;
+    const completed = open.intake(callback("a1")).humanInput;
+
+    // A repeated callback, another connection's, and a superseded attempt's all complete nothing.
+    expect(completed.intake(callback("a1")).events).toEqual([]);
+    expect(open.intake(callback("a1", "calendar")).events).toEqual([]);
+    const replaced = open.interrupt(signInRequired([challenge("a2")])).humanInput;
+    expect(replaced.intake(callback("a1")).events).toEqual([]);
+    expect(replaced.next()).toEqual({ held: "input" });
+  });
+
+  it("fails a sign-in whose callback can't be read, without handing it to the call", () => {
+    const open = HumanInput.read(undefined).interrupt(signInRequired([challenge("a1")])).humanInput;
+
+    const { events, humanInput } = open.intake({
+      attemptId: "a1",
+      connectionName: "weather",
+      outcome: "failed",
+      type: "authorization.completed",
+    });
+
+    expect(outcomes(events)).toEqual([{ attemptId: "a1", outcome: "failed", reason: undefined }]);
+    expect(events.some((event) => event.type === "sign-in.completed")).toBe(false);
+    expect(humanInput.next()).toEqual({ run: "model" });
+  });
+
+  it("declines open sign-ins when the turn is steered or cancelled", () => {
+    const open = HumanInput.read(undefined).interrupt(signInRequired([challenge("a1")])).humanInput;
+
+    const steered = open.intake({ sender: ALICE, text: "Never mind.", type: "message" });
+    expect(outcomes(steered.events)).toEqual([
+      { attemptId: "a1", outcome: "declined", reason: "Cancelled because a new message arrived." },
+    ]);
+    expect(steered.events).toContainEqual({
+      text: expect.stringContaining("Sign-in to weather was cancelled"),
+      type: "note",
+    });
+    expect(steered.humanInput.next()).toEqual({ run: "model" });
+
+    const cancelled = open.intake({ type: "cancelled" });
+    expect(outcomes(cancelled.events)).toEqual([
+      { attemptId: "a1", outcome: "declined", reason: "Cancelled." },
+    ]);
+    expect(cancelled.humanInput.write(undefined)).toBeUndefined();
+  });
+});
+
+describe("approval response policies", () => {
+  /** Alice's approval of `deploy`, which a response policy guards. */
+  function guarded(): HumanInput {
+    return HumanInput.read(undefined).interrupt(
+      requested([approval("a")], { responsePolicyRequestIds: ["a"] }),
+    ).humanInput;
+  }
+
+  function answerAs(responder: SessionAuthContext | null, optionId = "approve", now = NOW): Intake {
+    return { now, responder, responses: [{ optionId, requestId: "a" }], type: "answered" };
+  }
+
+  function checks(events: readonly HumanInputEvent[]) {
+    return events.flatMap((event) => (event.type === "responder.check" ? [event] : []));
+  }
+
+  function candidates(events: readonly HumanInputEvent[]) {
+    return published(events, "approval.candidate").map((event) => ({
+      outcome: event.data.outcome,
+      reason: event.data.reason,
+      responder: event.data.responderPrincipalId,
+    }));
+  }
+
+  it("makes an answer a candidate for the policy to check, and holds the turn", () => {
+    const { events, humanInput } = guarded().intake(answerAs(BOB));
+
+    expect(candidates(events)).toEqual([
+      { outcome: "pending", reason: undefined, responder: "bob" },
+    ]);
+    expect(checks(events)).toEqual([
+      expect.objectContaining({
+        at: AT,
+        decision: "approve",
+        request: approval("a"),
+        requester: ALICE,
+        responder: BOB,
+      }),
+    ]);
+    expect(humanInput.next()).toEqual({ held: "input" });
+    expect(published(events, "input.resolved")).toEqual([]);
+  });
+
+  it("never lets typed text answer a guarded approval", () => {
+    const { events, humanInput } = guarded().intake({
+      sender: ALICE,
+      text: "approve",
+      type: "message",
+    });
+
+    expect(events.some((event) => event.type === "message.answered")).toBe(false);
+    expect(published(events, "input.resolved")[0]?.data.resolutions).toEqual([
+      expect.objectContaining({ outcome: "ignored", requestId: "a" }),
+    ]);
+    expect(events.some((event) => event.type === "calls.approved")).toBe(false);
+    expect(humanInput.next()).toEqual({ run: "model" });
+  });
+
+  it("settles the approval with the first allowed candidate and stales its competitors", () => {
+    const answered = guarded().intake(answerAs(BOB)).humanInput.intake(answerAs(CAROL));
+    const carolsCandidate = checks(answered.events)[0]!.candidateId;
+
+    const { events, humanInput } = answered.humanInput.intake({
+      candidateId: carolsCandidate,
+      type: "responder.checked",
+      verdict: "allowed",
+    });
+
+    expect(candidates(events)).toEqual([
+      { outcome: "stale", reason: "Another response settled this approval.", responder: "bob" },
+    ]);
+    expect(published(events, "approval.settled")).toEqual([
+      expect.objectContaining({
+        data: expect.objectContaining({
+          outcome: "approved",
+          requestId: "a",
+          responderPrincipalId: "carol",
+        }),
+      }),
+    ]);
+    expect(events).toContainEqual({ at: AT, requests: [approval("a")], type: "calls.approved" });
+    expect(humanInput.next()).toEqual({ run: "model" });
+    // Bob's verdict comes too late to change anything.
+    const bobsCandidate = checks(guarded().intake(answerAs(BOB)).events)[0]!.candidateId;
+    expect(
+      humanInput.intake({
+        candidateId: bobsCandidate,
+        type: "responder.checked",
+        verdict: "allowed",
+      }).events,
+    ).toEqual([]);
+  });
+
+  it("settles an allowed Cancel as denied, and the call never runs", () => {
+    const answered = guarded().intake(answerAs(ALICE, "cancel"));
+
+    const { events } = answered.humanInput.intake({
+      candidateId: checks(answered.events)[0]!.candidateId,
+      type: "responder.checked",
+      verdict: "allowed",
+    });
+
+    expect(published(events, "approval.settled")[0]?.data.outcome).toBe("cancelled");
+    expect(published(events, "input.resolved")[0]?.data.resolutions).toEqual([
+      expect.objectContaining({ outcome: "denied", requestId: "a" }),
+    ]);
+    expect(events.some((event) => event.type === "calls.approved")).toBe(false);
+  });
+
+  it("keeps the approval open after a rejection, and a retry gets a fresh candidate", () => {
+    const first = guarded().intake(answerAs(BOB));
+    const firstId = checks(first.events)[0]!.candidateId;
+    const rejected = first.humanInput.intake({
+      candidateId: firstId,
+      reason: "Wrong responder.",
+      type: "responder.checked",
+      verdict: "rejected",
+    });
+
+    expect(candidates(rejected.events)).toEqual([
+      { outcome: "rejected", reason: "Wrong responder.", responder: "bob" },
+    ]);
+    expect(rejected.humanInput.next()).toEqual({ held: "input" });
+
+    // The audit survives the session's state round trip, so the retry isn't the old candidate.
+    const retry = HumanInput.read(rejected.humanInput.write(undefined)).intake(answerAs(BOB));
+    const retryId = checks(retry.events)[0]?.candidateId;
+    expect(retryId).toBeDefined();
+    expect(retryId).not.toBe(firstId);
+  });
+
+  it("ignores a repeat of an active candidate and refuses an unsigned answer", () => {
+    const answered = guarded().intake(answerAs(BOB)).humanInput;
+
+    expect(answered.intake(answerAs(BOB)).events).toEqual([]);
+    expect(checks(answered.intake(answerAs(BOB, "cancel")).events)).toHaveLength(1);
+    expect(published(answered.intake(answerAs(null)).events, "message.completed")).toEqual([
+      expect.objectContaining({
+        data: expect.objectContaining({
+          message: "Authentication is required to respond to this approval.",
+        }),
+      }),
+    ]);
+  });
+
+  it("fails a candidate whose policy failed, leaving the approval open", () => {
+    const answered = guarded().intake(answerAs(BOB));
+    const { events, humanInput } = answered.humanInput.intake({
+      candidateId: checks(answered.events)[0]!.candidateId,
+      type: "responder.checked",
+      verdict: "failed",
+    });
+
+    expect(candidates(events)).toEqual([
+      {
+        outcome: "failed",
+        reason: "We couldn’t verify your response. Please try again.",
+        responder: "bob",
+      },
+    ]);
+    expect(humanInput.next()).toEqual({ held: "input" });
+  });
+
+  it("holds on a responder's sign-in and checks the policy again once it completes", () => {
+    const answered = guarded().intake(answerAs(BOB));
+    const candidateId = checks(answered.events)[0]!.candidateId;
+    const signIn = answered.humanInput.intake({
+      candidateId,
+      challenges: [challenge("r1", { name: "reviewer", principalId: "bob", requester: BOB })],
+      type: "responder.checked",
+      verdict: "authorization-required",
+    });
+
+    expect(published(signIn.events, "authorization.required")[0]?.data).toMatchObject({
+      attemptId: "r1",
+      candidateId,
+      principalId: "bob",
+    });
+    expect(signIn.humanInput.awaitedSignIns()).toEqual(["r1"]);
+
+    const { events } = signIn.humanInput.intake(callback("r1", "reviewer"));
+    expect(outcomes(events)).toEqual([
+      { attemptId: "r1", outcome: "authorized", reason: undefined },
+    ]);
+    // The responder's sign-in binds the responder itself, so the turn keeps its person.
+    expect(events).toContainEqual(
+      expect.objectContaining({ requester: null, type: "sign-in.completed" }),
+    );
+    expect(checks(events)).toEqual([expect.objectContaining({ candidateId, responder: BOB })]);
+  });
+
+  it("times a candidate out after ten minutes, failing its sign-in", () => {
+    const answered = guarded().intake(answerAs(BOB));
+    const candidateId = checks(answered.events)[0]!.candidateId;
+    const signIn = answered.humanInput.intake({
+      candidateId,
+      challenges: [challenge("r1", { name: "reviewer" })],
+      type: "responder.checked",
+      verdict: "authorization-required",
+    }).humanInput;
+
+    expect(signIn.intake({ now: NOW + 10 * 60_000 - 1, type: "time" }).events).toEqual([]);
+    const { events, humanInput } = signIn.intake({ now: NOW + 10 * 60_000, type: "time" });
+
+    expect(candidates(events)).toEqual([
+      { outcome: "timed-out", reason: undefined, responder: "bob" },
+    ]);
+    expect(outcomes(events)).toEqual([
+      {
+        attemptId: "r1",
+        outcome: "failed",
+        reason: "The approval response expired. Please submit a new response.",
+      },
+    ]);
+    // The approval stays open for a new answer, and the late callback does nothing.
+    expect(humanInput.openRequestIds()).toEqual(new Set(["a"]));
+    expect(humanInput.intake(callback("r1", "reviewer")).events).toEqual([]);
+  });
+
+  it("stales active candidates and declines responder sign-ins when the turn moves on", () => {
+    const answered = guarded().intake(answerAs(BOB));
+    const candidateId = checks(answered.events)[0]!.candidateId;
+    const signIn = answered.humanInput.intake({
+      candidateId,
+      challenges: [challenge("r1", { name: "reviewer" })],
+      type: "responder.checked",
+      verdict: "authorization-required",
+    }).humanInput;
+
+    for (const intake of [
+      { sender: ALICE, text: "Never mind, just say hello.", type: "message" },
+      { type: "cancelled" },
+    ] satisfies Intake[]) {
+      const { events, humanInput } = signIn.intake(intake);
+
+      expect(candidates(events).map((candidate) => candidate.outcome)).toEqual(["stale"]);
+      expect(outcomes(events).map((outcome) => outcome.outcome)).toEqual(["declined"]);
+      // Only the turn's own sign-ins are named to the model.
+      expect(events.some((event) => event.type === "note")).toBe(false);
+      expect(humanInput.next()).toEqual({ run: "model" });
+    }
   });
 });
