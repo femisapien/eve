@@ -11,7 +11,7 @@ import {
   writeTaskTable,
 } from "#execution/tasks/table.js";
 import type { WorkflowToolRunRef } from "#execution/tools/workflow/messages.js";
-import { getProxyInputRequests } from "#harness/proxy-input-requests.js";
+import { readRelayedInputRequests } from "#harness/open-input-requests.js";
 import { createTestRuntime } from "#internal/testing/app-harness.js";
 import { containsEventSequence, filterEventsByType } from "#internal/testing/events.js";
 import { createTestSessionState } from "#internal/testing/session-state.js";
@@ -122,6 +122,6 @@ describe("handleWorkflowToolRunMessage", () => {
     expect(
       containsEventSequence(events, ["input.requested", "input.resolved", "task.settled"]),
     ).toBe(true);
-    expect(getProxyInputRequests(cursor.sessionState.snapshot.session.state).size).toBe(0);
+    expect(readRelayedInputRequests(cursor.sessionState.snapshot.session.state).size).toBe(0);
   });
 });

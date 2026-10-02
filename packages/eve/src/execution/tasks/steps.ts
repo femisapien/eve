@@ -39,7 +39,7 @@ import type {
   WorkflowToolRunOutcomeMessage,
 } from "#execution/tools/workflow/messages.js";
 import { workflowToolRunFailureOutput } from "#execution/tools/workflow/owner-inbox.js";
-import { withdrawProxyInputRequests } from "#harness/proxy-input-requests.js";
+import { withdrawRelayedInputRequests } from "#harness/open-input-requests.js";
 import { resumeHook } from "#internal/workflow/runtime.js";
 import {
   createTaskSettledEvent,
@@ -103,7 +103,7 @@ async function applyTaskRunMessage(
       events.push(...taskSettledEvents(record, settled.settled, outcome));
       table = finishTaskRun(settled.table, taskId, message.from.runId);
       // Nobody can answer what a finished run relayed, so channels must stop offering it.
-      ({ events: withdrawn, session } = withdrawProxyInputRequests(
+      ({ events: withdrawn, session } = withdrawRelayedInputRequests(
         session,
         (_requestId, route) => route.runId === message.from.runId,
       ));
@@ -153,7 +153,7 @@ async function cancelTasks(
     if (record?.resumable === false) stoppedRunIds.add(cancelled.send.run.runId);
     await sendTaskRunCommands(cancelled.send);
   }
-  const withdrawn = withdrawProxyInputRequests(
+  const withdrawn = withdrawRelayedInputRequests(
     session,
     (_requestId, route) => route.runId !== undefined && stoppedRunIds.has(route.runId),
   );

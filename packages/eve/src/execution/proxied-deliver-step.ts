@@ -28,13 +28,13 @@ import {
   toToolInputResponseResponder,
 } from "#execution/tools/workflow/answer.js";
 import type { PendingInputBatchEvent } from "#harness/pending-input-batches.js";
-import type { WorkflowAskRoute } from "#harness/proxy-input-requests.js";
+import type { WorkflowAskRoute } from "#harness/open-input-requests.js";
 import {
   createInputResolvedEvent,
   type InputResolution,
   type UnstampedMessageStreamEvent,
 } from "#protocol/message.js";
-import { getProxyInputRequests, retireProxyInputRequests } from "#harness/proxy-input-requests.js";
+import { readRelayedInputRequests, retireOpenInputRequests } from "#harness/open-input-requests.js";
 import type { InputResponse } from "#shared/input.js";
 
 export type RoutedDeliverResult =
@@ -53,7 +53,7 @@ export type RoutedDeliverResult =
 interface ChildBucket {
   readonly workflowAsk?: WorkflowAskRoute;
   readonly remote?: NonNullable<
-    import("#harness/proxy-input-requests.js").ProxyInputRequest["remote"]
+    import("#harness/open-input-requests.js").RelayedInputRequest["remote"]
   >;
   readonly childContinuationToken: string;
   readonly childSessionInbox?: SessionInboxAddress;
@@ -188,7 +188,7 @@ async function routeProxiedDeliver(
     }
     // Successfully forwarded request IDs are retired so later deliveries
     // cannot route through stale entries.
-    durableSession = retireProxyInputRequests(durableSession, [...child.resolutions.keys()]);
+    durableSession = retireOpenInputRequests(durableSession, [...child.resolutions.keys()]);
     retired = true;
   }
 
@@ -233,7 +233,7 @@ async function deliverChannelInputResponses(
   readonly delivery: DeliverHookPayload;
   readonly serializedContext: Record<string, unknown>;
 }> {
-  const requests = getProxyInputRequests(readDurableSession(input.sessionState).state);
+  const requests = readRelayedInputRequests(readDurableSession(input.sessionState).state);
   const routable = (response: InputResponse) => requests.has(response.requestId);
   const unrouted = input.delivery.payloads.some(
     (payload) => payload.inputResponses?.some((response) => !routable(response)) === true,

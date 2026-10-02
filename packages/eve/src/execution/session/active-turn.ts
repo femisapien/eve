@@ -76,7 +76,7 @@ export class ActiveTurn {
     if (
       delivery.kind === "deliver" &&
       isSteeringMessage(delivery, this.identity) &&
-      !this.input.cursor.sessionState.hasProxyInputRequests
+      !this.input.cursor.sessionState.hasRelayedInputRequests
     )
       this.steeringController.abort();
   };

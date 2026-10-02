@@ -746,7 +746,7 @@ describe("SessionExecution checkpoints", () => {
   });
 
   it("routes a proxied answer to a descendant while waiting for runtime results", async () => {
-    const sessionState = { ...state(""), hasProxyInputRequests: true };
+    const sessionState = { ...state(""), hasRelayedInputRequests: true };
     const answer: DeliverHookPayload = {
       kind: "deliver",
       payloads: [{ inputResponses: [{ requestId: "child-request", text: "blue" }] }],
@@ -786,7 +786,7 @@ describe("SessionExecution checkpoints", () => {
         kind: "continue",
         remainder: undefined,
         serializedContext: {},
-        sessionState: { ...sessionState, hasProxyInputRequests: false },
+        sessionState: { ...sessionState, hasRelayedInputRequests: false },
       })),
     );
 
@@ -803,7 +803,7 @@ describe("SessionExecution checkpoints", () => {
   });
 
   it("routes an answer to its question before the message beside it interrupts the waited call", async () => {
-    const base = { ...state(""), hasProxyInputRequests: true };
+    const base = { ...state(""), hasRelayedInputRequests: true };
     const sessionState: DurableSessionState = {
       ...base,
       snapshot: {
@@ -1411,7 +1411,7 @@ function state(continuationToken: string): DurableSessionState {
   return createTestSessionState({
     continuationToken,
     emissionState: { sequence: 0, sessionStarted: true, stepIndex: 0, turnId: "turn_0" },
-    hasProxyInputRequests: false,
+    hasRelayedInputRequests: false,
     sessionId: "session-1",
   });
 }

@@ -11,7 +11,7 @@ import type { WithSessionStateDelta } from "#execution/session/state-delta.js";
  * descendant session-limit Stop is returned as parent-owned turn control after
  * the child consumes the answer.
  *
- * Short-circuits via `hasProxyInputRequests` so the common no-active-descendant
+ * Short-circuits via `hasRelayedInputRequests` so the common no-active-descendant
  * path skips a durable step boundary. Lives in its own non-step module so both
  * the owner and the active turn can share it (a `"use step"` module cannot
  * re-export plain helpers into a workflow body).
@@ -22,7 +22,7 @@ export async function routeDeliverToChildren(input: {
   readonly sessionState: DurableSessionState;
   readonly serializedContext: Record<string, unknown>;
 }): Promise<WithSessionStateDelta<RoutedDeliverResult>> {
-  if (!input.sessionState.hasProxyInputRequests) {
+  if (!input.sessionState.hasRelayedInputRequests) {
     return { kind: "continue", remainder: input.delivery, stateDelta: {} };
   }
 

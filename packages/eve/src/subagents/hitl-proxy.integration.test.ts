@@ -10,7 +10,10 @@ import type { CompiledBundle } from "#runtime/sessions/runtime-context-keys.js";
 import { BundleKey, ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
 import { serializeContext } from "#context/serialize.js";
 import { setHarnessEmissionState } from "#harness/emission-state.js";
-import { hasProxyInputRequests, upsertProxyInputRequests } from "#harness/proxy-input-requests.js";
+import {
+  hasRelayedInputRequests,
+  upsertRelayedInputRequests,
+} from "#harness/open-input-requests.js";
 import type { HarnessEmitFn, HarnessSession } from "#harness/types.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import type { InputRequest } from "#shared/input.js";
@@ -312,7 +315,7 @@ describe("subagent HITL proxy → Slack-style text-approve regression (Finding #
     // The resolved responses now flow through the proxy router. With
     // the child's proxy entry recorded on the parent session, the
     // response routes back down to the right descendant.
-    const parkedSession = upsertProxyInputRequests({
+    const parkedSession = upsertRelayedInputRequests({
       entries,
       forChildContinuationToken: hookPayload.childContinuationToken,
       session: buildEmptySession("parent-token", "sess-parent"),
@@ -409,18 +412,18 @@ describe("subagent HITL proxy → concurrent-descendant routing", () => {
     // entries (what the parent runtime would accumulate across the
     // two proxy steps).
     let parkedSession = buildEmptySession("parent-token", "sess-parent");
-    parkedSession = upsertProxyInputRequests({
+    parkedSession = upsertRelayedInputRequests({
       entries: entriesA,
       forChildContinuationToken: payloadA.childContinuationToken,
       session: parkedSession,
     });
-    parkedSession = upsertProxyInputRequests({
+    parkedSession = upsertRelayedInputRequests({
       entries: entriesB,
       forChildContinuationToken: payloadB.childContinuationToken,
       session: parkedSession,
     });
 
-    expect(hasProxyInputRequests(parkedSession.state)).toBe(true);
+    expect(hasRelayedInputRequests(parkedSession.state)).toBe(true);
 
     // One inbound deliver carrying responses for both descendants.
     // Simulates a UI that lets the user answer both prompts before

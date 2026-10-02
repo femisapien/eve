@@ -55,6 +55,7 @@ describe("handoff state inspection", () => {
     ["eve.runtime.deferredStepInput", {}],
     ["eve.harness.pendingWorkflowInterrupt", {}],
     ["eve.runtime.proxyInputRequests", { malformed: null }],
+    ["eve.runtime.openInputRequests", { malformed: null }],
   ])("refuses nonempty or unreadable pending work in %s", (key, value) => {
     expect(isSessionStateIdleForHandoff(checkpoint({ [key]: value }))).toBe(false);
   });

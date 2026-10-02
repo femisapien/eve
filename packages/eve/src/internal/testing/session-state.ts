@@ -11,7 +11,7 @@ export function createTestSessionState(
     continuationToken: overrides.continuationToken ?? "test-token",
     sessionId: overrides.sessionId ?? "test-session",
     emissionState: { sequence: 0, sessionStarted: false, stepIndex: 0, turnId: "" },
-    hasProxyInputRequests: false,
+    hasRelayedInputRequests: false,
     version: DURABLE_SESSION_VERSION,
     snapshot: {
       session: {

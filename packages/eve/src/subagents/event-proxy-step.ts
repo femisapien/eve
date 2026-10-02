@@ -14,8 +14,8 @@ import {
   type SessionStateTransition,
 } from "#execution/session/state-delta.js";
 import { emitProxiedAuthorizationEvent, emitProxiedInputRequest } from "#subagents/hitl-proxy.js";
-import { upsertProxyInputRequests } from "#harness/proxy-input-requests.js";
-import type { WorkflowAskRoute } from "#harness/proxy-input-requests.js";
+import { upsertRelayedInputRequests } from "#harness/open-input-requests.js";
+import type { WorkflowAskRoute } from "#harness/open-input-requests.js";
 
 type SubagentEventHookPayload =
   | SubagentAuthorizationEventHookPayload
@@ -72,7 +72,7 @@ export async function emitProxiedSubagentEvent(
         return { session };
       }
       return {
-        session: upsertProxyInputRequests({
+        session: upsertRelayedInputRequests({
           entries: entries.map(([requestId, route]) => [
             requestId,
             {

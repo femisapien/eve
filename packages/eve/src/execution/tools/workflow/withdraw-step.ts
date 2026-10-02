@@ -15,9 +15,9 @@ import type { WorkflowToolRunControlMessage } from "#execution/tools/workflow/me
 import { ignoreGoneTarget } from "#execution/tasks/workflow-target.js";
 import { resumeHook } from "#internal/workflow/runtime.js";
 import {
-  withdrawProxyInputRequests,
-  type ProxyInputRequest,
-} from "#harness/proxy-input-requests.js";
+  withdrawRelayedInputRequests,
+  type RelayedInputRequest,
+} from "#harness/open-input-requests.js";
 
 /**
  * Decides a run's request to withdraw a question. A question the session
@@ -77,9 +77,9 @@ export async function withdrawFinishedRunQuestionsStep(
  */
 export async function relayWithdrawnRequests(
   input: SessionStepState,
-  select: (requestId: string, route: ProxyInputRequest) => boolean,
+  select: (requestId: string, route: RelayedInputRequest) => boolean,
 ): Promise<PublishedSessionEvents> {
-  const withdrawn = withdrawProxyInputRequests(readDurableSession(input.sessionState), select);
+  const withdrawn = withdrawRelayedInputRequests(readDurableSession(input.sessionState), select);
   return await relaySessionEvents(
     {
       serializedContext: input.serializedContext,

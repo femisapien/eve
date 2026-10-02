@@ -144,7 +144,7 @@ function state(continuationToken: string): DurableSessionState {
   return createTestSessionState({
     continuationToken,
     emissionState: { sequence: 0, sessionStarted: true, stepIndex: 0, turnId: "turn_0" },
-    hasProxyInputRequests: false,
+    hasRelayedInputRequests: false,
     sessionId: "session-1",
   });
 }

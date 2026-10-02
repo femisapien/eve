@@ -25,7 +25,7 @@ import {
   isInboxToolResultFromRecordedWorkflowToolRun,
 } from "#harness/workflow-tool-runs.js";
 import { runProxySubagentEventStep } from "#subagents/event-proxy-step.js";
-import type { WorkflowAskRoute } from "#harness/proxy-input-requests.js";
+import type { WorkflowAskRoute } from "#harness/open-input-requests.js";
 import type { RuntimeActionResult } from "#shared/action-types.js";
 
 interface HandlerInput<T> {
@@ -98,7 +98,7 @@ async function handleWorkflowToolRunOutcome(
   const result = workflowToolRunOutcomeToToolResult(message);
   if (!isInboxToolResultFromRecordedWorkflowToolRun(state, result)) return undefined;
 
-  if (cursor.sessionState.hasProxyInputRequests) {
+  if (cursor.sessionState.hasRelayedInputRequests) {
     const { runId } = message.from;
     await cursor.advance((current) => withdrawFinishedRunQuestionsStep({ ...current, runId }));
   }

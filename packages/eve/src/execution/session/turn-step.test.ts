@@ -35,7 +35,7 @@ import { getPendingCoordinationBatch, setPendingCoordinationBatch } from "#harne
 import { TurnCancelledError } from "#harness/turn-cancellation.js";
 import { setHarnessEmissionState } from "#harness/emission-state.js";
 import { getPendingAuthorization, setPendingAuthorization } from "#harness/authorization.js";
-import { upsertProxyInputRequests } from "#harness/proxy-input-requests.js";
+import { upsertRelayedInputRequests } from "#harness/open-input-requests.js";
 import { appendPendingInputBatch } from "#harness/input-requests.js";
 import { queueDeferredStepInput } from "#harness/pending-input-batches.js";
 import type { HarnessSession, StepFn, StepResult } from "#harness/types.js";
@@ -179,7 +179,7 @@ function createStubSessionState(overrides: Partial<DurableSessionState> = {}): D
   return createTestSessionState({
     continuationToken: "test-token",
     emissionState: { sequence: 0, sessionStarted: false, stepIndex: 0, turnId: "" },
-    hasProxyInputRequests: false,
+    hasRelayedInputRequests: false,
     sessionId: "sess-test",
     ...overrides,
   });
@@ -344,7 +344,7 @@ afterEach(() => {
 
 describe("routeProxiedDeliverStep", () => {
   it("replies to the saved child inbox after its continuation alias changes", async () => {
-    const session = upsertProxyInputRequests({
+    const session = upsertRelayedInputRequests({
       entries: [
         [
           "request-1",
@@ -373,7 +373,7 @@ describe("routeProxiedDeliverStep", () => {
       },
       sessionState: createStubSessionState({
         continuationToken: "parent-token",
-        hasProxyInputRequests: true,
+        hasRelayedInputRequests: true,
         sessionId: "parent-session",
       }),
     });
@@ -408,7 +408,7 @@ describe("routeProxiedDeliverStep", () => {
   });
 
   it("answers a root question once when one delivery carries several messages", async () => {
-    const session = upsertProxyInputRequests({
+    const session = upsertRelayedInputRequests({
       entries: [
         [
           "ask-1",
@@ -433,7 +433,7 @@ describe("routeProxiedDeliverStep", () => {
         payloads: [{ message: "Use the canary pool." }, { message: "Also check the logs." }],
       },
       sessionWritable: createTestWritable(),
-      sessionState: createStubSessionState({ hasProxyInputRequests: true }),
+      sessionState: createStubSessionState({ hasRelayedInputRequests: true }),
     });
 
     expect(resumeHookMock).toHaveBeenCalledTimes(1);
@@ -462,7 +462,7 @@ describe("routeProxiedDeliverStep", () => {
       },
     ],
   ])("does not answer a delegated %s question from steering text", async (_, serializedContext) => {
-    const session = upsertProxyInputRequests({
+    const session = upsertRelayedInputRequests({
       entries: [
         [
           "ask-1",
@@ -490,7 +490,7 @@ describe("routeProxiedDeliverStep", () => {
       delivery: { kind: "deliver", payloads: [{ message: "Approve" }] },
       serializedContext,
       sessionWritable: createTestWritable(),
-      sessionState: createStubSessionState({ hasProxyInputRequests: true }),
+      sessionState: createStubSessionState({ hasRelayedInputRequests: true }),
     });
 
     expect(resumeHookMock).not.toHaveBeenCalled();
@@ -507,7 +507,7 @@ describe("routeProxiedDeliverStep", () => {
       principalId: "user-1",
       principalType: "user",
     };
-    const session = upsertProxyInputRequests({
+    const session = upsertRelayedInputRequests({
       entries: [
         [
           "request-1",
@@ -540,7 +540,7 @@ describe("routeProxiedDeliverStep", () => {
       },
       sessionState: createStubSessionState({
         continuationToken: "parent-token",
-        hasProxyInputRequests: true,
+        hasRelayedInputRequests: true,
         sessionId: "parent-session",
       }),
     });
@@ -566,7 +566,7 @@ describe("routeProxiedDeliverStep", () => {
       replyTo: { kind: "hook" as const, token: "parent-turn" },
       subagentName: "research",
     };
-    const session = upsertProxyInputRequests({
+    const session = upsertRelayedInputRequests({
       entries: [
         [
           "child-a",
@@ -578,7 +578,7 @@ describe("routeProxiedDeliverStep", () => {
         ],
       ],
       forChildContinuationToken: "child-token-a",
-      session: upsertProxyInputRequests({
+      session: upsertRelayedInputRequests({
         entries: [
           [
             "child-b",
@@ -619,7 +619,7 @@ describe("routeProxiedDeliverStep", () => {
       serializedContext: createSerializedContext(),
       delivery,
       sessionWritable: createTestWritable(),
-      sessionState: createStubSessionState({ hasProxyInputRequests: true }),
+      sessionState: createStubSessionState({ hasRelayedInputRequests: true }),
     });
 
     expect(resumeHookMock).toHaveBeenCalledWith(
@@ -3099,9 +3099,9 @@ describe("runProxySubagentEventStep", () => {
 
     // And the parent session's proxy-entry map is reflected on the
     // returned durable session state. The flat
-    // `hasProxyInputRequests` boolean is enough for the workflow
+    // `hasRelayedInputRequests` boolean is enough for the workflow
     // body's routing branch; the full map travels via the snapshot.
-    expect(result.sessionState.hasProxyInputRequests).toBe(true);
+    expect(result.sessionState.hasRelayedInputRequests).toBe(true);
 
     // The step writes the outgoing `input.requested` event to the
     // durable stream so channel-side UI (Slack Block Kit buttons,

@@ -8,11 +8,8 @@ import type {
 import { getHarnessEmissionState } from "#harness/emission.js";
 import { resolveInputOutcome } from "#harness/input-request-resolution.js";
 import type { PendingInputBatchEvent } from "#harness/pending-input-batches.js";
-import {
-  getProxyInputRequests,
-  toProxyInputRequestEntries,
-} from "#harness/proxy-input-requests.js";
-import type { WorkflowAskRoute, ProxyInputRequest } from "#harness/proxy-input-requests.js";
+import { readRelayedInputRequests, toRelayedInputRequests } from "#harness/open-input-requests.js";
+import type { WorkflowAskRoute, RelayedInputRequest } from "#harness/open-input-requests.js";
 import type { HarnessEmitFn, HarnessSessionBase, SessionStateMap } from "#harness/types.js";
 import {
   createInputRequestedEvent,
@@ -37,7 +34,7 @@ export async function emitProxiedInputRequest(input: {
   readonly emit: HarnessEmitFn;
   readonly hookPayload: SubagentInputRequestHookPayload;
   readonly session: HarnessSessionBase;
-}): Promise<readonly (readonly [requestId: string, route: ProxyInputRequest])[]> {
+}): Promise<readonly (readonly [requestId: string, route: RelayedInputRequest])[]> {
   await input.emit(
     createInputRequestedEvent({
       requests: input.hookPayload.event.requests,
@@ -48,7 +45,7 @@ export async function emitProxiedInputRequest(input: {
     }),
   );
   await emitTurnWaiting(input.emit, input.session);
-  return toProxyInputRequestEntries(input.hookPayload);
+  return toRelayedInputRequests(input.hookPayload);
 }
 
 /**
@@ -87,7 +84,7 @@ async function emitTurnWaiting(emit: HarnessEmitFn, session: HarnessSessionBase)
 /** One proxied-child bucket of a routed deliver payload. */
 export interface RoutedChildDelivery {
   readonly workflowAsk?: WorkflowAskRoute;
-  readonly remote?: ProxyInputRequest["remote"];
+  readonly remote?: RelayedInputRequest["remote"];
   readonly inputSource?: string;
   readonly childContinuationToken: string;
   readonly childSessionInbox?: SessionInboxAddress;
@@ -121,7 +118,7 @@ export interface RoutedDeliverPayload {
 /** In-progress accumulation for one `forChildren` bucket. */
 interface ChildResponseBucket {
   readonly workflowAsk?: WorkflowAskRoute;
-  readonly remote?: ProxyInputRequest["remote"];
+  readonly remote?: RelayedInputRequest["remote"];
   readonly childContinuationToken: string;
   readonly childSessionInbox?: SessionInboxAddress;
   /** A child's routes all come from its latest batch, so they share coordinates. */
@@ -129,7 +126,7 @@ interface ChildResponseBucket {
   /** Parent-visible request IDs answered in this bucket. */
   readonly parentRequestIds: string[];
   readonly responses: InputResponse[];
-  readonly routes: ProxyInputRequest[];
+  readonly routes: RelayedInputRequest[];
 }
 
 /**
@@ -141,13 +138,13 @@ interface ChildResponseBucket {
  * message stays with the parent.
  */
 export function routeDeliverPayload(input: {
-  readonly allowRoute?: (requestId: string, route: ProxyInputRequest) => boolean;
+  readonly allowRoute?: (requestId: string, route: RelayedInputRequest) => boolean;
   readonly payload: DeliverPayload;
   readonly resolveMessage?: boolean;
   readonly state: SessionStateMap | undefined;
 }): RoutedDeliverPayload {
-  const entries = getProxyInputRequests(input.state);
-  const routable = (requestId: string, route: ProxyInputRequest | undefined) =>
+  const entries = readRelayedInputRequests(input.state);
+  const routable = (requestId: string, route: RelayedInputRequest | undefined) =>
     route !== undefined && input.allowRoute?.(requestId, route) !== false;
   const message = resolveMessageAgainstQuestions({
     enabled: input.resolveMessage === true,
@@ -161,7 +158,7 @@ export function routeDeliverPayload(input: {
   const unroutedResponses: InputResponse[] = [];
   let parentAction: RoutedDeliverPayload["parentAction"];
 
-  const bucketFor = (route: ProxyInputRequest): ChildResponseBucket => {
+  const bucketFor = (route: RelayedInputRequest): ChildResponseBucket => {
     const bucketKey = JSON.stringify([
       route.childContinuationToken,
       route.childSessionInbox?.sessionId ?? "",
@@ -276,7 +273,7 @@ export function routeDeliverPayload(input: {
 }
 
 function resolveRetiredRequests(input: {
-  readonly entries: ReadonlyMap<string, ProxyInputRequest>;
+  readonly entries: ReadonlyMap<string, RelayedInputRequest>;
   readonly responses: readonly InputResponse[];
   readonly retireRequestIds: ReadonlySet<string>;
 }): InputResolution[] {
@@ -292,7 +289,7 @@ function resolveRetiredRequests(input: {
 
 function toInputResolution(
   requestId: string,
-  route: ProxyInputRequest,
+  route: RelayedInputRequest,
   response: InputResponse | undefined,
 ): InputResolution {
   const outcome = resolveInputOutcome(route.kind, response);
@@ -302,9 +299,9 @@ function toInputResolution(
 
 function resolveMessageAgainstQuestions(input: {
   readonly enabled: boolean;
-  readonly entries: ReadonlyMap<string, ProxyInputRequest>;
+  readonly entries: ReadonlyMap<string, RelayedInputRequest>;
   readonly payload: DeliverPayload;
-  readonly routable: (requestId: string, route: ProxyInputRequest) => boolean;
+  readonly routable: (requestId: string, route: RelayedInputRequest) => boolean;
 }): {
   readonly consumed: boolean;
   readonly responses: readonly InputResponse[];
@@ -335,9 +332,9 @@ function resolveMessageAgainstQuestions(input: {
 }
 
 function batchResolves(input: {
-  readonly batch: NonNullable<ProxyInputRequest["batch"]>;
+  readonly batch: NonNullable<RelayedInputRequest["batch"]>;
   readonly childContinuationToken: string;
-  readonly entries: ReadonlyMap<string, ProxyInputRequest>;
+  readonly entries: ReadonlyMap<string, RelayedInputRequest>;
   readonly responseIds: ReadonlySet<string>;
 }): boolean {
   if (input.batch.approvalRequestIds.length === 0) return true;
@@ -350,9 +347,9 @@ function batchResolves(input: {
 }
 
 function sameBatch(
-  route: ProxyInputRequest,
+  route: RelayedInputRequest,
   input: {
-    readonly batch: NonNullable<ProxyInputRequest["batch"]>;
+    readonly batch: NonNullable<RelayedInputRequest["batch"]>;
     readonly childContinuationToken: string;
   },
 ): boolean {

@@ -4,10 +4,10 @@ import type { SessionStateMap } from "#harness/types.js";
 import { readDurableSession } from "#execution/durable-session-store.js";
 import { settleCancelledTurnStep } from "#execution/settle-cancelled-turn-step.js";
 import {
-  getProxyInputRequests,
-  upsertProxyInputRequestState,
-  type ProxyInputRequest,
-} from "#harness/proxy-input-requests.js";
+  readRelayedInputRequests,
+  upsertRelayedInputRequestState,
+  type RelayedInputRequest,
+} from "#harness/open-input-requests.js";
 import { filterEventsByType } from "#internal/testing/events.js";
 import type { MessageStreamEvent } from "#protocol/message.js";
 import {
@@ -132,16 +132,16 @@ describe("settleCancelledTurnStep", () => {
       [{ kind: "question", outcome: "cancelled", requestId: "deploy-run-ask-1" }],
       [{ kind: "tool-approval", outcome: "cancelled", requestId: "reviewer-approval-1" }],
     ]);
-    expect(getProxyInputRequests(readDurableSession(result.sessionState).state).size).toBe(0);
+    expect(readRelayedInputRequests(readDurableSession(result.sessionState).state).size).toBe(0);
   });
 });
 
 function relay(
   state: SessionStateMap | undefined,
   requestId: string,
-  route: Pick<ProxyInputRequest, "kind" | "runId" | "workflowAsk">,
+  route: Pick<RelayedInputRequest, "kind" | "runId" | "workflowAsk">,
 ): SessionStateMap | undefined {
-  return upsertProxyInputRequestState({
+  return upsertRelayedInputRequestState({
     entries: [
       [
         requestId,

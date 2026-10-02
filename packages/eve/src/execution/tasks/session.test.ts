@@ -14,9 +14,9 @@ import {
   type TaskTable,
 } from "#execution/tasks/table.js";
 import {
-  getProxyInputRequests,
-  upsertProxyInputRequestState,
-} from "#harness/proxy-input-requests.js";
+  readRelayedInputRequests,
+  upsertRelayedInputRequestState,
+} from "#harness/open-input-requests.js";
 import { createTestSessionState } from "#internal/testing/session-state.js";
 
 // No workflow runtime runs here: the run's cancel hook is a stub, and the
@@ -65,7 +65,7 @@ describe("answerTaskCancel", () => {
     });
 
     const committed = cursor.sessionState.snapshot.session;
-    expect([...getProxyInputRequests(committed.state).keys()]).toEqual(["summarize-run-ask-1"]);
+    expect([...readRelayedInputRequests(committed.state).keys()]).toEqual(["summarize-run-ask-1"]);
     expect(published).toEqual([
       {
         event: {
@@ -131,7 +131,7 @@ describe("applyTaskRunMessageStep", () => {
     );
 
     const committed = cursor.sessionState.snapshot.session;
-    expect([...getProxyInputRequests(committed.state).keys()]).toEqual(["summarize-run-ask-1"]);
+    expect([...readRelayedInputRequests(committed.state).keys()]).toEqual(["summarize-run-ask-1"]);
     expect(published).toEqual([
       {
         event: {
@@ -202,7 +202,7 @@ function startedTask(
 
 function withQuestion(session: DurableSession, runId: string): DurableSession {
   const requestId = `${runId}-ask-1`;
-  const state = upsertProxyInputRequestState({
+  const state = upsertRelayedInputRequestState({
     entries: [
       [
         requestId,

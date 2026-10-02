@@ -282,7 +282,7 @@ describe("nextTurnDelivery", () => {
   });
 
   it("carries retired proxy state through fully routed parked deliveries", async () => {
-    const retiredState = { ...sessionState, hasProxyInputRequests: false };
+    const retiredState = { ...sessionState, hasRelayedInputRequests: false };
     const inbox = createMockInbox([messageRead("child response"), messageRead("parent turn")]);
     vi.mocked(routeDeliverToChildren)
       .mockResolvedValueOnce({

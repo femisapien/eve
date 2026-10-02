@@ -14,7 +14,7 @@ import {
 import type { DurableSession } from "#execution/durable-session-store.js";
 import { openSessionEventPublisher } from "#execution/publish-session-events.js";
 import { createSessionLimitContinuationRequest } from "#harness/session-limit-continuation.js";
-import { getProxyInputRequests } from "#harness/proxy-input-requests.js";
+import { readRelayedInputRequests } from "#harness/open-input-requests.js";
 import { createAuthorizationRequiredEvent, type MessageStreamEvent } from "#protocol/message.js";
 import type { HookContext } from "#public/definitions/hook.js";
 import { createRuntimeHookRegistry } from "#runtime/hooks/registry.js";
@@ -146,7 +146,7 @@ describe("proxied stream hooks", () => {
       state: { pendingRequests: [f.request] },
     });
     expect(result.sessionState.continuationToken).toBe("http:parent-thread");
-    expect(result.sessionState.hasProxyInputRequests).toBe(true);
+    expect(result.sessionState.hasRelayedInputRequests).toBe(true);
     expect(result.sessionState.emissionState).toMatchObject({ sequence: 1, turnId: "parent-turn" });
     const routed = routeDeliverPayload({
       payload: { inputResponses: [{ requestId: f.request.requestId, optionId: "continue" }] },
@@ -339,7 +339,7 @@ describe("proxied stream hooks", () => {
       expect(forwarded.inputSource).toBe(JSON.stringify(["child-token", "nested-alice"]));
       expect(f.order).not.toContain("channel:input.requested");
       expect(f.events.map((event) => event.type)).toEqual(["input.requested", "turn.waiting"]);
-      expect(result.sessionState.hasProxyInputRequests).toBe(true);
+      expect(result.sessionState.hasRelayedInputRequests).toBe(true);
 
       const answer = { inputResponses: [{ requestId: f.request.requestId, optionId: "continue" }] };
       expect(
@@ -458,7 +458,7 @@ describe("proxied stream hooks", () => {
           inputSource: JSON.stringify([`child-${name}`, null]),
         })),
       );
-      expect([...getProxyInputRequests(session.state).keys()]).toEqual([
+      expect([...readRelayedInputRequests(session.state).keys()]).toEqual([
         "approval-Alice",
         "approval-Bob",
       ]);
@@ -504,7 +504,7 @@ describe("proxied stream hooks", () => {
       expect(f.order).not.toContain("channel:input.requested");
       expect(f.events).toHaveLength(0);
       expect(f.sessionWritable.locked).toBe(false);
-      expect(getProxyInputRequests(f.durableSession.state).size).toBe(0);
+      expect(readRelayedInputRequests(f.durableSession.state).size).toBe(0);
     } finally {
       vi.unstubAllGlobals();
     }

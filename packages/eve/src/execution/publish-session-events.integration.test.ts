@@ -3,7 +3,7 @@ import { expect, it } from "vitest";
 import { replaceDurableSessionSnapshot } from "#execution/durable-session-store.js";
 import { emitWorkflowToolRunReportStep } from "#execution/tools/workflow/emit-workflow-tool-run-report-step.js";
 import { withdrawWorkflowToolRunQuestionStep } from "#execution/tools/workflow/withdraw-step.js";
-import { upsertProxyInputRequests } from "#harness/proxy-input-requests.js";
+import { upsertRelayedInputRequests } from "#harness/open-input-requests.js";
 import type { HarnessSession } from "#harness/types.js";
 import { createTestRuntime } from "#internal/testing/app-harness.js";
 import { createTestSessionState } from "#internal/testing/session-state.js";
@@ -83,7 +83,7 @@ it("publishes a session step's action.partial to the stream and its hooks", asyn
 it("relays a withdrawn workflow question's input.resolved to the stream and its hooks", async () => {
   const { hooked, runtime, sessionWritable, streamed } = await createPublishingRuntime();
   const base = createTestSessionState();
-  const asked = upsertProxyInputRequests({
+  const asked = upsertRelayedInputRequests({
     entries: [
       [
         "ask-1",
