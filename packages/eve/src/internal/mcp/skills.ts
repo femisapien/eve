@@ -14,6 +14,7 @@ import {
 import { z } from "#compiled/zod/index.js";
 import { hasFrontmatter, parseFrontmatter } from "#internal/helpers/gray-matter.js";
 import { createLogger } from "#internal/logging.js";
+import { isSafeSegment, parseSkillUri, skillFileUri } from "#internal/mcp/skill-uri.js";
 import type { McpServerFeature } from "#internal/mcp/streamable-http-server.js";
 import type { JsonObject, JsonValue } from "#shared/json.js";
 import { isSkillEntryFileName, SKILL_ENTRY_FILE_NAME } from "#shared/skill-entry-file.js";
@@ -36,7 +37,6 @@ export const MCP_SKILLS_CACHE_HINT = {
 export const MCP_SKILL_MAX_RESOURCES = 512;
 export const MCP_SKILL_MAX_TOTAL_BYTES = 16 * 1024 * 1024;
 
-const SKILL_URI_PREFIX = "skill://";
 const DIRECTORY_MIME_TYPE = "inode/directory";
 /** Files read concurrently while building one skill entry. */
 const READ_CONCURRENCY = 8;
@@ -293,65 +293,6 @@ function registerLegacySubscriptions(server: McpServer, catalog: SkillCatalog): 
 }
 
 // ---------- URIs ----------
-
-interface ParsedSkillUri {
-  readonly skill: string;
-  /** File or directory path below the skill root; `undefined` for the root itself. */
-  readonly path?: string;
-}
-
-/**
- * Parses `skill://<skill>[/<path>]` strictly. Rejected: other schemes, a
- * query or fragment, backslashes, empty segments (so `//` and a trailing
- * `/`), `.` and `..` segments (decoded too), percent-encoded `/`, `\`, or
- * NUL, and malformed percent-encoding. Segments are percent-decoded. The
- * skill must still exist and the path must still be one of its served files;
- * `readSkill` enforces containment again on the filesystem.
- */
-export function parseSkillUri(uri: string): ParsedSkillUri | undefined {
-  if (!uri.startsWith(SKILL_URI_PREFIX)) return undefined;
-  const rest = uri.slice(SKILL_URI_PREFIX.length);
-  if (/[?#\\\s]/u.test(rest)) return undefined;
-  const segments: string[] = [];
-  for (const raw of rest.split("/")) {
-    let segment: string;
-    try {
-      segment = decodeURIComponent(raw);
-    } catch {
-      return undefined;
-    }
-    if (!isSafeSegment(segment)) return undefined;
-    segments.push(segment);
-  }
-  const [skill, ...path] = segments;
-  if (skill === undefined) return undefined;
-  return path.length === 0 ? { skill } : { skill, path: path.join("/") };
-}
-
-function isSafeSegment(segment: string): boolean {
-  return (
-    segment.length > 0 &&
-    segment !== "." &&
-    segment !== ".." &&
-    !segment.includes("/") &&
-    !segment.includes("\\") &&
-    !segment.includes("\0")
-  );
-}
-
-function encodePath(path: string): string {
-  return path.split("/").map(encodeURIComponent).join("/");
-}
-
-function skillRootUri(skill: string): string {
-  return `${SKILL_URI_PREFIX}${encodeURIComponent(skill)}`;
-}
-
-function skillFileUri(skill: string, path: string): string {
-  return `${skillRootUri(skill)}/${encodePath(path)}`;
-}
-
-// ---------- Skills and files ----------
 
 async function listSkills(source: McpSkillSource): Promise<AgentSkillDescription[]> {
   const { skills } = await source.describe();

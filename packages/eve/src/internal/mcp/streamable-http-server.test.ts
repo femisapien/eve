@@ -4,11 +4,11 @@ import type { SessionAuthContext } from "#channel/types.js";
 import { z } from "#compiled/zod/index.js";
 import {
   createMcpStreamableHttpServer,
-  defineMcpTool,
   MCP_PROTOCOL_VERSION,
   MCP_REQUEST_BODY_MAX_BYTES,
   McpToolOperationError,
 } from "#internal/mcp/streamable-http-server.js";
+import { defineMcpTool } from "#internal/mcp/define-tool.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
 
 const MCP_LEGACY_PROTOCOL_VERSION = "2025-11-25";
