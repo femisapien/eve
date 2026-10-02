@@ -12,7 +12,7 @@ import {
   ResourceNotFoundError,
 } from "#compiled/@modelcontextprotocol/server/index.js";
 import { z } from "#compiled/zod/index.js";
-import { hasFrontmatter, parseFrontmatter } from "#internal/helpers/gray-matter.js";
+import { parseFrontmatter } from "#internal/helpers/frontmatter.js";
 import { createLogger } from "#internal/logging.js";
 import { isSafeSegment, parseSkillUri, skillFileUri } from "#internal/mcp/skill-uri.js";
 import type { McpServerFeature } from "#internal/mcp/streamable-http-server.js";
@@ -443,16 +443,15 @@ function renderFrontmatter(frontmatter: JsonObject): string {
 function parseFrontmatterJson(
   text: string,
 ): { readonly present: boolean; readonly data: JsonObject; readonly content: string } | undefined {
-  const present = hasFrontmatter(text);
   let file;
   try {
     file = parseFrontmatter(text);
   } catch {
     return undefined;
   }
-  const data = toJsonValue(file.data);
+  const data = toJsonValue(file?.data ?? {});
   if (data === null || typeof data !== "object" || Array.isArray(data)) return undefined;
-  return { content: present ? file.content : text, data: data as JsonObject, present };
+  return { content: file?.content ?? text, data: data as JsonObject, present: file !== undefined };
 }
 
 /**
