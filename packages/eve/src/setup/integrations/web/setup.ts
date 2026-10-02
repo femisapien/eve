@@ -7,6 +7,7 @@ import type { RegistrySetupCompletion } from "#setup/registry-setup-protocol.js"
 import type { VercelProjectReference } from "#setup/project-resolution.js";
 import { installScaffoldDependencies } from "../shared/scaffold.js";
 import { prepareWebAuthScaffold } from "./auth-scaffold.js";
+import { WEB_AUTHENTICATION_QUESTION } from "./auth-options.js";
 import { provisionWebChatAuth } from "./provision-auth.js";
 import { detectPackageManager, type PackageManagerKind } from "#setup/package-manager.js";
 import { pathExists, writeTextFile } from "#setup/scaffold/files.js";
@@ -75,6 +76,7 @@ interface WebSetupPlan {
   hosting: "next" | "vercel";
   packageManager: PackageManagerKind;
   authProject?: VercelProjectReference;
+  rootWebChat?: boolean;
 }
 
 export async function prepareWebSetup(
@@ -85,50 +87,34 @@ export async function prepareWebSetup(
   if (project.kind === "workspace") {
     throw new Error("Web Chat setup requires a selected workspace agent.");
   }
-  const hosting = await context.asker.ask(
-    select({
-      key: "web-hosting",
-      message: "How should Web Chat and your agents be deployed?",
-      options: [
-        {
-          id: "vercel",
-          label: "Vercel services",
-          hint: "(Recommended) Web Chat and agents deploy as separate services.",
-          value: "vercel" as const,
-        },
-        {
-          id: "next",
-          label: "Next.js",
-          hint: "One Next.js app serves Web Chat and routes agent requests.",
-          value: "next" as const,
-        },
-      ],
-      recommended: "vercel" as const,
-      required: true,
-    }),
-  );
-  const authentication = await context.asker.ask(
-    select({
-      key: "web-authentication",
-      message: "How should people sign in to Web Chat?",
-      options: [
-        {
-          id: "vercel",
-          label: "Sign in with Vercel",
-          hint: "Create a Vercel App for members of the linked project's team.",
-          value: "vercel" as const,
-        },
-        {
-          id: "custom",
-          label: "Configure authentication myself",
-          hint: "Keep the current channel auth; the default rejects production browser requests.",
-          value: "custom" as const,
-        },
-      ],
-      recommended: "vercel" as const,
-      required: true,
-    }),
-  );
+  const rootWebChat =
+    (await deps.pathExists(join(project.environmentRoot, "app", "eve-agent.ts"))) &&
+    !(await deps.pathExists(join(project.environmentRoot, "apps", "web", "app", "eve-agent.ts")));
+  const hosting = rootWebChat
+    ? "next"
+    : await context.asker.ask(
+        select({
+          key: "web-hosting",
+          message: "How should Web Chat and your agents be deployed?",
+          options: [
+            {
+              id: "vercel",
+              label: "Vercel services",
+              hint: "(Recommended) Web Chat and agents deploy as separate services.",
+              value: "vercel" as const,
+            },
+            {
+              id: "next",
+              label: "Next.js",
+              hint: "One Next.js app serves Web Chat and routes agent requests.",
+              value: "next" as const,
+            },
+          ],
+          recommended: "vercel" as const,
+          required: true,
+        }),
+      );
+  const authentication = await context.asker.ask(WEB_AUTHENTICATION_QUESTION);
   const authProject =
     authentication === "vercel"
       ? await context.resolveVercelProject("Web Chat sign-in")
@@ -138,6 +124,7 @@ export async function prepareWebSetup(
     packageManager: (await deps.detectPackageManager(project.environmentRoot)).kind,
   };
   if (authProject !== undefined) plan.authProject = authProject;
+  if (rootWebChat) plan.rootWebChat = true;
   return plan;
 }
 
@@ -194,12 +181,16 @@ export async function applyWebSetup(
   const agentAppRoot =
     project.kind === "workspace-member" ? project.member.appRoot : project.appRoot;
   const channelPath = join(agentAppRoot, "agent", "channels", "eve.ts");
+  const webRoot = plan.rootWebChat
+    ? project.environmentRoot
+    : join(project.environmentRoot, "apps", "web");
   const writeAuth =
     plan.authProject === undefined
       ? undefined
       : await deps.prepareWebAuthScaffold({
           environmentRoot: project.environmentRoot,
           agentAppRoot,
+          webRoot,
           force: context.force,
         });
   if (writeAuth === undefined && (context.force || !(await deps.pathExists(channelPath)))) {
@@ -208,7 +199,6 @@ export async function applyWebSetup(
     });
   }
   const agentName = project.kind === "workspace-member" ? project.member.name : undefined;
-  const webRoot = join(project.environmentRoot, "apps", "web");
   await deps.writeTextFile(
     join(webRoot, "app", "eve-agent.ts"),
     `/** Named workspace agent selected by the Web Chat installer. */\nexport const WEB_CHAT_AGENT: string | undefined = ${agentName === undefined ? "undefined" : JSON.stringify(agentName)};\n`,
@@ -248,8 +238,12 @@ export default withEve(nextConfig);
     await configurePeerServiceScripts(project.environmentRoot, deps);
     startScript = "dev:all";
   } else {
-    await deps.writeTextFile(nextConfigPath, NEXT_HOSTED_CONFIG, { force: true });
-    startScript = "dev:web";
+    await deps.writeTextFile(
+      nextConfigPath,
+      plan.rootWebChat ? registryNextConfig : NEXT_HOSTED_CONFIG,
+      { force: true },
+    );
+    startScript = plan.rootWebChat ? "dev" : "dev:web";
   }
   if (plan.authProject !== undefined && writeAuth !== undefined) {
     await deps.provisionWebChatAuth(plan.authProject, context.signal);

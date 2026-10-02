@@ -23,9 +23,10 @@ async function readOptional(path: string): Promise<string | undefined> {
 export async function prepareWebAuthScaffold(input: {
   environmentRoot: string;
   agentAppRoot: string;
+  webRoot?: string;
   force?: boolean;
 }): Promise<() => Promise<void>> {
-  const webRoot = join(input.environmentRoot, "apps", "web");
+  const webRoot = input.webRoot ?? join(input.environmentRoot, "apps", "web");
   const channelPath = join(input.agentAppRoot, "agent", "channels", "eve.ts");
   const authPath = relative(dirname(channelPath), join(webRoot, "lib", "auth.js"))
     .split(sep)
