@@ -1,6 +1,6 @@
 import type { ModelMessage } from "ai";
 
-import type { ApprovalEventCoordinates } from "#harness/approval-candidates.js";
+import { APPROVAL_STATE_KEY, type ApprovalEventCoordinates } from "#harness/approval-candidates.js";
 import { PENDING_AUTHORIZATION_KEY } from "#harness/authorization.js";
 import { withdrawHeldSignIns } from "#harness/held-requests.js";
 import { cancelledApprovalResults } from "#harness/hitl/approval-input-requests.js";
@@ -21,7 +21,11 @@ import type { InputRequest } from "#shared/input.js";
  * between computing a transition and committing it adopts only these, so the
  * machine never overwrites state it does not decide.
  */
-const HITL_STATE_KEYS = [OPEN_INPUT_REQUESTS_KEY, PENDING_AUTHORIZATION_KEY] as const;
+const HITL_STATE_KEYS = [
+  APPROVAL_STATE_KEY,
+  OPEN_INPUT_REQUESTS_KEY,
+  PENDING_AUTHORIZATION_KEY,
+] as const;
 
 const CANCELLED_REASON = "Cancelled.";
 const STEERED_REASON = "Cancelled because a new message arrived.";

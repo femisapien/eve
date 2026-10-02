@@ -5,16 +5,13 @@ import {
   createApprovalCandidate,
   expireApprovalCandidates,
   finishApprovalCandidate,
+  getApprovalAuditState,
   markApprovalCandidateAuthorizationRequired,
-  readApprovalCandidates,
-  readSettledApprovals,
+  reportApprovalProgress,
   settleAllowedCandidate,
   settleDirectApprovalResponse,
 } from "#harness/approval-candidates.js";
-import { openTurnInputRequest } from "#harness/open-input-requests.js";
 import type { SessionStateMap } from "#harness/types.js";
-
-const at = { sequence: 3, stepIndex: 1, turnId: "turn-1" };
 
 function responder(principalId: string): SessionAuthContext {
   return {
@@ -26,22 +23,6 @@ function responder(principalId: string): SessionAuthContext {
   };
 }
 
-function openApprovals(...requestIds: string[]): SessionStateMap | undefined {
-  let session: { readonly state?: SessionStateMap } = {};
-  for (const requestId of requestIds) {
-    session = openTurnInputRequest(session, {
-      event: at,
-      request: {
-        action: { callId: `call-${requestId}`, input: {}, kind: "tool-call", toolName: "gate" },
-        kind: "tool-approval",
-        prompt: "Approve tool call: gate",
-        requestId,
-      },
-    });
-  }
-  return session.state;
-}
-
 function create(input: {
   readonly candidateId: string;
   readonly principalId: string;
@@ -49,30 +30,22 @@ function create(input: {
   readonly state?: SessionStateMap;
 }) {
   return createApprovalCandidate({
-    at,
     candidateIdPrefix: input.candidateId,
     createdAt: 100,
     decision: "approve",
     expiresAt: 700,
     requestId: input.requestId ?? "request-1",
     responder: responder(input.principalId),
-    state: input.state ?? openApprovals("request-1", "request-2"),
+    state: input.state,
   });
 }
 
-function candidateEvent(candidateId: string, outcome: string, data: object = {}) {
-  return {
-    data: expect.objectContaining({ ...data, candidateId, outcome }),
-    type: "approval.candidate",
-  };
-}
-
 describe("approval candidate state", () => {
-  it("keeps the complete responder on the approval while a candidate is active", () => {
+  it("persists the complete responder while a candidate is active", () => {
     const transition = create({ candidateId: "candidate-1", principalId: "U1" });
 
     expect(transition.changed).toBe(true);
-    expect(readApprovalCandidates(transition.state)).toEqual([
+    expect(getApprovalAuditState(transition.state).activeCandidates).toEqual([
       {
         candidateId: "candidate-1",
         createdAt: 100,
@@ -89,18 +62,6 @@ describe("approval candidate state", () => {
         status: "pending",
       },
     ]);
-    expect(transition.events).toEqual([
-      {
-        data: {
-          candidateId: "candidate-1",
-          outcome: "pending",
-          requestId: "request-1",
-          responderPrincipalId: "U1",
-          ...at,
-        },
-        type: "approval.candidate",
-      },
-    ]);
   });
 
   it("silently deduplicates one responder's active candidate", () => {
@@ -112,7 +73,6 @@ describe("approval candidate state", () => {
     });
 
     expect(duplicate.changed).toBe(false);
-    expect(duplicate.events).toEqual([]);
     expect(duplicate.state).toBe(first.state);
   });
 
@@ -136,14 +96,7 @@ describe("approval candidate state", () => {
     });
 
     expect(second.changed).toBe(true);
-    expect(readApprovalCandidates(second.state)).toHaveLength(2);
-  });
-
-  it("ignores a response for a request that is no longer open", () => {
-    const state = openApprovals("request-2");
-    const transition = create({ candidateId: "candidate-1", principalId: "U1", state });
-
-    expect(transition).toEqual({ changed: false, events: [], state });
+    expect(getApprovalAuditState(second.state).activeCandidates).toHaveLength(2);
   });
 
   it("tracks authorization-required state and provider expiry", () => {
@@ -155,17 +108,34 @@ describe("approval candidate state", () => {
       state: first.state,
     });
 
-    expect(readApprovalCandidates(state)[0]).toMatchObject({
+    expect(getApprovalAuditState(state).activeCandidates[0]).toMatchObject({
       expiresAt: 500,
       status: "authorization-required",
     });
   });
 
-  it("reports safe rejection feedback and permits a later retry under a fresh id", () => {
+  it("projects the responder to narrow identity in terminal history", () => {
+    const first = create({ candidateId: "candidate-1", principalId: "U1" });
+    const state = finishApprovalCandidate({
+      candidateId: "candidate-1",
+      completedAt: 200,
+      state: first.state,
+      status: "rejected",
+    });
+
+    expect(getApprovalAuditState(state).candidateHistory[0]?.responder).toEqual({
+      authenticator: "slack-webhook",
+      issuer: "slack:T1",
+      principalId: "U1",
+      principalType: "user",
+    });
+  });
+
+  it("persists safe rejection feedback and permits a later retry", () => {
     const first = create({ candidateId: "candidate-1", principalId: "U1" });
     const rejected = finishApprovalCandidate({
-      at,
       candidateId: "candidate-1",
+      completedAt: 200,
       reason: "GitHub write permission is required.",
       state: first.state,
       status: "rejected",
@@ -173,24 +143,22 @@ describe("approval candidate state", () => {
     const retry = create({
       candidateId: "candidate-1",
       principalId: "U1",
-      state: rejected.state,
+      state: rejected,
     });
 
-    expect(rejected.events).toEqual([
-      candidateEvent("candidate-1", "rejected", {
+    expect(getApprovalAuditState(retry.state).candidateHistory).toEqual([
+      expect.objectContaining({
+        candidateId: "candidate-1",
         reason: "GitHub write permission is required.",
+        status: "rejected",
       }),
     ]);
     expect(retry.changed).toBe(true);
-    expect(readApprovalCandidates(retry.state).map((candidate) => candidate.candidateId)).toEqual([
-      "candidate-1.1",
-    ]);
   });
 
   it("expires stale candidates intrinsically before creating another candidate", () => {
     const first = create({ candidateId: "candidate-1", principalId: "U1" });
     const next = createApprovalCandidate({
-      at,
       candidateIdPrefix: "candidate-2",
       createdAt: 800,
       decision: "approve",
@@ -200,19 +168,17 @@ describe("approval candidate state", () => {
       state: first.state,
     });
 
-    expect(readApprovalCandidates(next.state)).toEqual([
-      expect.objectContaining({ candidateId: "candidate-2.1" }),
-    ]);
-    expect(next.events).toEqual([
-      candidateEvent("candidate-1", "timed-out"),
-      candidateEvent("candidate-2.1", "pending"),
-    ]);
+    expect(getApprovalAuditState(next.state)).toMatchObject({
+      activeCandidates: [expect.objectContaining({ candidateId: "candidate-2" })],
+      candidateHistory: [
+        expect.objectContaining({ candidateId: "candidate-1", status: "timed-out" }),
+      ],
+    });
   });
 
   it("expires only candidates whose deadline has passed", () => {
     const first = create({ candidateId: "candidate-1", principalId: "U1" });
     const second = createApprovalCandidate({
-      at,
       candidateIdPrefix: "candidate-2",
       createdAt: 100,
       decision: "approve",
@@ -221,12 +187,15 @@ describe("approval candidate state", () => {
       responder: responder("U2"),
       state: first.state,
     });
-    const expired = expireApprovalCandidates({ at, now: 800, state: second.state });
+    const state = expireApprovalCandidates({ now: 800, state: second.state });
+    const audit = getApprovalAuditState(state);
 
-    expect(readApprovalCandidates(expired.state).map((candidate) => candidate.candidateId)).toEqual(
-      ["candidate-2.1"],
-    );
-    expect(expired.events).toEqual([candidateEvent("candidate-1", "timed-out")]);
+    expect(audit.activeCandidates.map((candidate) => candidate.candidateId)).toEqual([
+      "candidate-2",
+    ]);
+    expect(audit.candidateHistory).toEqual([
+      expect.objectContaining({ candidateId: "candidate-1", status: "timed-out" }),
+    ]);
   });
 
   it("atomically settles the first allowed candidate and stales competitors", () => {
@@ -237,67 +206,50 @@ describe("approval candidate state", () => {
       state: first.state,
     });
     const winner = settleAllowedCandidate({
-      at,
-      candidateId: "candidate-2.1",
+      candidateId: "candidate-2",
       settledAt: 300,
       state: second.state,
     });
     const late = settleAllowedCandidate({
-      at,
       candidateId: "candidate-1",
       settledAt: 400,
       state: winner.state,
     });
+    const audit = getApprovalAuditState(late.state);
 
     expect(winner.changed).toBe(true);
-    expect(winner.events).toEqual([
-      candidateEvent("candidate-1", "stale"),
-      {
-        data: {
-          outcome: "approved",
-          requestId: "request-1",
-          responderPrincipalId: "U2",
-          ...at,
-        },
-        type: "approval.settled",
-      },
-    ]);
-    expect(late).toEqual({ changed: false, events: [], state: winner.state });
-    expect(readApprovalCandidates(late.state)).toEqual([]);
-    expect(readSettledApprovals(late.state)).toEqual([
-      { decision: "approve", requestId: "request-1" },
-    ]);
+    expect(late.changed).toBe(false);
+    expect(audit.activeCandidates).toEqual([]);
+    expect(audit.candidateHistory).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ candidateId: "candidate-1", status: "stale" }),
+        expect.objectContaining({ candidateId: "candidate-2", status: "allowed" }),
+      ]),
+    );
   });
 
   it("lets Cancel win atomically and stales every Allow candidate", () => {
     const first = create({ candidateId: "candidate-1", principalId: "U1" });
     const cancelled = settleDirectApprovalResponse({
       actor: responder("U2"),
-      at,
-      decision: "cancel",
+      outcome: "cancelled",
       requestId: "request-1",
       settledAt: 250,
       state: first.state,
     });
     const late = settleAllowedCandidate({
-      at,
       candidateId: "candidate-1",
       settledAt: 300,
       state: cancelled.state,
     });
 
     expect(cancelled.changed).toBe(true);
-    expect(cancelled.events.map((event) => event.type)).toEqual([
-      "approval.candidate",
-      "approval.settled",
-    ]);
     expect(late.changed).toBe(false);
   });
 
   it("does not let a candidate start after terminal settlement", () => {
     const first = create({ candidateId: "candidate-1", principalId: "U1" });
     const settled = settleAllowedCandidate({
-      at,
       candidateId: "candidate-1",
       settledAt: 300,
       state: first.state,
@@ -309,7 +261,6 @@ describe("approval candidate state", () => {
     });
 
     expect(late.changed).toBe(false);
-    expect(late.events).toEqual([]);
   });
 
   it("keeps unrelated requests active when another request settles", () => {
@@ -321,14 +272,54 @@ describe("approval candidate state", () => {
       state: first.state,
     });
     const settled = settleAllowedCandidate({
-      at,
       candidateId: "candidate-1",
       settledAt: 300,
       state: unrelated.state,
     });
 
-    expect(readApprovalCandidates(settled.state)).toEqual([
+    expect(getApprovalAuditState(settled.state).activeCandidates).toEqual([
       expect.objectContaining({ candidateId: "candidate-2", requestId: "request-2" }),
     ]);
+  });
+
+  it("reads a candidate persisted without a decision as an Approve", () => {
+    const { decision: _decision, ...persisted } = getApprovalAuditState(
+      create({ candidateId: "candidate-1", principalId: "U1" }).state,
+    ).activeCandidates[0]!;
+    const state: SessionStateMap = {
+      "eve.runtime.hitl.approvalState": {
+        activeCandidates: { "candidate-1": persisted },
+        candidateHistory: [],
+        nextCandidateSequence: 1,
+        settlements: {},
+      },
+    };
+
+    expect(getApprovalAuditState(state).activeCandidates[0]?.decision).toBe("approve");
+    const settled = settleAllowedCandidate({ candidateId: "candidate-1", settledAt: 200, state });
+    expect(getApprovalAuditState(settled.state).settlements[0]?.outcome).toBe("allowed");
+  });
+
+  it("reports each candidate and settlement to the stream once", () => {
+    const at = { sequence: 2, stepIndex: 1, turnId: "turn-1" };
+    const first = create({ candidateId: "candidate-1", principalId: "U1" });
+    const second = create({ candidateId: "candidate-2", principalId: "U2", state: first.state });
+    const started = reportApprovalProgress(second.state, { at, challenges: [] });
+    const settled = settleAllowedCandidate({
+      candidateId: "candidate-2",
+      settledAt: 300,
+      state: started.state,
+    });
+    const finished = reportApprovalProgress(settled.state, { at, challenges: [] });
+
+    const summary = (events: typeof started.events) =>
+      events.map((event) =>
+        event.type === "approval.candidate"
+          ? `${event.data.candidateId}:${event.data.outcome}`
+          : event.type,
+      );
+    expect(summary(started.events)).toEqual(["candidate-1:pending", "candidate-2:pending"]);
+    expect(summary(finished.events)).toEqual(["candidate-1:stale", "approval.settled"]);
+    expect(reportApprovalProgress(finished.state, { at, challenges: [] }).events).toEqual([]);
   });
 });

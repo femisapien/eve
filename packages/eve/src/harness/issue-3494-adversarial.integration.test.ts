@@ -4,8 +4,8 @@ import { MockLanguageModelV4 } from "ai/test";
 import { afterAll, expect, it, vi } from "vitest";
 import type { ApprovalResponsePolicy } from "#approval/definition.js";
 import {
+  getApprovalAuditState,
   markApprovalCandidateAuthorizationRequired,
-  readApprovalCandidates,
 } from "#harness/approval-candidates.js";
 import { setPendingAuthorization } from "#harness/authorization.js";
 import { z } from "zod";
@@ -512,12 +512,7 @@ it.each(["rejected", "failed", "timed-out"] as const)(
     expect(refused.held).toEqual({ kind: "request" });
     expect(events.at(-1)).toMatchObject({ data: { on: "input" }, type: "turn.waiting" });
     expect(events.some((event) => event.type === "turn.started")).toBe(false);
-    expect(events).toContainEqual(
-      expect.objectContaining({
-        data: expect.objectContaining({ outcome }),
-        type: "approval.candidate",
-      }),
-    );
+    expect(getApprovalAuditState(f.session.state).candidateHistory.at(-1)?.status).toBe(outcome);
     expect(f.pending()).toHaveLength(1);
     expect(f.executions).toEqual([]);
 
@@ -547,7 +542,7 @@ it("keeps the turn held while a responder signs in, and fails the sign-in on exp
       },
     })),
   });
-  const candidate = readApprovalCandidates(f.session.state)[0]!;
+  const candidate = getApprovalAuditState(f.session.state).activeCandidates[0]!;
   const challenges = [
     {
       candidateId: candidate.candidateId,
@@ -601,7 +596,7 @@ it("announces a candidate's sign-in with the attempt its completion will name", 
       },
     })),
   });
-  const candidate = readApprovalCandidates(f.session.state)[0]!;
+  const candidate = getApprovalAuditState(f.session.state).activeCandidates[0]!;
   f.updateSession((session) => ({
     ...session,
     state: markApprovalCandidateAuthorizationRequired({

@@ -729,6 +729,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       }
       for (const event of coordinated.events) await emit(event);
     }
+    if (coordinated.kind === "park") return { next: null, session };
     if (coordinated.kind === "continue-coordination") {
       const continuedSession =
         coordinated.stepInput === undefined

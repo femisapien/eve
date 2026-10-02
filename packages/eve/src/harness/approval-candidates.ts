@@ -1,24 +1,71 @@
 import type { SessionAuthContext } from "#channel/types.js";
+import { authorizationEventFields } from "#harness/authorization-event-fields.js";
 import type { AuthorizationChallenge } from "#harness/authorization.js";
 import type { HarnessEmissionState } from "#harness/emission-state.js";
-import {
-  readTurnInputRequests,
-  replaceTurnInputRequest,
-  type TurnInputRequest,
-} from "#harness/open-input-requests.js";
 import type { SessionStateMap } from "#harness/types.js";
 import {
   createApprovalCandidateEvent,
   createApprovalSettledEvent,
-  type ApprovalCandidateOutcome,
+  createAuthorizationCompletedEvent,
   type ApprovalCandidateStreamEvent,
   type ApprovalSettledStreamEvent,
+  type AuthorizationCompletedStreamEvent,
 } from "#protocol/message.js";
+
+export const APPROVAL_STATE_KEY = "eve.runtime.hitl.approvalState";
+
+/** Where responder progress events sit in the stream. */
+export type ApprovalEventCoordinates = Pick<
+  HarnessEmissionState,
+  "sequence" | "stepIndex" | "turnId"
+>;
+
+export type ApprovalProgressEvent =
+  | ApprovalCandidateStreamEvent
+  | ApprovalSettledStreamEvent
+  | AuthorizationCompletedStreamEvent;
+
+type ApprovalCandidateStatus =
+  | "pending"
+  | "authorization-required"
+  | "allowed"
+  | "rejected"
+  | "failed"
+  | "timed-out"
+  | "stale";
 
 /** What a responder submitted: a candidate settles its request this way once allowed. */
 export type ApprovalCandidateDecision = "approve" | "cancel";
 
-/** One responder's answer to a tool approval, held while its response policy checks it. */
+interface ApprovalCandidateAuditRecord {
+  readonly candidateId: string;
+  readonly decision: ApprovalCandidateDecision;
+  readonly requestId: string;
+  readonly responder: ApprovalResponderIdentity;
+  readonly status: ApprovalCandidateStatus;
+  readonly createdAt: number;
+  readonly completedAt?: number;
+  readonly eventEmitted?: boolean;
+  readonly expiresAt?: number;
+  readonly reason?: string;
+}
+
+export interface ApprovalResponderIdentity {
+  readonly authenticator: string;
+  readonly issuer?: string;
+  readonly principalId: string;
+  readonly principalType: string;
+}
+
+export interface ApprovalSettlementAuditRecord {
+  readonly actor: ApprovalResponderIdentity;
+  readonly outcome: "allowed" | "cancelled";
+  readonly requestId: string;
+  readonly settledAt: number;
+  readonly candidateId?: string;
+  readonly eventEmitted?: boolean;
+}
+
 export interface ActiveApprovalCandidate {
   readonly candidateId: string;
   readonly decision: ApprovalCandidateDecision;
@@ -28,55 +75,23 @@ export interface ActiveApprovalCandidate {
   readonly createdAt: number;
   readonly expiresAt: number;
   readonly authorizationChallenges?: readonly AuthorizationChallenge[];
+  readonly pendingEventEmitted?: boolean;
 }
 
-/** The stream events a candidate transition reports; its caller emits them at once. */
-export type ApprovalCandidateEvent = ApprovalCandidateStreamEvent | ApprovalSettledStreamEvent;
+interface DurableApprovalState {
+  readonly activeCandidates: Readonly<Record<string, ActiveApprovalCandidate>>;
+  readonly nextCandidateSequence: number;
+  readonly candidateHistory: readonly ApprovalCandidateAuditRecord[];
+  readonly settlements: Readonly<Record<string, ApprovalSettlementAuditRecord>>;
+}
 
-/** Where a transition's events sit in the stream. */
-export type ApprovalEventCoordinates = Pick<
-  HarnessEmissionState,
-  "sequence" | "stepIndex" | "turnId"
->;
-
-interface ApprovalCandidateTransition {
+interface ApprovalStateTransition {
   readonly changed: boolean;
-  readonly events: readonly ApprovalCandidateEvent[];
   readonly state: SessionStateMap | undefined;
 }
 
-/** Every candidate still being checked, across the open approvals. */
-export function readApprovalCandidates(
-  state: SessionStateMap | undefined,
-): readonly ActiveApprovalCandidate[] {
-  return [...readTurnInputRequests(state).values()].flatMap((entry) =>
-    Object.values(entry.candidates ?? {}),
-  );
-}
-
-/** Returns one active candidate by id. */
-export function getActiveApprovalCandidate(
-  state: SessionStateMap | undefined,
-  candidateId: string,
-): ActiveApprovalCandidate | undefined {
-  return readApprovalCandidates(state).find((candidate) => candidate.candidateId === candidateId);
-}
-
-/** The open approvals already settled, with the decision that settled each. */
-export function readSettledApprovals(state: SessionStateMap | undefined): readonly {
-  readonly decision: ApprovalCandidateDecision;
-  readonly requestId: string;
-}[] {
-  return [...readTurnInputRequests(state).values()].flatMap((entry) =>
-    entry.settled === undefined
-      ? []
-      : [{ decision: entry.settled, requestId: entry.request.requestId }],
-  );
-}
-
-/** Creates or deduplicates one responder's candidate decision for an open approval. */
+/** Creates or deduplicates one responder's candidate decision for a pending request. */
 export function createApprovalCandidate(input: {
-  readonly at: ApprovalEventCoordinates;
   readonly candidateIdPrefix: string;
   readonly createdAt: number;
   readonly decision: ApprovalCandidateDecision;
@@ -84,51 +99,55 @@ export function createApprovalCandidate(input: {
   readonly requestId: string;
   readonly responder: SessionAuthContext;
   readonly state: SessionStateMap | undefined;
-}): ApprovalCandidateTransition {
-  const expired = expireApprovalCandidates({
-    at: input.at,
-    now: input.createdAt,
-    state: input.state,
-  });
-  const entry = readTurnInputRequests(expired.state).get(input.requestId);
-  const candidates = entry?.candidates ?? {};
-  if (
-    entry === undefined ||
-    entry.settled !== undefined ||
-    Object.values(candidates).some(
-      (candidate) =>
-        candidate.decision === input.decision &&
-        sameResponder(candidate.responder, input.responder),
-    )
-  ) {
-    return { ...expired, changed: false };
+}): ApprovalStateTransition {
+  const expiredState = expireApprovalCandidates({ now: input.createdAt, state: input.state });
+  const approvalState = readApprovalState(expiredState);
+  const settlement = approvalState.settlements[input.requestId];
+  if (settlement !== undefined) {
+    return { changed: false, state: expiredState };
   }
 
-  // Only the approval's first candidate goes unnumbered, so a responder's
-  // retry never reuses the id of a candidate that already finished.
-  const sequence = entry.candidateSequence ?? 0;
-  const candidateId =
-    sequence === 0
-      ? input.candidateIdPrefix
-      : `${input.candidateIdPrefix}.${sequence.toString(36)}`;
+  const responder = input.responder;
+  const duplicate = Object.values(approvalState.activeCandidates).find(
+    (candidate) =>
+      candidate.requestId === input.requestId &&
+      candidate.decision === input.decision &&
+      sameResponder(candidate.responder, responder),
+  );
+  if (duplicate !== undefined) {
+    return { changed: false, state: expiredState };
+  }
+
+  const prefixWasUsed =
+    approvalState.activeCandidates[input.candidateIdPrefix] !== undefined ||
+    approvalState.candidateHistory.some(
+      (candidate) => candidate.candidateId === input.candidateIdPrefix,
+    );
+  const candidateId = prefixWasUsed
+    ? `${input.candidateIdPrefix}.${approvalState.nextCandidateSequence.toString(36)}`
+    : input.candidateIdPrefix;
+  if (
+    approvalState.activeCandidates[candidateId] !== undefined ||
+    approvalState.candidateHistory.some((candidate) => candidate.candidateId === candidateId)
+  ) {
+    throw new Error(`Approval candidate id collision: "${candidateId}".`);
+  }
+
   const candidate: ActiveApprovalCandidate = {
     candidateId,
     createdAt: input.createdAt,
     decision: input.decision,
     expiresAt: input.expiresAt,
     requestId: input.requestId,
-    responder: input.responder,
+    responder,
     status: "pending",
   };
-  return {
-    changed: true,
-    events: [...expired.events, candidateEvent(candidate, "pending", input.at)],
-    state: replaceTurnInputRequest(expired.state, {
-      ...entry,
-      candidateSequence: sequence + 1,
-      candidates: { ...candidates, [candidateId]: candidate },
-    }),
+  const next: DurableApprovalState = {
+    ...approvalState,
+    activeCandidates: { ...approvalState.activeCandidates, [candidate.candidateId]: candidate },
+    nextCandidateSequence: approvalState.nextCandidateSequence + 1,
   };
+  return { changed: true, state: writeApprovalState(expiredState, next) };
 }
 
 /** Marks a candidate as waiting on a private authorization challenge. */
@@ -138,187 +157,399 @@ export function markApprovalCandidateAuthorizationRequired(input: {
   readonly expiresAt?: number;
   readonly state: SessionStateMap | undefined;
 }): SessionStateMap | undefined {
-  const entry = entryWithCandidate(input.state, input.candidateId);
-  const candidate = entry?.candidates?.[input.candidateId];
-  if (entry === undefined || candidate === undefined) return input.state;
-  return replaceTurnInputRequest(input.state, {
-    ...entry,
-    candidates: {
-      ...entry.candidates,
-      [input.candidateId]: {
-        ...candidate,
-        authorizationChallenges: input.authorizationChallenges,
-        expiresAt: input.expiresAt ?? candidate.expiresAt,
-        status: "authorization-required",
-      },
-    },
+  const approvalState = readApprovalState(input.state);
+  const candidate = approvalState.activeCandidates[input.candidateId];
+  if (candidate === undefined) return input.state;
+  const nextCandidate: ActiveApprovalCandidate = {
+    ...candidate,
+    authorizationChallenges: input.authorizationChallenges,
+    expiresAt: input.expiresAt ?? candidate.expiresAt,
+    status: "authorization-required",
+  };
+  return writeApprovalState(input.state, {
+    ...approvalState,
+    activeCandidates: { ...approvalState.activeCandidates, [input.candidateId]: nextCandidate },
   });
 }
 
-/** Finishes one candidate without settling its approval. */
+/** Finishes one candidate without settling the shared request. */
 export function finishApprovalCandidate(input: {
-  readonly at: ApprovalEventCoordinates;
   readonly candidateId: string;
+  readonly completedAt: number;
   readonly reason?: string;
   readonly state: SessionStateMap | undefined;
-  readonly status: Exclude<ApprovalCandidateOutcome, "pending">;
-}): ApprovalCandidateTransition {
-  const entry = entryWithCandidate(input.state, input.candidateId);
-  const candidate = entry?.candidates?.[input.candidateId];
-  if (entry === undefined || candidate === undefined) {
-    return { changed: false, events: [], state: input.state };
-  }
-  const { [input.candidateId]: _finished, ...remaining } = entry.candidates ?? {};
-  return {
-    changed: true,
-    events: [candidateEvent(candidate, input.status, input.at, input.reason)],
-    state: replaceTurnInputRequest(input.state, withCandidates(entry, remaining)),
-  };
+  readonly status: Exclude<ApprovalCandidateStatus, "pending" | "authorization-required">;
+}): SessionStateMap | undefined {
+  const approvalState = readApprovalState(input.state);
+  const candidate = approvalState.activeCandidates[input.candidateId];
+  if (candidate === undefined) return input.state;
+  const activeCandidates = { ...approvalState.activeCandidates };
+  delete activeCandidates[input.candidateId];
+  return writeApprovalState(input.state, {
+    ...approvalState,
+    activeCandidates,
+    candidateHistory: [
+      ...approvalState.candidateHistory,
+      toCandidateAuditRecord({
+        candidate,
+        completedAt: input.completedAt,
+        reason: input.reason,
+        status: input.status,
+      }),
+    ],
+  });
 }
 
-/** Expires active candidates whose deadline has passed. */
+/** Expires active candidates whose deterministic deadline has passed. */
 export function expireApprovalCandidates(input: {
-  readonly at: ApprovalEventCoordinates;
   readonly now: number;
   readonly state: SessionStateMap | undefined;
-}): ApprovalCandidateTransition {
-  let changed = false;
-  const events: ApprovalCandidateEvent[] = [];
+}): SessionStateMap | undefined {
   let state = input.state;
-  for (const candidate of readApprovalCandidates(input.state)) {
+  const candidates = Object.values(readApprovalState(state).activeCandidates);
+  for (const candidate of candidates) {
     if (candidate.expiresAt > input.now) continue;
-    const finished = finishApprovalCandidate({
-      at: input.at,
+    state = finishApprovalCandidate({
       candidateId: candidate.candidateId,
+      completedAt: input.now,
       state,
       status: "timed-out",
     });
-    changed = true;
-    events.push(...finished.events);
-    state = finished.state;
   }
-  return { changed, events, state };
+  return state;
 }
 
 /**
- * Settles an approval with an allowed candidate's decision; every competing
- * candidate becomes stale. A candidate already gone changes nothing.
+ * Atomically settles a request with an allowed candidate's decision; every
+ * losing candidate becomes stale.
  */
 export function settleAllowedCandidate(input: {
-  readonly at: ApprovalEventCoordinates;
   readonly candidateId: string;
   readonly settledAt: number;
   readonly state: SessionStateMap | undefined;
-}): ApprovalCandidateTransition {
-  const expired = expireApprovalCandidates({
-    at: input.at,
-    now: input.settledAt,
-    state: input.state,
-  });
-  const candidate = getActiveApprovalCandidate(expired.state, input.candidateId);
-  if (candidate === undefined) return { ...expired, changed: false };
-  return settleRequest(expired, {
-    actor: candidate.responder,
-    at: input.at,
+}): ApprovalStateTransition {
+  const expiredState = expireApprovalCandidates({ now: input.settledAt, state: input.state });
+  const approvalState = readApprovalState(expiredState);
+  const candidate = approvalState.activeCandidates[input.candidateId];
+  if (candidate === undefined) {
+    const historical = approvalState.candidateHistory.find(
+      (entry) => entry.candidateId === input.candidateId,
+    );
+    const settlement = historical && approvalState.settlements[historical.requestId];
+    if (settlement !== undefined) {
+      return { changed: false, state: expiredState };
+    }
+    throw new Error(`Unknown approval candidate "${input.candidateId}".`);
+  }
+  return settleRequest({
+    actor: projectResponder(candidate.responder),
     candidateId: candidate.candidateId,
-    decision: candidate.decision,
+    outcome: candidate.decision === "cancel" ? "cancelled" : "allowed",
     requestId: candidate.requestId,
+    settledAt: input.settledAt,
+    state: expiredState,
   });
 }
 
-/** Settles an approval with a direct authenticated response. */
+/** Atomically settles a direct authenticated approval response. */
 export function settleDirectApprovalResponse(input: {
   readonly actor: SessionAuthContext;
-  readonly at: ApprovalEventCoordinates;
-  readonly decision: ApprovalCandidateDecision;
+  readonly outcome: "allowed" | "cancelled";
   readonly requestId: string;
   readonly settledAt: number;
   readonly state: SessionStateMap | undefined;
-}): ApprovalCandidateTransition {
-  const expired = expireApprovalCandidates({
-    at: input.at,
-    now: input.settledAt,
-    state: input.state,
+}): ApprovalStateTransition {
+  const state = expireApprovalCandidates({ now: input.settledAt, state: input.state });
+  return settleRequest({
+    actor: projectResponder(input.actor),
+    outcome: input.outcome,
+    requestId: input.requestId,
+    settledAt: input.settledAt,
+    state,
   });
-  return settleRequest(expired, input);
 }
 
-function settleRequest(
-  expired: ApprovalCandidateTransition,
-  input: {
-    readonly actor: SessionAuthContext;
-    readonly at: ApprovalEventCoordinates;
-    readonly candidateId?: string;
-    readonly decision: ApprovalCandidateDecision;
-    readonly requestId: string;
-  },
-): ApprovalCandidateTransition {
-  const entry = readTurnInputRequests(expired.state).get(input.requestId);
-  if (entry === undefined || entry.settled !== undefined) return { ...expired, changed: false };
-  const stale = Object.values(entry.candidates ?? {}).filter(
-    (candidate) => candidate.candidateId !== input.candidateId,
-  );
-  return {
-    changed: true,
-    events: [
-      ...expired.events,
-      ...stale.map((candidate) => candidateEvent(candidate, "stale", input.at)),
-      createApprovalSettledEvent({
-        outcome: input.decision === "approve" ? "approved" : "cancelled",
-        requestId: input.requestId,
-        responderPrincipalId: input.actor.principalId,
-        sequence: input.at.sequence,
-        stepIndex: input.at.stepIndex,
-        turnId: input.at.turnId,
-      }),
-    ],
-    state: replaceTurnInputRequest(expired.state, {
-      ...withCandidates(entry, {}),
-      settled: input.decision,
-    }),
-  };
-}
-
-function candidateEvent(
-  candidate: ActiveApprovalCandidate,
-  outcome: ApprovalCandidateOutcome,
-  at: ApprovalEventCoordinates,
-  reason?: string,
-): ApprovalCandidateStreamEvent {
-  const data = {
-    candidateId: candidate.candidateId,
-    outcome,
-    requestId: candidate.requestId,
-    responderPrincipalId: candidate.responder.principalId,
-    sequence: at.sequence,
-    stepIndex: at.stepIndex,
-    turnId: at.turnId,
-  };
-  return createApprovalCandidateEvent(outcome === "pending" ? data : { ...data, reason });
-}
-
-function entryWithCandidate(
+/** Returns one active candidate by id. */
+export function getActiveApprovalCandidate(
   state: SessionStateMap | undefined,
   candidateId: string,
-): TurnInputRequest | undefined {
-  return [...readTurnInputRequests(state).values()].find(
-    (entry) => entry.candidates?.[candidateId] !== undefined,
-  );
+): ActiveApprovalCandidate | undefined {
+  return readApprovalState(state).activeCandidates[candidateId];
 }
 
-function withCandidates(
-  entry: TurnInputRequest,
-  candidates: Readonly<Record<string, ActiveApprovalCandidate>>,
-): TurnInputRequest {
-  const { candidates: _previous, ...rest } = entry;
-  return Object.keys(candidates).length === 0 ? rest : { ...rest, candidates };
+/** Returns a copy of the durable candidate/audit state for inspection and replay. */
+export function getApprovalAuditState(state: SessionStateMap | undefined): {
+  readonly activeCandidates: readonly ActiveApprovalCandidate[];
+  readonly candidateHistory: readonly ApprovalCandidateAuditRecord[];
+  readonly settlements: readonly ApprovalSettlementAuditRecord[];
+} {
+  const approvalState = readApprovalState(state);
+  return {
+    activeCandidates: Object.values(approvalState.activeCandidates),
+    candidateHistory: approvalState.candidateHistory,
+    settlements: Object.values(approvalState.settlements),
+  };
 }
 
-function sameResponder(a: SessionAuthContext, b: SessionAuthContext): boolean {
+function settleRequest(input: {
+  readonly actor: ApprovalResponderIdentity;
+  readonly candidateId?: string;
+  readonly outcome: ApprovalSettlementAuditRecord["outcome"];
+  readonly requestId: string;
+  readonly settledAt: number;
+  readonly state: SessionStateMap | undefined;
+}): ApprovalStateTransition {
+  const approvalState = readApprovalState(input.state);
+  const existing = approvalState.settlements[input.requestId];
+  if (existing !== undefined) {
+    return { changed: false, state: input.state };
+  }
+
+  const settlement: ApprovalSettlementAuditRecord = {
+    actor: input.actor,
+    candidateId: input.candidateId,
+    outcome: input.outcome,
+    requestId: input.requestId,
+    settledAt: input.settledAt,
+  };
+  const activeCandidates: Record<string, ActiveApprovalCandidate> = {};
+  const candidateHistory = [...approvalState.candidateHistory];
+  for (const candidate of Object.values(approvalState.activeCandidates)) {
+    if (candidate.requestId !== input.requestId) {
+      activeCandidates[candidate.candidateId] = candidate;
+      continue;
+    }
+    candidateHistory.push(
+      toCandidateAuditRecord({
+        candidate,
+        completedAt: input.settledAt,
+        status: candidate.candidateId === input.candidateId ? "allowed" : "stale",
+      }),
+    );
+  }
+  const next: DurableApprovalState = {
+    activeCandidates,
+    candidateHistory,
+    nextCandidateSequence: approvalState.nextCandidateSequence,
+    settlements: { ...approvalState.settlements, [input.requestId]: settlement },
+  };
+  return { changed: true, state: writeApprovalState(input.state, next) };
+}
+
+function toCandidateAuditRecord(input: {
+  readonly candidate: ActiveApprovalCandidate;
+  readonly completedAt: number;
+  readonly reason?: string;
+  readonly status: Exclude<ApprovalCandidateStatus, "pending" | "authorization-required">;
+}): ApprovalCandidateAuditRecord {
+  const {
+    authorizationChallenges: _authorizationChallenges,
+    responder,
+    ...candidate
+  } = input.candidate;
+  return {
+    ...candidate,
+    completedAt: input.completedAt,
+    responder: projectResponder(responder),
+    reason: input.reason,
+    status: input.status,
+  };
+}
+
+function projectResponder(responder: SessionAuthContext): ApprovalResponderIdentity {
+  return {
+    authenticator: responder.authenticator,
+    issuer: responder.issuer,
+    principalId: responder.principalId,
+    principalType: responder.principalType,
+  };
+}
+
+function sameResponder(
+  a: Pick<SessionAuthContext, "authenticator" | "issuer" | "principalId" | "principalType">,
+  b: Pick<SessionAuthContext, "authenticator" | "issuer" | "principalId" | "principalType">,
+): boolean {
   return (
     a.authenticator === b.authenticator &&
     a.issuer === b.issuer &&
     a.principalId === b.principalId &&
     a.principalType === b.principalType
   );
+}
+
+/**
+ * A candidate is an Approve unless it records Cancel: candidates persisted
+ * before Cancel was authorized carry no decision, and their responder pressed
+ * Approve.
+ */
+function readActiveCandidates(
+  candidates: Readonly<Record<string, ActiveApprovalCandidate>>,
+): Readonly<Record<string, ActiveApprovalCandidate>> {
+  return Object.fromEntries(
+    Object.entries(candidates).map(([candidateId, candidate]) => [
+      candidateId,
+      { ...candidate, decision: candidate.decision === "cancel" ? "cancel" : "approve" },
+    ]),
+  );
+}
+
+function readApprovalState(state: SessionStateMap | undefined): DurableApprovalState {
+  const value = state?.[APPROVAL_STATE_KEY];
+  if (typeof value !== "object" || value === null) {
+    return {
+      activeCandidates: {},
+      candidateHistory: [],
+      nextCandidateSequence: 0,
+      settlements: {},
+    };
+  }
+  const candidate = value as Partial<DurableApprovalState>;
+  return {
+    activeCandidates:
+      typeof candidate.activeCandidates === "object" && candidate.activeCandidates !== null
+        ? readActiveCandidates(candidate.activeCandidates)
+        : {},
+    candidateHistory: Array.isArray(candidate.candidateHistory) ? candidate.candidateHistory : [],
+    nextCandidateSequence:
+      typeof candidate.nextCandidateSequence === "number" &&
+      Number.isSafeInteger(candidate.nextCandidateSequence) &&
+      candidate.nextCandidateSequence >= 0
+        ? candidate.nextCandidateSequence
+        : deriveNextCandidateSequence(candidate),
+    settlements:
+      typeof candidate.settlements === "object" && candidate.settlements !== null
+        ? candidate.settlements
+        : {},
+  };
+}
+
+function deriveNextCandidateSequence(state: Partial<DurableApprovalState>): number {
+  return (
+    Object.keys(state.activeCandidates ?? {}).length +
+    (Array.isArray(state.candidateHistory) ? state.candidateHistory.length : 0)
+  );
+}
+
+function writeApprovalState(
+  state: SessionStateMap | undefined,
+  approvalState: DurableApprovalState,
+): SessionStateMap {
+  return { ...state, [APPROVAL_STATE_KEY]: approvalState };
+}
+
+/**
+ * The held turn moved on, steered or cancelled: the responders still checking one of its
+ * approvals stop, their candidates stale.
+ */
+export function retireActiveCandidates(
+  state: SessionStateMap | undefined,
+  input: { readonly completedAt: number; readonly reason: string },
+): SessionStateMap | undefined {
+  let next = state;
+  for (const candidate of getApprovalAuditState(next).activeCandidates) {
+    next = finishApprovalCandidate({
+      candidateId: candidate.candidateId,
+      completedAt: input.completedAt,
+      reason: input.reason,
+      state: next,
+      status: "stale",
+    });
+  }
+  return next;
+}
+
+/**
+ * Responder progress the stream hasn't heard yet: the sign-in of a candidate that expired,
+ * candidates that started or finished, and approvals they settled, in that order. Each record
+ * is reported once; the audit marks it so a later pass doesn't report it again.
+ */
+export function reportApprovalProgress(
+  state: SessionStateMap | undefined,
+  input: {
+    readonly at: ApprovalEventCoordinates;
+    /** Responder sign-ins pending when the pass began. */
+    readonly challenges: readonly AuthorizationChallenge[];
+  },
+): {
+  readonly events: readonly ApprovalProgressEvent[];
+  readonly state: SessionStateMap | undefined;
+} {
+  const approvalState = readApprovalState(state);
+  const { at } = input;
+  const events: ApprovalProgressEvent[] = [];
+  for (const challenge of input.challenges) {
+    const expired = approvalState.candidateHistory.some(
+      (candidate) =>
+        candidate.candidateId === challenge.candidateId &&
+        candidate.status === "timed-out" &&
+        candidate.eventEmitted !== true,
+    );
+    if (!expired) continue;
+    events.push(
+      createAuthorizationCompletedEvent({
+        ...authorizationEventFields(challenge),
+        outcome: "failed",
+        reason: "The approval response expired. Please submit a new response.",
+        ...at,
+      }),
+    );
+  }
+  const activeCandidates = { ...approvalState.activeCandidates };
+  for (const candidate of Object.values(activeCandidates)) {
+    if (candidate.pendingEventEmitted === true) continue;
+    events.push(
+      createApprovalCandidateEvent({
+        candidateId: candidate.candidateId,
+        outcome: "pending",
+        requestId: candidate.requestId,
+        responderPrincipalId: candidate.responder.principalId,
+        ...at,
+      }),
+    );
+    activeCandidates[candidate.candidateId] = { ...candidate, pendingEventEmitted: true };
+  }
+  const candidateHistory = approvalState.candidateHistory.map((candidate) => {
+    if (candidate.eventEmitted === true) return candidate;
+    if (candidate.status !== "allowed" && candidate.status !== "authorization-required") {
+      events.push(
+        createApprovalCandidateEvent({
+          candidateId: candidate.candidateId,
+          outcome: candidate.status,
+          requestId: candidate.requestId,
+          responderPrincipalId: candidate.responder.principalId,
+          reason: candidate.reason,
+          ...at,
+        }),
+      );
+    }
+    return { ...candidate, eventEmitted: true };
+  });
+  const settlements = { ...approvalState.settlements };
+  for (const settlement of Object.values(settlements)) {
+    if (settlement.eventEmitted === true) continue;
+    events.push(
+      createApprovalSettledEvent({
+        outcome: settlement.outcome === "allowed" ? "approved" : "cancelled",
+        requestId: settlement.requestId,
+        responderPrincipalId: settlement.actor.principalId,
+        ...at,
+      }),
+    );
+    settlements[settlement.requestId] = { ...settlement, eventEmitted: true };
+  }
+  if (
+    events.length === 0 &&
+    candidateHistory.every((c, i) => c === approvalState.candidateHistory[i])
+  ) {
+    return { events, state };
+  }
+  return {
+    events,
+    state: writeApprovalState(state, {
+      ...approvalState,
+      activeCandidates,
+      candidateHistory,
+      settlements,
+    }),
+  };
 }

@@ -1,8 +1,8 @@
 import {
-  finishApprovalCandidate,
-  readApprovalCandidates,
-  type ApprovalCandidateEvent,
+  reportApprovalProgress,
+  retireActiveCandidates,
   type ApprovalEventCoordinates,
+  type ApprovalProgressEvent,
 } from "#harness/approval-candidates.js";
 import { authorizationEventFields } from "#harness/authorization-event-fields.js";
 import {
@@ -10,10 +10,7 @@ import {
   getPendingAuthorization,
   type AuthorizationChallenge,
 } from "#harness/authorization.js";
-import {
-  createAuthorizationCompletedEvent,
-  type AuthorizationCompletedStreamEvent,
-} from "#protocol/message.js";
+import { createAuthorizationCompletedEvent } from "#protocol/message.js";
 
 /**
  * Ends the sign-ins a held turn waits on when the person moves on, by steering
@@ -27,33 +24,25 @@ export function withdrawHeldSignIns(
   state: Record<string, unknown> | undefined,
   input: { readonly emissionState: ApprovalEventCoordinates; readonly reason: string },
 ): {
-  readonly events: readonly (AuthorizationCompletedStreamEvent | ApprovalCandidateEvent)[];
+  readonly events: readonly ApprovalProgressEvent[];
   readonly state: Record<string, unknown> | undefined;
   readonly withdrawn: readonly AuthorizationChallenge[];
 } {
   const withdrawn = getPendingAuthorization(state)?.challenges ?? [];
-  const events: (AuthorizationCompletedStreamEvent | ApprovalCandidateEvent)[] = withdrawn.map(
-    (challenge) =>
-      createAuthorizationCompletedEvent({
-        ...authorizationEventFields(challenge),
-        outcome: "declined",
-        reason: input.reason,
-        sequence: input.emissionState.sequence,
-        stepIndex: input.emissionState.stepIndex,
-        turnId: input.emissionState.turnId,
-      }),
-  );
-  let next = withdrawn.length === 0 ? state : clearPendingAuthorization(state);
-  for (const candidate of readApprovalCandidates(next)) {
-    const finished = finishApprovalCandidate({
-      at: input.emissionState,
-      candidateId: candidate.candidateId,
+  const declined = withdrawn.map((challenge) =>
+    createAuthorizationCompletedEvent({
+      ...authorizationEventFields(challenge),
+      outcome: "declined",
       reason: input.reason,
-      state: next,
-      status: "stale",
-    });
-    events.push(...finished.events);
-    next = finished.state;
-  }
-  return { events, state: next, withdrawn };
+      sequence: input.emissionState.sequence,
+      stepIndex: input.emissionState.stepIndex,
+      turnId: input.emissionState.turnId,
+    }),
+  );
+  const retired = retireActiveCandidates(
+    withdrawn.length === 0 ? state : clearPendingAuthorization(state),
+    { completedAt: Date.now(), reason: input.reason },
+  );
+  const reported = reportApprovalProgress(retired, { at: input.emissionState, challenges: [] });
+  return { events: [...declined, ...reported.events], state: reported.state, withdrawn };
 }
