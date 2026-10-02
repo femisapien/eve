@@ -53,6 +53,11 @@ pnpm --filter eve exec vitest run --config vitest.unit.config.ts channel-conform
 | completing a sign-in tells the person it succeeded | ✅ | ✅ | ✅ | ✅ | ✅ | ❌<sup>[15](#note-15)</sup> | ❌<sup>[15](#note-15)</sup> | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌<sup>[15](#note-15)</sup> | ✅ | ✅ | ✅ |
 | message after ignored sign-in gets an answer, signing in late doesn't run | ✅ | ✅ | ✅ | ✅ | ✅ | —<sup>[2](#note-2)</sup> | —<sup>[2](#note-2)</sup> | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | message after ignored sign-in tells user it was cancelled | ✅ | ✅ | ✅ | ✅ | ✅ | —<sup>[2](#note-2)</sup> | —<sup>[2](#note-2)</sup> | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌<sup>[15](#note-15)</sup> | ✅ | ✅ | ✅ |
+| the requester pressing Approve on a requester-only approval runs the tool | ✅ | ✅ | ✅ |  | —<sup>[1](#note-1)</sup> | ❌<sup>[20](#note-20)</sup> |  | —<sup>[1](#note-1)</sup> |  | ✅ |  | ✅ |  | ✅ |  | —<sup>[1](#note-1)</sup> | —<sup>[1](#note-1)</sup> | —<sup>[1](#note-1)</sup> | —<sup>[1](#note-1)</sup> |
+| another person pressing Approve on a requester-only approval leaves it pending | —<sup>[21](#note-21)</sup> | —<sup>[21](#note-21)</sup> | ✅ |  | —<sup>[22](#note-22)</sup> | ❌<sup>[20](#note-20)</sup> |  | —<sup>[22](#note-22)</sup> |  | ✅ |  | ✅ |  | ✅ |  | —<sup>[22](#note-22)</sup> | —<sup>[22](#note-22)</sup> | —<sup>[22](#note-22)</sup> | —<sup>[22](#note-22)</sup> |
+| another person pressing Cancel on a requester-only approval leaves it pending | —<sup>[21](#note-21)</sup> | —<sup>[21](#note-21)</sup> | ✅ |  | —<sup>[22](#note-22)</sup> | ❌<sup>[20](#note-20)</sup> |  | —<sup>[22](#note-22)</sup> |  | ✅ |  | ✅ |  | ✅ |  | —<sup>[22](#note-22)</sup> | —<sup>[22](#note-22)</sup> | —<sup>[22](#note-22)</sup> | —<sup>[22](#note-22)</sup> |
+| another person's rejected press leaves the approval's buttons in place | —<sup>[21](#note-21)</sup> | —<sup>[21](#note-21)</sup> | ✅ |  | —<sup>[22](#note-22)</sup> | ✅ |  | —<sup>[22](#note-22)</sup> |  | ✅ |  | ✅ |  | ✅ |  | —<sup>[22](#note-22)</sup> | —<sup>[22](#note-22)</sup> | —<sup>[22](#note-22)</sup> | —<sup>[22](#note-22)</sup> |
+| another person pressing Approve runs a tool with no response policy | —<sup>[21](#note-21)</sup> | —<sup>[21](#note-21)</sup> | ✅ |  | —<sup>[22](#note-22)</sup> | ✅ |  | —<sup>[22](#note-22)</sup> |  | ✅ |  | ✅ |  | ✅ |  | —<sup>[22](#note-22)</sup> | —<sup>[22](#note-22)</sup> | —<sup>[22](#note-22)</sup> | —<sup>[22](#note-22)</sup> |
 
 ## Notes
 
@@ -75,3 +80,6 @@ pnpm --filter eve exec vitest run --config vitest.unit.config.ts channel-conform
 17. <a id="note-17"></a>the rule applies only where the conversation is public or shared, and this one is private
 18. <a id="note-18"></a>the sign-in prompt, link included, is posted to the whole thread
 19. <a id="note-19"></a>the code is in the elicitation body the whole issue sees; who sees the auth signal's link is unverified
+20. <a id="note-20"></a>a button press responds with `auth: null`, so no one can satisfy a response policy
+21. <a id="note-21"></a>the platform has no second person who can act
+22. <a id="note-22"></a>the platform has no second person who can act or buttons a person can press
