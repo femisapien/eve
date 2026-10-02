@@ -1,10 +1,21 @@
-import type { ModelMessage } from "ai";
+import type { ModelMessage, UserContent } from "ai";
 
 import type { SessionAuthContext } from "#channel/types.js";
 import type { AuthorizationChallenge } from "#harness/authorization.js";
 import type { SessionStateMap, StepInput } from "#harness/types.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
+
+import {
+  answerApprovals,
+  cancelApprovals,
+  grantedApprovalKeys,
+  openApprovals,
+  receiveMessage,
+  settleCalls,
+  type OpenApproval,
+} from "./approvals.js";
+import { staleAnswersAsText } from "./stale-answers.js";
 
 /**
  * Everything a turn waits on from a person: tool approvals, sign-ins, the
@@ -45,9 +56,29 @@ export class HumanInput {
     return this.#apply(reduce(this.#state, intake));
   }
 
-  /** What the turn does now: run its next model step, or wait. */
+  /**
+   * What the turn does now: run its next model step, or wait. The model never
+   * runs while a request is open.
+   */
   next(): Next {
     return Object.keys(this.#state.requests).length === 0 ? { run: "model" } : { held: "input" };
+  }
+
+  /**
+   * The input a step runs with, once answers to requests that are no longer
+   * open become text the model reads. `displayMessage` is that input's message
+   * as the person sent it, for `message.received`.
+   */
+  acceptInput(input: StepInput | undefined): {
+    readonly input: StepInput | undefined;
+    readonly displayMessage?: string | UserContent;
+  } {
+    return staleAnswersAsText(input, this.openRequestIds());
+  }
+
+  /** The approval keys `once()` approvals granted, which approval policies read. */
+  grantedApprovalKeys(): ReadonlySet<string> {
+    return grantedApprovalKeys(this.#state);
   }
 
   #apply(reduced: Reduced): Transition {
@@ -75,6 +106,8 @@ export type Interrupt =
       readonly at: RequestAt;
       readonly requests: readonly InputRequest[];
       readonly requester: SessionAuthContext | null;
+      /** Each request's approval key (the tool's `approvalKey`), when its tool has one. */
+      readonly approvalKeys: Readonly<Record<string, string>>;
       /** Requests whose tool decides who may answer (`approval.response`). */
       readonly responsePolicyRequestIds: readonly string[];
     }
@@ -139,8 +172,17 @@ export type Intake =
 export type HumanInputEvent =
   | { readonly type: "publish"; readonly event: UnstampedMessageStreamEvent }
   | { readonly type: "history.appended"; readonly message: ModelMessage }
-  /** Run these approved calls with the asking step's tools; report `calls.settled`. */
-  | { readonly type: "calls.approved"; readonly requests: readonly InputRequest[] }
+  /**
+   * Run these approved calls with the tools of the step that asked, at its
+   * coordinates; report `calls.settled` with their results.
+   */
+  | {
+      readonly type: "calls.approved";
+      readonly at: RequestAt;
+      readonly requests: readonly InputRequest[];
+    }
+  /** The message answered open requests, so the turn doesn't read it as input. */
+  | { readonly type: "message.answered" }
   /** Run a response policy for this answer; report `responder.checked`. */
   | { readonly type: "responder.check"; readonly candidateId: string; readonly requestId: string }
   /** Deliver an answer to the child session or run that asked. */
@@ -185,13 +227,7 @@ interface HumanInputState {
 }
 
 type OpenRequest =
-  | {
-      readonly kind: "tool-approval";
-      readonly at: RequestAt;
-      readonly request: InputRequest;
-      readonly requester: SessionAuthContext | null;
-      readonly responsePolicy: boolean;
-    }
+  | OpenApproval
   | {
       readonly kind: "authorization";
       readonly at: RequestAt;
@@ -236,28 +272,34 @@ interface Reduced {
 
 function reduce(state: HumanInputState, input: Interrupt | Intake): Reduced {
   switch (input.type) {
+    case "approvals.requested":
+      // Response policies decide who may answer; they come back in a later change.
+      if (input.responsePolicyRequestIds.length > 0) {
+        return unavailable(
+          state,
+          "This turn needs an approval whose tool defines an `approval.response` policy, which eve cannot ask for yet.",
+        );
+      }
+      return openApprovals(state, input);
+    case "answered":
+      return answerApprovals(state, input.responses);
+    case "message":
+      return receiveMessage(state, input.text);
+    case "cancelled":
+      return cancelApprovals(state);
+    case "calls.settled":
+      return settleCalls(state, input.results);
     // Human input is being rebuilt case by case. Until a case exists, a turn
     // that needs a person fails with a clear error instead of hanging.
-    case "approvals.requested":
     case "authorization.required":
     case "budget.exceeded":
     case "relayed.requested":
-      return {
-        events: [
-          {
-            code: "HUMAN_INPUT_UNAVAILABLE",
-            message: `This turn needs a person (${input.type}), which eve cannot ask for yet.`,
-            type: "turn.failed",
-          },
-        ],
+      return unavailable(
         state,
-      };
-    case "answered":
-    case "message":
-    case "cancelled":
+        `This turn needs a person (${input.type}), which eve cannot ask for yet.`,
+      );
     case "authorization.completed":
     case "responder.checked":
-    case "calls.settled":
     case "time":
     case "run.ended":
       return { events: [], state };
@@ -266,4 +308,8 @@ function reduce(state: HumanInputState, input: Interrupt | Intake): Reduced {
       throw new TypeError(`Unhandled human input: ${JSON.stringify(unhandled)}`);
     }
   }
+}
+
+function unavailable(state: HumanInputState, message: string): Reduced {
+  return { events: [{ code: "HUMAN_INPUT_UNAVAILABLE", message, type: "turn.failed" }], state };
 }

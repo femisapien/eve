@@ -1,3 +1,5 @@
+import type { ModelMessage } from "ai";
+
 import type { HumanInputEvent } from "#harness/human-input/index.js";
 import type { HandleEventFn } from "#harness/types.js";
 
@@ -9,18 +11,22 @@ export type HumanInputEnding =
 /**
  * Applies what human input reported to a session step outside the harness:
  * a cancel, or a request a workflow run relays. Each event has one meaning
- * here. Returns how the turn ended, when an event ended it; the session
- * workflow carries that out once the step commits.
+ * here. Returns how the turn ended, when an event ended it, which the session
+ * workflow carries out once the step commits, and the messages history gains.
  */
 export async function applyHumanInputEvents(
   emit: HandleEventFn,
   events: readonly HumanInputEvent[],
-): Promise<HumanInputEnding | undefined> {
+): Promise<{ readonly ending?: HumanInputEnding; readonly history: readonly ModelMessage[] }> {
   let ending: HumanInputEnding | undefined;
+  const history: ModelMessage[] = [];
   for (const event of events) {
     switch (event.type) {
       case "publish":
         await emit(event.event);
+        continue;
+      case "history.appended":
+        history.push(event.message);
         continue;
       case "turn.cancelled":
         ending ??= { kind: "cancelled" };
@@ -28,8 +34,8 @@ export async function applyHumanInputEvents(
       case "turn.failed":
         ending ??= { code: event.code, kind: "failed", message: event.message };
         continue;
-      case "history.appended":
       case "note":
+      case "message.answered":
       case "calls.approved":
       case "responder.check":
       case "answer.forwarded":
@@ -37,7 +43,7 @@ export async function applyHumanInputEvents(
         throw new Error(`Human input event "${event.type}" is not implemented.`);
     }
   }
-  return ending;
+  return { ending, history };
 }
 
 /**
