@@ -33,12 +33,6 @@ interface ConformanceChannel {
   readonly unsupported?: Partial<Record<HitlRule, string>>;
 }
 
-const DISCORD_ALIAS: BrokenCell = {
-  reason:
-    "a press finds the session by its message id, and only the first message the bot posts is aliased to the session",
-  symptom: /Timed out waiting for \w+ to (return|run or be denied) on discord/,
-};
-
 const TUI_TYPED_APPROVAL =
   "the approval drawer holds the keyboard; a person answers it with y or n";
 
@@ -56,16 +50,7 @@ const TUI_TYPED_APPROVAL =
  */
 const hitlConformance = {
   "chat-sdk": [{ driver: chatSdkDriver }, { driver: chatSdkTextDriver }],
-  discord: [
-    {
-      driver: discordDriver,
-      broken: {
-        "pressing options of two pending questions answers each with its own option": DISCORD_ALIAS,
-        "pressing Approve on one of two pending approvals runs only that tool": DISCORD_ALIAS,
-        "answering an approval and a question pending together settles both": DISCORD_ALIAS,
-      },
-    },
-  ],
+  discord: [{ driver: discordDriver }],
   github: [{ driver: githubDriver }],
   linear: [{ driver: linearDriver }],
   linq: [{ driver: linqDriver }],
