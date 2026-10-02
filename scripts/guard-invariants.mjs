@@ -121,6 +121,11 @@
  *             `execution/legacy-remote-agent/`. Only the ingress files that
  *             route protocol-1 callers into it may import it, so deleting the
  *             directory removes protocol 1 without a search.
+ *   rule 49 — Human input stays behind one boundary. Outside
+ *             `harness/human-input/`, code imports only its `index.ts`, and
+ *             only the module names its session state key, so every approval,
+ *             sign-in, budget question, and relayed request goes through
+ *             `HumanInput` and nothing else reads or changes that state.
  *
  * Baselines for rules with pre-existing violations live in
  * `guard-invariants-baseline.json`. Counts and allowlists in that file
@@ -240,6 +245,7 @@ function isTsLike(relPath) {
  *   rule46: Violation[];
  *   rule47: Violation[];
  *   rule48: Violation[];
+ *   rule49: Violation[];
  *   symlinks: string[];
  * }} state
  */
@@ -273,6 +279,7 @@ async function scanRepo(state) {
     checkRule46(posix, lines, state.rule46);
     checkRule47(posix, lines, state.rule47);
     checkRule48(posix, lines, state.rule48);
+    checkRule49(posix, lines, state.rule49);
   }
 }
 
@@ -512,6 +519,38 @@ function checkRule48(posix, lines, violations) {
       message:
         "imports remote agent protocol 1 outside its ingress files. Route protocol-1 behavior through execution/legacy-remote-agent/ from an existing ingress so the legacy path stays removable in one place.",
     });
+  });
+}
+
+// ---------- Rule 49: human input stays behind one boundary ----------
+
+const HUMAN_INPUT_DIR = "packages/eve/src/harness/human-input/";
+const HUMAN_INPUT_STATE_KEY = "eve.harness.humanInput";
+// Any import of a human-input module other than its index.
+const HUMAN_INPUT_PRIVATE_IMPORT_RE =
+  /\b(?:from|import)\s*\(?\s*["'][^"']*harness\/human-input\/(?!index\.js["'])[^"']+["']/;
+
+/** @param {string} posix @param {string[]} lines @param {Violation[]} violations */
+function checkRule49(posix, lines, violations) {
+  if (!posix.startsWith("packages/eve/src/") || posix.startsWith(HUMAN_INPUT_DIR)) return;
+  lines.forEach((line, idx) => {
+    if (HUMAN_INPUT_PRIVATE_IMPORT_RE.test(line)) {
+      violations.push({
+        rule: 49,
+        file: posix,
+        line: idx + 1,
+        message:
+          "imports a human-input module other than harness/human-input/index.ts. Go through the HumanInput boundary so only that module decides how a person's input works.",
+      });
+    }
+    if (line.includes(HUMAN_INPUT_STATE_KEY)) {
+      violations.push({
+        rule: 49,
+        file: posix,
+        line: idx + 1,
+        message: `names the human-input state key "${HUMAN_INPUT_STATE_KEY}" outside harness/human-input/. Read and write it through HumanInput.read and HumanInput.write.`,
+      });
+    }
   });
 }
 
@@ -1544,6 +1583,7 @@ async function main() {
     rule46: /** @type {Violation[]} */ ([]),
     rule47: /** @type {Violation[]} */ ([]),
     rule48: /** @type {Violation[]} */ ([]),
+    rule49: /** @type {Violation[]} */ ([]),
     symlinks: /** @type {string[]} */ ([]),
   };
 
@@ -1658,6 +1698,7 @@ async function main() {
   // Rule 47
   violations.push(...state.rule47);
   violations.push(...state.rule48);
+  violations.push(...state.rule49);
 
   if (violations.length === 0) {
     process.stdout.write("[eve:guard:invariants] ok — all mechanical lints passed.\n");
