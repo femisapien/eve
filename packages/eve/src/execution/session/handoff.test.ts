@@ -22,6 +22,7 @@ vi.mock("#compiled/@workflow/core/index.js", () => ({
 }));
 
 afterEach(() => {
+  vi.restoreAllMocks();
   vi.resetAllMocks();
   isSessionIdleForHandoffStepMock.mockResolvedValue(true);
 });
@@ -119,6 +120,7 @@ describe("SessionHandoff", () => {
   });
 
   it("keeps ownership and restores accepted payloads when activation fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const inbox = createInbox();
     const payloads: SessionInboxPayload[] = [
       { kind: "send", payload: { message: "Alice sends the first input." } },
@@ -135,9 +137,13 @@ describe("SessionHandoff", () => {
     ).resolves.toEqual({ kind: "retained", reason: "activation-failed" });
     expect(inbox.claimSessionHooks).toHaveBeenCalledWith([STABLE, "channel:current"]);
     expect(inbox.restore).toHaveBeenCalledWith(payloads);
+    expect(warn.mock.calls.some((call) => JSON.stringify(call).includes("bundle mismatch"))).toBe(
+      true,
+    );
   });
 
   it("remembers every incompatible target for the rest of the owner run", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     const inbox = createInbox();
     const payloads: SessionInboxPayload[] = [
       { kind: "send", payload: { message: "Alice sends a follow-up." } },
@@ -154,6 +160,13 @@ describe("SessionHandoff", () => {
       reason: "checkpoint-incompatible",
     });
     expect(inbox.restore).toHaveBeenCalledWith(payloads);
+    expect(
+      warn.mock.calls.some((call) =>
+        ["session-1", "deployment-b", "checkpoint-incompatible"].every((value) =>
+          JSON.stringify(call).includes(value),
+        ),
+      ),
+    ).toBe(true);
 
     await expect(handoff.tryTransfer(selection("deployment-b"), state())).resolves.toEqual({
       kind: "retained",

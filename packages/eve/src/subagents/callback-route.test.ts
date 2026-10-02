@@ -88,6 +88,46 @@ describe("session callback route", () => {
     expect(resumeHookMock).toHaveBeenCalledWith("tok123", input);
   });
 
+  it("relays a protocol-1 task authorization callback to the current session hook", async () => {
+    resumeHookMock.mockResolvedValue(undefined);
+    const event = {
+      data: {
+        attemptId: "auth-1",
+        description: "Sign in to Linear",
+        name: "linear",
+        sequence: 0,
+        stepIndex: 1,
+        turnId: "child-turn",
+        webhookUrl: "https://remote.example/connections/linear/callback/child",
+      },
+      type: "authorization.required",
+    };
+    const response = await handleSessionCallbackRequest(
+      new Request("https://app.example.com/eve/v1/callback/tok123", {
+        body: JSON.stringify({
+          callId: "call-2",
+          childContinuationToken: "child-inbox",
+          childSessionId: "remote-session",
+          event,
+          kind: "task.authorization",
+          subagentName: "research",
+          taskId: "task-1",
+        }),
+        method: "POST",
+      }),
+      createRouteContext({ token: "tok123" }),
+    );
+
+    expect(response.status).toBe(202);
+    expect(resumeHookMock).toHaveBeenCalledWith("tok123", {
+      callId: "call-2",
+      childSessionId: "remote-session",
+      event,
+      kind: "subagent-authorization-event",
+      subagentName: "research",
+    });
+  });
+
   it("relays remote authorization lifecycle without settling the turn", async () => {
     resumeHookMock.mockResolvedValue(undefined);
     const event = {
