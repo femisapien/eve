@@ -117,6 +117,7 @@ import {
 import type { InstrumentationAttempt, InstrumentationStepScope } from "#instrumentation/runtime.js";
 import {
   HumanInput,
+  type HumanInputEvent,
   type Intake,
   type Interrupt,
   type RequestAt,
@@ -137,7 +138,15 @@ import {
   validateHarnessModelMessages,
 } from "#harness/messages.js";
 import { normalizeProviderToolHistory } from "#harness/provider-tool-history.js";
-import { findInlineAuthorizationSignals } from "#harness/inline-tool-authorization.js";
+import {
+  findInlineAuthorizationSignals,
+  withoutCalls,
+} from "#harness/inline-tool-authorization.js";
+import { checkResponder } from "#harness/response-policy.js";
+import {
+  PendingAuthorizationResultKey,
+  ReceivedAuthorizationCallbacksKey,
+} from "#harness/authorization.js";
 import { runApprovedCalls } from "#harness/approved-calls.js";
 import type { RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
 import { readAnswerText } from "#internal/input-text.js";
@@ -616,7 +625,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     // results follow them.
     const commitsCoordination =
       resolvedCoordination.outcome === "resolved" &&
-      HumanInput.read(session.state).openRequestIds().size > 0;
+      "held" in HumanInput.read(session.state).next();
     if (commitsCoordination) {
       session = {
         ...session,
@@ -639,6 +648,11 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
         emit,
         emissionState,
         hasDelegatedCaller,
+        checkResponder: async (check, current) =>
+          await checkResponder(
+            check,
+            await prepareStepTools({ at: check.at, config, projectHistory, session: current }),
+          ),
         runApproved: (approved) =>
           runApprovedWork({
             ...approved,
@@ -2332,15 +2346,25 @@ async function handleStepResult(input: {
   }
   const signIns = findInlineAuthorizationSignals(result.toolResults);
   if (signIns !== undefined) {
-    const applied = await humanInput({
-      at: requestAt(emissionState),
-      callIds: signIns.callIds,
-      challenges: signIns.challenges,
-      requester: input.auth,
-      type: "authorization.required",
+    // The step's messages join history here, so the calls that asked can leave it.
+    const applied = await applyHumanInputTransition({
+      emit,
+      emissionState,
+      hasDelegatedCaller: input.hasDelegatedCaller,
+      session: {
+        ...baseSession,
+        history: validateHarnessModelMessages([...promptMessages, ...responseMessages]),
+      },
+      transition: HumanInput.read(baseSession.state).interrupt({
+        at: requestAt(emissionState),
+        callIds: signIns.callIds,
+        challenges: signIns.challenges,
+        requester: input.auth,
+        type: "authorization.required",
+      }),
     });
     if (applied.ended !== undefined) return applied.ended;
-    throw new Error("Holding a turn for a sign-in is not implemented.");
+    return await holdForInput({ emit, emissionState, session: applied.session });
   }
 
   const advertisedCoordinationTools = getAdvertisedTools({
@@ -2497,12 +2521,29 @@ function collectHumanInputIntakes(
   session: HarnessSession,
   auth: SessionAuthContext | null,
 ): Intake[] {
-  const intakes: Intake[] = [];
+  const now = Date.now();
+  // Time goes first, so an answer that expired never runs its policy.
+  const intakes: Intake[] = [{ now, type: "time" }];
+  const callbacks = contextStorage.getStore()?.get(ReceivedAuthorizationCallbacksKey) ?? [];
+  for (const { attemptId, callback, connectionName } of callbacks) {
+    intakes.push(
+      callback === undefined
+        ? { attemptId, connectionName, outcome: "failed", type: "authorization.completed" }
+        : {
+            attemptId,
+            callback,
+            connectionName,
+            outcome: "authorized",
+            type: "authorization.completed",
+          },
+    );
+  }
   if ((input?.inputResponses?.length ?? 0) > 0) {
-    intakes.push({ responder: auth, responses: input!.inputResponses!, type: "answered" });
+    intakes.push({ now, responder: auth, responses: input!.inputResponses!, type: "answered" });
   }
   for (const attributed of input?.attributedInputResponses ?? []) {
     intakes.push({
+      now,
       responder: attributed.auth,
       responses: [attributed.response],
       type: "answered",
@@ -2547,6 +2588,11 @@ async function applyHumanInputTransition(input: {
     readonly requests: readonly InputRequest[];
     readonly session: HarnessSession;
   }) => Promise<ApprovedWork>;
+  /** Absent where no answer can arrive, as for `runApproved`. */
+  readonly checkResponder?: (
+    check: Extract<HumanInputEvent, { readonly type: "responder.check" }>,
+    session: HarnessSession,
+  ) => Promise<Extract<Intake, { readonly type: "responder.checked" }>>;
   readonly session: HarnessSession;
   readonly transition: Transition;
 }): Promise<{
@@ -2591,6 +2637,33 @@ async function applyHumanInputTransition(input: {
       case "message.answered":
         messageAnswered = true;
         continue;
+      case "calls.stopped":
+        session = {
+          ...session,
+          history: validateHarnessModelMessages(
+            withoutCalls(session.history, new Set(event.callIds)),
+          ),
+        };
+        continue;
+      case "sign-in.completed": {
+        const ctx = contextStorage.getStore();
+        if (ctx === undefined) continue;
+        ctx.set(PendingAuthorizationResultKey, [
+          ...(ctx.get(PendingAuthorizationResultKey) ?? []),
+          event.result,
+        ]);
+        if (event.requester !== null) ctx.set(AuthKey, event.requester);
+        continue;
+      }
+      case "responder.check": {
+        if (input.checkResponder === undefined) {
+          throw new Error("Response policies can run only where answers arrive.");
+        }
+        const checked = await input.checkResponder(event, session);
+        const ended = await applyNested(HumanInput.read(session.state).intake(checked));
+        if (ended !== undefined) return { ended, messageAnswered, session };
+        continue;
+      }
       case "calls.approved": {
         if (input.runApproved === undefined) {
           throw new Error("Approved calls can run only where answers arrive.");
@@ -2641,7 +2714,6 @@ async function applyHumanInputTransition(input: {
           : { done: true as const, output: "" };
         return { ended: { next, session }, messageAnswered, session };
       }
-      case "responder.check":
       case "answer.forwarded":
         throw new Error(`Human input event "${event.type}" is not implemented.`);
     }
@@ -2665,20 +2737,8 @@ async function runApprovedWork(input: {
   readonly requests: readonly InputRequest[];
   readonly session: HarnessSession;
 }): Promise<ApprovedWork> {
-  const { at, config, session } = input;
-  const ctx = contextStorage.getStore();
-  await config.prepareApprovalTurn?.(at);
-  if (ctx !== undefined) {
-    await config.resolveStepDynamicTools?.({
-      ctx,
-      event: createStepStartedEvent({
-        modelId: session.agent.modelReference?.id ?? "dynamic",
-        ...at,
-      }),
-      messages: input.projectHistory(session.history, session.state),
-    });
-  }
-  const tools = buildResponseAuthorizationTools({ authoredTools: config.tools, context: ctx });
+  const { at, session } = input;
+  const tools = await prepareStepTools(input);
   for (const request of input.requests) {
     if (!tools.has(request.action.toolName)) {
       throw new Error(
@@ -2716,6 +2776,32 @@ async function runApprovedWork(input: {
     session: deferred?.session ?? session,
     signIns: findInlineAuthorizationSignals(local.signIns),
   };
+}
+
+/** The tools of the step at `at`, as its approvals and response policies saw them. */
+async function prepareStepTools(input: {
+  readonly at: RequestAt;
+  readonly config: ToolLoopHarnessConfig;
+  readonly projectHistory: (
+    messages: readonly ModelMessage[],
+    state: HarnessSession["state"],
+  ) => readonly ModelMessage[];
+  readonly session: HarnessSession;
+}): Promise<HarnessToolMap> {
+  const { at, config, session } = input;
+  const ctx = contextStorage.getStore();
+  await config.prepareApprovalTurn?.(at);
+  if (ctx !== undefined) {
+    await config.resolveStepDynamicTools?.({
+      ctx,
+      event: createStepStartedEvent({
+        modelId: session.agent.modelReference?.id ?? "dynamic",
+        ...at,
+      }),
+      messages: input.projectHistory(session.history, session.state),
+    });
+  }
+  return buildResponseAuthorizationTools({ authoredTools: config.tools, context: ctx });
 }
 
 /**
