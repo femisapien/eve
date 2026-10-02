@@ -73,8 +73,7 @@ interface ConformanceChannel {
 
 const TUI_TYPED_APPROVAL =
   "the approval drawer holds the keyboard; a person answers it with y or n";
-const TUI_ANSWERED_PROMPT =
-  "an answered prompt's drawer closes; there is no posted message to edit";
+const TUI_SINGLE_PERSON = "one person answers at their own terminal; there's nobody else to tell";
 
 /**
  * Every first-party channel's and client's place in the HITL contract, keyed by
@@ -154,11 +153,11 @@ const hitlConformance = {
           "an answered question's drawer closes, so nothing is left to press",
         "a text reply of approve runs the gated tool": TUI_TYPED_APPROVAL,
         "a text reply of cancel stops the gated tool without running it": TUI_TYPED_APPROVAL,
-        ...Object.fromEntries(
-          Object.values(answeredPromptRules)
-            .flat()
-            .map((rule) => [rule, TUI_ANSWERED_PROMPT]),
-        ),
+        "approving by text clears the approval's buttons": TUI_TYPED_APPROVAL,
+        "approving by text names who approved on the approval": TUI_TYPED_APPROVAL,
+        "pressing Approve names who approved on the approval": TUI_SINGLE_PERSON,
+        "pressing an option names who answered on the question": TUI_SINGLE_PERSON,
+        "answering a question by text names who answered on the question": TUI_SINGLE_PERSON,
       },
     },
   ],

@@ -124,7 +124,7 @@ async function answerSaturday(conversation: ChannelConversation, by: Answer) {
 async function approveDeploy(conversation: ChannelConversation, by: Answer) {
   const options = await askToDeploy(conversation);
   if (by === "press") {
-    const approve = options.find((option) => option.label === "Approve");
+    const approve = options.find((option) => APPROVE_LABELS.includes(option.label));
     expect(approve, "an Approve option to press").toBeDefined();
     await conversation.press(approve!);
   } else {
