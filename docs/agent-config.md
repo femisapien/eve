@@ -188,17 +188,19 @@ timeout. Expiration does not delete stored session data.
 
 Input tokens, output tokens, and model token cost are checked independently.
 The model call that crosses a limit is allowed to finish because exact usage
-arrives after the call completes. Before the next model call, eve pauses the
-session and sends a deterministic continuation prompt with two options:
-**Approve** grants a fresh window of each configured size, and **Stop**
-cancels the in-flight turn through the standard cancellation path
-(`turn.cancelled` → `session.waiting`) — a user decision, not an error. The session stays resumable; because it is
-still over budget, the next message re-raises the prompt. Declining a
-delegated child's prompt cancels the root turn, which cascades to the whole
-delegation tree — the delegating parent never receives an error result it
-could retry against a fresh quota share. A reply that answers neither option
-is queued while the existing prompt stays pending; eve does not raise another
-copy. The reply is processed once the budget is granted.
+arrives after the call completes. Before the next model call, eve holds the
+turn open (`turn.waiting` with `on: "input"`) and sends a deterministic
+continuation prompt with two options: **Approve** grants a fresh window of each
+configured size and runs the pending model call in the same turn, and **Stop**
+cancels that turn through the standard cancellation path
+(`turn.cancelled` → `session.waiting`) — a user decision, not an error. The
+session stays resumable; because it is still over budget, the next message
+re-raises the prompt. Declining a delegated child's prompt cancels the root
+turn, which cascades to the whole delegation tree — the delegating parent never
+receives an error result it could retry against a fresh quota share. A reply
+that answers neither option joins the held turn while the prompt stays pending;
+eve does not raise another copy, and the model reads the reply once the budget
+is granted. A typed reply answers the prompt only when no other request is open.
 
 Sessions that cannot request input from a human, such as markdown schedules and
 delegated runs without input proxying, skip the prompt and fail the next model
