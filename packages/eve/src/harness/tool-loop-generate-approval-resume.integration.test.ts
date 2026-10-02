@@ -132,34 +132,27 @@ function createPendingApprovalSession(
   });
 }
 
+/** One model step proposed two gated calls; the held turn waits on both. */
 function createTwoPendingApprovalSession(): HarnessSession {
+  const secondRequest: InputRequest = {
+    ...pendingApprovalInputRequest,
+    action: {
+      ...pendingApprovalInputRequest.action,
+      callId: secondToolCall.toolCallId,
+      input: secondToolCall.input,
+    },
+    requestId: secondApprovalRequest.approvalId,
+  };
   return appendPendingInputBatch({
-    requests: [
+    requests: [pendingApprovalInputRequest, secondRequest],
+    responseMessages: [],
+    session: createBaseSession([
+      { content: "Run pwd and whoami.", kind: "user" as const, role: "user" },
       {
-        action: {
-          callId: secondToolCall.toolCallId,
-          input: secondToolCall.input,
-          kind: "tool-call",
-          toolName: secondToolCall.toolName,
-        },
-        allowFreeform: false,
-        display: "confirmation",
-        kind: "tool-approval",
-        options: [
-          { id: "approve", label: "Yes" },
-          { id: "cancel", label: "No" },
-        ],
-        prompt: "Approve tool call: bash",
-        requestId: secondApprovalRequest.approvalId,
-      },
-    ],
-    responseMessages: [
-      {
-        content: [secondToolCall, secondApprovalRequest],
+        content: [toolCall, approvalRequest, secondToolCall, secondApprovalRequest],
         role: "assistant",
       },
-    ],
-    session: createPendingApprovalSession(),
+    ]),
   });
 }
 
@@ -577,7 +570,7 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
     );
     const model = createModel();
 
-    const first = await createToolLoopHarness(createConfig(model, execute))(
+    const result = await createToolLoopHarness(createConfig(model, execute))(
       createTwoPendingApprovalSession(),
       {
         inputResponses: [
@@ -586,12 +579,8 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
         ],
       },
     );
-    if (typeof first.next !== "function") {
-      throw new TypeError("Expected the deferred approval to schedule another harness step.");
-    }
-    const result = await first.next(first.session);
 
-    expect(model.doGenerateCalls).toHaveLength(2);
+    expect(model.doGenerateCalls).toHaveLength(1);
     expect(execute).toHaveBeenCalledTimes(2);
     expect(execute).toHaveBeenNthCalledWith(
       1,
@@ -614,43 +603,31 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
 
   // Regression: approving one once()-gated call recorded the grant immediately,
   // so a new same-tool call proposed on the resume step executed without a
-  // prompt while the other parked card was still visible to the user.
-  it("keeps prompting a once() tool while a sibling approval is still pending", async () => {
-    const thirdToolCall = {
-      input: JSON.stringify({ command: "ls" }),
-      toolCallId: "call-3",
-      toolName: "bash",
-    };
+  // prompt. A partial answer now keeps the turn held: nothing runs and the
+  // model is not called until every approval in the step is answered.
+  it("runs nothing while a sibling approval from the same step is unanswered", async () => {
     const execute = vi.fn(async () => "/workspace");
+    const doStream = vi.fn(async () => textStreamResult("unexpected"));
     const model = new MockLanguageModelV4({
-      doStream: async () => toolCallStreamResult(thirdToolCall),
+      doStream,
       modelId: "generate-approval-resume-model",
       provider: "eve-integration-mock",
     });
-    const requested: InputRequest[] = [];
-    const config = {
-      ...createConfig(model, execute, once()),
-      handleEvent: async (event) => {
-        if (event.type === "input.requested") requested.push(...event.data.requests);
-      },
-    } satisfies ToolLoopHarnessConfig;
 
     const result = await contextStorage.run(createApprovalContext(), () =>
-      createToolLoopHarness(config)(createTwoPendingApprovalSession(), {
-        inputResponses: [{ optionId: "approve", requestId: approvalRequest.approvalId }],
-      }),
+      createToolLoopHarness(createConfig(model, execute, once()))(
+        createTwoPendingApprovalSession(),
+        { inputResponses: [{ optionId: "approve", requestId: approvalRequest.approvalId }] },
+      ),
     );
 
-    expect(execute).toHaveBeenCalledExactlyOnceWith(
-      toolCall.input,
-      expect.objectContaining({ toolCallId: toolCall.toolCallId }),
-    );
-    expect(requested.map((request) => request.action.callId)).toEqual([thirdToolCall.toolCallId]);
+    expect(execute).not.toHaveBeenCalled();
+    expect(doStream).not.toHaveBeenCalled();
     expect(result.next).toBeNull();
     const pendingCallIds = getPendingInputBatches(result.session.state).flatMap((batch) =>
       batch.requests.map((request) => request.action.callId),
     );
-    expect(pendingCallIds).toEqual([secondToolCall.toolCallId, thirdToolCall.toolCallId]);
+    expect(pendingCallIds).toEqual([toolCall.toolCallId, secondToolCall.toolCallId]);
   });
 
   it("auto-allows a once() tool after every pending approval with its key is settled", async () => {
@@ -660,13 +637,8 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       toolName: "bash",
     };
     const execute = vi.fn(async () => "/workspace");
-    // Batches settle one per step, so the model is called between them. It
-    // proposes the third call only once both pending prompts are gone.
-    const responses = [
-      textStreamResult("Ran pwd."),
-      toolCallStreamResult(thirdToolCall),
-      textStreamResult("All done."),
-    ];
+    // The model proposes the third call once both pending prompts are gone.
+    const responses = [toolCallStreamResult(thirdToolCall), textStreamResult("All done.")];
     const model = new MockLanguageModelV4({
       doStream: async () => {
         const next = responses.shift();
@@ -694,10 +666,6 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
         ],
       }),
     );
-    // The second batch's denial replays on a deferred step; drain until the turn settles.
-    if (typeof first.next !== "function") {
-      throw new TypeError("Expected the deferred approval response to schedule another step.");
-    }
     let result = first;
     while (typeof result.next === "function") {
       const { next, session } = result;

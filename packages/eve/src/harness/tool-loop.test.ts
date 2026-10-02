@@ -7057,14 +7057,8 @@ describe("createToolLoopHarness", () => {
       { message: "Search, then run the gated tool." },
     );
 
-    const pendingResponseMessages = (
-      result.session.state?.["eve.runtime.pendingInputBatches"] as
-        | readonly { responseMessages?: readonly ModelMessage[] }[]
-        | undefined
-    )?.[0]?.responseMessages;
-
     expect(result.next).toBeNull();
-    expect(pendingResponseMessages).toEqual([
+    expect(result.session.history.slice(1)).toEqual([
       {
         content: [
           { text: "I looked that up and need a choice.", type: "text" },
@@ -7773,7 +7767,7 @@ describe("createToolLoopHarness", () => {
     ).toEqual([["call-1"], ["call-2"]]);
   });
 
-  it("parks tool approval with one durable model-visible projection", async () => {
+  it("parks tool approval with the waiting call at the tail of history", async () => {
     setupMockAgent(pendingBashApprovalResult());
 
     const { emit, events } = createEventCollector();
@@ -7811,12 +7805,16 @@ describe("createToolLoopHarness", () => {
       kind: "user" as const,
       role: "user",
     });
-    const projection = result.session.history[1];
-    expect(projection?.role).toBe("user");
-    const serializedProjection = JSON.stringify(projection?.content);
-    expect(serializedProjection).toMatch(/pending/iu);
-    expect(serializedProjection).toContain("approval-1");
-    expect(serializedProjection).toContain("bash");
+    // The waiting call stays at the tail of history, where the AI SDK will read
+    // the approval response appended after it.
+    const waitingCall = result.session.history[1];
+    expect(waitingCall?.role).toBe("assistant");
+    expect(waitingCall?.content).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ toolCallId: "call-1", toolName: "bash", type: "tool-call" }),
+        expect.objectContaining({ approvalId: "approval-1", type: "tool-approval-request" }),
+      ]),
+    );
     expect(hasPendingInputBatch(result.session.state)).toBe(true);
     expect(getCompatibilityEventTypes(events)).toEqual([
       "session.started",

@@ -110,10 +110,6 @@ import {
 } from "#harness/emission.js";
 import { extractToolApprovalInputRequests } from "#harness/input-extraction.js";
 import {
-  renderPendingApprovalsInstruction,
-  renderPendingApprovalsSnippet,
-} from "#harness/hitl/approval-prompt.js";
-import {
   createToolResultMessagePartFromToolError,
   isToolResultError,
 } from "#harness/action-result-helpers.js";
@@ -1237,13 +1233,12 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
         availableSkills: ctx?.get(PendingSkillAnnouncementKey),
         keyed: getPendingAnnouncements(ctx),
       });
-      const pendingApprovals = renderPendingApprovalsInstruction(
-        getPendingInputBatches(session.state).flatMap((batch) => batch.requests),
-      );
-      if (pendingApprovals !== undefined) {
-        currentMessages.add(pendingApprovals, "context.state", {
-          cacheFriendly: false,
-        });
+      // A held turn appends nothing between a waiting call and its approval
+      // response, so the AI SDK finds that response at the tail of history.
+      if (getPendingInputBatches(session.state).length > 0) {
+        throw new Error(
+          "eve internal error: the model was called while a tool approval is open. A held turn must not call the model until every approval from its step is answered or withdrawn.",
+        );
       }
       return currentMessages;
     };
@@ -2561,9 +2556,8 @@ async function handleStepResult(input: {
     excludedCallIds: invalidInputToolCallIds,
   });
   const inputRequests: InputRequest[] = approvalRequests;
-  const pendingApprovals = renderPendingApprovalsSnippet(approvalRequests);
-  // Keep outcomes from resumed work ahead of the framework pending-approval
-  // message; only the unresolved assistant response belongs to the parked batch.
+  // Outcomes from resumed work stay committed; only the unresolved assistant
+  // response belongs to a parked coordination batch.
   const pendingResponseStart = responseMessages.findIndex((message) => message.role !== "tool");
   const committedResponseMessages =
     pendingResponseStart === -1
@@ -2573,9 +2567,6 @@ async function handleStepResult(input: {
   const parkedInputHistory: HarnessModelMessage[] = validateHarnessModelMessages([
     ...promptMessages,
     ...committedResponseMessages,
-    ...(pendingApprovals === undefined
-      ? []
-      : [createFrameworkUserMessage("context.state", pendingApprovals)]),
   ]);
   const advertisedCoordinationTools = getAdvertisedTools({
     session: baseSession,
@@ -2687,8 +2678,13 @@ async function handleStepResult(input: {
       },
       requests: inputRequests,
       responseAuthRequiredRequestIds: responsePolicyRequestIds(config, approvalRequests),
-      responseMessages: pendingResponseMessages,
-      session: { ...baseSession, history: parkedInputHistory },
+      // The call stays at the tail of history; the held turn writes nothing
+      // else before its approval response, which the AI SDK reads from the tail.
+      responseMessages: [],
+      session: {
+        ...baseSession,
+        history: validateHarnessModelMessages([...promptMessages, ...responseMessages]),
+      },
     });
 
     const runsDeferredInput = hasRunnableDeferredStepInput(parkedSession);
