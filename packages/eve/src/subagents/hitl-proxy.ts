@@ -8,7 +8,11 @@ import type {
 import { getHarnessEmissionState } from "#harness/emission.js";
 import { resolveInputOutcome } from "#harness/input-request-resolution.js";
 import type { PendingInputBatchEvent } from "#harness/pending-input-batches.js";
-import { readRelayedInputRequests, toRelayedInputRequests } from "#harness/open-input-requests.js";
+import {
+  countTurnOwnedRequests,
+  readRelayedInputRequests,
+  toRelayedInputRequests,
+} from "#harness/open-input-requests.js";
 import type { WorkflowAskRoute, RelayedInputRequest } from "#harness/open-input-requests.js";
 import type { HarnessEmitFn, HarnessSessionBase, SessionStateMap } from "#harness/types.js";
 import {
@@ -151,6 +155,7 @@ export function routeDeliverPayload(input: {
     entries,
     payload: input.payload,
     routable,
+    turnRequests: countTurnOwnedRequests(input.state),
   });
   const inputResponses = [...(input.payload.inputResponses ?? []), ...message.responses];
 
@@ -302,6 +307,8 @@ function resolveMessageAgainstQuestions(input: {
   readonly entries: ReadonlyMap<string, RelayedInputRequest>;
   readonly payload: DeliverPayload;
   readonly routable: (requestId: string, route: RelayedInputRequest) => boolean;
+  /** The turn's own open requests, which make a plain-text reply ambiguous too. */
+  readonly turnRequests: number;
 }): {
   readonly consumed: boolean;
   readonly responses: readonly InputResponse[];
@@ -324,7 +331,9 @@ function resolveMessageAgainstQuestions(input: {
 
   const [only] = questions;
   const answer =
-    pending.length === 1 && only !== undefined && typeof input.payload.message === "string"
+    pending.length + input.turnRequests === 1 &&
+    only !== undefined &&
+    typeof input.payload.message === "string"
       ? resolveTextToResponse(input.payload.message, only)
       : undefined;
   if (answer !== undefined) return { consumed: true, responses: [answer] };

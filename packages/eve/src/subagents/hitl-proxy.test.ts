@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
-import { upsertRelayedInputRequests } from "#harness/open-input-requests.js";
+import { openTurnInputRequest, upsertRelayedInputRequests } from "#harness/open-input-requests.js";
+import { appendPendingInputBatch } from "#harness/pending-input-batches.js";
 import type { HarnessSession } from "#harness/types.js";
 import { routeDeliverPayload } from "#subagents/hitl-proxy.js";
 
@@ -352,6 +353,47 @@ describe("routeDeliverPayload message resolution", () => {
     });
 
     expect(routed.forSelf).toEqual({ message: "Use the canary pool" });
+    expect(routed.forChildren).toEqual([]);
+  });
+
+  const ownRequest = (requestId: string, kind: "session-limit" | "tool-approval") => ({
+    action: { callId: requestId, input: {}, kind: "tool-call" as const, toolName: "send_report" },
+    kind,
+    options: [
+      { id: "approve", label: "Approve" },
+      { id: "stop", label: "Stop" },
+    ],
+    prompt: "Alice's turn needs an answer.",
+    requestId,
+  });
+
+  it.each([
+    {
+      open: "the budget question",
+      own: (session: HarnessSession) =>
+        openTurnInputRequest(session, {
+          event: REQUEST_EVENT,
+          request: ownRequest("limit-1", "session-limit"),
+        }),
+    },
+    {
+      open: "a tool approval",
+      own: (session: HarnessSession) =>
+        appendPendingInputBatch({
+          event: REQUEST_EVENT,
+          requests: [ownRequest("approval-1", "tool-approval")],
+          responseMessages: [],
+          session,
+        }),
+    },
+  ])("does not answer a question with text while the turn's own $open is open", ({ own }) => {
+    const routed = routeDeliverPayload({
+      payload: { message: "production" },
+      resolveMessage: true,
+      state: own(askSession([["ask-1", {}]])).state,
+    });
+
+    expect(routed.forSelf).toEqual({ message: "production" });
     expect(routed.forChildren).toEqual([]);
   });
 

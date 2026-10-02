@@ -1,5 +1,8 @@
 import type { SubagentInputRequestHookPayload } from "#channel/types.js";
-import type { PendingInputBatchEvent } from "#harness/pending-input-batches.js";
+import {
+  getPendingInputRequestIds,
+  type PendingInputBatchEvent,
+} from "#harness/pending-input-batches.js";
 import type { HarnessSessionBase, SessionStateMap } from "#harness/types.js";
 import {
   inputOptionSchema,
@@ -133,18 +136,24 @@ export function openTurnInputRequest<T extends { readonly state?: SessionStateMa
 }
 
 /**
+ * How many requests the turn asked itself: its entries here, and the tool
+ * approvals that still wait in pending input batches.
+ */
+export function countTurnOwnedRequests(state: SessionStateMap | undefined): number {
+  return readTurnInputRequests(state).size + getPendingInputRequestIds(state).size;
+}
+
+/**
  * How many open requests a plain-text message could answer: relayed
  * questions and approvals, and the turn's own requests. Text answers one only
  * when it is the only candidate, so a reply never settles the wrong request.
  */
 export function countTextAnswerableRequests(state: SessionStateMap | undefined): number {
-  let count = 0;
-  for (const entry of Object.values(readMap(state))) {
-    if (isTurnRequest(entry) || entry.kind === "question" || entry.kind === "tool-approval") {
-      count += 1;
-    }
+  let relayed = 0;
+  for (const [, entry] of relayedEntries(readMap(state))) {
+    if (entry.kind === "question" || entry.kind === "tool-approval") relayed += 1;
   }
-  return count;
+  return relayed + countTurnOwnedRequests(state);
 }
 
 /**
