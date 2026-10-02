@@ -1,4 +1,4 @@
-import { declinedSignInEvents, withdrawHeldSignIns } from "#harness/held-requests.js";
+import { withdrawHeldSignIns } from "#harness/held-requests.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { GenerationSteering } from "#harness/generation-steering.js";
 import { interruptStreamOnFailure } from "#harness/interruptible-stream.js";
@@ -58,8 +58,6 @@ import { getPendingAnnouncements } from "#harness/announcements.js";
 import { toErrorMessage } from "#shared/errors.js";
 import {
   createActionResultEvent,
-  createApprovalCandidateEvent,
-  createApprovalSettledEvent,
   createCompactionCompletedEvent,
   createCompactionRequestedEvent,
   createContextClearedEvent,
@@ -119,12 +117,6 @@ import {
   getTurnClientContextState,
   setTurnClientContextState,
 } from "#harness/turn-client-context.js";
-import {
-  getApprovalAuditState,
-  markApprovalCandidateHistoryEventEmitted,
-  markApprovalCandidatePendingEventEmitted,
-  markApprovalSettlementEventEmitted,
-} from "#harness/approval-candidates.js";
 import { coordinateApprovalDelivery } from "#harness/approval-delivery-coordinator.js";
 import type { InstrumentationAttempt, InstrumentationStepScope } from "#instrumentation/runtime.js";
 import {
@@ -163,7 +155,6 @@ import {
 import { normalizeProviderToolHistory } from "#harness/provider-tool-history.js";
 import { authorizationEventFields } from "#harness/authorization-event-fields.js";
 import {
-  getPendingAuthorization,
   getSupersededAuthorizationChallenges,
   setPendingAuthorization,
 } from "#harness/authorization.js";
@@ -683,20 +674,12 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     // sign-ins it waits on, and its unanswered approvals resolve below.
     if (turnInput?.message !== undefined || staleConversion.kind === "converted") {
       const withdrawal = withdrawHeldSignIns(session.state, {
-        completedAt: Date.now(),
+        emissionState,
         reason: STEERED_SIGN_IN_REASON,
       });
       session = { ...session, state: withdrawal.state };
+      if (emit) for (const event of withdrawal.events) await emit(event);
       if (withdrawal.withdrawn.length > 0) {
-        if (emit) {
-          for (const event of declinedSignInEvents(
-            withdrawal.withdrawn,
-            STEERED_SIGN_IN_REASON,
-            emissionState,
-          )) {
-            await emit(event);
-          }
-        }
         const names = [...new Set(withdrawal.withdrawn.map((challenge) => challenge.name))];
         effectiveStepInput = {
           ...effectiveStepInput,
@@ -732,8 +715,8 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
         context: approvalContext,
       });
     };
-    const pendingApprovalChallenges = getPendingAuthorization(session.state)?.challenges ?? [];
     const coordinated = await coordinateApprovalDelivery({
+      emissionState,
       session,
       stepInput: effectiveStepInput,
       tools: config.tools,
@@ -751,97 +734,8 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
           }),
         );
       }
-      const audit = getApprovalAuditState(session.state);
-      for (const challenge of pendingApprovalChallenges) {
-        if (
-          !audit.candidateHistory.some(
-            (candidate) =>
-              candidate.candidateId === challenge.candidateId &&
-              candidate.status === "timed-out" &&
-              candidate.eventEmitted !== true,
-          )
-        )
-          continue;
-        await emit(
-          createAuthorizationCompletedEvent({
-            ...authorizationEventFields(challenge),
-            outcome: "failed",
-            reason: "The approval response expired. Please submit a new response.",
-            sequence: emissionState.sequence,
-            stepIndex: emissionState.stepIndex,
-            turnId: emissionState.turnId,
-          }),
-        );
-      }
-      for (const candidate of audit.activeCandidates.filter(
-        (entry) => entry.pendingEventEmitted !== true,
-      )) {
-        await emit(
-          createApprovalCandidateEvent({
-            candidateId: candidate.candidateId,
-            outcome: "pending",
-            requestId: candidate.requestId,
-            responderPrincipalId: candidate.responder.principalId,
-            sequence: emissionState.sequence,
-            stepIndex: emissionState.stepIndex,
-            turnId: emissionState.turnId,
-          }),
-        );
-        session = {
-          ...session,
-          state: markApprovalCandidatePendingEventEmitted({
-            candidateId: candidate.candidateId,
-            state: session.state,
-          }),
-        };
-      }
-      for (const candidate of audit.candidateHistory.filter(
-        (entry) => entry.eventEmitted !== true && entry.status !== "allowed",
-      )) {
-        await emit(
-          createApprovalCandidateEvent({
-            candidateId: candidate.candidateId,
-            outcome: candidate.status as Exclude<
-              typeof candidate.status,
-              "allowed" | "authorization-required"
-            >,
-            requestId: candidate.requestId,
-            responderPrincipalId: candidate.responder.principalId,
-            reason: candidate.reason,
-            sequence: emissionState.sequence,
-            stepIndex: emissionState.stepIndex,
-            turnId: emissionState.turnId,
-          }),
-        );
-        session = {
-          ...session,
-          state: markApprovalCandidateHistoryEventEmitted({
-            candidateId: candidate.candidateId,
-            state: session.state,
-          }),
-        };
-      }
-      for (const settlement of audit.settlements.filter((entry) => entry.eventEmitted !== true)) {
-        await emit(
-          createApprovalSettledEvent({
-            outcome: settlement.outcome === "allowed" ? "approved" : "cancelled",
-            requestId: settlement.requestId,
-            responderPrincipalId: settlement.actor.principalId,
-            sequence: emissionState.sequence,
-            stepIndex: emissionState.stepIndex,
-            turnId: emissionState.turnId,
-          }),
-        );
-        session = {
-          ...session,
-          state: markApprovalSettlementEventEmitted({
-            requestId: settlement.requestId,
-            state: session.state,
-          }),
-        };
-      }
+      for (const event of coordinated.events) await emit(event);
     }
-    if (coordinated.kind === "park") return { next: null, session };
     if (coordinated.kind === "continue-coordination") {
       const continuedSession =
         coordinated.stepInput === undefined

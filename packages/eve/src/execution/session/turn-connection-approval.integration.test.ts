@@ -12,8 +12,8 @@ import { turnStep } from "#execution/session/turn-step.js";
 import { runSessionStateStep } from "#internal/testing/session-state-step.js";
 import type { DurableStepResult, TurnStepPayload } from "#execution/session/turn-step-types.js";
 import {
-  getApprovalAuditState,
   markApprovalCandidateAuthorizationRequired,
+  readApprovalCandidates,
 } from "#harness/approval-candidates.js";
 import { CallbackBaseUrlKey, setPendingAuthorization } from "#harness/authorization.js";
 import { ConnectionAuthorizationRequiredError } from "#connections/errors.js";
@@ -461,12 +461,15 @@ describe("turn connection approval restoration", () => {
     expect(fixture.fetch).not.toHaveBeenCalled();
     const state = readDurableSession(refused.sessionState).state;
     expect(readOpenApprovals(state)!.requests[0]!.requestId).toBe(request.requestId);
-    expect(getApprovalAuditState(state).candidateHistory).toEqual([
+    expect(fixture.events).toContainEqual(
       expect.objectContaining({
-        status: "rejected",
-        reason: expect.stringContaining("cannot replay its approvalResponse callback"),
+        data: expect.objectContaining({
+          outcome: "rejected",
+          reason: expect.stringContaining("cannot replay its approvalResponse callback"),
+        }),
+        type: "approval.candidate",
       }),
-    ]);
+    );
   });
 
   it("names the responder, not the requester, on a candidate's sign-in events", async () => {
@@ -557,8 +560,7 @@ describe("turn connection approval restoration", () => {
         payloads: [{ inputResponses: [{ requestId: request.requestId, optionId: "approve" }] }],
       },
     });
-    const candidate = getApprovalAuditState(readDurableSession(ingested.sessionState).state)
-      .activeCandidates[0]!;
+    const candidate = readApprovalCandidates(readDurableSession(ingested.sessionState).state)[0]!;
     const challenges = [
       {
         attemptId: "sign-in-1",
@@ -634,15 +636,18 @@ describe("turn connection approval restoration", () => {
           payloads: [{ inputResponses: [{ requestId: request.requestId, optionId: "approve" }] }],
         },
       });
-      expect(
-        getApprovalAuditState(readDurableSession(candidate.sessionState).state).activeCandidates,
-      ).toHaveLength(1);
+      expect(readApprovalCandidates(readDurableSession(candidate.sessionState).state)).toHaveLength(
+        1,
+      );
       if (cold) clearDurableDynamicCallbacks(sessionId);
       const resumed = await fixture.step();
       expect(fixture.response).toHaveBeenCalledOnce();
-      expect(
-        getApprovalAuditState(readDurableSession(resumed.sessionState).state).settlements,
-      ).toEqual([expect.objectContaining({ outcome: "allowed", requestId: request.requestId })]);
+      expect(fixture.events).toContainEqual(
+        expect.objectContaining({
+          data: expect.objectContaining({ outcome: "approved", requestId: request.requestId }),
+          type: "approval.settled",
+        }),
+      );
       expect(fixture.fetch).toHaveBeenCalledOnce();
       expect(readOpenApprovals(readDurableSession(resumed.sessionState).state)).toBeUndefined();
       expect(resumed.serializedContext).not.toHaveProperty("eve.pendingConnectionCalls");
@@ -700,13 +705,17 @@ describe("turn connection approval restoration", () => {
       },
     });
     clearDurableDynamicCallbacks(sessionId);
-    const rejected = await fixture.step();
+    await fixture.step();
     expect(fixture.response).toHaveBeenCalledOnce();
-    expect(
-      getApprovalAuditState(readDurableSession(rejected.sessionState).state).candidateHistory,
-    ).toEqual([
-      expect.objectContaining({ status: "rejected", reason: "Only the notes owner can approve." }),
-    ]);
+    expect(fixture.events).toContainEqual(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          outcome: "rejected",
+          reason: "Only the notes owner can approve.",
+        }),
+        type: "approval.candidate",
+      }),
+    );
     expect(fixture.fetch).not.toHaveBeenCalled();
     expect(fixture.events.filter((event) => event.type === "turn.started")).toHaveLength(1);
   });

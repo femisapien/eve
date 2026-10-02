@@ -33,13 +33,21 @@ export function isSessionStateIdleForHandoff(sessionState: DurableSessionState):
     "eve.runtime.proxyInputRequests",
   ];
   if (pendingKeys.some((key) => state?.[key] !== undefined)) return false;
-  const openRequests = state?.["eve.runtime.openInputRequests"];
+  if (holdsEntries(state?.["eve.runtime.openInputRequests"])) return false;
+  // `hitl.approvalState` held response-policy candidates before they moved
+  // onto their approval entries. Its history and settlements outlive the work,
+  // so only an active candidate in it means the session is still waiting.
+  const approvalState = state?.["eve.runtime.hitl.approvalState"];
   if (
-    openRequests !== undefined &&
-    (!isObject(openRequests) || Object.keys(openRequests).length > 0)
+    approvalState !== undefined &&
+    (!isObject(approvalState) || holdsEntries(approvalState.activeCandidates))
   )
     return false;
   return workflowToolRuns.length === 0;
+}
+
+function holdsEntries(value: unknown): boolean {
+  return value !== undefined && (!isObject(value) || Object.keys(value).length > 0);
 }
 
 /** Reads durable work using the source deployment's handoff contract. */

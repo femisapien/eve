@@ -14,7 +14,7 @@ import {
 } from "#execution/session/state-delta.js";
 import { relayWithdrawnRequests } from "#execution/tools/workflow/withdraw-step.js";
 import { emitCancelledTurn } from "#harness/cancelled-turn-emission.js";
-import { declinedSignInEvents, withdrawHeldSignIns } from "#harness/held-requests.js";
+import { withdrawHeldSignIns } from "#harness/held-requests.js";
 import { cancelOpenApprovals } from "#harness/hitl/approval-input-requests.js";
 import type { HarnessModelMessage } from "#harness/messages.js";
 import { withdrawTurnInputRequests } from "#harness/open-input-requests.js";
@@ -72,20 +72,14 @@ export async function settleCancelledTurn(
   };
   const durableState = step.durableSession.state;
   // Every request the turn held ends with it: its sign-ins, approvals, and budget question.
-  const withdraw = { completedAt: Date.now(), reason: CANCELLED_REASON };
+  const emissionState = getHarnessEmissionState(durableState);
+  const withdraw = { emissionState, reason: CANCELLED_REASON };
   const withdrawal = withdrawHeldSignIns(durableState, withdraw);
   const turnRequests = withdrawTurnInputRequests(step.durableSession).events;
   const { published, result: usage } = await publishFromSessionStep(step, {
     origin: "own",
     async publish(emit) {
-      const emissionState = getHarnessEmissionState(durableState);
-      for (const event of declinedSignInEvents(
-        withdrawal.withdrawn,
-        CANCELLED_REASON,
-        emissionState,
-      )) {
-        await emit(event);
-      }
+      for (const event of withdrawal.events) await emit(event);
       for (const event of turnRequests) await emit(event);
       return await emitCancelledTurn(emit, emissionState, getSessionUsage(step.durableSession));
     },

@@ -1,4 +1,8 @@
 import type { SessionAuthContext, SubagentInputRequestHookPayload } from "#channel/types.js";
+import type {
+  ActiveApprovalCandidate,
+  ApprovalCandidateDecision,
+} from "#harness/approval-candidates.js";
 import type { InputRequestEvent } from "#harness/open-approvals.js";
 import type { HarnessSessionBase, SessionStateMap } from "#harness/types.js";
 import {
@@ -84,6 +88,16 @@ export interface TurnInputRequest {
   readonly requester?: SessionAuthContext | null;
   /** Whether a responder must sign in before their answer counts. */
   readonly responseAuthRequired?: true;
+  /** Responders' answers to a tool approval its response policy is still checking. */
+  readonly candidates?: Readonly<Record<string, ActiveApprovalCandidate>>;
+  /** How many candidates the approval has had, so a retry gets a fresh id. */
+  readonly candidateSequence?: number;
+  /**
+   * The decision that settled the approval. It stays open until every
+   * approval in its step is answered; meanwhile a later answer neither starts
+   * a candidate for it nor reports it settled again.
+   */
+  readonly settled?: ApprovalCandidateDecision;
 }
 
 /** One open input request, by who answers it. */
@@ -136,6 +150,17 @@ export function openTurnInputRequest<T extends { readonly state?: SessionStateMa
     ...readMap(session.state),
     [entry.request.requestId]: { ...entry, owner: "turn" },
   });
+}
+
+/** Replaces the turn's entry for a request; a request no longer open stays closed. */
+export function replaceTurnInputRequest(
+  state: SessionStateMap | undefined,
+  entry: TurnInputRequest,
+): SessionStateMap | undefined {
+  const map = readMap(state);
+  const current = map[entry.request.requestId];
+  if (current === undefined || !isTurnRequest(current)) return state;
+  return writeMap({ state }, { ...map, [entry.request.requestId]: entry }).state;
 }
 
 /** How many requests the turn asked itself: its budget question and tool approvals. */
@@ -391,6 +416,16 @@ function parseTurnInputRequest(value: unknown): TurnInputRequest | undefined {
   const requester: unknown = Reflect.get(value, "requester");
   if (typeof requester === "object") entry.requester = requester as SessionAuthContext | null;
   if (Reflect.get(value, "responseAuthRequired") === true) entry.responseAuthRequired = true;
+  const candidates: unknown = Reflect.get(value, "candidates");
+  if (candidates !== null && typeof candidates === "object" && !Array.isArray(candidates)) {
+    entry.candidates = candidates as Readonly<Record<string, ActiveApprovalCandidate>>;
+  }
+  const candidateSequence: unknown = Reflect.get(value, "candidateSequence");
+  if (Number.isSafeInteger(candidateSequence) && (candidateSequence as number) >= 0) {
+    entry.candidateSequence = candidateSequence as number;
+  }
+  const settled: unknown = Reflect.get(value, "settled");
+  if (settled === "approve" || settled === "cancel") entry.settled = settled;
   return entry;
 }
 

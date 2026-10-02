@@ -11,14 +11,17 @@ import {
   expireApprovalCandidates,
   finishApprovalCandidate,
   getActiveApprovalCandidate,
-  getApprovalAuditState,
   markApprovalCandidateAuthorizationRequired,
+  readApprovalCandidates,
+  readSettledApprovals,
   settleAllowedCandidate,
   settleDirectApprovalResponse,
   type ActiveApprovalCandidate,
   type ApprovalCandidateDecision,
-  type ApprovalSettlementAuditRecord,
+  type ApprovalCandidateEvent,
+  type ApprovalEventCoordinates,
 } from "#harness/approval-candidates.js";
+import { authorizationEventFields } from "#harness/authorization-event-fields.js";
 import {
   clearPendingAuthorization,
   getAuthorizationResult,
@@ -29,21 +32,28 @@ import {
 import { isApprovalRequest } from "#harness/input-request-class.js";
 import { openApprovalRequester, readOpenApprovals } from "#harness/open-approvals.js";
 import type { HarnessSession, HarnessToolMap, StepInput } from "#harness/types.js";
+import {
+  createAuthorizationCompletedEvent,
+  type AuthorizationCompletedStreamEvent,
+} from "#protocol/message.js";
 import type { InputRequest } from "#shared/input.js";
 
 const UNAUTHENTICATED_APPROVAL_FEEDBACK = "Authentication is required to respond to this approval.";
 const APPROVAL_AUTHORIZER_TIMEOUT_MS = 10_000;
 const APPROVAL_CANDIDATE_TTL_MS = 10 * 60_000;
 
+type ApprovalDeliveryEvent = ApprovalCandidateEvent | AuthorizationCompletedStreamEvent;
+
 interface ApprovalDeliveryResult {
   readonly challenges: readonly AuthorizationChallenge[];
+  /** What this pass changed, for the caller to emit now. */
+  readonly events: readonly ApprovalDeliveryEvent[];
   readonly feedback: readonly string[];
   readonly kind:
     | "continue"
     | "continue-coordination"
     | "authorization-required"
-    | "responses-completed"
-    | "park";
+    | "responses-completed";
   readonly session: HarnessSession;
   readonly stepInput?: StepInput;
 }
@@ -56,71 +66,86 @@ interface ApprovalDeliveryResult {
  * | pending request | Approve or Cancel | create responder-bound candidate |
  * | pending candidate | coordinator pass | run current authorizer |
  * | pending candidate | allowed | settle with its decision; competitors go stale |
- * | pending candidate | rejected/error/expiry | append terminal history |
+ * | pending candidate | rejected/error/expiry | finish the candidate |
  * | pending candidate | authorization required | persist private challenge |
  * | authorization required | matching callback | re-run current authorizer |
  * | settled request | any later response | no state change |
  *
  * Delivery ingestion returns before authorizer work so candidate creation
- * commits before long-running policy execution. Candidate results also
- * commit before lifecycle events are projected by the next stack layer.
+ * commits before long-running policy execution.
  */
 export async function coordinateApprovalDelivery(input: {
+  readonly emissionState: ApprovalEventCoordinates;
   readonly now?: number;
   readonly session: HarnessSession;
   readonly stepInput?: StepInput;
   readonly tools: HarnessToolMap;
   readonly prepareTools?: (request: InputRequest) => Promise<HarnessToolMap>;
 }): Promise<ApprovalDeliveryResult> {
+  const events: ApprovalCandidateEvent[] = [];
+  const result = await coordinate(input, events);
+  const timedOut = new Set(
+    events.flatMap((event) =>
+      event.type === "approval.candidate" && event.data.outcome === "timed-out"
+        ? [event.data.candidateId]
+        : [],
+    ),
+  );
+  const failedSignIns = (getPendingAuthorization(input.session.state)?.challenges ?? [])
+    .filter(
+      (challenge) => challenge.candidateId !== undefined && timedOut.has(challenge.candidateId),
+    )
+    .map((challenge) =>
+      createAuthorizationCompletedEvent({
+        ...authorizationEventFields(challenge),
+        outcome: "failed",
+        reason: "The approval response expired. Please submit a new response.",
+        sequence: input.emissionState.sequence,
+        stepIndex: input.emissionState.stepIndex,
+        turnId: input.emissionState.turnId,
+      }),
+    );
+  // By kind, so a settlement follows the candidates it ends: failed sign-ins,
+  // new candidates, finished candidates, then settlements.
+  const rank = (event: ApprovalCandidateEvent) =>
+    event.type === "approval.settled" ? 2 : event.data.outcome === "pending" ? 0 : 1;
+  return {
+    ...result,
+    events: [...failedSignIns, ...[...events].sort((a, b) => rank(a) - rank(b))],
+  };
+}
+
+async function coordinate(
+  input: Parameters<typeof coordinateApprovalDelivery>[0],
+  events: ApprovalCandidateEvent[],
+): Promise<Omit<ApprovalDeliveryResult, "events">> {
+  const at = input.emissionState;
   const now = input.now ?? Date.now();
-  const expiredCandidates = getApprovalAuditState(input.session.state).activeCandidates.filter(
-    (candidate) => candidate.expiresAt <= now,
-  );
-  const expiredChallengeIds = expiredCandidates.flatMap(
-    (candidate) =>
-      candidate.authorizationChallenges?.map(
-        (challenge) => challenge.attemptId ?? challenge.candidateId ?? challenge.name,
-      ) ?? [],
-  );
-  const expiredState = expireApprovalCandidates({ now, state: input.session.state });
+  const expiredChallengeIds = readApprovalCandidates(input.session.state)
+    .filter((candidate) => candidate.expiresAt <= now)
+    .flatMap(
+      (candidate) =>
+        candidate.authorizationChallenges?.map(
+          (challenge) => challenge.attemptId ?? challenge.candidateId ?? challenge.name,
+        ) ?? [],
+    );
+  const expired = expireApprovalCandidates({ at, now, state: input.session.state });
+  events.push(...expired.events);
   let session: HarnessSession = {
     ...input.session,
-    state: clearPendingAuthorization(expiredState, expiredChallengeIds),
+    state: clearPendingAuthorization(expired.state, expiredChallengeIds),
   };
-  const audit = getApprovalAuditState(session.state);
+  const stepInput = input.stepInput;
   const approvals = readOpenApprovals(session.state);
-  const pendingRequestIds = new Set(approvals?.requests.map((request) => request.requestId));
-  const pendingSettlements = audit.settlements.filter((settlement) =>
-    pendingRequestIds.has(settlement.requestId),
-  );
-  const settledRequestIds = new Set(audit.settlements.map((settlement) => settlement.requestId));
-  // A direct response settles its own request before every open approval is
-  // answered. Keep that response while its request is open so a later response
-  // can answer the rest; only discard responses for requests that have closed.
-  const deduplicableSettledRequestIds = new Set(
-    [...settledRequestIds].filter((requestId) => !pendingRequestIds.has(requestId)),
-  );
-  const discardedDuplicate = hasResponseForRequest(input.stepInput, deduplicableSettledRequestIds);
-  const deduplicatedInput = discardedDuplicate
-    ? removeConsumedResponses(input.stepInput, deduplicableSettledRequestIds)
-    : input.stepInput;
-  if (
-    discardedDuplicate &&
-    pendingSettlements.length === 0 &&
-    !hasMeaningfulInput(deduplicatedInput)
-  ) {
-    return deliveryResult(session, deduplicatedInput, "park");
-  }
-  if (approvals === undefined) return deliveryResult(session, deduplicatedInput);
+  if (approvals === undefined) return deliveryResult(session, stepInput);
 
-  const stepInput = deduplicatedInput;
   const authorizationRequiredRequestIds = new Set(approvals.responseAuthRequiredRequestIds);
   const requests = new Map(approvals.requests.map((request) => [request.requestId, request]));
   const challenges: AuthorizationChallenge[] = [];
   const feedback: string[] = [];
   const consumed = new Set<string>();
   let didCommit = false;
-  const candidatesAtStart = getApprovalAuditState(session.state).activeCandidates;
+  const candidatesAtStart = readApprovalCandidates(session.state);
 
   const deliveredResponses = [
     ...(stepInput?.attributedInputResponses ?? []),
@@ -141,11 +166,13 @@ export async function coordinateApprovalDelivery(input: {
       if (responder !== null && decision !== undefined) {
         const settled = settleDirectApprovalResponse({
           actor: responder,
-          outcome: decision === "approve" ? "allowed" : "cancelled",
+          at,
+          decision,
           requestId: response.requestId,
           settledAt: now,
           state: session.state,
         });
+        events.push(...settled.events);
         session = { ...session, state: settled.state };
         didCommit ||= settled.changed;
       }
@@ -167,6 +194,7 @@ export async function coordinateApprovalDelivery(input: {
     }
 
     const created = createApprovalCandidate({
+      at,
       candidateIdPrefix: approvalCandidateIdPrefix(request.requestId, responder, decision),
       createdAt: now,
       decision,
@@ -175,6 +203,7 @@ export async function coordinateApprovalDelivery(input: {
       responder,
       state: session.state,
     });
+    events.push(...created.events);
     session = { ...session, state: created.state };
     didCommit ||= created.changed;
   }
@@ -220,8 +249,10 @@ export async function coordinateApprovalDelivery(input: {
       continue;
     }
     const processed = await authorizeCandidate({
+      at,
       candidateId: candidate.candidateId,
       decision: candidate.decision,
+      events,
       now,
       request,
       responder: candidate.responder,
@@ -231,22 +262,16 @@ export async function coordinateApprovalDelivery(input: {
     session = processed.session;
     didCommit ||= processed.didCommit;
     challenges.push(...processed.challenges);
-    const settlement = getApprovalAuditState(session.state).settlements.find(
-      (entry) => entry.requestId === candidate.requestId,
-    );
-    if (settlement !== undefined) pendingSettlements.push(settlement);
   }
 
-  const resumedStepInput = appendSettledResponses(remainingStepInput, pendingSettlements);
+  const settledApprovals = readSettledApprovals(session.state);
+  const resumedStepInput = appendSettledResponses(remainingStepInput, settledApprovals);
   // Only a terminal candidate pass completes response processing. Ingestion must
   // still commit before policy work, and live candidates still own their park.
-  if (
-    (didCommit || expiredCandidates.length > 0) &&
-    getApprovalAuditState(session.state).activeCandidates.length === 0
-  ) {
+  if ((didCommit || expired.changed) && readApprovalCandidates(session.state).length === 0) {
     return deliveryResult(session, resumedStepInput, "responses-completed");
   }
-  if (pendingSettlements.length > 0) {
+  if (settledApprovals.length > 0) {
     return deliveryResult(session, resumedStepInput, "continue");
   }
   return didCommit
@@ -260,8 +285,10 @@ export async function coordinateApprovalDelivery(input: {
 }
 
 async function authorizeCandidate(input: {
+  readonly at: ApprovalEventCoordinates;
   readonly candidateId: string;
   readonly decision: ApprovalCandidateDecision;
+  readonly events: ApprovalCandidateEvent[];
   readonly now: number;
   readonly request: InputRequest;
   readonly responder: ActiveApprovalCandidate["responder"];
@@ -273,10 +300,13 @@ async function authorizeCandidate(input: {
   readonly session: HarnessSession;
 }> {
   // Expiry is checked again immediately before callback/policy execution.
-  let session = {
-    ...input.session,
-    state: expireApprovalCandidates({ now: input.now, state: input.session.state }),
-  };
+  const expired = expireApprovalCandidates({
+    at: input.at,
+    now: input.now,
+    state: input.session.state,
+  });
+  input.events.push(...expired.events);
+  let session = { ...input.session, state: expired.state };
   if (getActiveApprovalCandidate(session.state, input.candidateId) === undefined) {
     return { challenges: [], didCommit: false, session };
   }
@@ -317,27 +347,19 @@ async function authorizeCandidate(input: {
       }),
     );
     if (outcome.status === "rejected") {
-      session = {
-        ...session,
-        state: finishApprovalCandidate({
-          candidateId: input.candidateId,
-          completedAt: input.now,
-          reason: outcome.reason,
-          state: session.state,
-          status: "rejected",
-        }),
-      };
-      return { challenges: [], didCommit: true, session };
+      return failCandidate({ ...input, reason: outcome.reason, session, status: "rejected" });
     }
     if (outcome.status !== "allowed") {
       return failCandidate({ ...input, session });
     }
 
     const settled = settleAllowedCandidate({
+      at: input.at,
       candidateId: input.candidateId,
       settledAt: input.now,
       state: session.state,
     });
+    input.events.push(...settled.events);
     return {
       challenges: [],
       didCommit: settled.changed,
@@ -350,100 +372,69 @@ async function authorizeCandidate(input: {
         .map((entry) => Date.parse(entry.challenge.expiresAt ?? ""))
         .filter(Number.isFinite)
         .sort((a, b) => a - b)[0];
+      const challenges = authorization.challenges.map((challenge) => ({
+        ...challenge,
+        candidateId: input.candidateId,
+      }));
       session = {
         ...session,
         state: markApprovalCandidateAuthorizationRequired({
-          authorizationChallenges: authorization.challenges.map((challenge) => ({
-            ...challenge,
-            candidateId: input.candidateId,
-          })),
+          authorizationChallenges: challenges,
           candidateId: input.candidateId,
           expiresAt: providerExpiresAt,
           state: session.state,
         }),
       };
-      return {
-        challenges: authorization.challenges.map((challenge) => ({
-          ...challenge,
-          candidateId: input.candidateId,
-        })),
-        didCommit: true,
-        session,
-      };
+      return { challenges, didCommit: true, session };
     }
     return failCandidate({ ...input, session });
   }
 }
 
 function failCandidate(input: {
+  readonly at: ApprovalEventCoordinates;
   readonly candidateId: string;
-  readonly now: number;
-  readonly request: InputRequest;
+  readonly events: ApprovalCandidateEvent[];
   readonly reason?: string;
   readonly session: HarnessSession;
+  readonly status?: "rejected";
 }): {
   readonly challenges: readonly AuthorizationChallenge[];
   readonly didCommit: true;
   readonly session: HarnessSession;
 } {
-  const reason = input.reason ?? "We couldn’t verify your response. Please try again.";
-  return {
-    challenges: [],
-    didCommit: true,
-    session: {
-      ...input.session,
-      state: finishApprovalCandidate({
-        candidateId: input.candidateId,
-        completedAt: input.now,
-        reason,
-        state: input.session.state,
-        status: "failed",
-      }),
-    },
-  };
-}
-
-function hasResponseForRequest(
-  stepInput: StepInput | undefined,
-  requestIds: ReadonlySet<string>,
-): boolean {
-  return (
-    stepInput?.attributedInputResponses?.some(({ response }) =>
-      requestIds.has(response.requestId),
-    ) === true ||
-    stepInput?.inputResponses?.some((response) => requestIds.has(response.requestId)) === true
-  );
-}
-
-function hasMeaningfulInput(stepInput: StepInput | undefined): boolean {
-  return (
-    stepInput?.message !== undefined ||
-    (stepInput?.attributedInputResponses?.length ?? 0) > 0 ||
-    (stepInput?.inputResponses?.length ?? 0) > 0 ||
-    (stepInput?.runtimeActionResults?.length ?? 0) > 0
-  );
+  const finished = finishApprovalCandidate({
+    at: input.at,
+    candidateId: input.candidateId,
+    reason:
+      input.status === "rejected"
+        ? input.reason
+        : (input.reason ?? "We couldn’t verify your response. Please try again."),
+    state: input.session.state,
+    status: input.status ?? "failed",
+  });
+  input.events.push(...finished.events);
+  return { challenges: [], didCommit: true, session: { ...input.session, state: finished.state } };
 }
 
 function appendSettledResponses(
   stepInput: StepInput | undefined,
-  settlements: readonly ApprovalSettlementAuditRecord[],
+  settled: ReturnType<typeof readSettledApprovals>,
 ): StepInput | undefined {
-  if (settlements.length === 0) return stepInput;
+  if (settled.length === 0) return stepInput;
   const existingRequestIds = new Set([
     ...(stepInput?.inputResponses ?? []).map((response) => response.requestId),
     ...(stepInput?.attributedInputResponses ?? []).map(({ response }) => response.requestId),
   ]);
-  const missingSettlements = settlements.filter(
-    (settlement) => !existingRequestIds.has(settlement.requestId),
-  );
-  if (missingSettlements.length === 0) return stepInput;
+  const missing = settled.filter((approval) => !existingRequestIds.has(approval.requestId));
+  if (missing.length === 0) return stepInput;
   return {
     ...stepInput,
     inputResponses: [
       ...(stepInput?.inputResponses ?? []),
-      ...missingSettlements.map((settlement) => ({
-        optionId: settlement.outcome === "allowed" ? "approve" : "cancel",
-        requestId: settlement.requestId,
+      ...missing.map((approval) => ({
+        optionId: approval.decision,
+        requestId: approval.requestId,
       })),
     ],
   };
@@ -474,7 +465,7 @@ function deliveryResult(
   kind: ApprovalDeliveryResult["kind"] = "continue",
   challenges: readonly AuthorizationChallenge[] = [],
   feedback: readonly string[] = [],
-): ApprovalDeliveryResult {
+): Omit<ApprovalDeliveryResult, "events"> {
   return { challenges, feedback, kind, session, stepInput };
 }
 

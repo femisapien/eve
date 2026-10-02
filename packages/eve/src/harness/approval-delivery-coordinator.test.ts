@@ -4,13 +4,14 @@ import type { ApprovalResponsePolicy } from "#approval/definition.js";
 import { ContextContainer, contextStorage } from "#context/container.js";
 import { AuthKey, SessionKey } from "#context/keys.js";
 import {
-  getApprovalAuditState,
   markApprovalCandidateAuthorizationRequired,
+  readApprovalCandidates,
+  readSettledApprovals,
+  settleDirectApprovalResponse,
 } from "#harness/approval-candidates.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 
 import type { SessionAuthContext } from "#channel/types.js";
-import { settleDirectApprovalResponse } from "#harness/approval-candidates.js";
 import { coordinateApprovalDelivery } from "#harness/approval-delivery-coordinator.js";
 import { selectApprovalReplayBatch } from "#harness/input-requests.js";
 import { readOpenApprovals } from "#harness/open-approvals.js";
@@ -30,6 +31,7 @@ const request: InputRequest = {
   prompt: "Approve tool call: gate",
   requestId: "approval-1",
 };
+const emissionState = { sequence: 1, stepIndex: 0, turnId: "turn-1" };
 const responder: SessionAuthContext = {
   attributes: {},
   authenticator: "test",
@@ -70,6 +72,7 @@ describe("coordinateApprovalDelivery", () => {
     };
     return contextStorage.run(ctx, () =>
       coordinateApprovalDelivery({
+        emissionState,
         now: 101,
         session,
         tools: new Map([["gate", tool]]),
@@ -79,6 +82,7 @@ describe("coordinateApprovalDelivery", () => {
 
   async function ingest(session = parkedSession(), optionId = "approve") {
     return coordinateApprovalDelivery({
+      emissionState,
       now: 100,
       session,
       stepInput: {
@@ -124,10 +128,11 @@ describe("coordinateApprovalDelivery", () => {
       expect.objectContaining({ response: { decision: "cancel", principal: responder } }),
     );
     expect(rejected.stepInput?.inputResponses ?? []).toEqual([]);
-    expect(getApprovalAuditState(rejected.session.state).settlements).toEqual([]);
+    expect(readSettledApprovals(rejected.session.state)).toEqual([]);
     expect(readOpenApprovals(rejected.session.state)).toBeDefined();
 
     const requesterCancel = await coordinateApprovalDelivery({
+      emissionState,
       now: 102,
       session: rejected.session,
       stepInput: {
@@ -175,7 +180,13 @@ describe("coordinateApprovalDelivery", () => {
     async (status) => {
       const ingested = await ingest();
       expect(ingested.kind).toBe("continue-coordination");
-      expect(getApprovalAuditState(ingested.session.state).activeCandidates).toHaveLength(1);
+      expect(readApprovalCandidates(ingested.session.state)).toHaveLength(1);
+      expect(ingested.events).toEqual([
+        expect.objectContaining({
+          data: expect.objectContaining({ outcome: "pending", responderPrincipalId: "user-1" }),
+          type: "approval.candidate",
+        }),
+      ]);
       const response = vi.fn(() => {
         if (status === "failed") throw new Error("policy unavailable");
         return { status, reason: "Not an eligible responder." };
@@ -183,8 +194,18 @@ describe("coordinateApprovalDelivery", () => {
       const result = await authorize(ingested.session, response);
       expect(response).toHaveBeenCalledOnce();
       expect(result.kind).toBe("responses-completed");
-      expect(getApprovalAuditState(result.session.state).activeCandidates).toEqual([]);
-      expect(getApprovalAuditState(result.session.state).candidateHistory[0]?.status).toBe(status);
+      expect(readApprovalCandidates(result.session.state)).toEqual([]);
+      expect(result.events).toEqual([
+        status === "allowed"
+          ? expect.objectContaining({
+              data: expect.objectContaining({ outcome: "approved" }),
+              type: "approval.settled",
+            })
+          : expect.objectContaining({
+              data: expect.objectContaining({ outcome: status }),
+              type: "approval.candidate",
+            }),
+      ]);
       expect(result.stepInput?.inputResponses ?? []).toEqual(
         status === "allowed" ? [{ optionId: "approve", requestId: request.requestId }] : [],
       );
@@ -197,14 +218,15 @@ describe("coordinateApprovalDelivery", () => {
   it("completes an expired candidate without executing policy", async () => {
     const ingested = await ingest();
     const result = await coordinateApprovalDelivery({
+      emissionState,
       now: 600_100,
       session: ingested.session,
       tools: new Map(),
     });
     expect(result.kind).toBe("responses-completed");
-    expect(getApprovalAuditState(result.session.state).candidateHistory[0]?.status).toBe(
-      "timed-out",
-    );
+    expect(result.events).toEqual([
+      expect.objectContaining({ data: expect.objectContaining({ outcome: "timed-out" }) }),
+    ]);
   });
 
   it("completes a failed authorizer timeout", async () => {
@@ -215,9 +237,9 @@ describe("coordinateApprovalDelivery", () => {
       await vi.advanceTimersByTimeAsync(10_000);
       const result = await pending;
       expect(result.kind).toBe("responses-completed");
-      expect(getApprovalAuditState(result.session.state).candidateHistory[0]?.status).toBe(
-        "failed",
-      );
+      expect(result.events).toEqual([
+        expect.objectContaining({ data: expect.objectContaining({ outcome: "failed" }) }),
+      ]);
     } finally {
       vi.useRealTimers();
     }
@@ -227,12 +249,13 @@ describe("coordinateApprovalDelivery", () => {
     const ingested = await ingest();
     const duplicate = await ingest(ingested.session);
     expect(duplicate.kind).toBe("continue");
-    expect(getApprovalAuditState(duplicate.session.state).activeCandidates).toHaveLength(1);
+    expect(readApprovalCandidates(duplicate.session.state)).toHaveLength(1);
+    expect(duplicate.events).toEqual([]);
   });
 
   it("keeps authorization-required candidates parked instead of completing", async () => {
     const ingested = await ingest();
-    const candidate = getApprovalAuditState(ingested.session.state).activeCandidates[0]!;
+    const candidate = readApprovalCandidates(ingested.session.state)[0]!;
     const session = {
       ...ingested.session,
       state: markApprovalCandidateAuthorizationRequired({
@@ -257,12 +280,14 @@ describe("coordinateApprovalDelivery", () => {
     const parked = parkedSession();
     const settled = settleDirectApprovalResponse({
       actor: responder,
-      outcome: "allowed",
+      at: emissionState,
+      decision: "approve",
       requestId: request.requestId,
       settledAt: 100,
       state: parked.state,
     });
     const result = await coordinateApprovalDelivery({
+      emissionState,
       now: 101,
       session: { ...parked, state: settled.state },
       tools: new Map(),
@@ -277,12 +302,14 @@ describe("coordinateApprovalDelivery", () => {
     const parked = parkedSession();
     const settled = settleDirectApprovalResponse({
       actor: responder,
-      outcome: "cancelled",
+      at: emissionState,
+      decision: "cancel",
       requestId: request.requestId,
       settledAt: 100,
       state: parked.state,
     });
     const result = await coordinateApprovalDelivery({
+      emissionState,
       now: 101,
       session: { ...parked, state: settled.state },
       tools: new Map(),
@@ -313,12 +340,14 @@ describe("coordinateApprovalDelivery", () => {
     });
     const settled = settleDirectApprovalResponse({
       actor: responder,
-      outcome: "allowed",
+      at: emissionState,
+      decision: "approve",
       requestId: request.requestId,
       settledAt: 100,
       state: parked.state,
     });
     const result = await coordinateApprovalDelivery({
+      emissionState,
       now: 101,
       session: { ...parked, state: settled.state },
       stepInput: {
@@ -338,6 +367,7 @@ describe("coordinateApprovalDelivery", () => {
   it("forwards an unrelated message while a response-authorized approval remains pending", async () => {
     const messageAuth: SessionAuthContext = { ...responder, principalId: "user-2" };
     const result = await coordinateApprovalDelivery({
+      emissionState,
       now: 100,
       session: parkedSession(),
       stepInput: {

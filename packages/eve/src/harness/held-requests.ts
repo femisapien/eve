@@ -1,11 +1,15 @@
-import { finishApprovalCandidate, getApprovalAuditState } from "#harness/approval-candidates.js";
+import {
+  finishApprovalCandidate,
+  readApprovalCandidates,
+  type ApprovalCandidateEvent,
+  type ApprovalEventCoordinates,
+} from "#harness/approval-candidates.js";
 import { authorizationEventFields } from "#harness/authorization-event-fields.js";
 import {
   clearPendingAuthorization,
   getPendingAuthorization,
   type AuthorizationChallenge,
 } from "#harness/authorization.js";
-import type { HarnessEmissionState } from "#harness/emission-state.js";
 import {
   createAuthorizationCompletedEvent,
   type AuthorizationCompletedStreamEvent,
@@ -16,42 +20,40 @@ import {
  * it with a message or cancelling it: the turn's own sign-ins, and the sign-ins
  * of responders still checking one of its approvals, whose candidates end as
  * stale. The approvals themselves resolve with the steering step or the cancel.
+ * Returns the events to emit now: each withdrawn sign-in declined, then each
+ * stale candidate.
  */
 export function withdrawHeldSignIns(
   state: Record<string, unknown> | undefined,
-  input: { readonly completedAt: number; readonly reason: string },
+  input: { readonly emissionState: ApprovalEventCoordinates; readonly reason: string },
 ): {
+  readonly events: readonly (AuthorizationCompletedStreamEvent | ApprovalCandidateEvent)[];
   readonly state: Record<string, unknown> | undefined;
   readonly withdrawn: readonly AuthorizationChallenge[];
 } {
   const withdrawn = getPendingAuthorization(state)?.challenges ?? [];
+  const events: (AuthorizationCompletedStreamEvent | ApprovalCandidateEvent)[] = withdrawn.map(
+    (challenge) =>
+      createAuthorizationCompletedEvent({
+        ...authorizationEventFields(challenge),
+        outcome: "declined",
+        reason: input.reason,
+        sequence: input.emissionState.sequence,
+        stepIndex: input.emissionState.stepIndex,
+        turnId: input.emissionState.turnId,
+      }),
+  );
   let next = withdrawn.length === 0 ? state : clearPendingAuthorization(state);
-  for (const candidate of getApprovalAuditState(next).activeCandidates) {
-    next = finishApprovalCandidate({
+  for (const candidate of readApprovalCandidates(next)) {
+    const finished = finishApprovalCandidate({
+      at: input.emissionState,
       candidateId: candidate.candidateId,
-      completedAt: input.completedAt,
       reason: input.reason,
       state: next,
       status: "stale",
     });
+    events.push(...finished.events);
+    next = finished.state;
   }
-  return { state: next, withdrawn };
-}
-
-/** The `authorization.completed` events reporting withdrawn sign-ins as declined. */
-export function declinedSignInEvents(
-  withdrawn: readonly AuthorizationChallenge[],
-  reason: string,
-  emissionState: HarnessEmissionState,
-): AuthorizationCompletedStreamEvent[] {
-  return withdrawn.map((challenge) =>
-    createAuthorizationCompletedEvent({
-      ...authorizationEventFields(challenge),
-      outcome: "declined",
-      reason,
-      sequence: emissionState.sequence,
-      stepIndex: emissionState.stepIndex,
-      turnId: emissionState.turnId,
-    }),
-  );
+  return { events, state: next, withdrawn };
 }
