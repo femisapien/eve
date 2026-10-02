@@ -4,10 +4,13 @@ import { TOOL_SESSION_KEY_MAX_LENGTH } from "#channel/invoke-tool.js";
 import type { SessionAuthContext } from "#channel/types.js";
 
 /** Why a tool session key was refused, or `undefined` when it is usable. */
-export function validateToolSessionKey(key: string): string | undefined {
-  if (key.length === 0) return "The tool session key must not be empty.";
+export function validateToolSessionKey(
+  key: string,
+  label = "tool session key",
+): string | undefined {
+  if (key.length === 0) return `The ${label} must not be empty.`;
   if (key.length > TOOL_SESSION_KEY_MAX_LENGTH) {
-    return `The tool session key must be at most ${TOOL_SESSION_KEY_MAX_LENGTH} characters.`;
+    return `The ${label} must be at most ${TOOL_SESSION_KEY_MAX_LENGTH} characters.`;
   }
   return undefined;
 }

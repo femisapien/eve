@@ -112,20 +112,16 @@ export async function invokeToolInSession(
   input: unknown,
   options: InvokeToolOptions,
 ): Promise<InvokeToolResult> {
-  const callId = options.callId ?? `call_${createUlid()}`;
-  if (options.key !== undefined) {
-    const problem = validateToolSessionKey(options.key);
+  const caps = [
+    [options.key, "tool session key"],
+    [options.key === undefined ? options.oneOffNonce : undefined, "one-off nonce"],
+    [options.callId, "callId"],
+  ] as const;
+  for (const [value, label] of caps) {
+    const problem = value === undefined ? undefined : validateToolSessionKey(value, label);
     if (problem !== undefined) return { message: problem, status: "invalid-input" };
   }
-  if (options.key === undefined && options.oneOffNonce !== undefined) {
-    const problem = validateToolSessionKey(options.oneOffNonce);
-    if (problem !== undefined) {
-      return {
-        message: problem.replace("tool session key", "one-off nonce"),
-        status: "invalid-input",
-      };
-    }
-  }
+  const callId = options.callId ?? `call_${createUlid()}`;
 
   const compiled = runtime.manifest.tools.find((tool) => tool.name === name);
   const definition = runtime.tools.get(name);

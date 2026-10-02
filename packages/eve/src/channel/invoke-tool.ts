@@ -28,11 +28,14 @@ export interface InvokeToolOptions {
    * derives the same one-off session id. Ignored when `key` is set.
    */
   readonly oneOffNonce?: string;
-  /** Correlates the retries of one call. Minted when absent. */
+  /** Correlates the retries of one call, at most 512 characters. Minted when absent. */
   readonly callId?: string;
   /**
    * The person's answer to this call's approval, when the caller has one. The
    * tool's response policy still runs with the caller as the responder.
+   * `invokeTool` does not tie the answer to `input` or `callId`: a caller
+   * that relays answers across requests must bind them itself, for example
+   * with signed state over the tool name and arguments.
    */
   readonly approval?: { readonly approved: boolean };
   readonly signal?: AbortSignal;
