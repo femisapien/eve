@@ -1,5 +1,5 @@
 import { getPendingAuthorization } from "#harness/authorization.js";
-import { hasPendingInputBatch } from "#harness/input-requests.js";
+import { hasOpenApprovals } from "#harness/input-requests.js";
 import { getPendingCoordinationBatch, pendingCoordinationCallIds } from "#harness/coordination.js";
 import { pendingTaskToolCalls, type TaskToolCall } from "#execution/tasks/calls.js";
 import type { HarnessSession } from "#harness/types.js";
@@ -19,7 +19,7 @@ export function derivePendingState(session: HarnessSession): {
       challenge.attemptId === undefined ? [] : [challenge.attemptId],
     ),
     hasPendingAuthorization: pendingAuth !== undefined,
-    hasPendingInputBatch: hasPendingInputBatch(session.state),
+    hasPendingInputBatch: hasOpenApprovals(session.state),
   };
   if (batch === undefined) return base;
   return {

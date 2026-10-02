@@ -12,7 +12,7 @@ import {
 } from "#harness/coordination.js";
 import { getHarnessEmissionState } from "#harness/emission.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
-import { getPendingInputBatches } from "#harness/pending-input-batches.js";
+import { readOpenApprovals } from "#harness/open-approvals.js";
 import { createToolLoopHarness } from "#harness/tool-loop.js";
 import { setTurnUsageState } from "#harness/turn-tag-state.js";
 import type { HarnessSession, ToolLoopHarnessConfig } from "#harness/types.js";
@@ -95,9 +95,8 @@ function setup(
 }
 
 function requests(session: HarnessSession) {
-  // Approvals wait in batches; the budget question is the turn's own request.
   return [
-    ...getPendingInputBatches(session.state).flatMap((batch) => batch.requests),
+    ...(readOpenApprovals(session.state)?.requests ?? []),
     ...[...readTurnInputRequests(session.state).values()].map((entry) => entry.request),
   ];
 }
@@ -295,7 +294,7 @@ describe("workflow approval resume (real AI SDK)", () => {
     const initial = await fixture.step(fixture.session, {
       message: "Deploy Alice's release and notify Bob.",
     });
-    const origin = getPendingInputBatches(initial.session.state)[0]!.event!.turnId;
+    const origin = readOpenApprovals(initial.session.state)!.event.turnId;
     const approved = await fixture.step(initial.session, {
       inputResponses: requests(initial.session).map((request) => ({
         optionId: "approve",

@@ -27,7 +27,7 @@ import {
   sendWorkflowAskAnswers,
   toToolInputResponseResponder,
 } from "#execution/tools/workflow/answer.js";
-import type { PendingInputBatchEvent } from "#harness/pending-input-batches.js";
+import type { InputRequestEvent } from "#harness/open-approvals.js";
 import type { WorkflowAskRoute } from "#harness/open-input-requests.js";
 import {
   createInputResolvedEvent,
@@ -57,7 +57,7 @@ interface ChildBucket {
   >;
   readonly childContinuationToken: string;
   readonly childSessionInbox?: SessionInboxAddress;
-  readonly event: PendingInputBatchEvent;
+  readonly event: InputRequestEvent;
   readonly metadata: NonNullable<DeliverHookPayload["deliveryMetadata"]>[number][];
   readonly payloads: DeliverPayload[];
   /** Keyed by request id: a request resolves once however many payloads answer it. */

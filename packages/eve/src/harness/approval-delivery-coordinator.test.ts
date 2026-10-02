@@ -13,7 +13,7 @@ import type { SessionAuthContext } from "#channel/types.js";
 import { settleDirectApprovalResponse } from "#harness/approval-candidates.js";
 import { coordinateApprovalDelivery } from "#harness/approval-delivery-coordinator.js";
 import { selectApprovalReplayBatch } from "#harness/input-requests.js";
-import { getPendingInputBatches } from "#harness/pending-input-batches.js";
+import { readOpenApprovals } from "#harness/open-approvals.js";
 import type { HarnessSession } from "#harness/types.js";
 import type { InputRequest } from "#shared/input.js";
 import { parkApprovals } from "#internal/testing/approval-fixtures.js";
@@ -125,7 +125,7 @@ describe("coordinateApprovalDelivery", () => {
     );
     expect(rejected.stepInput?.inputResponses ?? []).toEqual([]);
     expect(getApprovalAuditState(rejected.session.state).settlements).toEqual([]);
-    expect(getPendingInputBatches(rejected.session.state)).toHaveLength(1);
+    expect(readOpenApprovals(rejected.session.state)).toBeDefined();
 
     const requesterCancel = await coordinateApprovalDelivery({
       now: 102,
@@ -352,9 +352,7 @@ describe("coordinateApprovalDelivery", () => {
     expect(result.stepInput?.message).toBe("What else can you help with?");
     expect(result.stepInput?.messageAuth).toEqual(messageAuth);
     expect(
-      getPendingInputBatches(result.session.state).flatMap((batch) =>
-        batch.requests.map((pending) => pending.requestId),
-      ),
+      readOpenApprovals(result.session.state)?.requests.map((pending) => pending.requestId),
     ).toEqual([request.requestId]);
   });
 });

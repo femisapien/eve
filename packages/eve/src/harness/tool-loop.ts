@@ -130,18 +130,19 @@ import type { InstrumentationAttempt, InstrumentationStepScope } from "#instrume
 import {
   consumeDeferredStepInput,
   getApprovedTools,
-  getPendingInputRequestIds,
+  openApprovalRequestIds,
   hasRunnableDeferredStepInput,
   hasStepInput,
   resolvePendingInput,
   selectApprovalReplayBatch,
-  appendPendingInputBatch,
+  openApprovals,
 } from "#harness/input-requests.js";
 import {
-  getPendingInputBatches,
+  hasOpenApprovals,
   queueDeferredStepInput,
-  type PendingInputBatchEvent,
-} from "#harness/pending-input-batches.js";
+  readOpenApprovals,
+  type InputRequestEvent,
+} from "#harness/open-approvals.js";
 import {
   convertStaleResponsesToUserMessage,
   dropStaleSessionLimitContinuationResponses,
@@ -668,7 +669,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     // Stale-response handling is two passes: drop what must never reach the
     // model (session-limit continuation answers), then convert what should
     // reach it as plain text.
-    const pendingRequestIds = getPendingInputRequestIds(session.state);
+    const pendingRequestIds = openApprovalRequestIds(session.state);
     const staleConversion = convertStaleResponsesToUserMessage({
       history: resolvedCoordination.messages,
       pendingRequestIds,
@@ -713,7 +714,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
 
     const approvalContext = contextStorage.getStore();
     const prepareApprovalTools = async (
-      batch: { readonly event?: PendingInputBatchEvent } | undefined,
+      batch: { readonly event?: InputRequestEvent } | undefined,
     ) => {
       if (batch?.event !== undefined) await config.prepareApprovalTurn?.(batch.event);
       if (approvalContext !== undefined) {
@@ -736,12 +737,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       session,
       stepInput: effectiveStepInput,
       tools: config.tools,
-      prepareTools: async (request) => {
-        const batch = getPendingInputBatches(session.state).find((batch) =>
-          batch.requests.some((entry) => entry.requestId === request.requestId),
-        );
-        return await prepareApprovalTools(batch);
-      },
+      prepareTools: async () => await prepareApprovalTools(readOpenApprovals(session.state)),
     });
     session = coordinated.session;
     if (emit) {
@@ -1198,12 +1194,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
         }
       }
     }
-    const approvedTools = getApprovedTools(
-      session,
-      resolveApprovalKeyFromTools(
-        buildResponseAuthorizationTools({ authoredTools: config.tools, context: ctx }),
-      ),
-    );
+    const approvedTools = getApprovedTools(session);
 
     // --- Execute via ToolLoopAgent ------------------------------------------
 
@@ -1235,7 +1226,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       });
       // A held turn appends nothing between a waiting call and its approval
       // response, so the AI SDK finds that response at the tail of history.
-      if (getPendingInputBatches(session.state).length > 0) {
+      if (hasOpenApprovals(session.state)) {
         throw new Error(
           "eve internal error: the model was called while a tool approval is open. A held turn must not call the model until every approval from its step is answered or withdrawn.",
         );
@@ -2638,7 +2629,7 @@ async function handleStepResult(input: {
     });
 
     // The coordination batch owns the assistant response shared with its calls.
-    parkedSession = appendPendingInputBatch({
+    parkedSession = openApprovals({
       event: {
         sequence: emissionState.sequence,
         stepIndex: emissionState.stepIndex,
@@ -2669,7 +2660,7 @@ async function handleStepResult(input: {
   // --- Park on input requests -----------------------------------------------
 
   if (inputRequests.length > 0) {
-    let parkedSession = appendPendingInputBatch({
+    let parkedSession = openApprovals({
       event: {
         sequence: emissionState.sequence,
         stepIndex: emissionState.stepIndex,
@@ -3286,7 +3277,7 @@ function responsePolicyRequestIds(
 /**
  * Creates an approval-key resolver from the tool map. The resolver computes
  * compound keys at recording time instead of pre-computing and persisting
- * them on the pending batch.
+ * them on the open approvals.
  */
 function resolveApprovalKeyFromTools(
   tools: HarnessToolMap,

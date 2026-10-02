@@ -13,7 +13,7 @@ import { ContextContainer, contextStorage } from "#context/container.js";
 import { SessionKey } from "#context/keys.js";
 import { getHarnessEmissionState } from "#harness/emission.js";
 import { getPendingCoordinationBatch } from "#harness/coordination.js";
-import { getPendingInputBatches } from "#harness/pending-input-batches.js";
+import { readOpenApprovals } from "#harness/open-approvals.js";
 import { createToolLoopHarness } from "#harness/tool-loop.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import type { HarnessSession, StepInput, StepResult } from "#harness/types.js";
@@ -199,14 +199,20 @@ function fixture(
       historyLastRole: session.history.at(-1)?.role,
       emission: getHarnessEmissionState(session.state),
       deferred: session.state?.["eve.runtime.deferredStepInput"],
-      pending: getPendingInputBatches(session.state).map((batch) => ({
-        owner: batch.event,
-        requests: batch.requests.map((r) => ({
-          id: r.requestId,
-          tool: r.action.toolName,
-          kind: r.kind,
-        })),
-      })),
+      pending: [readOpenApprovals(session.state)].flatMap((approvals) =>
+        approvals === undefined
+          ? []
+          : [
+              {
+                owner: approvals.event,
+                requests: approvals.requests.map((r) => ({
+                  id: r.requestId,
+                  tool: r.action.toolName,
+                  kind: r.kind,
+                })),
+              },
+            ],
+      ),
     });
     return result;
   }

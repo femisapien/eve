@@ -7,7 +7,7 @@ import type {
 } from "#channel/types.js";
 import { getHarnessEmissionState } from "#harness/emission.js";
 import { resolveInputOutcome } from "#harness/input-request-resolution.js";
-import type { PendingInputBatchEvent } from "#harness/pending-input-batches.js";
+import type { InputRequestEvent } from "#harness/open-approvals.js";
 import {
   countTurnOwnedRequests,
   readRelayedInputRequests,
@@ -104,7 +104,7 @@ export interface RoutedChildDelivery {
  * the coordinates of the child batch's `input.requested`.
  */
 export interface ProxiedInputResolutions {
-  readonly event: PendingInputBatchEvent;
+  readonly event: InputRequestEvent;
   readonly resolutions: readonly InputResolution[];
 }
 
@@ -126,7 +126,7 @@ interface ChildResponseBucket {
   readonly childContinuationToken: string;
   readonly childSessionInbox?: SessionInboxAddress;
   /** A child's routes all come from its latest batch, so they share coordinates. */
-  readonly event: PendingInputBatchEvent;
+  readonly event: InputRequestEvent;
   /** Parent-visible request IDs answered in this bucket. */
   readonly parentRequestIds: string[];
   readonly responses: InputResponse[];

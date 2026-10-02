@@ -53,7 +53,7 @@ import {
   validateHarnessModelMessages,
   type UserModelMessage,
 } from "#harness/messages.js";
-import { consumeDeferredStepInput } from "#harness/pending-input-batches.js";
+import { consumeDeferredStepInput } from "#harness/open-approvals.js";
 import type { HarnessSession, StepInput, StepResult } from "#harness/types.js";
 import type {
   DurableStepResult,

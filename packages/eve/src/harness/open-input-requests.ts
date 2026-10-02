@@ -1,5 +1,5 @@
 import type { SessionAuthContext, SubagentInputRequestHookPayload } from "#channel/types.js";
-import type { PendingInputBatchEvent } from "#harness/pending-input-batches.js";
+import type { InputRequestEvent } from "#harness/open-approvals.js";
 import type { HarnessSessionBase, SessionStateMap } from "#harness/types.js";
 import {
   inputOptionSchema,
@@ -60,7 +60,7 @@ export interface RelayedInputRequest {
    * Coordinates of the `input.requested` this session emitted for the request;
    * the `input.resolved` it emits once it routes the answer repeats them.
    */
-  readonly event: PendingInputBatchEvent;
+  readonly event: InputRequestEvent;
   readonly kind: InputRequestKind;
   /** Question metadata lets the human-facing parent resolve plain text before proxying by ID. */
   readonly question?: RelayedInputQuestion;
@@ -78,7 +78,7 @@ export interface RelayedInputRequestBatch {
 export interface TurnInputRequest {
   readonly owner: "turn";
   /** Coordinates of the `input.requested` the turn emitted for it. */
-  readonly event: PendingInputBatchEvent;
+  readonly event: InputRequestEvent;
   readonly request: InputRequest;
   /** Auth of the caller whose turn asked; `null` when unauthenticated. */
   readonly requester?: SessionAuthContext | null;
@@ -299,7 +299,7 @@ export function toRelayedInputRequests(
     ),
     requestIds: payload.event.requests.map((request) => request.requestId),
   };
-  const event: PendingInputBatchEvent = {
+  const event: InputRequestEvent = {
     sequence: payload.event.sequence,
     stepIndex: payload.event.stepIndex,
     turnId: payload.event.turnId,
@@ -310,7 +310,7 @@ export function toRelayedInputRequests(
       readonly inputSource?: string;
       readonly remote?: RemoteAgentBinding & { readonly sessionId: string };
       childSessionInbox?: SessionInboxAddress;
-      readonly event: PendingInputBatchEvent;
+      readonly event: InputRequestEvent;
       readonly kind: InputRequestKind;
       question?: RelayedInputQuestion;
     } & { readonly batch: RelayedInputRequestBatch } = {
@@ -432,7 +432,7 @@ function parseRelayedInputRequest(
     inputSource?: string;
     remote?: RemoteAgentBinding & { readonly sessionId: string };
     childSessionInbox?: SessionInboxAddress;
-    readonly event: PendingInputBatchEvent;
+    readonly event: InputRequestEvent;
     readonly kind: InputRequestKind;
     question?: RelayedInputQuestion;
   } = {
@@ -450,7 +450,7 @@ function parseRelayedInputRequest(
   return request;
 }
 
-function parseInputRequestEvent(value: unknown): PendingInputBatchEvent | undefined {
+function parseInputRequestEvent(value: unknown): InputRequestEvent | undefined {
   if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined;
   const sequence = Reflect.get(value, "sequence");
   const stepIndex = Reflect.get(value, "stepIndex");

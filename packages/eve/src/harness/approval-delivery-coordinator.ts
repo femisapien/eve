@@ -27,7 +27,7 @@ import {
   type AuthorizationChallenge,
 } from "#harness/authorization.js";
 import { isApprovalRequest } from "#harness/input-request-class.js";
-import { getPendingInputBatches, pendingInputRequester } from "#harness/pending-input-batches.js";
+import { openApprovalRequester, readOpenApprovals } from "#harness/open-approvals.js";
 import type { HarnessSession, HarnessToolMap, StepInput } from "#harness/types.js";
 import type { InputRequest } from "#shared/input.js";
 
@@ -88,18 +88,15 @@ export async function coordinateApprovalDelivery(input: {
     state: clearPendingAuthorization(expiredState, expiredChallengeIds),
   };
   const audit = getApprovalAuditState(session.state);
-  const batches = getPendingInputBatches(session.state);
-  const pendingRequestIds = new Set(
-    batches.flatMap((batch) => batch.requests.map((request) => request.requestId)),
-  );
+  const approvals = readOpenApprovals(session.state);
+  const pendingRequestIds = new Set(approvals?.requests.map((request) => request.requestId));
   const pendingSettlements = audit.settlements.filter((settlement) =>
     pendingRequestIds.has(settlement.requestId),
   );
   const settledRequestIds = new Set(audit.settlements.map((settlement) => settlement.requestId));
-  // A direct response settles its individual request before the whole batch
-  // resolves. Keep that response while its request is still pending so a
-  // later response can complete the batch; only discard responses for requests
-  // that have left pending input entirely.
+  // A direct response settles its own request before every open approval is
+  // answered. Keep that response while its request is open so a later response
+  // can answer the rest; only discard responses for requests that have closed.
   const deduplicableSettledRequestIds = new Set(
     [...settledRequestIds].filter((requestId) => !pendingRequestIds.has(requestId)),
   );
@@ -114,14 +111,11 @@ export async function coordinateApprovalDelivery(input: {
   ) {
     return deliveryResult(session, deduplicatedInput, "park");
   }
-  if (batches.length === 0) return deliveryResult(session, deduplicatedInput);
+  if (approvals === undefined) return deliveryResult(session, deduplicatedInput);
 
   const stepInput = deduplicatedInput;
-  const authorizationRequiredRequestIds = new Set(
-    batches.flatMap((batch) => batch.responseAuthRequiredRequestIds ?? []),
-  );
-  const allRequests = batches.flatMap((batch) => batch.requests);
-  const requests = new Map(allRequests.map((request) => [request.requestId, request]));
+  const authorizationRequiredRequestIds = new Set(approvals.responseAuthRequiredRequestIds);
+  const requests = new Map(approvals.requests.map((request) => [request.requestId, request]));
   const challenges: AuthorizationChallenge[] = [];
   const feedback: string[] = [];
   const consumed = new Set<string>();
@@ -309,7 +303,7 @@ async function authorizeCandidate(input: {
         request: {
           callId: input.request.action.callId,
           requestId: input.request.requestId,
-          principal: pendingInputRequester(session.state, input.request.requestId),
+          principal: openApprovalRequester(session.state, input.request.requestId),
           toolInput: input.request.action.input,
           toolName: input.request.action.toolName,
         },

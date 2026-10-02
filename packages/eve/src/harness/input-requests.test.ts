@@ -9,11 +9,11 @@ import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import {
   consumeDeferredStepInput,
   getApprovedTools,
-  getPendingInputRequestIds,
+  openApprovalRequestIds,
   hasStepInput,
   resolvePendingInput,
 } from "#harness/input-requests.js";
-import { getDeferredStepInput } from "#harness/pending-input-batches.js";
+import { getDeferredStepInput } from "#harness/open-approvals.js";
 import { createRuntimeToolCallActionFromToolCall } from "#harness/tool-call-action.js";
 import { buildToolApproval, buildToolSet } from "#harness/tools.js";
 import type { HarnessSession, HarnessToolMap } from "#harness/types.js";
@@ -653,7 +653,7 @@ describe("resolvePendingInput", () => {
     ]);
     expect(result.rejectedActions?.[0]?.results).toMatchObject([{ callId: "approval-call" }]);
     expect(getDeferredStepInput(result.session)).toBeUndefined();
-    expect(getPendingInputRequestIds(result.session.state)).toEqual(new Set());
+    expect(openApprovalRequestIds(result.session.state)).toEqual(new Set());
   });
 
   it("preserves context-only input while a pending batch stays open", () => {
@@ -877,6 +877,6 @@ describe("pending input batch collection", () => {
     const result = resolvePendingInput({ session });
 
     expect(result.outcome).toBe("unresolved");
-    expect(getPendingInputRequestIds(result.session.state)).toEqual(new Set(["approval-1"]));
+    expect(openApprovalRequestIds(result.session.state)).toEqual(new Set(["approval-1"]));
   });
 });

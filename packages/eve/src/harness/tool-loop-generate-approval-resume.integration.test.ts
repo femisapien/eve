@@ -34,7 +34,7 @@ import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import type { InputRequest } from "#shared/input.js";
 import { getApprovedTools } from "#harness/input-requests.js";
 import type { HarnessModelMessage } from "#harness/messages.js";
-import { getPendingInputBatches } from "#harness/pending-input-batches.js";
+import { readOpenApprovals } from "#harness/open-approvals.js";
 import { createToolLoopHarness } from "#harness/tool-loop.js";
 import { setTurnUsageState } from "#harness/turn-tag-state.js";
 import type { HarnessSession, ToolLoopHarnessConfig } from "#harness/types.js";
@@ -627,8 +627,8 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
     expect(execute).not.toHaveBeenCalled();
     expect(doStream).not.toHaveBeenCalled();
     expect(result.next).toBeNull();
-    const pendingCallIds = getPendingInputBatches(result.session.state).flatMap((batch) =>
-      batch.requests.map((request) => request.action.callId),
+    const pendingCallIds = readOpenApprovals(result.session.state)?.requests.map(
+      (request) => request.action.callId,
     );
     expect(pendingCallIds).toEqual([toolCall.toolCallId, secondToolCall.toolCallId]);
   });

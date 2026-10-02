@@ -15,7 +15,7 @@ import {
 import { relayWithdrawnRequests } from "#execution/tools/workflow/withdraw-step.js";
 import { emitCancelledTurn } from "#harness/cancelled-turn-emission.js";
 import { declinedSignInEvents, withdrawHeldSignIns } from "#harness/held-requests.js";
-import { cancelApprovalInputBatches } from "#harness/hitl/approval-input-requests.js";
+import { cancelOpenApprovals } from "#harness/hitl/approval-input-requests.js";
 import type { HarnessModelMessage } from "#harness/messages.js";
 import { withdrawTurnInputRequests } from "#harness/open-input-requests.js";
 import { getHarnessEmissionState, setHarnessEmissionState } from "#harness/emission.js";
@@ -102,7 +102,7 @@ export async function settleCancelledTurn(
         // result for each waiting call, after the coordination batch, which
         // owns an assistant response it shares with approvals beside its calls.
         withdrawTurnInputRequests(
-          cancelApprovalInputBatches(
+          cancelOpenApprovals(
             commitCancelledCoordinationBatch(
               removeBlockingWorkflowToolRuns({ ...session, outputSchema: undefined }, owningTurnId),
             ),

@@ -36,7 +36,7 @@ import { TurnCancelledError } from "#harness/turn-cancellation.js";
 import { setHarnessEmissionState } from "#harness/emission-state.js";
 import { getPendingAuthorization, setPendingAuthorization } from "#harness/authorization.js";
 import { upsertRelayedInputRequests } from "#harness/open-input-requests.js";
-import { queueDeferredStepInput } from "#harness/pending-input-batches.js";
+import { queueDeferredStepInput } from "#harness/open-approvals.js";
 import type { HarnessSession, StepFn, StepResult } from "#harness/types.js";
 import { createRuntimeHookRegistry } from "#runtime/hooks/registry.js";
 import {

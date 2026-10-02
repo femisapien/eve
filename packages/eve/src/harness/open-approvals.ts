@@ -18,7 +18,7 @@ const DEFERRED_STEP_INPUT_KEY = "eve.runtime.deferredStepInput";
  * Stream-emit coordinates carried so a request's resolution can attribute its
  * events to the turn and step that asked for it.
  */
-export interface PendingInputBatchEvent {
+export interface InputRequestEvent {
   readonly sequence: number;
   readonly stepIndex: number;
   readonly turnId: string;
@@ -27,10 +27,10 @@ export interface PendingInputBatchEvent {
 /**
  * The tool approvals one model step raised, read from the turn's entries in
  * the open input requests. A held turn does not call the model while an
- * approval is open, so at most one step's approvals are open at once.
+ * approval is open, so only one step's approvals can be open at once.
  */
-export interface PendingInputBatch {
-  readonly event: PendingInputBatchEvent;
+export interface OpenApprovals {
+  readonly event: InputRequestEvent;
   readonly requests: readonly InputRequest[];
   /**
    * Auth of the caller whose turn raised the approvals; `null` when that caller
@@ -41,61 +41,49 @@ export interface PendingInputBatch {
 }
 
 /** Returns true when the turn waits on tool approvals. */
-export function hasPendingInputBatch(state: SessionStateMap | undefined): boolean {
-  return getPendingInputBatches(state).length > 0;
+export function hasOpenApprovals(state: SessionStateMap | undefined): boolean {
+  return readOpenApprovals(state) !== undefined;
 }
 
 /** Returns the request IDs of the open tool approvals. */
-export function getPendingInputRequestIds(state: SessionStateMap | undefined): ReadonlySet<string> {
-  return new Set(
-    getPendingInputBatches(state).flatMap((batch) =>
-      batch.requests.map((request) => request.requestId),
-    ),
-  );
+export function openApprovalRequestIds(state: SessionStateMap | undefined): ReadonlySet<string> {
+  return new Set(readOpenApprovals(state)?.requests.map((request) => request.requestId));
 }
 
-/** The open tool approvals, as the one batch their model step raised. */
-export function getPendingInputBatches(
-  state: SessionStateMap | undefined,
-): readonly PendingInputBatch[] {
+/** The open tool approvals, or `undefined` when none are open. */
+export function readOpenApprovals(state: SessionStateMap | undefined): OpenApprovals | undefined {
   const approvals = [...readTurnInputRequests(state).values()].filter(
     (entry) => entry.request.kind === "tool-approval",
   );
   const first = approvals[0];
-  if (first === undefined) return [];
+  if (first === undefined) return undefined;
   const responseAuthRequiredRequestIds = approvals
     .filter((entry) => entry.responseAuthRequired === true)
     .map((entry) => entry.request.requestId);
-  const batch: Mutable<PendingInputBatch> = {
+  const open: Mutable<OpenApprovals> = {
     event: first.event,
     requester: first.requester ?? null,
     requests: approvals.map((entry) => entry.request),
   };
   if (responseAuthRequiredRequestIds.length > 0) {
-    batch.responseAuthRequiredRequestIds = responseAuthRequiredRequestIds;
+    open.responseAuthRequiredRequestIds = responseAuthRequiredRequestIds;
   }
-  return [batch];
+  return open;
 }
 
-/** Closes the given approval batches from a prior {@link getPendingInputBatches} read. */
-export function removePendingInputBatches(
-  session: HarnessSession,
-  batches: readonly PendingInputBatch[],
-): HarnessSession {
-  return retireOpenInputRequests(
-    session,
-    batches.flatMap((batch) => batch.requests.map((request) => request.requestId)),
-  );
+/** Closes every open tool approval; other open input requests stay open. */
+export function closeApprovals(session: HarnessSession): HarnessSession {
+  return retireOpenInputRequests(session, [...openApprovalRequestIds(session.state)]);
 }
 
 /** Opens the tool approvals one model step raised, as turn entries. */
-export function appendPendingInputBatch(input: {
-  readonly event: PendingInputBatchEvent;
+export function openApprovals(input: {
+  readonly event: InputRequestEvent;
   readonly requests: readonly InputRequest[];
   readonly responseAuthRequiredRequestIds?: readonly string[];
   readonly session: HarnessSession;
 }): HarnessSession {
-  if (hasPendingInputBatch(input.session.state)) {
+  if (hasOpenApprovals(input.session.state)) {
     throw new Error(
       "eve internal error: a model step raised tool approvals while earlier approvals are open. A held turn must not call the model until every approval is answered or withdrawn.",
     );
@@ -126,7 +114,7 @@ function currentRequester(): SessionAuthContext | null {
 }
 
 /** The requester recorded on the open approval `requestId`. */
-export function pendingInputRequester(
+export function openApprovalRequester(
   state: SessionStateMap | undefined,
   requestId: string,
 ): SessionAuthContext | null {

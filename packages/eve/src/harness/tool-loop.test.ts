@@ -62,8 +62,8 @@ import {
   modelFacingAuthorizationOutput,
   requestAuthorization,
 } from "#harness/authorization.js";
-import { hasPendingInputBatch } from "#harness/input-requests.js";
-import { getPendingInputBatches } from "#harness/pending-input-batches.js";
+import { hasOpenApprovals } from "#harness/input-requests.js";
+import { readOpenApprovals } from "#harness/open-approvals.js";
 import { getPendingCoordinationBatch, pendingCoordinationCallIds } from "#harness/coordination.js";
 import { PendingSkillAnnouncementKey } from "#context/dynamic-skill-lifecycle.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
@@ -1575,9 +1575,9 @@ describe("createToolLoopHarness", () => {
     });
 
     expect(getPendingCoordinationBatch(parked.session.state)).toBeDefined();
-    expect(getPendingInputBatches(parked.session.state)).toEqual([
+    expect(readOpenApprovals(parked.session.state)).toEqual(
       expect.objectContaining({ responseAuthRequiredRequestIds: ["approval-gate"] }),
-    ]);
+    );
   });
 
   it("parks on both batches when one step carries a workflow task and an approval", async () => {
@@ -1596,7 +1596,7 @@ describe("createToolLoopHarness", () => {
     expect(getPendingCoordinationBatch(parked.session.state)?.tasks).toEqual([
       expect.objectContaining({ callId: "delegate-1", kind: "workflow-task" }),
     ]);
-    expect(hasPendingInputBatch(parked.session.state)).toBe(true);
+    expect(hasOpenApprovals(parked.session.state)).toBe(true);
     expect(events.filter((event) => event.type === "input.requested")).toHaveLength(1);
     expect(
       parked.session.history.flatMap((message) =>
@@ -1621,7 +1621,7 @@ describe("createToolLoopHarness", () => {
 
     expect(reparked.next).toBeNull();
     expect(getPendingCoordinationBatch(reparked.session.state)).toBeUndefined();
-    expect(hasPendingInputBatch(reparked.session.state)).toBe(true);
+    expect(hasOpenApprovals(reparked.session.state)).toBe(true);
     const toolMessages = reparked.session.history.filter((message) => message.role === "tool");
     expect(JSON.stringify(toolMessages)).toContain("delegated-done");
     expect(reparked.held).toEqual({ kind: "request" });
@@ -1687,7 +1687,7 @@ describe("createToolLoopHarness", () => {
     });
 
     expect(parked.next).toBeNull();
-    expect(hasPendingInputBatch(parked.session.state)).toBe(true);
+    expect(hasOpenApprovals(parked.session.state)).toBe(true);
     const batch = getPendingCoordinationBatch(parked.session.state);
     expect(batch?.tasks).toEqual([]);
     expect(pendingCoordinationCallIds(batch!)).toEqual(["wait-1"]);
@@ -7835,7 +7835,7 @@ describe("createToolLoopHarness", () => {
         expect.objectContaining({ approvalId: "approval-1", type: "tool-approval-request" }),
       ]),
     );
-    expect(hasPendingInputBatch(result.session.state)).toBe(true);
+    expect(hasOpenApprovals(result.session.state)).toBe(true);
     expect(getCompatibilityEventTypes(events)).toEqual([
       "session.started",
       "turn.started",

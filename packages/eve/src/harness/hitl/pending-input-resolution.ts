@@ -3,25 +3,24 @@ import type { ModelMessage } from "ai";
 import type { RuntimeToolResultActionResult } from "#shared/action-types.js";
 import type { InputResponse } from "#shared/input.js";
 import type { ResolvedInputBatch } from "#harness/input-request-resolution.js";
-import type { PendingInputBatch, PendingInputBatchEvent } from "#harness/pending-input-batches.js";
-import { queueDeferredStepInput } from "#harness/pending-input-batches.js";
+import type { InputRequestEvent, OpenApprovals } from "#harness/open-approvals.js";
+import { queueDeferredStepInput } from "#harness/open-approvals.js";
 import type { HarnessSession, StepInput } from "#harness/types.js";
 import { attachClientContext, readClientContext } from "#internal/client-context.js";
 
 export type ToolResponsePart = Extract<ModelMessage, { role: "tool" }>["content"][number];
 
-/** Action results from one resolved batch, attributed to their originating turn. */
+/** Action results from resolved approvals, attributed to their originating turn. */
 export interface ResolvedInputActionBatch {
-  readonly event: PendingInputBatchEvent;
+  readonly event: InputRequestEvent;
   readonly results: readonly RuntimeToolResultActionResult[];
 }
 
 export type ResolvedStepInput = StepInput & { readonly messageConsumed?: boolean };
 
 export type InputDomainResolverInput = {
+  readonly approvals: OpenApprovals;
   readonly baseHistory: ModelMessage[];
-  readonly batches: readonly PendingInputBatch[];
-  readonly deferTurnInput: boolean;
   readonly resolvedStepInput: ResolvedStepInput | undefined;
   readonly responses: readonly InputResponse[];
   readonly session: HarnessSession;
@@ -38,14 +37,12 @@ export type ResolvePendingInputResult = {
   readonly session: HarnessSession;
 };
 
-export function responsesForBatches(
+export function responsesForApprovals(
   responses: readonly InputResponse[],
-  batches: readonly PendingInputBatch[],
+  approvals: OpenApprovals,
 ): readonly InputResponse[] {
   return responses.filter((response) =>
-    batches.some((batch) =>
-      batch.requests.some((request) => request.requestId === response.requestId),
-    ),
+    approvals.requests.some((request) => request.requestId === response.requestId),
   );
 }
 
