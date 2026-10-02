@@ -50,13 +50,13 @@ export default photonIMessageChannel({
 ## Polls
 
 Questions and tool approvals arrive as numbered text by default, and a person
-answers by replying with a number or an option. Set `questionsAsPolls: true` to send each one
+answers by replying with a number or an option. Set `inputAsPolls: true` to send each one
 as a native iMessage poll instead. This option is experimental:
 
 ```ts
 export default photonIMessageChannel({
   credentials: connectPhotonCredentials("photon/my-agent"),
-  questionsAsPolls: true,
+  inputAsPolls: true,
 });
 ```
 

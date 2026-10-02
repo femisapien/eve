@@ -116,7 +116,7 @@ export function photonDriver(): ChannelDriver {
       };
       return photonIMessageChannel({
         credentials: () => ({ projectId: "photon-project", projectSecret: "photon-secret" }),
-        questionsAsPolls: true,
+        inputAsPolls: true,
         webhookSecret: WEBHOOK_SECRET,
       });
     },
