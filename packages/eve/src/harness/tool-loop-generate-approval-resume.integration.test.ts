@@ -32,7 +32,7 @@ import {
 import { setHarnessEmissionState } from "#harness/emission.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import type { InputRequest } from "#shared/input.js";
-import { appendPendingInputBatch, getApprovedTools } from "#harness/input-requests.js";
+import { getApprovedTools } from "#harness/input-requests.js";
 import type { HarnessModelMessage } from "#harness/messages.js";
 import { getPendingInputBatches } from "#harness/pending-input-batches.js";
 import { createToolLoopHarness } from "#harness/tool-loop.js";
@@ -44,6 +44,7 @@ import {
   registerDurableDynamicCallback,
   stampDurableDynamicCallback,
 } from "#tools/durable-callbacks.js";
+import { parkApprovals } from "#internal/testing/approval-fixtures.js";
 
 // The harness runs outside a workflow body here, where run attributes cannot
 // be written; the attribute contract is covered by emit.test.ts.
@@ -117,7 +118,9 @@ function createPendingApprovalSession(
   history?: readonly HarnessModelMessage[],
   responseAuthorization = false,
 ): HarnessSession {
-  return appendPendingInputBatch({
+  return parkApprovals({
+    // The step that raised the approval, matching the context's `turn-1`.
+    event: { sequence: 1, stepIndex: 1, turnId: "turn-1" },
     requests: [pendingApprovalInputRequest],
     responseAuthRequiredRequestIds: responseAuthorization
       ? [approvalRequest.approvalId]
@@ -143,7 +146,7 @@ function createTwoPendingApprovalSession(): HarnessSession {
     },
     requestId: secondApprovalRequest.approvalId,
   };
-  return appendPendingInputBatch({
+  return parkApprovals({
     requests: [pendingApprovalInputRequest, secondRequest],
     responseMessages: [],
     session: createBaseSession([
@@ -815,7 +818,7 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
         toolName: "bash",
         type: "tool-result" as const,
       };
-      const session = appendPendingInputBatch({
+      const session = parkApprovals({
         requests: [pendingApprovalInputRequest],
         // The parked shape when a gated call shares a step with an ungated one.
         responseMessages: [

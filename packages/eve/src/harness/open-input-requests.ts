@@ -1,8 +1,5 @@
-import type { SubagentInputRequestHookPayload } from "#channel/types.js";
-import {
-  getPendingInputRequestIds,
-  type PendingInputBatchEvent,
-} from "#harness/pending-input-batches.js";
+import type { SessionAuthContext, SubagentInputRequestHookPayload } from "#channel/types.js";
+import type { PendingInputBatchEvent } from "#harness/pending-input-batches.js";
 import type { HarnessSessionBase, SessionStateMap } from "#harness/types.js";
 import {
   inputOptionSchema,
@@ -16,6 +13,8 @@ import {
 } from "#execution/session-inbox/address.js";
 import type { RemoteAgentBinding } from "#eve-channel/support.js";
 import { createInputResolvedEvent, type InputResolvedStreamEvent } from "#protocol/message.js";
+
+type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
 const OPEN_INPUT_REQUESTS_KEY = "eve.runtime.openInputRequests";
 
@@ -81,6 +80,10 @@ export interface TurnInputRequest {
   /** Coordinates of the `input.requested` the turn emitted for it. */
   readonly event: PendingInputBatchEvent;
   readonly request: InputRequest;
+  /** Auth of the caller whose turn asked; `null` when unauthenticated. */
+  readonly requester?: SessionAuthContext | null;
+  /** Whether a responder must sign in before their answer counts. */
+  readonly responseAuthRequired?: true;
 }
 
 /** One open input request, by who answers it. */
@@ -135,12 +138,9 @@ export function openTurnInputRequest<T extends { readonly state?: SessionStateMa
   });
 }
 
-/**
- * How many requests the turn asked itself: its entries here, and the tool
- * approvals that still wait in pending input batches.
- */
+/** How many requests the turn asked itself: its budget question and tool approvals. */
 export function countTurnOwnedRequests(state: SessionStateMap | undefined): number {
-  return readTurnInputRequests(state).size + getPendingInputRequestIds(state).size;
+  return readTurnInputRequests(state).size;
 }
 
 /**
@@ -383,7 +383,15 @@ function parseTurnInputRequest(value: unknown): TurnInputRequest | undefined {
   ) {
     return undefined;
   }
-  return { event, owner: "turn", request: request as InputRequest };
+  const entry: Mutable<TurnInputRequest> = {
+    event,
+    owner: "turn",
+    request: request as InputRequest,
+  };
+  const requester: unknown = Reflect.get(value, "requester");
+  if (typeof requester === "object") entry.requester = requester as SessionAuthContext | null;
+  if (Reflect.get(value, "responseAuthRequired") === true) entry.responseAuthRequired = true;
+  return entry;
 }
 
 function parseRelayedInputRequest(

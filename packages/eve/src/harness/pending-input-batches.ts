@@ -1,22 +1,22 @@
-import type { ModelMessage } from "ai";
-
 import { contextStorage } from "#context/container.js";
 import type { SessionAuthContext } from "#channel/types.js";
 import { AuthKey, SessionKey } from "#context/keys.js";
 import type { InputRequest } from "#shared/input.js";
 import type { HarnessSession, SessionStateMap, StepInput } from "#harness/types.js";
 import { coalesceTurnInputs } from "#harness/messages.js";
+import {
+  openTurnInputRequest,
+  readTurnInputRequests,
+  retireOpenInputRequests,
+} from "#harness/open-input-requests.js";
 
-const PENDING_INPUT_BATCHES_KEY = "eve.runtime.pendingInputBatches";
-/** Pre-collection singleton key; read once for sessions parked before the upgrade. */
-const LEGACY_PENDING_INPUT_BATCH_KEY = "eve.runtime.pendingInputBatch";
+type Mutable<T> = { -readonly [K in keyof T]: T[K] };
+
 const DEFERRED_STEP_INPUT_KEY = "eve.runtime.deferredStepInput";
-const DUPLICATE_REQUEST_ID_MESSAGE =
-  "Internal pending input invariant violated: requestId must be unique across all pending batches";
 
 /**
- * Stream-emit coordinates carried so a parked batch's resolution can attribute
- * its events to the turn and step that requested the input.
+ * Stream-emit coordinates carried so a request's resolution can attribute its
+ * events to the turn and step that asked for it.
  */
 export interface PendingInputBatchEvent {
   readonly sequence: number;
@@ -25,32 +25,27 @@ export interface PendingInputBatchEvent {
 }
 
 /**
- * Serializable pending input batch stored on the session state: one parked
- * assistant turn's requests plus its withheld model output.
+ * The tool approvals one model step raised, read from the turn's entries in
+ * the open input requests. A held turn does not call the model while an
+ * approval is open, so at most one step's approvals are open at once.
  */
 export interface PendingInputBatch {
-  readonly event?: PendingInputBatchEvent;
+  readonly event: PendingInputBatchEvent;
   readonly requests: readonly InputRequest[];
   /**
-   * Auth of the caller whose turn parked the batch, captured when it parked;
-   * `null` when that caller was unauthenticated.
+   * Auth of the caller whose turn raised the approvals; `null` when that caller
+   * was unauthenticated.
    */
-  readonly requester?: SessionAuthContext | null;
+  readonly requester: SessionAuthContext | null;
   readonly responseAuthRequiredRequestIds?: readonly string[];
-  readonly responseMessages: readonly ModelMessage[];
 }
 
-/**
- * Returns true when the session holds at least one pending HITL batch
- * (tool approvals or a session-limit continuation prompt).
- */
+/** Returns true when the turn waits on tool approvals. */
 export function hasPendingInputBatch(state: SessionStateMap | undefined): boolean {
   return getPendingInputBatches(state).length > 0;
 }
 
-/**
- * Returns the request IDs across every pending HITL batch.
- */
+/** Returns the request IDs of the open tool approvals. */
 export function getPendingInputRequestIds(state: SessionStateMap | undefined): ReadonlySet<string> {
   return new Set(
     getPendingInputBatches(state).flatMap((batch) =>
@@ -59,119 +54,65 @@ export function getPendingInputRequestIds(state: SessionStateMap | undefined): R
   );
 }
 
-function coercePendingInputBatch(value: unknown): PendingInputBatch | undefined {
-  if (typeof value !== "object" || value === null) {
-    return undefined;
-  }
-
-  const batch = value as PendingInputBatch;
-
-  if (!Array.isArray(batch.requests) || !Array.isArray(batch.responseMessages)) {
-    return undefined;
-  }
-
-  return batch;
-}
-
-/**
- * Reads the ordered pending batches. Sessions parked before the collection
- * shape carry the legacy singleton key; it reads as a one-element list and
- * is rewritten to the list shape on the next batch write.
- */
+/** The open tool approvals, as the one batch their model step raised. */
 export function getPendingInputBatches(
   state: SessionStateMap | undefined,
 ): readonly PendingInputBatch[] {
-  const value = state?.[PENDING_INPUT_BATCHES_KEY];
-  if (Array.isArray(value)) {
-    const batches = value
-      .map((entry) => coercePendingInputBatch(entry))
-      .filter((batch): batch is PendingInputBatch => batch !== undefined);
-    assertUniqueRequestIds(batches);
-    return batches;
+  const approvals = [...readTurnInputRequests(state).values()].filter(
+    (entry) => entry.request.kind === "tool-approval",
+  );
+  const first = approvals[0];
+  if (first === undefined) return [];
+  const responseAuthRequiredRequestIds = approvals
+    .filter((entry) => entry.responseAuthRequired === true)
+    .map((entry) => entry.request.requestId);
+  const batch: Mutable<PendingInputBatch> = {
+    event: first.event,
+    requester: first.requester ?? null,
+    requests: approvals.map((entry) => entry.request),
+  };
+  if (responseAuthRequiredRequestIds.length > 0) {
+    batch.responseAuthRequiredRequestIds = responseAuthRequiredRequestIds;
   }
-
-  const legacy = coercePendingInputBatch(state?.[LEGACY_PENDING_INPUT_BATCH_KEY]);
-  const batches = legacy === undefined ? [] : [legacy];
-  assertUniqueRequestIds(batches);
-  return batches;
+  return [batch];
 }
 
-function assertUniqueRequestIds(batches: readonly PendingInputBatch[]): void {
-  const requestIds = new Set<string>();
-  for (const batch of batches) {
-    for (const request of batch.requests) {
-      if (requestIds.has(request.requestId)) {
-        throw new TypeError(
-          `${DUPLICATE_REQUEST_ID_MESSAGE}: ${JSON.stringify(request.requestId)}.`,
-        );
-      }
-      requestIds.add(request.requestId);
-    }
-  }
-}
-
-/**
- * Removes the given batches (matched by identity from a prior
- * {@link getPendingInputBatches} read) and keeps every other batch open.
- *
- * Removal is the only exported way to shrink the collection: a wholesale
- * setter would reintroduce the overwrite hazard the collection exists to
- * prevent — a writer clobbering batches it never resolved.
- */
+/** Closes the given approval batches from a prior {@link getPendingInputBatches} read. */
 export function removePendingInputBatches(
   session: HarnessSession,
   batches: readonly PendingInputBatch[],
 ): HarnessSession {
-  const removed = new Set(batches);
-  return setPendingInputBatches(
+  return retireOpenInputRequests(
     session,
-    getPendingInputBatches(session.state).filter((batch) => !removed.has(batch)),
+    batches.flatMap((batch) => batch.requests.map((request) => request.requestId)),
   );
 }
 
-function setPendingInputBatches(
-  session: HarnessSession,
-  batches: readonly PendingInputBatch[],
-): HarnessSession {
-  assertUniqueRequestIds(batches);
-  const state = { ...session.state };
-  delete state[LEGACY_PENDING_INPUT_BATCH_KEY];
-  if (batches.length === 0) {
-    delete state[PENDING_INPUT_BATCHES_KEY];
-  } else {
-    state[PENDING_INPUT_BATCHES_KEY] = batches.map((batch) => ({
-      event: batch.event,
-      requester: batch.requester,
-      responseAuthRequiredRequestIds: batch.responseAuthRequiredRequestIds,
-      requests: [...batch.requests],
-      responseMessages: [...batch.responseMessages],
-    }));
-  }
-
-  return { ...session, state: Object.keys(state).length > 0 ? state : undefined };
-}
-
-/**
- * Appends one pending HITL batch for a parked assistant turn. Earlier
- * batches stay open and independently answerable.
- */
+/** Opens the tool approvals one model step raised, as turn entries. */
 export function appendPendingInputBatch(input: {
-  readonly event?: PendingInputBatchEvent;
+  readonly event: PendingInputBatchEvent;
   readonly requests: readonly InputRequest[];
   readonly responseAuthRequiredRequestIds?: readonly string[];
-  readonly responseMessages: readonly ModelMessage[];
   readonly session: HarnessSession;
 }): HarnessSession {
-  return setPendingInputBatches(input.session, [
-    ...getPendingInputBatches(input.session.state),
-    {
+  if (hasPendingInputBatch(input.session.state)) {
+    throw new Error(
+      "eve internal error: a model step raised tool approvals while earlier approvals are open. A held turn must not call the model until every approval is answered or withdrawn.",
+    );
+  }
+  const requester = currentRequester();
+  const responseAuthRequired = new Set(input.responseAuthRequiredRequestIds ?? []);
+  let session = input.session;
+  for (const request of input.requests) {
+    const entry: Mutable<Parameters<typeof openTurnInputRequest>[1]> = {
       event: input.event,
-      requester: currentRequester(),
-      responseAuthRequiredRequestIds: input.responseAuthRequiredRequestIds,
-      requests: input.requests,
-      responseMessages: input.responseMessages,
-    },
-  ]);
+      request,
+      requester,
+    };
+    if (responseAuthRequired.has(request.requestId)) entry.responseAuthRequired = true;
+    session = openTurnInputRequest(session, entry);
+  }
+  return session;
 }
 
 /**
@@ -184,15 +125,12 @@ function currentRequester(): SessionAuthContext | null {
   return auth?.principalType === "anonymous" ? null : auth;
 }
 
-/** The requester recorded on the pending batch that holds `requestId`. */
+/** The requester recorded on the open approval `requestId`. */
 export function pendingInputRequester(
   state: SessionStateMap | undefined,
   requestId: string,
 ): SessionAuthContext | null {
-  const batch = getPendingInputBatches(state).find((candidate) =>
-    candidate.requests.some((request) => request.requestId === requestId),
-  );
-  return batch?.requester ?? null;
+  return readTurnInputRequests(state).get(requestId)?.requester ?? null;
 }
 
 // ---------------------------------------------------------------------------

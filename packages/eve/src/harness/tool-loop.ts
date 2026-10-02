@@ -2637,7 +2637,7 @@ async function handleStepResult(input: {
       session: { ...deferred.session, history: parkedInputHistory },
     });
 
-    // The coordination batch already owns the shared assistant response.
+    // The coordination batch owns the assistant response shared with its calls.
     parkedSession = appendPendingInputBatch({
       event: {
         sequence: emissionState.sequence,
@@ -2646,7 +2646,6 @@ async function handleStepResult(input: {
       },
       requests: inputRequests,
       responseAuthRequiredRequestIds: responsePolicyRequestIds(config, approvalRequests),
-      responseMessages: [],
       session: parkedSession,
     });
 
@@ -2680,7 +2679,6 @@ async function handleStepResult(input: {
       responseAuthRequiredRequestIds: responsePolicyRequestIds(config, approvalRequests),
       // The call stays at the tail of history; the held turn writes nothing
       // else before its approval response, which the AI SDK reads from the tail.
-      responseMessages: [],
       session: {
         ...baseSession,
         history: validateHarnessModelMessages([...promptMessages, ...responseMessages]),

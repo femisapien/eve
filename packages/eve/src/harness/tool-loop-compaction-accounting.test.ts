@@ -2,7 +2,6 @@ import { getRequestEnvelopeTokens } from "#harness/request-envelope.js";
 import { generateText, jsonSchema, type LanguageModel, ToolLoopAgent } from "ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { appendPendingInputBatch } from "#harness/input-requests.js";
 import { validateHarnessModelMessages } from "#harness/messages.js";
 import { createToolLoopHarness } from "#harness/tool-loop.js";
 import type { HarnessSession, StepFn, StepNext, ToolLoopHarnessConfig } from "#harness/types.js";
@@ -12,6 +11,7 @@ import {
   projectMemoryHistoryFromSessionState,
   validateMemoryRecallResult,
 } from "#shared/memory-state.js";
+import { parkApprovals } from "#internal/testing/approval-fixtures.js";
 
 // The harness runs outside a workflow body here, where run attributes cannot
 // be written; the attribute contract is covered by emit.test.ts.
@@ -348,14 +348,14 @@ describe("tool-loop structured compaction accounting", () => {
     ]);
 
     const runStep = createToolLoopHarness(createTestConfig());
-    const session = appendPendingInputBatch({
+    const session = parkApprovals({
       requests: [
         {
           action: {
             callId: "call-1",
             input: { command: "pwd" },
             kind: "tool-call",
-            toolName: "bash",
+            toolName: "add",
           },
           allowFreeform: false,
           display: "confirmation",
@@ -364,7 +364,7 @@ describe("tool-loop structured compaction accounting", () => {
             { id: "approve", label: "Yes" },
             { id: "cancel", label: "No" },
           ],
-          prompt: "Approve tool call: bash",
+          prompt: "Approve tool call: add",
           requestId: "approval-1",
         },
       ],

@@ -11,7 +11,6 @@ import {
   StepDynamicToolMetadataKey,
 } from "#context/keys.js";
 import { BundleKey, ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
-import { appendPendingInputBatch } from "#harness/input-requests.js";
 import { createInstrumentationHooks } from "#instrumentation/lifecycle.js";
 import {
   bindInstrumentationRuntime,
@@ -36,6 +35,7 @@ import {
   AGENT_TOOL_NAME,
   SUBAGENT_TOOL_INPUT_SCHEMA,
 } from "#tools/framework/agent-contract.js";
+import { parkApprovals } from "#internal/testing/approval-fixtures.js";
 
 // The harness runs outside a workflow body here, where run attributes cannot
 // be written; the attribute contract is covered by emit.test.ts.
@@ -488,7 +488,7 @@ describe("createExecutionNodeStep", () => {
         resolverSlug: "wired",
       } satisfies OldSourceOffsetDynamicToolMetadata,
     ]);
-    const session = appendPendingInputBatch({
+    const session = parkApprovals({
       requests: [
         {
           action: {

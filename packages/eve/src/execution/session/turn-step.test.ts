@@ -36,7 +36,6 @@ import { TurnCancelledError } from "#harness/turn-cancellation.js";
 import { setHarnessEmissionState } from "#harness/emission-state.js";
 import { getPendingAuthorization, setPendingAuthorization } from "#harness/authorization.js";
 import { upsertRelayedInputRequests } from "#harness/open-input-requests.js";
-import { appendPendingInputBatch } from "#harness/input-requests.js";
 import { queueDeferredStepInput } from "#harness/pending-input-batches.js";
 import type { HarnessSession, StepFn, StepResult } from "#harness/types.js";
 import { createRuntimeHookRegistry } from "#runtime/hooks/registry.js";
@@ -99,6 +98,7 @@ function turnStep(
 import { routeProxiedDeliverStep } from "#execution/proxied-deliver-step.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
 import { runSessionStateStep } from "#internal/testing/session-state-step.js";
+import { parkApprovals } from "#internal/testing/approval-fixtures.js";
 
 const REQUEST_EVENT = { sequence: 0, stepIndex: 0, turnId: "turn_0" };
 
@@ -970,11 +970,17 @@ describe("turnStep", () => {
     const continueStep: StepFn = async (session) => ({ next: null, session });
     const execute = vi.fn(async (session: HarnessSession): Promise<StepResult> => ({
       next: continueStep,
-      session: appendPendingInputBatch({
+      session: parkApprovals({
         requests: [
           {
             action: { callId: "call-confirm", input: {}, kind: "tool-call", toolName: "confirm" },
-            kind: "question",
+            allowFreeform: false,
+            display: "confirmation",
+            kind: "tool-approval",
+            options: [
+              { id: "approve", label: "Approve" },
+              { id: "cancel", label: "Cancel" },
+            ],
             prompt: "Continue?",
             requestId: "request-confirm",
           },

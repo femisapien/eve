@@ -13,9 +13,10 @@ import type { SessionAuthContext } from "#channel/types.js";
 import { settleDirectApprovalResponse } from "#harness/approval-candidates.js";
 import { coordinateApprovalDelivery } from "#harness/approval-delivery-coordinator.js";
 import { selectApprovalReplayBatch } from "#harness/input-requests.js";
-import { appendPendingInputBatch, getPendingInputBatches } from "#harness/pending-input-batches.js";
+import { getPendingInputBatches } from "#harness/pending-input-batches.js";
 import type { HarnessSession } from "#harness/types.js";
 import type { InputRequest } from "#shared/input.js";
+import { parkApprovals } from "#internal/testing/approval-fixtures.js";
 
 const request: InputRequest = {
   action: { callId: "call-1", input: { marker: "durable" }, kind: "tool-call", toolName: "gate" },
@@ -38,7 +39,7 @@ const responder: SessionAuthContext = {
 };
 
 function parkedSession(): HarnessSession {
-  return appendPendingInputBatch({
+  return parkApprovals({
     requests: [request],
     responseAuthRequiredRequestIds: [request.requestId],
     responseMessages: [],
@@ -299,7 +300,7 @@ describe("coordinateApprovalDelivery", () => {
       prompt: "Approve tool call: gate-2",
       requestId: "approval-2",
     };
-    const parked = appendPendingInputBatch({
+    const parked = parkApprovals({
       requests: [request, secondRequest],
       responseMessages: [],
       session: {
@@ -370,7 +371,7 @@ describe("text approval replay preparation", () => {
     responseAuthRequiredRequestIds?: string[],
   ) {
     const base = parkedSession();
-    return appendPendingInputBatch({
+    return parkApprovals({
       requests,
       responseAuthRequiredRequestIds,
       responseMessages: [],
@@ -406,17 +407,6 @@ describe("text approval replay preparation", () => {
         stepInput: { message: "approve" },
       }),
     ).toBe(false);
-  });
-
-  it("does not interpret text when multiple batches are pending", () => {
-    const session = appendPendingInputBatch({
-      requests: [{ ...request, requestId: "approval-2" }],
-      responseMessages: [],
-      session: sessionWithRequests(),
-    });
-    expect(shouldPrepareApprovalReplayTools({ session, stepInput: { message: "approve" } })).toBe(
-      false,
-    );
   });
 
   it("preserves an explicit cancellation over approval text", () => {

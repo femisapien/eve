@@ -51,10 +51,8 @@ export function responsesForBatches(
 
 export function appendResolvedBatchTranscript(
   messages: ModelMessage[],
-  batch: PendingInputBatch,
   toolParts: readonly ToolResponsePart[],
 ): void {
-  messages.push(...batch.responseMessages);
   if (toolParts.length > 0) {
     messages.push({ content: [...toolParts], role: "tool" });
   }

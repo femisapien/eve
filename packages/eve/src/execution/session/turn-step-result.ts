@@ -1,7 +1,6 @@
 import { createDurableSessionValues } from "#execution/durable-session-store.js";
 import { derivePendingState } from "#execution/session/pending-turn-state.js";
 import type { DurableStepResult } from "#execution/session/turn-step-types.js";
-import { getPendingInputBatches } from "#harness/pending-input-batches.js";
 import { readTurnInputRequests } from "#harness/open-input-requests.js";
 import { getTurnUsageState, takeSessionUsageDelta, toUsage } from "#harness/turn-tag-state.js";
 import type { StepResult } from "#harness/types.js";
@@ -42,12 +41,7 @@ export function resolveSessionStepResult(
       authorizationAttemptIds: pending.authorizationAttemptIds ?? [],
       hasPendingInputBatch: pending.hasPendingInputBatch,
       hold: "request",
-      inputRequestIds: [
-        ...getPendingInputBatches(stepResult.session.state).flatMap((batch) =>
-          batch.requests.map((request) => request.requestId),
-        ),
-        ...readTurnInputRequests(stepResult.session.state).keys(),
-      ],
+      inputRequestIds: [...readTurnInputRequests(stepResult.session.state).keys()],
       ...values,
     };
   }

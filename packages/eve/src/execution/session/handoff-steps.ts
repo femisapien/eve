@@ -20,20 +20,19 @@ export function isSessionStateIdleForHandoff(sessionState: DurableSessionState):
 
   // These registries are deleted when work settles. Their ordinary readers
   // tolerate malformed values as absent; that must not authorize a handoff.
-  // `proxyInputRequests` is the relayed-request map `openInputRequests`
-  // replaced; it stays so a session an earlier version parked finishes on the
-  // deployment that can still answer it.
+  // `proxyInputRequests` and `pendingInputBatches` are the stores
+  // `openInputRequests` replaced; they stay so a session an earlier version
+  // parked finishes on the deployment that can still answer it.
   const pendingKeys = [
     "eve.runtime.pendingAuthorization",
     "eve.runtime.pendingInputBatch",
+    "eve.runtime.pendingInputBatches",
     "eve.runtime.pendingCoordinationBatch",
     "eve.runtime.deferredStepInput",
     "eve.harness.pendingWorkflowInterrupt",
     "eve.runtime.proxyInputRequests",
   ];
   if (pendingKeys.some((key) => state?.[key] !== undefined)) return false;
-  const batches = state?.["eve.runtime.pendingInputBatches"];
-  if (batches !== undefined && (!Array.isArray(batches) || batches.length > 0)) return false;
   const openRequests = state?.["eve.runtime.openInputRequests"];
   if (
     openRequests !== undefined &&

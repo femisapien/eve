@@ -1,4 +1,5 @@
 import { context as otelContext, trace } from "#compiled/@opentelemetry/api/index.js";
+import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import {
   type FilePart,
   jsonSchema,
@@ -61,7 +62,7 @@ import {
   modelFacingAuthorizationOutput,
   requestAuthorization,
 } from "#harness/authorization.js";
-import { hasPendingInputBatch, appendPendingInputBatch } from "#harness/input-requests.js";
+import { hasPendingInputBatch } from "#harness/input-requests.js";
 import { getPendingInputBatches } from "#harness/pending-input-batches.js";
 import { getPendingCoordinationBatch, pendingCoordinationCallIds } from "#harness/coordination.js";
 import { PendingSkillAnnouncementKey } from "#context/dynamic-skill-lifecycle.js";
@@ -88,6 +89,7 @@ import {
 } from "#instrumentation/runtime.js";
 import type { RuntimeContextResolver } from "#tracing/otel-declaration.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
+import { parkApprovals } from "#internal/testing/approval-fixtures.js";
 
 // The harness runs outside a workflow body here, where run attributes cannot
 // be written; the attribute contract is covered by emit.test.ts.
@@ -359,8 +361,22 @@ function mockApprovalAlongsideWorkflowTask(): void {
   });
 }
 
+/** The tool the pending approval fixtures wait on, for steps that resume them. */
+function bashToolEntry(): [string, HarnessToolDefinition] {
+  return [
+    "bash",
+    {
+      description: "Run shell commands",
+      execute: vi.fn().mockResolvedValue("/workspace"),
+      inputSchema: jsonSchema({ type: "object" }),
+      name: "bash",
+    },
+  ];
+}
+
 function createDelegationToolMap(): ToolLoopHarnessConfig["tools"] {
   return new Map([
+    bashToolEntry(),
     [
       "add",
       {
@@ -737,7 +753,7 @@ function pendingBashApprovalResult(): Record<string, unknown> {
 }
 
 function createPendingBashApprovalSession(): HarnessSession {
-  return appendPendingInputBatch({
+  return parkApprovals({
     requests: [
       {
         action: {
@@ -788,7 +804,7 @@ function createPendingBashApprovalSession(): HarnessSession {
 }
 
 function createPendingProtectedActionApprovalSessionWithSiblingCall(): HarnessSession {
-  return appendPendingInputBatch({
+  return parkApprovals({
     requests: [
       {
         action: {
@@ -6475,7 +6491,7 @@ describe("createToolLoopHarness", () => {
     const harness = createToolLoopHarness(
       createTestConfig(emit, {
         historyProjector: ({ messages }) => messages.filter((message) => message !== hidden),
-        tools: new Map(),
+        tools: new Map([bashToolEntry()]),
       }),
     );
     const result = await contextStorage.run(new ContextContainer(), () =>
@@ -6542,7 +6558,9 @@ describe("createToolLoopHarness", () => {
       toolResults: [],
     });
 
-    const harness = createToolLoopHarness(createTestConfig(undefined, { tools: new Map() }));
+    const harness = createToolLoopHarness(
+      createTestConfig(undefined, { tools: new Map([bashToolEntry()]) }),
+    );
     const result = await harness(createPendingBashApprovalSession(), {
       inputResponses: [{ optionId: "approve", requestId: "approval-1" }],
     });
@@ -7480,7 +7498,9 @@ describe("createToolLoopHarness", () => {
     const { emit } = createEventCollector();
     const session = createPendingBashApprovalSession();
 
-    const harness = createToolLoopHarness(createTestConfig(emit, { tools: new Map() }));
+    const harness = createToolLoopHarness(
+      createTestConfig(emit, { tools: new Map([bashToolEntry()]) }),
+    );
     const result = await harness(session, {
       inputResponses: [{ optionId: "approve", requestId: "approval-1" }],
     });
@@ -8017,7 +8037,7 @@ describe("createToolLoopHarness", () => {
       ? (settings: S) => ToolLoopAgent
       : never);
 
-    const session = appendPendingInputBatch({
+    const session = parkApprovals({
       requests: [
         {
           action: {

@@ -10,15 +10,14 @@ import {
   consumeDeferredStepInput,
   getApprovedTools,
   getPendingInputRequestIds,
-  hasPendingInputBatch,
   hasStepInput,
   resolvePendingInput,
-  appendPendingInputBatch,
 } from "#harness/input-requests.js";
 import { getDeferredStepInput } from "#harness/pending-input-batches.js";
 import { createRuntimeToolCallActionFromToolCall } from "#harness/tool-call-action.js";
 import { buildToolApproval, buildToolSet } from "#harness/tools.js";
 import type { HarnessSession, HarnessToolMap } from "#harness/types.js";
+import { parkApprovals } from "#internal/testing/approval-fixtures.js";
 
 function createHarnessSession(): HarnessSession {
   return {
@@ -119,7 +118,7 @@ describe("createRuntimeToolCallActionFromToolCall", () => {
 
 describe("resolvePendingInput", () => {
   it("defers a follow-up message until after tool approvals are resolved", () => {
-    const session = appendPendingInputBatch({
+    const session = parkApprovals({
       requests: [
         {
           action: {
@@ -187,7 +186,7 @@ describe("resolvePendingInput", () => {
   });
 
   it("defers channel context until after tool approvals are resolved", () => {
-    const session = appendPendingInputBatch({
+    const session = parkApprovals({
       requests: [
         {
           action: {
@@ -247,7 +246,7 @@ describe("resolvePendingInput", () => {
   });
 
   it("resolves approval when follow-up text matches an option", () => {
-    const session = appendPendingInputBatch({
+    const session = parkApprovals({
       requests: [
         {
           action: {
@@ -312,7 +311,7 @@ describe("resolvePendingInput", () => {
   });
 
   it("records compound approval key when resolveApprovalKey is provided", () => {
-    const session = appendPendingInputBatch({
+    const session = parkApprovals({
       requests: [
         {
           action: {
@@ -379,7 +378,7 @@ describe("resolvePendingInput", () => {
      * unmatched. The harness must emit the matching tool-result
      * itself so persisted history is replay-safe.
      */
-    const session = appendPendingInputBatch({
+    const session = parkApprovals({
       requests: [
         {
           action: {
@@ -448,7 +447,7 @@ describe("resolvePendingInput", () => {
   });
 
   it("returns a rejected action for an ACP denial", () => {
-    const session = appendPendingInputBatch({
+    const session = parkApprovals({
       event: { sequence: 5, stepIndex: 1, turnId: "turn_0" },
       requests: [
         {
@@ -520,7 +519,7 @@ describe("resolvePendingInput", () => {
   });
 
   it("does not return a rejected action when an approval is granted", () => {
-    const session = appendPendingInputBatch({
+    const session = parkApprovals({
       event: { sequence: 5, stepIndex: 1, turnId: "turn_0" },
       requests: [
         {
@@ -581,7 +580,7 @@ describe("resolvePendingInput", () => {
       prompt: "Approve tool call: bash",
       requestId,
     });
-    const session = appendPendingInputBatch({
+    const session = parkApprovals({
       event: { sequence: 5, stepIndex: 1, turnId: "turn_0" },
       requests: [approval("approval-1", "call-1"), approval("approval-2", "call-2")],
       responseMessages: [],
@@ -616,7 +615,7 @@ describe("resolvePendingInput", () => {
   });
 
   it("steers past a pending approval when a follow-up message arrives instead of an answer", () => {
-    const session = appendPendingInputBatch({
+    const session = parkApprovals({
       event: { sequence: 7, stepIndex: 2, turnId: "turn_1" },
       requests: [
         {
@@ -658,7 +657,7 @@ describe("resolvePendingInput", () => {
   });
 
   it("preserves context-only input while a pending batch stays open", () => {
-    const session = appendPendingInputBatch({
+    const session = parkApprovals({
       requests: [
         {
           action: {
@@ -687,7 +686,7 @@ describe("resolvePendingInput", () => {
   });
 
   it("falls back to tool name when no approvalKey is provided", () => {
-    const session = appendPendingInputBatch({
+    const session = parkApprovals({
       requests: [
         {
           action: {
@@ -747,7 +746,7 @@ describe("resolvePendingInput", () => {
     // survive on session.state across the park, so approval returns
     // "not-applicable" and the user is never asked to approve a second time.
     // See research/per-tool-auth-known-issues.md, issue 3.
-    const session = appendPendingInputBatch({
+    const session = parkApprovals({
       requests: [
         {
           action: {
@@ -867,187 +866,8 @@ describe("pending input batch collection", () => {
     };
   }
 
-  it("reads a legacy singleton batch and rewrites it as a list", () => {
-    const legacySession: HarnessSession = {
-      ...createHarnessSession(),
-      state: {
-        "eve.runtime.pendingInputBatch": {
-          requests: [approvalRequest("approval-1", "call-1")],
-          responseMessages: [batchOutput("call-1", "bash")],
-        },
-      },
-    };
-
-    expect(getPendingInputRequestIds(legacySession.state)).toEqual(new Set(["approval-1"]));
-
-    const appended = appendPendingInputBatch({
-      requests: [approvalRequest("approval-2", "call-2")],
-      responseMessages: [batchOutput("call-2", "bash")],
-      session: legacySession,
-    });
-    expect(appended.state?.["eve.runtime.pendingInputBatch"]).toBeUndefined();
-    expect(getPendingInputRequestIds(appended.state)).toEqual(
-      new Set(["approval-1", "approval-2"]),
-    );
-
-    const result = resolvePendingInput({
-      session: legacySession,
-      stepInput: { inputResponses: [{ requestId: "approval-1", optionId: "approve" }] },
-    });
-    expect(result.outcome).toBe("resolved");
-    expect(result.session.state?.["eve.runtime.pendingInputBatch"]).toBeUndefined();
-    expect(hasPendingInputBatch(result.session.state)).toBe(false);
-  });
-
-  it("resolves only the first approval-bearing batch and defers later responses", () => {
-    let session = appendPendingInputBatch({
-      requests: [approvalRequest("approval-1", "call-1")],
-      responseMessages: [batchOutput("call-1", "bash")],
-      session: createHarnessSession(),
-    });
-    session = appendPendingInputBatch({
-      requests: [approvalRequest("approval-2", "call-2")],
-      responseMessages: [batchOutput("call-2", "bash")],
-      session,
-    });
-
-    const first = resolvePendingInput({
-      session,
-      stepInput: {
-        inputResponses: [
-          { requestId: "approval-1", optionId: "approve" },
-          { requestId: "approval-2", optionId: "approve" },
-        ],
-      },
-    });
-
-    expect(first.outcome).toBe("resolved");
-    expect(first.messages).toEqual([
-      { content: "previous", kind: "user", role: "user" },
-      batchOutput("call-1", "bash"),
-      {
-        content: [
-          {
-            approvalId: "approval-1",
-            approved: true,
-            reason: undefined,
-            type: "tool-approval-response",
-          },
-        ],
-        role: "tool",
-      },
-    ]);
-    expect(getPendingInputRequestIds(first.session.state)).toEqual(new Set(["approval-2"]));
-
-    const deferred = consumeDeferredStepInput({ session: first.session });
-    expect(deferred.input).toEqual({
-      inputResponses: [{ requestId: "approval-2", optionId: "approve" }],
-    });
-
-    const second = resolvePendingInput({ session: deferred.session, stepInput: deferred.input });
-    expect(second.outcome).toBe("resolved");
-    expect(second.messages.at(-1)).toMatchObject({
-      content: [{ approvalId: "approval-2", approved: true }],
-      role: "tool",
-    });
-    expect(hasPendingInputBatch(second.session.state)).toBe(false);
-  });
-
-  it("does not apply an approval grant to already-pending calls with the same key", () => {
-    let session = createHarnessSession();
-    for (const index of [1, 2, 3]) {
-      session = appendPendingInputBatch({
-        requests: [approvalRequest(`approval-${index}`, `call-${index}`)],
-        responseMessages: [batchOutput(`call-${index}`, "bash")],
-        session,
-      });
-    }
-
-    const first = resolvePendingInput({
-      session,
-      stepInput: { inputResponses: [{ requestId: "approval-1", optionId: "approve" }] },
-    });
-
-    expect(first.outcome).toBe("resolved");
-    expect(getApprovedTools(first.session)).toEqual(new Set());
-    expect(getPendingInputRequestIds(first.session.state)).toEqual(
-      new Set(["approval-2", "approval-3"]),
-    );
-
-    const second = resolvePendingInput({
-      session: first.session,
-      stepInput: { inputResponses: [{ requestId: "approval-2", optionId: "cancel" }] },
-    });
-    expect(getApprovedTools(second.session)).toEqual(new Set());
-    expect(getPendingInputRequestIds(second.session.state)).toEqual(new Set(["approval-3"]));
-
-    const third = resolvePendingInput({
-      session: second.session,
-      stepInput: { inputResponses: [{ requestId: "approval-3", optionId: "cancel" }] },
-    });
-    expect(getApprovedTools(third.session)).toEqual(new Set(["bash"]));
-    expect(hasPendingInputBatch(third.session.state)).toBe(false);
-  });
-
-  it("keeps approval grants independent across compound keys", () => {
-    const scopedApproval = (
-      requestId: string,
-      callId: string,
-      workspace: string,
-    ): InputRequest => ({
-      ...approvalRequest(requestId, callId),
-      action: {
-        callId,
-        input: { workspace },
-        kind: "tool-call",
-        toolName: "notion__notion-update-page",
-      },
-    });
-    const resolveApprovalKey = (request: InputRequest) =>
-      `${request.action.toolName}:${String(request.action.input.workspace)}`;
-    let session = appendPendingInputBatch({
-      requests: [scopedApproval("approval-1", "call-1", "workspace-a")],
-      responseMessages: [batchOutput("call-1", "notion__notion-update-page")],
-      session: createHarnessSession(),
-    });
-    session = appendPendingInputBatch({
-      requests: [scopedApproval("approval-2", "call-2", "workspace-b")],
-      responseMessages: [batchOutput("call-2", "notion__notion-update-page")],
-      session,
-    });
-    session = appendPendingInputBatch({
-      requests: [scopedApproval("approval-3", "call-3", "workspace-a")],
-      responseMessages: [batchOutput("call-3", "notion__notion-update-page")],
-      session,
-    });
-
-    const first = resolvePendingInput({
-      resolveApprovalKey,
-      session,
-      stepInput: { inputResponses: [{ requestId: "approval-1", optionId: "approve" }] },
-    });
-
-    // approval-3 shares the workspace-a key, so the grant stays masked; the
-    // bare tool name would not mask it, which is what makes the resolver matter.
-    expect(getApprovedTools(first.session, resolveApprovalKey)).toEqual(new Set());
-    expect(getPendingInputRequestIds(first.session.state)).toEqual(
-      new Set(["approval-2", "approval-3"]),
-    );
-
-    const second = resolvePendingInput({
-      resolveApprovalKey,
-      session: first.session,
-      stepInput: { inputResponses: [{ requestId: "approval-3", optionId: "cancel" }] },
-    });
-
-    expect(getApprovedTools(second.session, resolveApprovalKey)).toEqual(
-      new Set(["notion__notion-update-page:workspace-a"]),
-    );
-    expect(getPendingInputRequestIds(second.session.state)).toEqual(new Set(["approval-2"]));
-  });
-
   it("holds on a pending approval when the step brings no answer or message", () => {
-    const session = appendPendingInputBatch({
+    const session = parkApprovals({
       event: { sequence: 5, stepIndex: 1, turnId: "turn_1" },
       requests: [approvalRequest("approval-1", "call-1")],
       responseMessages: [batchOutput("call-1", "bash")],

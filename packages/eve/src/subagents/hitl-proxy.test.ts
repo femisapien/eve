@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import { openTurnInputRequest, upsertRelayedInputRequests } from "#harness/open-input-requests.js";
-import { appendPendingInputBatch } from "#harness/pending-input-batches.js";
 import type { HarnessSession } from "#harness/types.js";
 import { routeDeliverPayload } from "#subagents/hitl-proxy.js";
+import { parkApprovals } from "#internal/testing/approval-fixtures.js";
 
 const REQUEST_EVENT = { sequence: 0, stepIndex: 0, turnId: "turn_0" };
 
@@ -379,7 +379,7 @@ describe("routeDeliverPayload message resolution", () => {
     {
       open: "a tool approval",
       own: (session: HarnessSession) =>
-        appendPendingInputBatch({
+        parkApprovals({
           event: REQUEST_EVENT,
           requests: [ownRequest("approval-1", "tool-approval")],
           responseMessages: [],

@@ -140,7 +140,6 @@ export function cancelApprovalInputBatches(session: HarnessSession): HarnessSess
   for (const batch of batches) {
     appendResolvedBatchTranscript(
       messages,
-      batch,
       buildApprovalBatchToolResponseParts(batch, [], CANCELLED_APPROVAL_REASON),
     );
   }
@@ -148,13 +147,6 @@ export function cancelApprovalInputBatches(session: HarnessSession): HarnessSess
     ...removePendingInputBatches(session, batches),
     history: validateHarnessModelMessages(messages),
   };
-}
-
-/** Tool approvals still waiting for an answer, which cancelling their turn withdraws. */
-export function getPendingApprovalRequests(
-  state: HarnessSession["state"],
-): readonly InputRequest[] {
-  return pendingApprovalBatches(state).flatMap((batch) => batch.requests);
 }
 
 function pendingApprovalBatches(state: HarnessSession["state"]): readonly PendingInputBatch[] {
@@ -195,7 +187,7 @@ function resolveApprovalBatch(input: {
     session: input.session,
   });
   const toolParts = buildApprovalBatchToolResponseParts(input.batch, input.responses);
-  appendResolvedBatchTranscript(input.messages, input.batch, toolParts);
+  appendResolvedBatchTranscript(input.messages, toolParts);
   const rejected = buildRejectedActionBatch(input.batch, input.responses);
 
   return {

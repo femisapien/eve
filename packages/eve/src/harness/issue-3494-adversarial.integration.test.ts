@@ -233,11 +233,8 @@ function fixture(
     updateSession(update: (session: HarnessSession) => HarnessSession) {
       session = update(session);
     },
-    // Approvals wait in batches; the budget question is the turn's own request.
-    pending: () => [
-      ...getPendingInputBatches(session.state).flatMap((b) => b.requests),
-      ...[...readTurnInputRequests(session.state).values()].map((entry) => entry.request),
-    ],
+    // The turn's own requests: its tool approvals and budget question.
+    pending: () => [...readTurnInputRequests(session.state).values()].map((entry) => entry.request),
     async gate(...names: string[]) {
       script.push(calls(...names));
       const parked = await drive({ message: `Prepare ${names.join(" and ")}.` });
