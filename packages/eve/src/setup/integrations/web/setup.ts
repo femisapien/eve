@@ -3,6 +3,11 @@ import { join } from "node:path";
 
 import { resolveEveProjectContext } from "#internal/project-context.js";
 import { select } from "#setup/ask.js";
+import type { RegistrySetupCompletion } from "#setup/registry-setup-protocol.js";
+import type { VercelProjectReference } from "#setup/project-resolution.js";
+import { installScaffoldDependencies } from "../shared/scaffold.js";
+import { prepareWebAuthScaffold } from "./auth-scaffold.js";
+import { provisionWebChatAuth } from "./provision-auth.js";
 import { detectPackageManager, type PackageManagerKind } from "#setup/package-manager.js";
 import { pathExists, writeTextFile } from "#setup/scaffold/files.js";
 import { WEB_CHANNEL_TEMPLATES } from "#setup/scaffold/create/web-template.js";
@@ -50,6 +55,9 @@ export interface WebSetupDeps {
   readTextFile(path: string): Promise<string>;
   resolveEveProjectContext: typeof resolveEveProjectContext;
   writeTextFile: typeof writeTextFile;
+  prepareWebAuthScaffold: typeof prepareWebAuthScaffold;
+  provisionWebChatAuth: typeof provisionWebChatAuth;
+  installScaffoldDependencies: typeof installScaffoldDependencies;
 }
 
 const defaultDeps: WebSetupDeps = {
@@ -58,11 +66,15 @@ const defaultDeps: WebSetupDeps = {
   readTextFile: (path) => readFile(path, "utf8"),
   resolveEveProjectContext,
   writeTextFile,
+  prepareWebAuthScaffold,
+  provisionWebChatAuth,
+  installScaffoldDependencies,
 };
 
 interface WebSetupPlan {
   hosting: "next" | "vercel";
   packageManager: PackageManagerKind;
+  authProject?: VercelProjectReference;
 }
 
 export async function prepareWebSetup(
@@ -95,10 +107,38 @@ export async function prepareWebSetup(
       required: true,
     }),
   );
-  return {
+  const authentication = await context.asker.ask(
+    select({
+      key: "web-authentication",
+      message: "How should people sign in to Web Chat?",
+      options: [
+        {
+          id: "vercel",
+          label: "Sign in with Vercel",
+          hint: "Create a Vercel App for members of the linked project's team.",
+          value: "vercel" as const,
+        },
+        {
+          id: "custom",
+          label: "Configure authentication myself",
+          hint: "Keep the current channel auth; the default rejects production browser requests.",
+          value: "custom" as const,
+        },
+      ],
+      recommended: "vercel" as const,
+      required: true,
+    }),
+  );
+  const authProject =
+    authentication === "vercel"
+      ? await context.resolveVercelProject("Web Chat sign-in")
+      : undefined;
+  const plan: WebSetupPlan = {
     hosting,
     packageManager: (await deps.detectPackageManager(project.environmentRoot)).kind,
   };
+  if (authProject !== undefined) plan.authProject = authProject;
+  return plan;
 }
 
 function runScriptCommand(packageManager: PackageManagerKind, script: string): string {
@@ -154,7 +194,15 @@ export async function applyWebSetup(
   const agentAppRoot =
     project.kind === "workspace-member" ? project.member.appRoot : project.appRoot;
   const channelPath = join(agentAppRoot, "agent", "channels", "eve.ts");
-  if (context.force || !(await deps.pathExists(channelPath))) {
+  const writeAuth =
+    plan.authProject === undefined
+      ? undefined
+      : await deps.prepareWebAuthScaffold({
+          environmentRoot: project.environmentRoot,
+          agentAppRoot,
+          force: context.force,
+        });
+  if (writeAuth === undefined && (context.force || !(await deps.pathExists(channelPath)))) {
     await deps.writeTextFile(channelPath, WEB_CHANNEL_TEMPLATES.default, {
       force: context.force,
     });
@@ -203,8 +251,24 @@ export default withEve(nextConfig);
     await deps.writeTextFile(nextConfigPath, NEXT_HOSTED_CONFIG, { force: true });
     startScript = "dev:web";
   }
+  if (plan.authProject !== undefined && writeAuth !== undefined) {
+    await deps.provisionWebChatAuth(plan.authProject, context.signal);
+    context.signal?.throwIfAborted();
+    await writeAuth();
+    await deps.installScaffoldDependencies({
+      changed: true,
+      log: context.presenter.log,
+      projectPath: project.environmentRoot,
+      signal: context.signal,
+    });
+    context.presenter.log.success("Configured Sign in with Vercel for this project's team");
+    context.presenter.nextSteps([
+      "Deploy the project to use Sign in with Vercel. Production and preview credentials are configured.",
+      "Local development continues to use localDev() without signing in.",
+    ]);
+  }
   context.presenter.log.success("Configured channel: web");
-  return {
+  const completion: RegistrySetupCompletion = {
     facts: [
       {
         label: "",
@@ -212,6 +276,8 @@ export default withEve(nextConfig);
       },
     ],
   };
+  if (plan.authProject !== undefined) completion.deploymentRequired = true;
+  return completion;
 }
 
 export const WEB_SETUP = defineSetupIntegration({
