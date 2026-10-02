@@ -234,11 +234,27 @@ export default mcpChannel({
 
 Every caller the channel's `auth` admits can then call those tools directly, as themselves, outside the agent's model loop and instructions. Approval policies still apply. Review what becomes callable before you turn this on.
 
+Set `agent: false` to stop serving the `agent_*` tools, for a server that publishes only tools and skills:
+
+```ts title="agent/channels/mcp.ts"
+import { localDev } from "eve/channels/auth";
+import { mcpChannel } from "eve/channels/mcp";
+
+export default mcpChannel({
+  auth: localDev(),
+  agent: false,
+  tools: true,
+  skills: true,
+});
+```
+
+The channel then sends no `agent_*` instructions, and the `agent_*` names are free for the agent's own tools. Turning off `agent`, `tools`, and `skills` all at once throws, since the channel would publish nothing.
+
 ### Tools
 
-With `tools: true`, `tools/list` returns the `agent_*` tools first, then every published tool in name order, with its input and output JSON schemas unchanged. Tools that need approval carry `_meta["dev.eve/approval"]: true`. `tools/list` and `server/discover` return `cacheScope: "private"` and `ttlMs: 300000`. The list is fixed per deployment, so clients may cache it for five minutes, but only per caller.
+With `tools: true`, `tools/list` returns the `agent_*` tools first (unless `agent: false`), then every published tool in name order, with its input and output JSON schemas unchanged. Tools that need approval carry `_meta["dev.eve/approval"]: true`. `tools/list` and `server/discover` return `cacheScope: "private"` and `ttlMs: 300000`. The list is fixed per deployment, so clients may cache it for five minutes, but only per caller.
 
-The `agent_*` names are reserved: an agent tool named `agent_start`, `agent_get`, `agent_update`, or `agent_cancel` is not published, and eve logs a warning.
+While `agent` is on, the `agent_*` names are reserved: an agent tool named `agent_start`, `agent_get`, `agent_update`, or `agent_cancel` is not published, and eve logs a warning.
 
 #### Tool sessions
 

@@ -71,11 +71,17 @@ export interface McpChannelInput {
   /** Override the default MCP route path (`/eve/v1/mcp`). */
   readonly route?: string;
   /**
+   * Serve the `agent_*` tools, which start and follow a durable agent task.
+   * Defaults to `true`. With `false`, the channel serves only what `tools`
+   * and `skills` publish, and the `agent_*` names are not reserved.
+   */
+  readonly agent?: boolean;
+  /**
    * Also publish the agent's invocable tools over `tools/list` and
-   * `tools/call`, next to the `agent_*` tools. Defaults to `false`. `true`
-   * adds the `dev.eve/tool-sessions` extension to `server/discover`. The
-   * `agent_*` names stay reserved: an agent tool with one of them is not
-   * published.
+   * `tools/call`. Defaults to `false`. `true` adds the
+   * `dev.eve/tool-sessions` extension to `server/discover`. While `agent` is
+   * on, its `agent_*` names stay reserved: an agent tool with one of them is
+   * not published.
    */
   readonly tools?: boolean;
   /** Publish the agent's skills (SEP-2640). Defaults to `false`. */
@@ -107,6 +113,7 @@ export type McpChannel = Channel;
 const MCP_LIST_CACHE_HINT = { cacheScope: "private", ttlMs: 5 * 60 * 1000 } as const;
 
 interface McpChannelConfig {
+  readonly agent: boolean;
   readonly auth: AuthFn<Request> | readonly AuthFn<Request>[];
   readonly oauth: OAuthResourceOptions | undefined;
   readonly requestState: () => McpToolsRequestState;
@@ -120,15 +127,23 @@ interface McpChannelConfig {
  *
  * This channel owns MCP transport, authentication, and durable eve invocation.
  * It reuses eve's inbound auth strategies and recognizes `oauthResource(...)`
- * metadata when OAuth discovery is needed. It always serves the `agent_*`
- * invocation tools. With `tools: true` it also publishes the agent's
- * invocable tools (each call runs through `invokeTool` in a tool session),
- * and with `skills: true` its skills.
+ * metadata when OAuth discovery is needed. It serves the `agent_*` invocation
+ * tools unless `agent: false`. With `tools: true` it also publishes the
+ * agent's invocable tools (each call runs through `invokeTool` in a tool
+ * session), and with `skills: true` its skills.
  * The file containing this channel must be `agent/channels/mcp.ts`.
  */
 export function mcpChannel(input: McpChannelInput): McpChannel {
   if (input?.auth === undefined) {
     throw new Error("mcpChannel requires auth. Use none() for explicit public access.");
+  }
+  const agent = input.agent ?? true;
+  const tools = input.tools ?? false;
+  const skills = input.skills ?? false;
+  if (!agent && !tools && !skills) {
+    throw new Error(
+      "mcpChannel publishes nothing with agent, tools, and skills all false. Enable at least one.",
+    );
   }
   const path = input.route ?? "/eve/v1/mcp";
   const oauth = readOAuthResourceOptions(input.auth);
@@ -139,14 +154,15 @@ export function mcpChannel(input: McpChannelInput): McpChannel {
       : resolveMcpRequestStateSecret(input.requestStateSecret);
   let requestState: McpToolsRequestState | undefined;
   const config: McpChannelConfig = {
+    agent,
     auth: input.auth,
     oauth,
     requestState() {
       requestState ??= toRequestState(optionSecret ?? resolveMcpRequestStateSecret(undefined));
       return requestState;
     },
-    skills: input.skills ?? false,
-    tools: input.tools ?? false,
+    skills,
+    tools,
     trustedForwarders: input.trustedForwarders,
   };
   const handle = async (request: Request, args: RouteHandlerArgs) =>
@@ -427,7 +443,7 @@ async function handleMcpRequest(
   principals: McpRequestPrincipals,
 ): Promise<Response> {
   const createSession = readRouteSessionCreator(args);
-  if (readRouteChannelName(args) === undefined || createSession === undefined) {
+  if (config.agent && (readRouteChannelName(args) === undefined || createSession === undefined)) {
     return Response.json({ error: "MCP requires agent route context." }, { status: 500 });
   }
   let description: AgentDescription;
@@ -440,11 +456,14 @@ async function handleMcpRequest(
       { status: 500 },
     );
   }
-  const agentTools = createInvocationTools(
-    new WorkflowAgentInvocationExecution({ createSession, from: args.from }),
-    description.description,
-    isPublicAccess(invocationOwner(principals)),
-  );
+  const agentTools =
+    config.agent && createSession !== undefined
+      ? createInvocationTools(
+          new WorkflowAgentInvocationExecution({ createSession, from: args.from }),
+          description.description,
+          isPublicAccess(invocationOwner(principals)),
+        )
+      : [];
   const features: McpServerFeature<McpRequestPrincipals>[] = [];
   let requestState: McpToolsRequestState | undefined;
   if (config.tools) {
@@ -474,7 +493,7 @@ async function handleMcpRequest(
     authenticate: async () => principals,
     cacheHints: { "server/discover": MCP_LIST_CACHE_HINT, "tools/list": MCP_LIST_CACHE_HINT },
     features,
-    instructions: MCP_SERVER_INSTRUCTIONS,
+    instructions: config.agent ? MCP_SERVER_INSTRUCTIONS : undefined,
     listen: "ack-then-close",
     name: description.name,
     requestState: {
@@ -485,7 +504,7 @@ async function handleMcpRequest(
       },
     },
     // With `tools` on, the tools feature serves `agent_*` itself (see `reservedTools`).
-    tools: config.tools ? undefined : agentTools,
+    tools: config.tools || !config.agent ? undefined : agentTools,
     version: resolveInstalledPackageInfo().version,
   })(request);
 }
