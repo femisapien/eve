@@ -27,13 +27,8 @@ export interface Prompt {
   clientContext: ClientContext | undefined;
 }
 
-/** `pending` is the transcript the step resumes, which follows the turn's preamble in history. */
-export async function buildPrompt(
-  step: Step,
-  turn: TurnInput,
-  pending: readonly HarnessModelMessage[],
-): Promise<Prompt> {
-  const messages = validateHarnessModelMessages([...step.session.history, ...pending]);
+export async function buildPrompt(step: Step, turn: TurnInput): Promise<Prompt> {
+  const messages = validateHarnessModelMessages([...step.session.history]);
   if (!hasUnansweredToolCall(messages)) {
     const taskContext = await appendTaskContext({
       messages,
@@ -45,24 +40,62 @@ export async function buildPrompt(
     messages.push(...taskContext.messages);
   }
 
-  let clientContext = turn.storedClientContext;
-  if (turn.clientContext !== undefined) {
-    clientContext = {
-      insertionIndex: turn.storedClientContext?.insertionIndex ?? messages.length,
-      messages: turn.clientContext,
-      turnId: turn.turnId,
-    };
-  }
+  const placed = placeTurnInput(step, messages, turn);
+  return {
+    clientContext: getTurnClientContextState(step.session.state, turn.turnId),
+    messages: placed,
+  };
+}
+
+/**
+ * The prompt a step starts on while approved calls wait to run: history and the turn's input,
+ * without the task results and the client context's position a prompt settles, which wait for
+ * the prompt the model reads once the calls have run.
+ */
+export function previewPrompt(step: Step, turn: TurnInput): Prompt {
+  const messages = validateHarnessModelMessages([...step.session.history]);
+  return {
+    clientContext: turnClientContext(messages, turn),
+    messages: withTurnInput(messages, turn),
+  };
+}
+
+/**
+ * The turn's input after `messages`, past a tool-result boundary when they end in tool results.
+ * The client's context takes its position here, and never joins the messages.
+ */
+export function placeTurnInput(
+  step: Step,
+  messages: readonly HarnessModelMessage[],
+  turn: TurnInput,
+): HarnessModelMessage[] {
+  const clientContext = turnClientContext(messages, turn);
   if (clientContext !== undefined) {
     step.session = setTurnClientContextState(step.session, clientContext);
   }
+  return withTurnInput(messages, turn);
+}
+
+function turnClientContext(
+  messages: readonly HarnessModelMessage[],
+  turn: TurnInput,
+): ClientContext | undefined {
+  if (turn.clientContext === undefined) return turn.storedClientContext;
   return {
-    clientContext,
-    messages: [
-      ...messages,
-      ...(followsToolResults(messages) ? followingToolResults(turn) : turn.messages),
-    ],
+    insertionIndex: turn.storedClientContext?.insertionIndex ?? messages.length,
+    messages: turn.clientContext,
+    turnId: turn.turnId,
   };
+}
+
+function withTurnInput(
+  messages: readonly HarnessModelMessage[],
+  turn: TurnInput,
+): HarnessModelMessage[] {
+  return [
+    ...messages,
+    ...(followsToolResults(messages) ? followingToolResults(turn) : turn.messages),
+  ];
 }
 
 /** `messages`, the prompt's by default, with the client's context at its position. */

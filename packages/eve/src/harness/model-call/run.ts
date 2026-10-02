@@ -1,21 +1,24 @@
 import type { LanguageModel, ModelMessage } from "ai";
 
 import { HistoryStateKey } from "#context/keys.js";
-import { activeTurnId } from "#harness/active-turn-id.js";
-import { emitStepStarted } from "#harness/emission.js";
 import type { GenerationSteering } from "#harness/generation-steering.js";
+import { type HarnessModelMessage, validateHarnessModelMessages } from "#harness/messages.js";
 import {
   type ApprovedWork,
   dispatchApprovedWorkflows,
   enforceBudget,
-  executeApprovedLocalCalls,
+  hasApprovedWork,
   humanInputContext,
+  runApprovedLocalCalls,
 } from "#harness/hitl/index.js";
-import { type HarnessModelMessage, validateHarnessModelMessages } from "#harness/messages.js";
+import { stepStartedForResolvers } from "#harness/session-machine/resolver-events.js";
+import { startStep } from "#harness/session-machine/transitions.js";
+import { activeTurnId } from "#harness/session-machine/view.js";
 import { failBoundaryEvent, failModelSelection, type Step } from "#harness/step/context.js";
 import type { TurnInput } from "#harness/step/intake.js";
 import {
   buildPrompt,
+  previewPrompt,
   projectPrompt,
   type Prompt,
   withClientContext,
@@ -28,7 +31,6 @@ import {
   type StepResult,
 } from "#harness/types.js";
 import type { InstrumentationAttempt } from "#instrumentation/runtime.js";
-import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import { ModelCaller } from "./call.js";
 import type { EndsTurnTools } from "./tools.js";
 import { reportModelCallFailure } from "./failure.js";
@@ -43,8 +45,6 @@ export interface ModelResponse {
   readonly durableModelPromptMessageCount?: number;
   /** Tools that can end the turn in this step, with their `endsTurn` option. */
   readonly endsTurnTools: EndsTurnTools;
-  /** The model's output started streaming, so steering can no longer interrupt the turn. */
-  readonly outputStarted: boolean;
   readonly promptMessages: readonly HarnessModelMessage[];
   readonly requestEnvelopeTokens?: number;
   readonly result: HarnessStepResult;
@@ -53,14 +53,16 @@ export interface ModelResponse {
 /**
  * One model step of the open turn: the prompt it reads, the model that serves it, and the call
  * with its retries and recoveries. `onResponse` decides what the session does with the response.
+ *
+ * Approved work runs where the AI SDK ran it, between the step's start and the model call:
+ * approved workflow calls join their runs, the budget gate passes, then approved local calls run
+ * and the model reads their results.
  */
 export async function runModelStep(
   step: Step,
   input: {
     readonly onResponse: (response: ModelResponse) => Promise<StepResult>;
     readonly turn: TurnInput;
-    /** The transcript the step resumes, after the turn's preamble. */
-    readonly pending: readonly HarnessModelMessage[];
     readonly approved: ApprovedWork;
     readonly generation: GenerationSteering;
     /** A child's caller and a schedule hear only the turn's real end. */
@@ -70,31 +72,37 @@ export async function runModelStep(
   },
 ): Promise<StepResult> {
   const { generation } = input;
-  const prompt = await buildPrompt(step, input.turn, input.pending);
+  const approves = hasApprovedWork(step);
+  let prompt = approves ? previewPrompt(step, input.turn) : await buildPrompt(step, input.turn);
   const model = await selectModel(step, prompt);
   if (!("model" in model)) return model.failed;
 
-  const start = async (messages: readonly ModelMessage[]) => {
-    if (step.emit === undefined) return;
-    const modelId = requireSessionModelReference(step.session).id;
-    await emitStepStarted(step.emit, step.position(), modelId, messages);
-  };
+  const start = (messages: readonly ModelMessage[]) =>
+    step.apply(
+      startStep(step.view(), { modelId: requireSessionModelReference(step.session).id }),
+      messages,
+    );
   let projectedMessages = projectPrompt(step, prompt);
   try {
     await start(projectedMessages);
   } catch (error) {
     return failBoundaryEvent(step, error);
   }
-  // Approved calls run as their approvers, so who approved each is known before any runs.
-  const { approvedTools, pendingApprovalsNote } = humanInputContext(step, input.approved);
-  const dispatched = dispatchApprovedWorkflows(step, input.approved, prompt.messages);
-  if (dispatched !== undefined) return dispatched;
-  const overBudget = await enforceBudget(step, projectedMessages);
+  // The turn waits on the runtime for the runs approved calls joined.
+  if (approves && (await dispatchApprovedWorkflows(step, input.approved))) {
+    return { next: null, session: step.session };
+  }
+  // Over budget, neither approved calls nor the model run: the step's messages park with the
+  // prompt.
+  const overBudget = await enforceBudget(step, prompt.messages);
   if (overBudget !== undefined) return overBudget;
-  const approved = await executeApprovedLocalCalls(step, prompt.messages, input.setAttemptScope);
-  if (approved.held !== undefined) return approved.held;
-  prompt.messages = approved.messages;
-  projectedMessages = projectPrompt(step, prompt);
+  if (approves) {
+    const held = await runApprovedLocalCalls(step, input.approved, input.setAttemptScope);
+    if (held !== undefined) return held;
+    prompt = await buildPrompt(step, input.turn);
+    projectedMessages = projectPrompt(step, prompt);
+  }
+  const { approvedTools, pendingApprovalsNote } = humanInputContext(step);
   const caller = new ModelCaller(step, prompt, {
     approvedTools,
     generation,
@@ -106,6 +114,7 @@ export async function runModelStep(
     startStep: start,
     turnMessages: input.turn.messages,
   });
+
   let result: HarnessStepResult;
   try {
     result = await caller.call({ suppressStepStartedEmission: true });
@@ -140,7 +149,6 @@ export async function runModelStep(
           ? caller.modelMessages.length
           : undefined,
       endsTurnTools: caller.tools?.endsTurnTools ?? new Map(),
-      outputStarted: generation.outputStarted,
       promptMessages: caller.request.history,
       requestEnvelopeTokens: caller.requestEnvelopeTokens,
       result,
@@ -166,13 +174,15 @@ async function selectModel(
   const { config, ctx } = step;
   try {
     if (ctx !== undefined && config.dispatchDynamicModelEvent !== undefined) {
-      const { sequence, stepIndex } = step.position();
+      const position = step.position();
       await config.dispatchDynamicModelEvent({
         ctx,
-        event: {
-          data: { sequence, stepIndex, turnId: activeTurnId(step.position()) },
-          type: "step.started",
-        } as UnstampedMessageStreamEvent,
+        event: stepStartedForResolvers({
+          modelId: step.session.agent.modelReference?.id ?? "dynamic",
+          sequence: position.sequence,
+          stepIndex: position.stepIndex,
+          turnId: activeTurnId(position),
+        }),
         messages: validateHarnessModelMessages(step.projectHistory(withClientContext(prompt))),
       });
     }

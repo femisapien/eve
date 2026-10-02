@@ -1,174 +1,157 @@
 import type { ModelMessage } from "ai";
 
+import type { SessionAuthContext } from "#channel/types.js";
 import { buildResponseAuthorizationTools } from "#context/build-dynamic-tools.js";
-import { setPendingCoordinationBatch } from "#harness/coordination.js";
-import { advanceStep, type HarnessEmissionState } from "#harness/emission.js";
-import {
-  appendPendingInputBatch,
-  getApprovedTools,
-  hasRunnableDeferredStepInput,
-} from "#harness/hitl/input-requests.js";
-import {
-  createFrameworkUserMessage,
-  type HarnessModelMessage,
-  validateHarnessModelMessages,
-} from "#harness/messages.js";
-import { getPendingInputBatches } from "#harness/pending-input-batches.js";
+import { AuthKey, SessionKey } from "#context/keys.js";
+import { clearPendingAuthorization } from "#harness/authorization.js";
+import type { resolveInlineAuthorizationInterrupt } from "#harness/inline-tool-authorization.js";
+import { validateHarnessModelMessages } from "#harness/messages.js";
+import { fail } from "#harness/session-machine/transitions.js";
+import type { StepCoordinates } from "#harness/session-machine/view.js";
 import type { Step } from "#harness/step/context.js";
-import type { HarnessToolMap, StepResult } from "#harness/types.js";
-import { dispatchApprovedWorkflowCalls } from "#harness/workflow-dispatch.js";
-import { createInputRequestedEvent } from "#protocol/message.js";
+import type { HarnessSessionBase, HarnessToolMap, StepResult } from "#harness/types.js";
 import type { RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
 import type { InputRequest } from "#shared/input.js";
+import { renderPendingApprovalsInstruction } from "./approval-prompt.js";
 import {
-  renderPendingApprovalsInstruction,
-  renderPendingApprovalsSnippet,
-} from "./approval-prompt.js";
-import { applyBudgetAnswer } from "./budget.js";
-import { type ApprovedWork, approvalKeyResolver, holdForInput } from "./intake.js";
-import { setApprovedCallCallers } from "./approved-call-callers.js";
+  grantedApprovalKeys,
+  hasRunnableQueue,
+  parkOnApprovals as parkOnApprovalsTransition,
+  requestLimit,
+  requireSignIn,
+} from "./approvals.js";
+import { checkSessionUsageLimit } from "./budget.js";
+import { retireActiveCandidates } from "./candidates.js";
+import { holdForInput } from "./intake.js";
 
 // The session's human-in-the-loop lifecycle, behind the few points where the rest of the harness
-// meets it: a delivery's answers before its turn runs (`acceptHumanInput`), the work they approved
-// once it does (`runApprovedWork`, `dispatchApprovedWorkflows`), what a model call reads about the
-// approvals (`humanInputContext`), the budget gate before each model call, and a model step's
-// gated calls and sign-ins. Outside this directory, only leaf helpers are read directly.
+// meets it: a delivery's answers and sign-in callbacks before its turn runs (`acceptHumanInput`),
+// the work they approved once its model step starts (`runApprovedLocalCalls`), a model step's gated calls and
+// sign-ins, the budget gate before each model call, and what the model reads about pending
+// approvals. Nothing outside this directory reads its records.
 
-export { acceptHumanInput, type ApprovedWork, type HumanInputIntake } from "./intake.js";
-export { enforceBudget } from "./budget.js";
-export { stopForToolSignIn } from "./sign-in.js";
-export { executeApprovedLocalCalls } from "./execute-approved.js";
-export { declinedSignInEvents, withdrawHeldSignIns } from "./held-requests.js";
+export {
+  acceptHumanInput,
+  admitApprovedWork,
+  dispatchApprovedWorkflows,
+  hasApprovedWork,
+  runApprovedLocalCalls,
+  type ApprovedWork,
+  type HumanInputIntake,
+} from "./intake.js";
 export { extractToolApprovalInputRequests } from "#harness/input-extraction.js";
-export {
-  cancelApprovalInputBatches,
-  getPendingApprovalRequests,
-} from "#harness/hitl/approval-input-requests.js";
-export {
-  clearPendingSessionLimitPrompt,
-  hasRunnableDeferredStepInput,
-} from "#harness/hitl/input-requests.js";
-
-/** Work the answers approved that runs once their turn opens: a granted budget. */
-export function runApprovedWork(step: Step, approved: ApprovedWork): void {
-  applyBudgetAnswer(step, approved.limit);
-}
+export { hasRunnableQueue } from "./approvals.js";
 
 /**
- * Approved workflow calls start like ungated ones, once the model step started, and the turn
- * waits on the runtime for their runs.
- */
-export function dispatchApprovedWorkflows(
-  step: Step,
-  approved: ApprovedWork,
-  messages: readonly HarnessModelMessage[],
-): StepResult | undefined {
-  const dispatched = dispatchApprovedWorkflowCalls({
-    messages: [...messages],
-    resolvedInputs: approved.resolved,
-    session: step.session,
-    tools: responseTools(step),
-  });
-  if (dispatched === undefined) return undefined;
-  step.session = dispatched;
-  step.moveTo(advanceStep(step.position()));
-  return { next: null, session: step.session };
-}
-
-/**
- * What a model call needs from the approvals: the keys `once()` approvals granted, and a note on
- * the calls still awaiting approval. An approved call replays through the AI SDK, so its tool
- * must still exist, and it runs as whoever approved it.
- */
-export function humanInputContext(
-  step: Step,
-  approved: ApprovedWork,
-): { readonly approvedTools: ReadonlySet<string>; readonly pendingApprovalsNote?: string } {
-  const tools = responseTools(step);
-  for (const batch of approved.resolved) {
-    for (const { outcome, request } of batch.inputs) {
-      if (outcome === "approved" && !tools.has(request.action.toolName)) {
-        throw new Error(
-          "The approved tool is no longer available. Request a new tool call and approval.",
-        );
-      }
-    }
-  }
-  setApprovedCallCallers(approved.resolved, step.session.state);
-  return {
-    approvedTools: getApprovedTools(step.session, approvalKeyResolver(tools)),
-    pendingApprovalsNote: renderPendingApprovalsInstruction(
-      getPendingInputBatches(step.session.state).flatMap((batch) => batch.requests),
-    ),
-  };
-}
-
-/**
- * A model step made calls that need a person's approval. The step's committed tool results join
- * history with a note on the pending approvals, and the rest of its response parks with them. With
- * `runtimeCalls`, the step parks on those runs too and the turn waits on the runtime; otherwise
- * the turn holds for the answers, unless queued input can already run.
+ * A model step made calls that need a person's approval: the step parks on them beside any
+ * runtime calls it made. The turn holds for the answers, unless the runtime runs calls for it
+ * meanwhile, or queued input can already run.
  */
 export async function parkOnApprovals(
   step: Step,
   input: {
-    readonly position: HarnessEmissionState;
-    readonly promptMessages: readonly HarnessModelMessage[];
-    readonly responseMessages: readonly ModelMessage[];
+    readonly event: StepCoordinates;
+    readonly messages: readonly ModelMessage[];
     readonly requests: readonly InputRequest[];
-    readonly runtimeCalls?: readonly RuntimeWorkflowTaskRequest[];
+    readonly tasks: readonly RuntimeWorkflowTaskRequest[];
+    /** The step made calls the runtime runs, so the turn waits on them instead. */
+    readonly waitsOnRuntime: boolean;
   },
 ): Promise<StepResult> {
-  const { position, requests, responseMessages } = input;
-  const note = renderPendingApprovalsSnippet(requests);
-  // Results of resumed work stay ahead of the note; only the unresolved response parks.
-  const pendingStart = responseMessages.findIndex((message) => message.role !== "tool");
-  const committed =
-    pendingStart === -1 ? responseMessages : responseMessages.slice(0, pendingStart);
-  const pendingResponse = responseMessages.slice(committed.length);
-  const history = validateHarnessModelMessages([
-    ...input.promptMessages,
-    ...committed,
-    ...(note === undefined ? [] : [createFrameworkUserMessage("context.state", note)]),
-  ]);
-  const event = {
-    sequence: position.sequence,
-    stepIndex: position.stepIndex,
-    turnId: position.turnId,
-  };
-  const batch = {
-    event,
-    requests,
-    responseAuthRequiredRequestIds: responsePolicyRequestIds(step, requests),
-  };
+  const transition = parkOnApprovalsTransition(step.view(), {
+    event: input.event,
+    messages: input.messages,
+    requests: input.requests,
+    tasks: input.tasks,
+    requester: currentRequester(step),
+    responseAuthRequiredRequestIds: responsePolicyRequestIds(step, input.requests),
+  });
+  await step.apply(transition, [...step.session.history, ...(transition.commit ?? [])]);
+  if (input.waitsOnRuntime) return { next: null, session: step.session };
+  if (hasRunnableQueue(step.view())) return { next: step.runStep, session: step.session };
+  return holdForInput(step);
+}
 
-  if (input.runtimeCalls !== undefined) {
-    // The runtime's batch owns the shared assistant response.
-    step.session = appendPendingInputBatch({
-      ...batch,
-      responseMessages: [],
-      session: setPendingCoordinationBatch({
-        event,
-        responseMessages: pendingResponse,
-        session: { ...step.session, history },
-        tasks: input.runtimeCalls,
-      }),
-    });
-    await step.emit?.(createInputRequestedEvent({ requests: [...requests], ...event }));
-    step.moveTo(advanceStep(position));
+/**
+ * A call the model step ran needs a sign-in: the calls that need it stop, and the model calls
+ * them again once it completes.
+ */
+export async function stopForToolSignIn(
+  step: Step,
+  interrupt: NonNullable<ReturnType<typeof resolveInlineAuthorizationInterrupt>>,
+): Promise<StepResult> {
+  step.session = { ...step.session, history: validateHarnessModelMessages(interrupt.history) };
+  await step.apply(
+    requireSignIn(step.view(), {
+      callIdsByName: interrupt.callIdsByName,
+      challenges: interrupt.challenges,
+    }),
+    step.session.history,
+  );
+  return { held: { kind: "request" }, next: null, session: step.session };
+}
+
+/**
+ * The gate before each model call. A spent budget asks whether to continue when someone can
+ * answer, and fails the session otherwise. `messages` are the step's: they park with the prompt,
+ * so the input that triggered it survives into the turn that resumes.
+ */
+export async function enforceBudget(
+  step: Step,
+  messages: readonly ModelMessage[],
+): Promise<StepResult | undefined> {
+  const limit = checkSessionUsageLimit({
+    canAsk: step.emit !== undefined && step.config.capabilities?.requestInput === true,
+    session: step.session,
+    turnSequence: step.position().sequence,
+  });
+  if (limit.kind === "within") return undefined;
+  if (limit.kind === "ask") {
+    step.session = { ...step.session, history: validateHarnessModelMessages([...messages]) };
+    await step.apply(requestLimit(step.view(), { request: limit.request }), step.session.history);
     return { next: null, session: step.session };
   }
+  await step.apply(
+    fail(step.view(), {
+      code: limit.code,
+      details: limit.details,
+      message: limit.message,
+      terminal: { sessionId: step.session.sessionId },
+    }),
+  );
+  return { next: { done: true, output: "" }, session: step.session };
+}
 
-  step.session = appendPendingInputBatch({
-    ...batch,
-    responseMessages: pendingResponse,
-    session: { ...step.session, history },
-  });
-  const runsQueuedInput = hasRunnableDeferredStepInput(step.session);
-  await step.emit?.(createInputRequestedEvent({ requests: [...requests], ...event }));
-  if (runsQueuedInput) return { next: step.runStep, session: step.session };
-  await holdForInput(step, position);
-  return { held: { kind: "request" }, next: null, session: step.session };
+/**
+ * What a model call needs from the approvals: the keys `once()` approvals granted, and a note on
+ * the calls still awaiting approval, which a message may revise.
+ */
+export function humanInputContext(step: Step): {
+  readonly approvedTools: ReadonlySet<string>;
+  readonly pendingApprovalsNote?: string;
+} {
+  const view = step.view();
+  const tools = responseTools(step);
+  return {
+    approvedTools: grantedApprovalKeys(view, (request) =>
+      tools.get(request.action.toolName)?.approvalKey?.(request.action.input),
+    ),
+    pendingApprovalsNote: renderPendingApprovalsInstruction(
+      view.turn.suspended.flatMap((parked) => parked.requests),
+    ),
+  };
+}
+
+const APPROVAL_STATE_KEY = "eve.runtime.hitl.approvalState";
+
+/**
+ * Drops what a cleared context owned: sign-in attempts and responders' approval progress. `clear`
+ * reported each close; relay routes for live tasks stay.
+ */
+export function discardClearedHumanInput<T extends HarnessSessionBase>(session: T): T {
+  const { [APPROVAL_STATE_KEY]: _approvals, ...state } =
+    clearPendingAuthorization(session.state) ?? {};
+  return { ...session, state: Object.keys(state).length > 0 ? state : undefined };
 }
 
 function responseTools(step: Step): HarnessToolMap {
@@ -194,14 +177,15 @@ function responsePolicyRequestIds(
     .map((request) => request.requestId);
 }
 
-export {
-  answerSessionLimitFromText,
-  appendPendingInputBatch,
-  getPendingInputRequestIds,
-  hasPendingInputBatch,
-  getApprovedTools,
-  hasStepInput,
-  selectApprovalReplayBatch,
-  resolvePendingInput,
-} from "./input-requests.js";
-export type { ResolvedInputBatch, RejectedActionBatch } from "./input-requests.js";
+/** The caller whose turn parks a step. */
+function currentRequester(step: Step): SessionAuthContext | null {
+  return step.ctx?.get(AuthKey) ?? step.ctx?.get(SessionKey)?.auth.current ?? null;
+}
+
+/** The cancelled turn's responders stop checking its approvals: their candidates stale. */
+export function retireCancelledCandidates<T extends HarnessSessionBase>(session: T): T {
+  return {
+    ...session,
+    state: retireActiveCandidates(session.state, { completedAt: Date.now(), reason: "Cancelled." }),
+  };
+}

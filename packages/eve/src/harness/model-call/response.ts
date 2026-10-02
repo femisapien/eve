@@ -1,4 +1,7 @@
-import { getInvalidToolCallInputError, isInvalidToolCall } from "#harness/tool-call-input-errors.js";
+import {
+  getInvalidToolCallInputError,
+  isInvalidToolCall,
+} from "#harness/tool-call-input-errors.js";
 import type { ModelMessage, ToolSet, TypedToolCall, TypedToolResult } from "ai";
 
 import type { HarnessStepResult } from "#harness/step-hooks.js";
@@ -135,4 +138,3 @@ export function answerSkippedToolCalls(step: HarnessStepResult, tools: ToolSet):
       type: "tool-result",
     }));
 }
-
