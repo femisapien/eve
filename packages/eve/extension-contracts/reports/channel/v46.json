@@ -2,7 +2,7 @@
   "kind": "eve-extension-capability-contract",
   "capability": "channel",
   "epoch": 46,
-  "sha256": "f470c556f7171a4cd0e606acb6e32de1614e50edb716fe8650bf7c92571241f6",
+  "sha256": "1a7a0a4f0c9cdbb6f74166726849bf8dfd8fbe8df22506696d113708690bc0d2",
   "exports": [
     "DELETE",
     "GET",
