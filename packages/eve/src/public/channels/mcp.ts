@@ -72,19 +72,20 @@ export interface McpChannelInput {
   readonly route?: string;
   /**
    * Serve the `agent_*` tools, which start and follow a durable agent task.
-   * Defaults to `true`. With `false`, the channel serves only what `tools`
-   * and `skills` publish, and the `agent_*` names are not reserved.
+   * With `false`, the channel serves only what `tools` and `skills` publish,
+   * and the `agent_*` names are not reserved.
+   * @default true
    */
   readonly agent?: boolean;
   /**
    * Also publish the agent's invocable tools over `tools/list` and
-   * `tools/call`. Defaults to `false`. `true` adds the
-   * `dev.eve/tool-sessions` extension to `server/discover`. While `agent` is
-   * on, its `agent_*` names stay reserved: an agent tool with one of them is
-   * not published.
+   * `tools/call`. `true` adds the `dev.eve/tool-sessions` extension to
+   * `server/discover`. While `agent` is on, its `agent_*` names stay
+   * reserved: an agent tool with one of them is not published.
+   * @default false
    */
   readonly tools?: boolean;
-  /** Publish the agent's skills (SEP-2640). Defaults to `false`. */
+  /** Publish the agent's skills (SEP-2640). @default false */
   readonly skills?: boolean;
   /**
    * Accepts the `eve-forwarded-principal` header from route-authenticated
@@ -94,9 +95,9 @@ export interface McpChannelInput {
   readonly trustedForwarders?: TrustedForwarders;
   /**
    * HMAC secret for the `requestState` of approval and sign-in rounds, at
-   * least 32 bytes and the same on every instance. Defaults to
-   * `EVE_MCP_REQUEST_STATE_SECRET`. During `eve dev` a per-process random key
-   * is used when neither is set.
+   * least 32 bytes and the same on every instance. During `eve dev` a
+   * per-process random key is used when neither is set.
+   * @default process.env.EVE_MCP_REQUEST_STATE_SECRET
    */
   readonly requestStateSecret?: string;
 }
