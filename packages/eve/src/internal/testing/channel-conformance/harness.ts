@@ -700,6 +700,7 @@ async function converse(
           attachSession,
           describe: unsupported("describe"),
           invokeTool: unsupported("invokeTool"),
+          readSkill: unsupported("readSkill"),
           params,
           requestIp: null,
           to: unsupported("to"),
