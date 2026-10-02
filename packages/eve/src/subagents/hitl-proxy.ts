@@ -8,11 +8,8 @@ import type {
 import { getHarnessEmissionState } from "#harness/emission.js";
 import { resolveInputOutcome } from "#harness/input-request-resolution.js";
 import type { InputRequestEvent } from "#harness/open-approvals.js";
-import {
-  countTurnOwnedRequests,
-  readRelayedInputRequests,
-  toRelayedInputRequests,
-} from "#harness/open-input-requests.js";
+import { textAnswerable } from "#harness/hitl/machine.js";
+import { readRelayedInputRequests, toRelayedInputRequests } from "#harness/open-input-requests.js";
 import type { WorkflowAskRoute, RelayedInputRequest } from "#harness/open-input-requests.js";
 import type { HarnessEmitFn, HarnessSessionBase, SessionStateMap } from "#harness/types.js";
 import {
@@ -152,10 +149,9 @@ export function routeDeliverPayload(input: {
     route !== undefined && input.allowRoute?.(requestId, route) !== false;
   const message = resolveMessageAgainstQuestions({
     enabled: input.resolveMessage === true,
-    entries,
     payload: input.payload,
     routable,
-    turnRequests: countTurnOwnedRequests(input.state),
+    state: input.state,
   });
   const inputResponses = [...(input.payload.inputResponses ?? []), ...message.responses];
 
@@ -304,11 +300,9 @@ function toInputResolution(
 
 function resolveMessageAgainstQuestions(input: {
   readonly enabled: boolean;
-  readonly entries: ReadonlyMap<string, RelayedInputRequest>;
   readonly payload: DeliverPayload;
   readonly routable: (requestId: string, route: RelayedInputRequest) => boolean;
-  /** The turn's own open requests, which make a plain-text reply ambiguous too. */
-  readonly turnRequests: number;
+  readonly state: SessionStateMap | undefined;
 }): {
   readonly consumed: boolean;
   readonly responses: readonly InputResponse[];
@@ -316,28 +310,15 @@ function resolveMessageAgainstQuestions(input: {
   const none = { consumed: false, responses: [] };
   // An explicit structured answer means the client already chose what to answer.
   if (!input.enabled || (input.payload.inputResponses?.length ?? 0) > 0) return none;
-  if (input.payload.message === undefined) return none;
+  if (typeof input.payload.message !== "string") return none;
 
-  // Task and subagent questions carry no `ctx.ask()` metadata, so plain text
-  // cannot resolve them, but they still make the message ambiguous.
-  const pending = [...input.entries].filter(
-    ([requestId, route]) => route.kind === "question" && input.routable(requestId, route),
-  );
-  const questions = pending.flatMap(([requestId, route]) => {
-    const question = route.workflowAsk?.question ?? route.question;
-    return question !== undefined ? [{ requestId, ...question }] : [];
+  const answerable = textAnswerable(input.state, { routable: input.routable });
+  if (answerable?.kind !== "relayed") return none;
+  const answer = resolveTextToResponse(input.payload.message, {
+    requestId: answerable.requestId,
+    ...answerable.question,
   });
-  if (questions.length === 0) return none;
-
-  const [only] = questions;
-  const answer =
-    pending.length + input.turnRequests === 1 &&
-    only !== undefined &&
-    typeof input.payload.message === "string"
-      ? resolveTextToResponse(input.payload.message, only)
-      : undefined;
-  if (answer !== undefined) return { consumed: true, responses: [answer] };
-  return none;
+  return answer === undefined ? none : { consumed: true, responses: [answer] };
 }
 
 function batchResolves(input: {

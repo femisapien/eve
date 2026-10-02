@@ -2,6 +2,7 @@ import type { ModelMessage } from "ai";
 
 import type { InputRequest, InputResponse } from "#shared/input.js";
 import { resolveTextToResponses } from "#channel/resolve-text.js";
+import { textAnswerable } from "#harness/hitl/machine.js";
 import { hasTailApprovalResponse } from "#harness/current-messages.js";
 import {
   answersEveryApproval,
@@ -68,7 +69,7 @@ export function selectApprovalReplayBatch(
 ): OpenApprovals | undefined {
   const approvals = readOpenApprovals(session.state);
   if (approvals === undefined) return undefined;
-  const resolved = resolveTextMessageInput(approvals, stepInput);
+  const resolved = resolveTextMessageInput(approvals, stepInput, session.state);
   const responses = canonicalizeInputResponses(resolved?.inputResponses ?? []);
   if (!answersEveryApproval(approvals, responses)) return undefined;
   return approvals.requests.some((request) =>
@@ -106,7 +107,11 @@ export function resolvePendingInput(input: {
   if (approvals === undefined) {
     return { outcome: "continue", messages: baseHistory, session: input.session };
   }
-  const resolvedStepInput = resolveTextMessageInput(approvals, input.stepInput);
+  const resolvedStepInput = resolveTextMessageInput(
+    approvals,
+    input.stepInput,
+    input.session.state,
+  );
   const responses = canonicalizeInputResponses(resolvedStepInput?.inputResponses ?? []);
 
   if (responses.length === 0 && resolvedStepInput?.message === undefined) {
@@ -139,6 +144,7 @@ function canonicalizeInputResponses(responses: readonly InputResponse[]): readon
 function resolveTextMessageInput(
   approvals: OpenApprovals,
   stepInput: StepInput | undefined,
+  state: HarnessSession["state"],
 ): ResolvedStepInput | undefined {
   if (typeof stepInput?.message !== "string") return stepInput;
 
@@ -147,12 +153,11 @@ function resolveTextMessageInput(
     return stepInput;
   }
 
-  const responseAuthRequired = new Set(approvals.responseAuthRequiredRequestIds ?? []);
-  const textRequests = approvals.requests.filter(
-    (request) => !responseAuthRequired.has(request.requestId),
-  );
-  const responses = resolveTextToResponses(stepInput.message, textRequests);
-  if (responses.length === 0) return stepInput;
+  const answerable = textAnswerable(state);
+  if (answerable?.kind !== "approvals") return stepInput;
+  // One reply answers the step's approvals together, or none of them.
+  const responses = resolveTextToResponses(stepInput.message, answerable.requests);
+  if (responses.length !== answerable.requests.length) return stepInput;
 
   return compactStepInput({
     ...stepInput,

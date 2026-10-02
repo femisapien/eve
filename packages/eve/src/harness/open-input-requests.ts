@@ -163,24 +163,6 @@ export function replaceTurnInputRequest(
   return writeMap({ state }, { ...map, [entry.request.requestId]: entry }).state;
 }
 
-/** How many requests the turn asked itself: its budget question and tool approvals. */
-export function countTurnOwnedRequests(state: SessionStateMap | undefined): number {
-  return readTurnInputRequests(state).size;
-}
-
-/**
- * How many open requests a plain-text message could answer: relayed
- * questions and approvals, and the turn's own requests. Text answers one only
- * when it is the only candidate, so a reply never settles the wrong request.
- */
-export function countTextAnswerableRequests(state: SessionStateMap | undefined): number {
-  let relayed = 0;
-  for (const [, entry] of relayedEntries(readMap(state))) {
-    if (entry.kind === "question" || entry.kind === "tool-approval") relayed += 1;
-  }
-  return relayed + countTurnOwnedRequests(state);
-}
-
 /**
  * Whether the session relays any request for a workflow run or a child
  * session, so a delivery may carry an answer it has to route.

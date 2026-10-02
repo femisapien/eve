@@ -6,10 +6,15 @@ import { withdrawHeldSignIns } from "#harness/held-requests.js";
 import { cancelledApprovalResults } from "#harness/hitl/approval-input-requests.js";
 import {
   OPEN_INPUT_REQUESTS_KEY,
+  readRelayedInputRequests,
+  readTurnInputRequests,
   withdrawTurnInputRequests,
+  type RelayedInputQuestion,
+  type RelayedInputRequest,
 } from "#harness/open-input-requests.js";
 import type { SessionStateMap } from "#harness/types.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
+import type { InputRequest } from "#shared/input.js";
 
 /**
  * The session state keys the machine owns. A caller that changes the session
@@ -58,6 +63,55 @@ export function intake(state: SessionStateMap | undefined, input: HitlIntake): H
       throw new TypeError(`Unhandled HITL intake: ${JSON.stringify(unhandled)}`);
     }
   }
+}
+
+/** The open requests a typed reply may answer, all at once. */
+export type TextAnswerable =
+  | { readonly kind: "approvals"; readonly requests: readonly InputRequest[] }
+  | { readonly kind: "session-limit"; readonly request: InputRequest }
+  | {
+      readonly kind: "relayed";
+      readonly question: RelayedInputQuestion;
+      readonly requestId: string;
+    };
+
+/**
+ * Which open requests a typed reply answers. It answers only when everything
+ * open is one group, so it never settles a request the person did not mean:
+ * the approvals one model step raised (none needing a responder's sign-in),
+ * the budget question alone, or one relayed question whose options are known.
+ * Otherwise the message is an ordinary message, and steers the turn.
+ */
+export function textAnswerable(
+  state: SessionStateMap | undefined,
+  input: {
+    /** Leaves out relayed requests an earlier answer in the same delivery settled. */
+    readonly routable?: (requestId: string, route: RelayedInputRequest) => boolean;
+  } = {},
+): TextAnswerable | undefined {
+  const turn = [...readTurnInputRequests(state).values()];
+  const relayed = [...readRelayedInputRequests(state)].filter(
+    ([requestId, route]) => input.routable?.(requestId, route) !== false,
+  );
+  if (relayed.length === 0) {
+    const [only] = turn;
+    if (only === undefined) return undefined;
+    if (turn.length === 1 && only.request.kind === "session-limit") {
+      return { kind: "session-limit", request: only.request };
+    }
+    const approvals = turn.every(
+      (entry) => entry.request.kind === "tool-approval" && entry.responseAuthRequired !== true,
+    );
+    return approvals
+      ? { kind: "approvals", requests: turn.map((entry) => entry.request) }
+      : undefined;
+  }
+  const [first] = relayed;
+  if (turn.length > 0 || relayed.length !== 1 || first === undefined) return undefined;
+  const [requestId, route] = first;
+  const question =
+    route.kind === "question" ? (route.workflowAsk?.question ?? route.question) : undefined;
+  return question === undefined ? undefined : { kind: "relayed", question, requestId };
 }
 
 /** Copies the machine's keys from `source` onto `target`, including removals. */

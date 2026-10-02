@@ -7,8 +7,8 @@
  */
 import { resolveTextToResponse } from "#channel/resolve-text.js";
 import type { HarnessEmissionState } from "#harness/emission-state.js";
+import { textAnswerable } from "#harness/hitl/machine.js";
 import {
-  countTextAnswerableRequests,
   openTurnInputRequest,
   readTurnInputRequests,
   retireOpenInputRequests,
@@ -73,11 +73,10 @@ export async function answerSessionLimitRequest(input: {
   const structured = input.stepInput.inputResponses?.find(
     (response) => response.requestId === requestId,
   );
-  // Text answers the question only when nothing else open could take it.
   const typed =
     structured === undefined &&
     typeof input.stepInput.message === "string" &&
-    countTextAnswerableRequests(input.session.state) === 1
+    textAnswerable(input.session.state)?.kind === "session-limit"
       ? resolveTextToResponse(input.stepInput.message, open.request)
       : undefined;
   const response: InputResponse | undefined = structured ?? typed;

@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import { getPendingAuthorization, setPendingAuthorization } from "#harness/authorization.js";
-import { intake } from "#harness/hitl/machine.js";
-import { readTurnInputRequests } from "#harness/open-input-requests.js";
+import { intake, textAnswerable } from "#harness/hitl/machine.js";
+import { readTurnInputRequests, upsertRelayedInputRequests } from "#harness/open-input-requests.js";
 import { openSessionLimitRequest } from "#harness/session-limit-request.js";
 import type { HarnessSession } from "#harness/types.js";
 import { parkApprovals } from "#internal/testing/approval-fixtures.js";
@@ -165,5 +165,60 @@ describe("intake: steer", () => {
     const steered = intake(state, { at: AT, kind: "steer" });
 
     expect(steered).toEqual({ effects: [], state });
+  });
+});
+
+describe("textAnswerable", () => {
+  function approvalsOnly(...requests: InputRequest[]): HarnessSession {
+    return parkApprovals({
+      event: ASKED,
+      requests,
+      session: { ...heldTurn(), history: [], state: undefined },
+    });
+  }
+  const second: InputRequest = {
+    ...APPROVAL,
+    action: { ...APPROVAL.action, callId: "call-2" },
+    requestId: "approval-2",
+  };
+
+  it("answers one step's approvals together", () => {
+    expect(textAnswerable(approvalsOnly(APPROVAL, second).state)).toEqual({
+      kind: "approvals",
+      requests: [APPROVAL, second],
+    });
+  });
+
+  it("answers nothing when an approval needs a responder's sign-in", () => {
+    const session = parkApprovals({
+      event: ASKED,
+      requests: [APPROVAL, second],
+      responseAuthRequiredRequestIds: ["approval-2"],
+      session: { ...heldTurn(), history: [], state: undefined },
+    });
+    expect(textAnswerable(session.state)).toBeUndefined();
+  });
+
+  it("answers nothing when the budget question is open beside an approval", () => {
+    expect(textAnswerable(heldTurn().state)).toBeUndefined();
+  });
+
+  it("answers nothing when a relayed question is open beside the turn's approval", () => {
+    const session = upsertRelayedInputRequests({
+      entries: [
+        [
+          "ask-1",
+          {
+            childContinuationToken: "child",
+            event: ASKED,
+            kind: "question",
+            question: { options: [{ id: "approve", label: "Approve" }] },
+          },
+        ],
+      ],
+      forChildContinuationToken: "child",
+      session: approvalsOnly(APPROVAL),
+    });
+    expect(textAnswerable(session.state)).toBeUndefined();
   });
 });
