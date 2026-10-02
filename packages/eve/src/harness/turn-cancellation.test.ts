@@ -53,7 +53,7 @@ describe("isTurnCancellation", () => {
 
 describe("SessionLimitDeclinedError", () => {
   it("is a turn cancellation with the canonical name", () => {
-    const error = new SessionLimitDeclinedError();
+    const error = new SessionLimitDeclinedError("limit-1");
     // Keeps the canonical name so every existing cancellation check matches.
     expect(error.name).toBe("TurnCancelledError");
     expect(isTurnCancellation(error)).toBe(true);

@@ -21,7 +21,7 @@ import {
 } from "#harness/hitl/approval-input-requests.js";
 import { createInputResolvedEvent } from "#protocol/message.js";
 import type { HarnessModelMessage } from "#harness/messages.js";
-import { clearPendingSessionLimitPrompt } from "#harness/input-requests.js";
+import { withdrawTurnInputRequests } from "#harness/open-input-requests.js";
 import { getHarnessEmissionState, setHarnessEmissionState } from "#harness/emission.js";
 import { removeBlockingWorkflowToolRuns } from "#harness/workflow-tool-runs.js";
 import {
@@ -79,6 +79,7 @@ export async function settleCancelledTurn(
   const withdraw = { completedAt: Date.now(), reason: CANCELLED_REASON };
   const withdrawal = withdrawHeldSignIns(durableState, withdraw);
   const cancelledApprovals = getPendingApprovalRequests(durableState);
+  const turnRequests = withdrawTurnInputRequests(step.durableSession).events;
   const { published, result: usage } = await publishFromSessionStep(step, {
     origin: "own",
     async publish(emit) {
@@ -104,6 +105,7 @@ export async function settleCancelledTurn(
           }),
         );
       }
+      for (const event of turnRequests) await emit(event);
       return await emitCancelledTurn(emit, emissionState, getSessionUsage(step.durableSession));
     },
     updateSession(baseSession, emissionState) {
@@ -111,17 +113,12 @@ export async function settleCancelledTurn(
         ...baseSession,
         state: withdrawHeldSignIns(baseSession.state, withdraw).state,
       };
-      // `clearPendingSessionLimitPrompt`: cancellation settles with the step's
-      // input snapshot, which can resurrect an already-answered session-limit
-      // prompt (the decline that cancelled this turn consumed the answer in the
-      // discarded turn state). The pre-model gate re-raises the prompt while the
-      // violation holds, so the next delivery gets a fresh prompt instead of
-      // queueing forever behind a stale one.
       const owningTurnId =
         getPendingCoordinationBatch(session.state)?.event.turnId ??
         input.sessionState.emissionState.turnId;
       const cancelledSession = setHarnessEmissionState(
-        clearPendingSessionLimitPrompt(
+        // The turn's own requests end with it, its budget question among them.
+        withdrawTurnInputRequests(
           // After the coordination batch, which owns an assistant response it
           // shares with approvals raised beside its calls.
           cancelApprovalInputBatches(
@@ -129,7 +126,7 @@ export async function settleCancelledTurn(
               removeBlockingWorkflowToolRuns({ ...session, outputSchema: undefined }, owningTurnId),
             ),
           ),
-        ),
+        ).session,
         emissionState,
       );
       if (!input.reportUsage || getTurnUsageState(session.state) === undefined) {

@@ -1,7 +1,12 @@
 import type { SubagentInputRequestHookPayload } from "#channel/types.js";
 import type { PendingInputBatchEvent } from "#harness/pending-input-batches.js";
 import type { HarnessSessionBase, SessionStateMap } from "#harness/types.js";
-import { inputOptionSchema, type InputOption, type InputRequestKind } from "#shared/input.js";
+import {
+  inputOptionSchema,
+  type InputOption,
+  type InputRequest,
+  type InputRequestKind,
+} from "#shared/input.js";
 import {
   isSessionInboxAddress,
   type SessionInboxAddress,
@@ -65,19 +70,81 @@ export interface RelayedInputRequestBatch {
 }
 
 /**
- * The session's open input requests, `requestId → entry`. Each entry is a
- * request the session relays for a workflow run or a child session.
+ * A request the turn asked itself, such as its budget question. The turn owns
+ * it: the turn answers it, and the turn ending withdraws it.
  */
-type OpenInputRequestMap = Readonly<Record<string, RelayedInputRequest>>;
+export interface TurnInputRequest {
+  readonly owner: "turn";
+  /** Coordinates of the `input.requested` the turn emitted for it. */
+  readonly event: PendingInputBatchEvent;
+  readonly request: InputRequest;
+}
+
+/** One open input request, by who answers it. */
+export type OpenInputRequest = RelayedInputRequest | TurnInputRequest;
 
 /**
- * The requests the session relays, as a fresh `Map`, so mutating it cannot
- * corrupt session state.
+ * The session's open input requests, `requestId → entry`. One table holds
+ * every kind: requests relayed for a workflow run or a child session (a
+ * {@link RelayedInputRequest}), and the turn's own (a {@link TurnInputRequest}).
+ */
+type OpenInputRequestMap = Readonly<Record<string, OpenInputRequest>>;
+
+function isTurnRequest(entry: OpenInputRequest): entry is TurnInputRequest {
+  return "owner" in entry && entry.owner === "turn";
+}
+
+function relayedEntries(map: OpenInputRequestMap): (readonly [string, RelayedInputRequest])[] {
+  return Object.entries(map).flatMap(([requestId, entry]) =>
+    isTurnRequest(entry) ? [] : [[requestId, entry] as const],
+  );
+}
+
+/**
+ * The requests the session relays for a workflow run or a child session, as a
+ * fresh `Map`, so mutating it cannot corrupt session state.
  */
 export function readRelayedInputRequests(
   state: SessionStateMap | undefined,
 ): ReadonlyMap<string, RelayedInputRequest> {
-  return new Map(Object.entries(readMap(state)));
+  return new Map(relayedEntries(readMap(state)));
+}
+
+/** The requests the turn asked itself. */
+export function readTurnInputRequests(
+  state: SessionStateMap | undefined,
+): ReadonlyMap<string, TurnInputRequest> {
+  const entries = new Map<string, TurnInputRequest>();
+  for (const [requestId, entry] of Object.entries(readMap(state))) {
+    if (isTurnRequest(entry)) entries.set(requestId, entry);
+  }
+  return entries;
+}
+
+/** Opens a request the turn asks itself. */
+export function openTurnInputRequest<T extends { readonly state?: SessionStateMap }>(
+  session: T,
+  entry: Omit<TurnInputRequest, "owner">,
+): T {
+  return writeMap(session, {
+    ...readMap(session.state),
+    [entry.request.requestId]: { ...entry, owner: "turn" },
+  });
+}
+
+/**
+ * How many open requests a plain-text message could answer: relayed
+ * questions and approvals, and the turn's own requests. Text answers one only
+ * when it is the only candidate, so a reply never settles the wrong request.
+ */
+export function countTextAnswerableRequests(state: SessionStateMap | undefined): number {
+  let count = 0;
+  for (const entry of Object.values(readMap(state))) {
+    if (isTurnRequest(entry) || entry.kind === "question" || entry.kind === "tool-approval") {
+      count += 1;
+    }
+  }
+  return count;
 }
 
 /**
@@ -85,10 +152,7 @@ export function readRelayedInputRequests(
  * session, so a delivery may carry an answer it has to route.
  */
 export function hasRelayedInputRequests(state: SessionStateMap | undefined): boolean {
-  for (const _ of Object.keys(readMap(state))) {
-    return true;
-  }
-  return false;
+  return relayedEntries(readMap(state)).length > 0;
 }
 
 /**
@@ -121,10 +185,11 @@ export function upsertRelayedInputRequestState(input: {
   readonly forChildContinuationToken: string;
   readonly state: SessionStateMap | undefined;
 }): SessionStateMap | undefined {
-  const next: Record<string, RelayedInputRequest> = {};
+  const next: Record<string, OpenInputRequest> = {};
 
   for (const [requestId, route] of Object.entries(readMap(input.state))) {
     if (
+      isTurnRequest(route) ||
       route.childContinuationToken !== input.forChildContinuationToken ||
       route.inputSource !== input.inputSource
     ) {
@@ -156,7 +221,7 @@ export function withdrawRelayedInputRequests<T extends { readonly state?: Sessio
 ): { readonly events: readonly InputResolvedStreamEvent[]; readonly session: T } {
   const requestIds: string[] = [];
   const events: InputResolvedStreamEvent[] = [];
-  for (const [requestId, route] of Object.entries(readMap(session.state))) {
+  for (const [requestId, route] of relayedEntries(readMap(session.state))) {
     if (!select(requestId, route)) continue;
     requestIds.push(requestId);
     events.push(
@@ -167,6 +232,30 @@ export function withdrawRelayedInputRequests<T extends { readonly state?: Sessio
     );
   }
   return { events, session: retireOpenInputRequests(session, requestIds) };
+}
+
+/**
+ * Retires the requests the turn asked itself, which nobody can answer once
+ * the turn ends, and returns the `input.resolved` events that report them
+ * `cancelled`. Publish the events as the session's own.
+ */
+export function withdrawTurnInputRequests<T extends { readonly state?: SessionStateMap }>(
+  session: T,
+): { readonly events: readonly InputResolvedStreamEvent[]; readonly session: T } {
+  const entries = [...readTurnInputRequests(session.state)];
+  const events = entries.map(([requestId, entry]) =>
+    createInputResolvedEvent({
+      resolutions: [{ kind: entry.request.kind, outcome: "cancelled", requestId }],
+      ...entry.event,
+    }),
+  );
+  return {
+    events,
+    session: retireOpenInputRequests(
+      session,
+      entries.map(([requestId]) => requestId),
+    ),
+  };
 }
 
 /** Removes only the request IDs whose responses were successfully forwarded. */
@@ -244,9 +333,9 @@ function readMap(state: SessionStateMap | undefined): OpenInputRequestMap {
     return {};
   }
 
-  const result: Record<string, RelayedInputRequest> = {};
+  const result: Record<string, OpenInputRequest> = {};
   for (const [key, value] of Object.entries(raw)) {
-    const request = parseRelayedInputRequest(value, key);
+    const request = parseTurnInputRequest(value) ?? parseRelayedInputRequest(value, key);
     if (request !== undefined) {
       result[key] = request;
     }
@@ -256,7 +345,7 @@ function readMap(state: SessionStateMap | undefined): OpenInputRequestMap {
 
 function writeMap<T extends { readonly state?: SessionStateMap }>(
   session: T,
-  entries: Record<string, RelayedInputRequest>,
+  entries: Record<string, OpenInputRequest>,
 ): T {
   const state = { ...session.state };
 
@@ -270,6 +359,22 @@ function writeMap<T extends { readonly state?: SessionStateMap }>(
 
   state[OPEN_INPUT_REQUESTS_KEY] = entries;
   return { ...session, state };
+}
+
+function parseTurnInputRequest(value: unknown): TurnInputRequest | undefined {
+  if (value === null || typeof value !== "object" || Reflect.get(value, "owner") !== "turn") {
+    return undefined;
+  }
+  const event = parseInputRequestEvent(Reflect.get(value, "event"));
+  const request: unknown = Reflect.get(value, "request");
+  if (event === undefined || request === null || typeof request !== "object") return undefined;
+  if (
+    typeof Reflect.get(request, "requestId") !== "string" ||
+    !isInputRequestKind(Reflect.get(request, "kind"))
+  ) {
+    return undefined;
+  }
+  return { event, owner: "turn", request: request as InputRequest };
 }
 
 function parseRelayedInputRequest(

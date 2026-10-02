@@ -14,8 +14,12 @@ export class TurnCancelledError extends Error {
  * settles it through the standard turn-cancellation path.
  */
 export class SessionLimitDeclinedError extends TurnCancelledError {
-  constructor() {
+  /** The budget question the person answered with Stop, already resolved. */
+  readonly requestId: string;
+
+  constructor(requestId: string) {
     super("The user declined a fresh session token budget.");
+    this.requestId = requestId;
   }
 }
 

@@ -1,4 +1,5 @@
 import { jsonSchema, simulateReadableStream } from "ai";
+import { readTurnInputRequests } from "#harness/open-input-requests.js";
 import { MockLanguageModelV4 } from "ai/test";
 import { afterAll, expect, it, vi } from "vitest";
 import type { ApprovalResponsePolicy } from "#approval/definition.js";
@@ -232,7 +233,11 @@ function fixture(
     updateSession(update: (session: HarnessSession) => HarnessSession) {
       session = update(session);
     },
-    pending: () => getPendingInputBatches(session.state).flatMap((b) => b.requests),
+    // Approvals wait in batches; the budget question is the turn's own request.
+    pending: () => [
+      ...getPendingInputBatches(session.state).flatMap((b) => b.requests),
+      ...[...readTurnInputRequests(session.state).values()].map((entry) => entry.request),
+    ],
     async gate(...names: string[]) {
       script.push(calls(...names));
       const parked = await drive({ message: `Prepare ${names.join(" and ")}.` });
@@ -367,8 +372,12 @@ it("keeps a message waiting behind a budget prompt and runs it after the grant",
 
   const waitingStart = f.events.length;
   expect((await f.drive({ message: "Also say goodbye." })).held).toEqual({ kind: "request" });
-  // The prompt still holds the turn; the message is announced when it runs.
-  expect(f.events.slice(waitingStart).map((event) => event.type)).toEqual(["turn.waiting"]);
+  // The prompt still holds the turn: the message is recorded now and read
+  // after the grant, and the question is not asked again.
+  const whileHeld = f.events.slice(waitingStart).map((event) => event.type);
+  expect(whileHeld[0]).toBe("message.received");
+  expect(whileHeld.at(-1)).toBe("turn.waiting");
+  expect(whileHeld).not.toContain("input.requested");
   expect(f.pending().map((r) => r.kind)).toEqual(["session-limit"]);
 
   f.script.push(calls("read"), "FINAL");

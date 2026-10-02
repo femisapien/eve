@@ -1,4 +1,5 @@
 import { jsonSchema } from "ai";
+import { readTurnInputRequests } from "#harness/open-input-requests.js";
 import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
 import { ContextContainer, contextStorage } from "#context/container.js";
@@ -94,7 +95,11 @@ function setup(
 }
 
 function requests(session: HarnessSession) {
-  return getPendingInputBatches(session.state).flatMap((batch) => batch.requests);
+  // Approvals wait in batches; the budget question is the turn's own request.
+  return [
+    ...getPendingInputBatches(session.state).flatMap((batch) => batch.requests),
+    ...[...readTurnInputRequests(session.state).values()].map((entry) => entry.request),
+  ];
 }
 
 function workflowResult(callId = "call-0") {

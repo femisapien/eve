@@ -39,7 +39,12 @@ import { bindSessionInstrumentation } from "#instrumentation/runtime.js";
 import { RuntimeActionSettlementTimesKey } from "#harness/runtime-action-settlement-state.js";
 import * as agentTraceState from "#tracing/agent-trace-context-store.js";
 import { matchAuthorizationCallbacks } from "#execution/authorization-callback-match.js";
-import { isTurnCancellation, throwIfTurnAborted } from "#harness/turn-cancellation.js";
+import { retireOpenInputRequests } from "#harness/open-input-requests.js";
+import {
+  isTurnCancellation,
+  SessionLimitDeclinedError,
+  throwIfTurnAborted,
+} from "#harness/turn-cancellation.js";
 import { setChannelContext } from "#execution/channel-context.js";
 import { activeTurnId } from "#harness/active-turn-id.js";
 import {
@@ -552,7 +557,11 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
         beforeBatchContext: input.serializedContext,
         checkpoint: completedModelCall,
         ctx,
-        initialSession,
+        // Stop answered the budget question, so the cancel must not withdraw it again.
+        initialSession:
+          error instanceof SessionLimitDeclinedError
+            ? retireOpenInputRequests(initialSession, [error.requestId])
+            : initialSession,
         stepInput: resolved,
       });
     }

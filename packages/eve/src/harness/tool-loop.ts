@@ -84,6 +84,7 @@ import {
   shouldCompact,
 } from "#harness/compaction.js";
 import { createCurrentMessages, hasTailApprovalResponse } from "#harness/current-messages.js";
+import { answerSessionLimitRequest } from "#harness/session-limit-request.js";
 import { collectDeferredCalls, dispatchApprovedWorkflowCalls } from "#harness/workflow-dispatch.js";
 import { estimateTokens } from "#harness/token-estimate.js";
 import {
@@ -94,10 +95,7 @@ import {
   type TokenUsageDelta,
 } from "#harness/turn-tag-state.js";
 import type { TokenUsage } from "#shared/token-usage.js";
-import {
-  applySessionLimitContinuation,
-  enforceSessionUsageLimit,
-} from "#harness/session-limit-enforcement.js";
+import { enforceSessionUsageLimit } from "#harness/session-limit-enforcement.js";
 import { setEveAttributes } from "#runtime/attributes/emit.js";
 import {
   advanceStep,
@@ -661,6 +659,16 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     }
     session = resolvedCoordination.session;
 
+    // An answer to the turn's budget question is consumed first, so the stale
+    // passes and steering below never see it.
+    const answeredLimit = await answerSessionLimitRequest({
+      emit,
+      session,
+      stepInput: stepInput.input,
+    });
+    session = answeredLimit.session;
+    const turnInput = answeredLimit.stepInput;
+
     // Stale-response handling is two passes: drop what must never reach the
     // model (session-limit continuation answers), then convert what should
     // reach it as plain text.
@@ -670,13 +678,13 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       pendingRequestIds,
       stepInput: dropStaleSessionLimitContinuationResponses({
         pendingRequestIds,
-        stepInput: stepInput.input,
+        stepInput: turnInput,
       }),
     });
     let effectiveStepInput = staleConversion.stepInput;
     // A new message reaching an open turn steers it: the turn moves past the
     // sign-ins it waits on, and its unanswered approvals resolve below.
-    if (input?.message !== undefined || staleConversion.kind === "converted") {
+    if (turnInput?.message !== undefined || staleConversion.kind === "converted") {
       const withdrawal = withdrawHeldSignIns(session.state, {
         completedAt: Date.now(),
         reason: STEERED_SIGN_IN_REASON,
@@ -1067,20 +1075,6 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       ...preambleMessages,
       ...pending.messages.slice(historyLength),
     ]);
-
-    // A resolved session-limit continuation prompt grants a fresh token
-    // budget or ends the session; see session-limit-enforcement.
-    const continuation = await applySessionLimitContinuation({
-      config,
-      emit,
-      emissionState,
-      limitContinuation: pending.limitContinuation,
-      session,
-    });
-    if (continuation.result !== null) {
-      return continuation.result;
-    }
-    session = continuation.session;
 
     if (!hasUnansweredToolCall(messages)) {
       const taskContext = await appendTaskContext({

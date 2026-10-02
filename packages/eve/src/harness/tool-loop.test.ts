@@ -1926,7 +1926,7 @@ describe("createToolLoopHarness", () => {
 
   const LIMIT_REQUEST_ID = "test-session:limit:input:12";
 
-  it("parks on a deterministic continuation prompt when the session reaches its token limit", async () => {
+  it("holds the turn on a deterministic continuation prompt when the session reaches its token limit", async () => {
     const { emit, events } = createEventCollector();
     const runStep = createToolLoopHarness(createTestConfig(emit));
 
@@ -1934,6 +1934,7 @@ describe("createToolLoopHarness", () => {
 
     expect(vi.mocked(ToolLoopAgent)).not.toHaveBeenCalled();
     expect(result.next).toBeNull();
+    expect(result.held).toEqual({ kind: "request" });
     expect(result.settledTurn).toBeUndefined();
     expect(events.map((event) => event.type)).toEqual([
       "session.started",
@@ -1941,9 +1942,11 @@ describe("createToolLoopHarness", () => {
       "message.received",
       "step.started",
       "input.requested",
-      "turn.completed",
-      "session.waiting",
+      "turn.waiting",
     ]);
+    expect(events.find((event) => event.type === "turn.waiting")?.data).toMatchObject({
+      on: "input",
+    });
     const requested = events.find((event) => event.type === "input.requested");
     expect(requested?.data).toMatchObject({
       requests: [

@@ -21,15 +21,10 @@ import type {
   ResolvePendingInputResult,
   ResolvedStepInput,
 } from "#harness/hitl/pending-input-resolution.js";
-import {
-  clearPendingSessionLimitPrompt,
-  isSessionLimitInputBatch,
-  resolveSessionLimitInput,
-} from "#harness/hitl/session-limit-input-requests.js";
 import type { HarnessSession, StepInput } from "#harness/types.js";
 import { readClientContext } from "#internal/client-context.js";
 
-export { getApprovedTools, clearPendingSessionLimitPrompt };
+export { getApprovedTools };
 export type { RejectedActionBatch };
 export type { ResolvedInputBatch } from "#harness/input-request-resolution.js";
 export {
@@ -64,15 +59,8 @@ export function hasRunnableDeferredStepInput(session: HarnessSession): boolean {
   ];
   if (responses.length === 0) return false;
   const batches = getPendingInputBatches(session.state);
-  const route = routePendingInput(batches);
-  switch (route.kind) {
-    case "session-limit":
-      return route.batch.requests.every((request) =>
-        responses.some((response) => response.requestId === request.requestId),
-      );
-    case "approvals":
-      return findAnsweredApprovalBatches(batches, responses).length > 0;
-  }
+  assertApprovalBatches(batches);
+  return findAnsweredApprovalBatches(batches, responses).length > 0;
 }
 
 /** Selects the complete approval batch that pending-input resolution will resume. */
@@ -81,7 +69,6 @@ export function selectApprovalReplayBatch(
   stepInput?: StepInput,
 ): PendingInputBatch | undefined {
   const batches = getPendingInputBatches(session.state);
-  if (batches.some(isSessionLimitInputBatch)) return;
   const resolved =
     batches.length === 1 ? resolveTextMessageInput(batches[0]!, stepInput) : stepInput;
   const responses = canonicalizeInputResponses(resolved?.inputResponses ?? []);
@@ -100,9 +87,8 @@ export function selectApprovalReplayBatch(
 /**
  * Resolves pending input at the start of a harness step.
  *
- * Ordered batches remain independently answerable. Session-limit prompts own
- * resolution while open; approval batches preserve AI SDK's tail-message
- * requirement.
+ * Ordered batches remain independently answerable. Approval batches preserve
+ * AI SDK's tail-message requirement.
  */
 export function resolvePendingInput(input: {
   readonly history?: readonly ModelMessage[];
@@ -112,10 +98,10 @@ export function resolvePendingInput(input: {
 }): ResolvePendingInputResult {
   const baseHistory = [...(input.history ?? input.session.history)];
   const batches = getPendingInputBatches(input.session.state);
-  const route = routePendingInput(batches);
+  assertApprovalBatches(batches);
   // Finish already-approved work before another batch or user message can hide
-  // the approval response from the SDK. Session-limit prompts still take priority.
-  if (route.kind === "approvals" && hasTailApprovalResponse(baseHistory)) {
+  // the approval response from the SDK.
+  if (hasTailApprovalResponse(baseHistory)) {
     return finishResolvedInput({
       deferTurnInput: true,
       leftoverResponses: input.stepInput?.inputResponses ?? [],
@@ -128,8 +114,7 @@ export function resolvePendingInput(input: {
     return { outcome: "continue", messages: baseHistory, session: input.session };
   }
   const deferTurnInput = hasTailApprovalResponse(baseHistory);
-  const textResolutionBatch =
-    route.kind === "session-limit" ? route.batch : batches.length === 1 ? batches[0] : undefined;
+  const textResolutionBatch = batches.length === 1 ? batches[0] : undefined;
   const resolvedStepInput =
     textResolutionBatch === undefined
       ? input.stepInput
@@ -155,25 +140,14 @@ export function resolvePendingInput(input: {
     responses,
     session: input.session,
   };
-  switch (route.kind) {
-    case "session-limit":
-      return resolveSessionLimitInput({ ...resolverInput, pendingBatch: route.batch });
-    case "approvals":
-      return resolveApprovalInputBatches({
-        ...resolverInput,
-        resolveApprovalKey: input.resolveApprovalKey,
-      });
-  }
+  return resolveApprovalInputBatches({
+    ...resolverInput,
+    resolveApprovalKey: input.resolveApprovalKey,
+  });
 }
 
-type PendingInputRoute =
-  | { readonly batch: PendingInputBatch; readonly kind: "session-limit" }
-  | { readonly kind: "approvals" };
-
-function routePendingInput(batches: readonly PendingInputBatch[]): PendingInputRoute {
-  const limitBatch = batches.find((batch) => isSessionLimitInputBatch(batch));
-  if (limitBatch !== undefined) return { batch: limitBatch, kind: "session-limit" };
-
+/** Pending batches hold only approvals: the budget question is the turn's own request. */
+function assertApprovalBatches(batches: readonly PendingInputBatch[]): void {
   for (const batch of batches) {
     for (const request of batch.requests) {
       if (!isApprovalRequest(request)) {
@@ -181,7 +155,6 @@ function routePendingInput(batches: readonly PendingInputBatch[]): PendingInputR
       }
     }
   }
-  return { kind: "approvals" };
 }
 
 function canonicalizeInputResponses(responses: readonly InputResponse[]): readonly InputResponse[] {

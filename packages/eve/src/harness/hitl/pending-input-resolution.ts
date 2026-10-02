@@ -31,8 +31,6 @@ export type ResolvePendingInputResult = {
   readonly consumedMessage?: boolean;
   readonly deferredContext?: boolean;
   readonly deferredMessage?: boolean;
-  /** Present when a session-limit continuation prompt was resolved. */
-  readonly limitContinuation?: { readonly granted: boolean };
   readonly outcome: "resolved" | "continue" | "unresolved";
   readonly messages: ModelMessage[];
   readonly rejectedActions?: readonly ResolvedInputActionBatch[];
@@ -65,7 +63,6 @@ export function appendResolvedBatchTranscript(
 export function finishResolvedInput(input: {
   readonly deferTurnInput: boolean;
   readonly leftoverResponses: readonly InputResponse[];
-  readonly limitContinuation?: { readonly granted: boolean };
   readonly messages: ModelMessage[];
   readonly rejectedActions?: readonly ResolvedInputActionBatch[];
   readonly resolvedInputs?: readonly ResolvedInputBatch[];
@@ -105,7 +102,6 @@ export function finishResolvedInput(input: {
           ? undefined
           : true,
       deferredMessage: deferredInput.message === undefined ? undefined : true,
-      limitContinuation: input.limitContinuation,
       outcome: "resolved",
       messages: input.messages,
       rejectedActions: input.rejectedActions,
@@ -116,7 +112,6 @@ export function finishResolvedInput(input: {
 
   return {
     consumedMessage: input.resolvedStepInput?.messageConsumed,
-    limitContinuation: input.limitContinuation,
     outcome: "resolved",
     messages: input.messages,
     rejectedActions: input.rejectedActions,

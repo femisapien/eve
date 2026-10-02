@@ -1,29 +1,26 @@
 /**
  * Session token and token-cost limit policy for the tool-loop harness.
  *
- * Two seams into the harness step:
- *
- * 1. {@link applySessionLimitContinuation} runs after pending-input
- *    resolution and acts on the user's answer to a continuation prompt —
- *    grant a fresh budget window, or cancel the in-flight turn tree.
- * 2. {@link enforceSessionUsageLimit} runs before each model call and, when
- *    the session is over budget, parks it on the deterministic continuation
- *    prompt (sessions that can request input) or fails it (nobody can answer
- *    the prompt).
+ * {@link enforceSessionUsageLimit} runs before each model call. Over budget,
+ * a turn that can reach a person holds on a budget question it owns (see
+ * `session-limit-request`); a turn that can't fails with
+ * `SESSION_TOKEN_LIMIT_REACHED` (or the cost variant).
  */
-import { createInputRequestedEvent } from "#protocol/message.js";
+import { createInputRequestedEvent, createTurnWaitingEvent } from "#protocol/message.js";
 import {
+  advanceStep,
   emitFailedStep,
-  emitTurnEpilogue,
   setHarnessEmissionState,
   type HarnessEmissionState,
 } from "#harness/emission.js";
-import { appendPendingInputBatch } from "#harness/input-requests.js";
 import type { HarnessModelMessage } from "#harness/messages.js";
 import { createSessionLimitContinuationRequest } from "#harness/session-limit-continuation.js";
-import { SessionLimitDeclinedError } from "#harness/turn-cancellation.js";
 import {
-  bumpSessionRuntimeUsageLimits,
+  openSessionLimitRequest,
+  readSessionLimitRequest,
+  sessionLimitRequestAt,
+} from "#harness/session-limit-request.js";
+import {
   getSessionUsageLimitViolation,
   getSessionTokenUsage,
   getSessionUsage,
@@ -39,39 +36,6 @@ interface SessionLimitPolicyInput {
   readonly emit?: ToolLoopHarnessConfig["handleEvent"];
   readonly emissionState: HarnessEmissionState;
   readonly session: HarnessSession;
-}
-
-/**
- * Acts on a resolved session-limit continuation answer.
- *
- * Granted: bumps the runtime token limits via
- * {@link bumpSessionRuntimeUsageLimits} and lets the step continue
- * transparently.
- * Declined: a user decision, not an error — the decline cancels the
- * in-flight turn tree through the standard cancellation path, settling as
- * `turn.cancelled` → `session.waiting` with no failure surfaced anywhere.
- * The harness only declares the intent by throwing
- * {@link SessionLimitDeclinedError}; the execution layer detects it at the
- * step boundary and cancels the root turn, whose cancelled arm cascades to
- * every descendant, so the delegating parent never receives an error result
- * it could retry against a fresh budget share.
- *
- * Returns `result: null` when the step should continue with `session`.
- */
-export async function applySessionLimitContinuation(
-  input: SessionLimitPolicyInput & {
-    readonly limitContinuation: { readonly granted: boolean } | undefined;
-  },
-): Promise<{ readonly result: StepResult | null; readonly session: HarnessSession }> {
-  if (input.limitContinuation === undefined) {
-    return { result: null, session: input.session };
-  }
-
-  if (input.limitContinuation.granted) {
-    return { result: null, session: bumpSessionRuntimeUsageLimits(input.session) };
-  }
-
-  throw new SessionLimitDeclinedError();
 }
 
 /**
@@ -98,20 +62,18 @@ export async function enforceSessionUsageLimit(
     emit !== undefined &&
     input.config.capabilities?.requestInput === true
   ) {
-    return parkOnSessionUsageLimit({ ...input, emit, violation });
+    return await holdOnSessionUsageLimit({ ...input, emit, violation });
   }
 
   return failSessionUsageLimit({ ...input, violation });
 }
 
 /**
- * Parks the session on the deterministic HITL continuation prompt. No model
- * call happens: the request is harness-authored, and the parked history
- * carries the step's accumulated messages so the triggering user message
- * survives into the resumed turn.
+ * Holds the turn on its budget question. The question is asked once; a later
+ * step that still has no answer holds again without asking. The held history
+ * keeps the step's messages, so a message sent meanwhile is read after Continue.
  */
-async function parkOnSessionUsageLimit(input: {
-  readonly config: ToolLoopHarnessConfig;
+async function holdOnSessionUsageLimit(input: {
   readonly emit: NonNullable<ToolLoopHarnessConfig["handleEvent"]>;
   readonly emissionState: HarnessEmissionState;
   readonly messages: readonly HarnessModelMessage[];
@@ -122,38 +84,32 @@ async function parkOnSessionUsageLimit(input: {
     sessionId: input.session.sessionId,
     violation: input.violation,
   });
-  let emissionState = input.emissionState;
-
-  const parkedSession = appendPendingInputBatch({
-    event: {
-      sequence: emissionState.sequence,
-      stepIndex: emissionState.stepIndex,
-      turnId: emissionState.turnId,
-    },
-    requests: [request],
-    responseMessages: [],
-    session: { ...input.session, history: [...input.messages] },
-  });
-
+  let session: HarnessSession = { ...input.session, history: [...input.messages] };
+  let { emissionState } = input;
+  if (readSessionLimitRequest(session)?.request.requestId !== request.requestId) {
+    session = openSessionLimitRequest(session, sessionLimitRequestAt(request, emissionState));
+    await input.emit(
+      createInputRequestedEvent({
+        requests: [request],
+        sequence: emissionState.sequence,
+        stepIndex: emissionState.stepIndex,
+        turnId: emissionState.turnId,
+      }),
+    );
+  }
+  emissionState = advanceStep(emissionState);
   await input.emit(
-    createInputRequestedEvent({
-      requests: [request],
+    createTurnWaitingEvent({
+      on: "input",
       sequence: emissionState.sequence,
-      stepIndex: emissionState.stepIndex,
       turnId: emissionState.turnId,
+      usage: getSessionUsage(session),
     }),
   );
-
-  emissionState = await emitTurnEpilogue(
-    input.emit,
-    emissionState,
-    parkedSession.history,
-    getSessionUsage(parkedSession),
-  );
-
   return {
+    held: { kind: "request" },
     next: null,
-    session: setHarnessEmissionState(parkedSession, emissionState),
+    session: setHarnessEmissionState(session, emissionState),
   };
 }
 
