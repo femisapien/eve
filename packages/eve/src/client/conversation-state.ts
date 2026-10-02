@@ -1,6 +1,11 @@
+import { conversationProjection } from "#client/conversation-projection.js";
 import type { EveAuthorizationPart, EveMessageData } from "#client/message-reducer-types.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
-import type { ConversationTask, ConversationTaskCall } from "#protocol/session-projection.js";
+import {
+  type ConversationTask,
+  type ConversationTaskCall,
+  openSignIns,
+} from "#protocol/session-projection.js";
 
 export type { ConversationTask, ConversationTaskCall };
 
@@ -45,7 +50,9 @@ export interface ConversationAgentSession {
   readonly observation: AgentObservation;
 }
 
-/** Renderable conversation state. Root and agent-session input IDs occupy separate scopes. */
+/**
+ * Renderable conversation state. Root and agent-session input IDs occupy separate scopes.
+ */
 export interface ConversationState extends EveMessageData {
   readonly activeTurnId?: string;
   readonly turns: Readonly<Record<string, ConversationTurn>>;
@@ -73,8 +80,8 @@ export function conversationAuthorizations(
 
 /** A sign-in the session still waits on, which resumes its work when the callback arrives. */
 export function hasPendingAuthorizations(state: ConversationState): boolean {
-  return conversationAuthorizations(state).some(
-    (part) => part.state === "required" && part.awaitsCallback === true,
+  return openSignIns(conversationProjection(state)).some(
+    (attempt) => attempt.awaitsCallback === true,
   );
 }
 
