@@ -47,6 +47,12 @@ export interface McpRequestStatePayload {
    * tool again. They already went to the client in `inputRequests`.
    */
   readonly authorizationUrls?: readonly McpAuthorizationUrl[];
+  /**
+   * When the round ends, in epoch milliseconds. Set on the first mint and
+   * kept when a sign-in round is sent again, so partial answers never extend
+   * it. `mint` fills it in.
+   */
+  readonly expiresAt?: number;
 }
 
 /** One URL an `authorization` round asks the person to open to sign in to a connection. */
@@ -127,11 +133,15 @@ export function createMcpRequestStateCodec(key: string | Uint8Array): McpRequest
   });
   return {
     async mint(payload) {
-      return await codec.mint(payload);
+      const expiresAt = payload.expiresAt ?? Date.now() + MCP_REQUEST_STATE_TTL_SECONDS * 1000;
+      return await codec.mint({ ...payload, expiresAt });
     },
     async verify(state, ctx) {
       const payload = await codec.verify(state, ctx);
       if (!isRequestStatePayload(payload)) throw new Error("malformed");
+      if (payload.expiresAt === undefined || payload.expiresAt <= Date.now()) {
+        throw new Error("expired");
+      }
       return payload;
     },
   };
@@ -146,6 +156,7 @@ function isRequestStatePayload(value: unknown): value is McpRequestStatePayload 
     if (typeof payload[field] !== "string" || payload[field].length === 0) return false;
   }
   if (payload.nonce !== undefined && typeof payload.nonce !== "string") return false;
+  if (payload.expiresAt !== undefined && typeof payload.expiresAt !== "number") return false;
   if (payload.approval !== undefined) {
     const approval = payload.approval as Record<string, unknown> | null;
     if (typeof approval !== "object" || approval === null) return false;

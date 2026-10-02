@@ -158,11 +158,7 @@ async function callMcpTool(
   server: McpServer,
   context: McpToolsContext,
   tools: ReadonlyMap<string, AgentToolDescription>,
-  params: {
-    readonly arguments?: McpJsonObject;
-    readonly name: string;
-    readonly requestState?: string;
-  },
+  params: { readonly arguments?: McpJsonObject; readonly name: string },
   ctx: McpRequestHandlerExtra,
 ): Promise<McpToolCallResult> {
   const name = params.name;
@@ -212,10 +208,8 @@ async function callMcpTool(
       if (answers === "declined") {
         return toolError("denied", `The sign-in for the tool "${name}" was declined.`);
       }
-      // Echo the client's own state: minting a new one would restart its
-      // expiry, so partial answers could keep a sign-in round alive forever.
-      if (answers === "missing" && params.requestState !== undefined) {
-        return signInRequired(state.callId, state.authorizationUrls ?? [], params.requestState);
+      if (answers === "missing") {
+        return await reissueSignIn(context, state);
       }
     }
   }
@@ -302,6 +296,18 @@ export function readSignInAnswers(
     if (view.action !== "accept") missing = true;
   }
   return missing ? "missing" : "accepted";
+}
+
+/** The same sign-in questions for the same call, under a state that keeps its expiry. */
+async function reissueSignIn(
+  context: McpToolsContext,
+  state: McpRequestStatePayload,
+): Promise<McpToolCallResult> {
+  if (context.requestState.kind === "missing") {
+    return toolError("internal", context.requestState.reason);
+  }
+  const requestState = await context.requestState.codec.mint(state);
+  return signInRequired(state.callId, state.authorizationUrls ?? [], requestState);
 }
 
 function signInRequired(
