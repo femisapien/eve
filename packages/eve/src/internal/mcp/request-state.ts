@@ -42,17 +42,17 @@ export interface McpRequestStatePayload {
   /** The person's approval answer, carried into a sign-in round that follows it. */
   readonly approval?: { readonly approved: boolean };
   /**
-   * The sign-ins an `authorization` round asked for, so a retry that leaves
-   * one unanswered gets the same questions back without running the tool.
-   * The URLs already went to the client in `inputRequests`.
+   * The URLs an `authorization` round asked the person to open, so a retry
+   * that leaves one unanswered gets the same URLs back without running the
+   * tool again. They already went to the client in `inputRequests`.
    */
-  readonly signIns?: readonly McpSignInRequest[];
+  readonly authorizationUrls?: readonly McpAuthorizationUrl[];
 }
 
-/** One sign-in an `authorization` round asks the client to complete. */
-export interface McpSignInRequest {
-  /** The connection name; the input request key is `dev.eve/authorization:<name>`. */
-  readonly name: string;
+/** One URL an `authorization` round asks the person to open to sign in to a connection. */
+export interface McpAuthorizationUrl {
+  /** The connection name; the input request key is `dev.eve/authorization:<connection>`. */
+  readonly connection: string;
   readonly url: string;
   readonly userCode?: string;
 }
@@ -152,18 +152,18 @@ function isRequestStatePayload(value: unknown): value is McpRequestStatePayload 
     if (typeof approval.approved !== "boolean") return false;
   }
   if (payload.kind === "authorization") {
-    if (!Array.isArray(payload.signIns) || payload.signIns.length === 0) return false;
-    if (!payload.signIns.every(isSignInRequest)) return false;
-  } else if (payload.signIns !== undefined) {
+    const urls = payload.authorizationUrls;
+    if (!Array.isArray(urls) || urls.length === 0 || !urls.every(isAuthorizationUrl)) return false;
+  } else if (payload.authorizationUrls !== undefined) {
     return false;
   }
   return true;
 }
 
-function isSignInRequest(value: unknown): value is McpSignInRequest {
+function isAuthorizationUrl(value: unknown): value is McpAuthorizationUrl {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
   const entry = value as Record<string, unknown>;
-  if (typeof entry.name !== "string" || entry.name.length === 0) return false;
+  if (typeof entry.connection !== "string" || entry.connection.length === 0) return false;
   if (typeof entry.url !== "string" || entry.url.length === 0) return false;
   return entry.userCode === undefined || typeof entry.userCode === "string";
 }

@@ -21,7 +21,7 @@ import {
   hashToolArguments,
   type McpRequestStateCodec,
   type McpRequestStatePayload,
-  type McpSignInRequest,
+  type McpAuthorizationUrl,
 } from "#internal/mcp/request-state.js";
 import type { ToolModelOutput } from "#tools/model-output.js";
 
@@ -204,7 +204,7 @@ async function callMcpTool(
       if (state.approval !== undefined) options.approval = state.approval;
       // Nothing runs until every requested sign-in has an answer: a grant
       // that already exists does not stand in for the person's reply.
-      const answers = readSignInAnswers(ctx.mcpReq.inputResponses, state.signIns ?? []);
+      const answers = readSignInAnswers(ctx.mcpReq.inputResponses, state.authorizationUrls ?? []);
       if (answers === "declined") {
         return toolError("denied", `The sign-in for the tool "${name}" was declined.`);
       }
@@ -283,11 +283,11 @@ export function readApprovalAnswer(
  */
 export function readSignInAnswers(
   responses: McpJsonObject | undefined,
-  signIns: readonly McpSignInRequest[],
+  authorizationUrls: readonly McpAuthorizationUrl[],
 ): "accepted" | "declined" | "missing" {
-  let missing = signIns.length === 0;
-  for (const signIn of signIns) {
-    const view = inputResponse(responses, `${MCP_AUTHORIZATION_KEY_PREFIX}${signIn.name}`);
+  let missing = authorizationUrls.length === 0;
+  for (const entry of authorizationUrls) {
+    const view = inputResponse(responses, `${MCP_AUTHORIZATION_KEY_PREFIX}${entry.connection}`);
     if (view.kind !== "elicit") {
       missing = true;
       continue;
@@ -307,24 +307,24 @@ async function reissueSignIn(
     return toolError("internal", context.requestState.reason);
   }
   const requestState = await context.requestState.codec.mint(state);
-  return signInRequired(state.callId, state.signIns ?? [], requestState);
+  return signInRequired(state.callId, state.authorizationUrls ?? [], requestState);
 }
 
 function signInRequired(
   callId: string,
-  signIns: readonly McpSignInRequest[],
+  authorizationUrls: readonly McpAuthorizationUrl[],
   requestState: string,
 ): McpToolCallResult {
   return {
     _meta: {
       [MCP_AUTHORIZATION_META_KEY]: {
         callId,
-        connections: signIns.map((entry) => entry.name),
+        connections: authorizationUrls.map((entry) => entry.connection),
       },
     },
     inputRequests: Object.fromEntries(
-      signIns.map((entry) => [
-        `${MCP_AUTHORIZATION_KEY_PREFIX}${entry.name}`,
+      authorizationUrls.map((entry) => [
+        `${MCP_AUTHORIZATION_KEY_PREFIX}${entry.connection}`,
         {
           method: "elicitation/create",
           params: { message: signInMessage(entry), mode: "url", url: entry.url },
@@ -427,20 +427,20 @@ async function toMcpToolResult(
       if (context.requestState.kind === "missing") {
         return withSandbox(toolError("internal", context.requestState.reason));
       }
-      const signIns: McpSignInRequest[] = result.challenges.map((entry) => {
-        const signIn: { -readonly [K in keyof McpSignInRequest]: McpSignInRequest[K] } = {
-          name: entry.name,
+      const authorizationUrls: McpAuthorizationUrl[] = result.challenges.map((entry) => {
+        const url: { -readonly [K in keyof McpAuthorizationUrl]: McpAuthorizationUrl[K] } = {
+          connection: entry.name,
           url: entry.challenge.url as string,
         };
-        if (entry.challenge.userCode !== undefined) signIn.userCode = entry.challenge.userCode;
-        return signIn;
+        if (entry.challenge.userCode !== undefined) url.userCode = entry.challenge.userCode;
+        return url;
       });
       const payload = {
         ...statePayload(context, call, "authorization", result.callId, result.oneOffNonce),
-        signIns,
+        authorizationUrls,
       };
       const requestState = await context.requestState.codec.mint(payload);
-      return withSandbox(signInRequired(result.callId, signIns, requestState));
+      return withSandbox(signInRequired(result.callId, authorizationUrls, requestState));
     }
   }
 }
@@ -487,9 +487,9 @@ function statePayload(
   return payload;
 }
 
-function signInMessage(entry: McpSignInRequest): string {
+function signInMessage(entry: McpAuthorizationUrl): string {
   const code = entry.userCode === undefined ? "" : ` Code: ${entry.userCode}`;
-  return `Sign in to ${entry.name} to continue.${code}`;
+  return `Sign in to ${entry.connection} to continue.${code}`;
 }
 
 function formatNames(challenges: readonly InvokeToolAuthorizationChallenge[]): string {
