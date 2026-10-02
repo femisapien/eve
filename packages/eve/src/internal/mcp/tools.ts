@@ -69,7 +69,7 @@ const warnedShadowedTools = new Set<string>();
 /** Capabilities the tools adapter adds to `server/discover` and `initialize`. */
 export const MCP_TOOLS_CAPABILITIES = {
   extensions: { [MCP_TOOL_SESSIONS_EXTENSION]: {} },
-  tools: { listChanged: true },
+  tools: { listChanged: false },
 } as const;
 
 type McpContentBlock =
@@ -158,7 +158,11 @@ async function callMcpTool(
   server: McpServer,
   context: McpToolsContext,
   tools: ReadonlyMap<string, AgentToolDescription>,
-  params: { readonly arguments?: McpJsonObject; readonly name: string },
+  params: {
+    readonly arguments?: McpJsonObject;
+    readonly name: string;
+    readonly requestState?: string;
+  },
   ctx: McpRequestHandlerExtra,
 ): Promise<McpToolCallResult> {
   const name = params.name;
@@ -208,8 +212,10 @@ async function callMcpTool(
       if (answers === "declined") {
         return toolError("denied", `The sign-in for the tool "${name}" was declined.`);
       }
-      if (answers === "missing") {
-        return await reissueSignIn(context, state);
+      // Echo the client's own state: minting a new one would restart its
+      // expiry, so partial answers could keep a sign-in round alive forever.
+      if (answers === "missing" && params.requestState !== undefined) {
+        return signInRequired(state.callId, state.authorizationUrls ?? [], params.requestState);
       }
     }
   }
@@ -296,18 +302,6 @@ export function readSignInAnswers(
     if (view.action !== "accept") missing = true;
   }
   return missing ? "missing" : "accepted";
-}
-
-/** The same sign-in questions, under a freshly minted state for the same call. */
-async function reissueSignIn(
-  context: McpToolsContext,
-  state: McpRequestStatePayload,
-): Promise<McpToolCallResult> {
-  if (context.requestState.kind === "missing") {
-    return toolError("internal", context.requestState.reason);
-  }
-  const requestState = await context.requestState.codec.mint(state);
-  return signInRequired(state.callId, state.authorizationUrls ?? [], requestState);
 }
 
 function signInRequired(

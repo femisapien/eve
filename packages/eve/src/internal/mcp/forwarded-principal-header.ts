@@ -24,9 +24,11 @@ export interface McpRequestPrincipals {
  * `trustedForwarders`, sharing parsing, stamping, and the predicate with
  * eveChannel's `forwardedPrincipal` body field.
  *
- * Without a predicate the header is ignored entirely. With one, a malformed or
- * oversized header is a 400 and a refused forwarder a 403, before any MCP
- * handling. An anonymous route principal (`none()`) cannot forward: there is
+ * Without a predicate a request carrying the header is a 403, as eveChannel
+ * refuses a `forwardedPrincipal` it does not accept: running the call as the
+ * forwarder instead would silently widen it to the router's access. With a
+ * predicate, a malformed or oversized header is a 400 and a refused forwarder
+ * a 403, before any MCP handling. An anonymous route principal (`none()`) cannot forward: there is
  * no one to hold accountable for the assertion, so the request is refused.
  */
 export async function resolveMcpRequestPrincipals(
@@ -35,7 +37,10 @@ export async function resolveMcpRequestPrincipals(
   trustedForwarders: TrustedForwarders | undefined,
 ): Promise<McpRequestPrincipals | Response> {
   const header = request.headers.get(MCP_FORWARDED_PRINCIPAL_HEADER);
-  if (header === null || trustedForwarders === undefined) return { current: routePrincipal };
+  if (header === null) return { current: routePrincipal };
+  if (trustedForwarders === undefined) {
+    return forwardedHeaderFailure(403, "This deployment does not accept a forwarded principal.");
+  }
 
   if (routePrincipal.principalType === "anonymous") {
     return forwardedHeaderFailure(

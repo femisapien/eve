@@ -484,10 +484,6 @@ async function handleMcpRequest(
       },
     });
   }
-  // The SEP-2640 skills module plugs in here as another feature when
-  // `config.skills` is on: `skills/list`, `skills/get`, `resources/read`,
-  // `resources/directory/read`, the `resources` capability, and the
-  // `io.modelcontextprotocol/skills` extension.
   features.push(...skillsFeatures(config, description, args));
 
   return await createMcpStreamableHttpServer<McpRequestPrincipals>({

@@ -232,7 +232,7 @@ export default mcpChannel({
 });
 ```
 
-Every caller the channel's `auth` admits can then call those tools directly, as themselves, outside the agent's model loop and instructions. Approval policies still apply. Review what becomes callable before you turn this on.
+Every caller the channel's `auth` admits can then call those tools directly, as themselves, outside the agent's model loop and instructions. Approval policies still run, but the MCP client that made the call is the one that answers them (see [Approval and sign-in](#approval-and-sign-in)). Review what becomes callable before you turn this on.
 
 Set `agent: false` to stop serving the `agent_*` tools, for a server that publishes only tools and skills:
 
@@ -258,7 +258,7 @@ While `agent` is on, the `agent_*` names are reserved: an agent tool named `agen
 
 #### Tool sessions
 
-Each `tools/call` runs in a **tool session**. When the client sends a key in `_meta["dev.eve/tool-session"]` (a string of up to 512 characters), calls from the same principal with the same key share a session, and with it the session's sandbox. eve derives the session id from the principal and the key, so another caller cannot reach your session by reusing your key. Without a key, the call gets a one-off session. Servers advertise this in `server/discover` under `capabilities.extensions["dev.eve/tool-sessions"]`.
+Each `tools/call` runs in a **tool session**. When a client that declares the `dev.eve/tool-sessions` extension in its capabilities sends a key in `_meta["dev.eve/tool-session"]` (a string of up to 512 characters), calls from the same principal with the same key share a session, and with it the session's sandbox. eve derives the session id from the principal and the key, so another caller cannot reach your session by reusing your key. Without a key, or from a client that did not declare the extension, the call gets a one-off session. Servers advertise this in `server/discover` under `capabilities.extensions["dev.eve/tool-sessions"]`.
 
 A tool session has none of these:
 
@@ -276,6 +276,8 @@ A tool that needs approval, or a sign-in to a connection, returns an MCP `input_
 
 `requestState` is HMAC-signed, expires after 10 minutes, and is bound to the session, the tool name, and the arguments. A state used by another principal, for another tool, or with other arguments is refused with `-32602`. The signature grants nothing by itself: eve evaluates approval again on every call.
 
+The approval answer comes from the MCP client that made the call, and the tool's response policy runs with that caller as the responder. A client that answers on its own can therefore approve its own calls. When a person must confirm a call that the caller cannot approve, keep the tool out of the published set or enforce the check inside the tool.
+
 Set the signing key in every production deployment:
 
 ```bash
@@ -286,7 +288,7 @@ All instances must share the same value so that a retry can land on any of them.
 
 #### Forwarded principals
 
-A router that calls the channel on behalf of its own users can name them in the `eve-forwarded-principal` header: unpadded base64url JSON, at most 16 KiB. eve reads the header only when `trustedForwarders` is set, and only from a forwarder the predicate accepts:
+A router that calls the channel on behalf of its own users can name them in the `eve-forwarded-principal` header: unpadded base64url JSON, at most 16 KiB. eve accepts the header only when `trustedForwarders` is set, and only from a forwarder the predicate accepts:
 
 ```ts title="agent/channels/mcp.ts"
 export default mcpChannel({
@@ -295,11 +297,11 @@ export default mcpChannel({
 });
 ```
 
-A malformed or oversized header gets `400`. A header from an untrusted or anonymous caller gets `403`. A forwarded call runs as the forwarded user, and the router is recorded as `eve:forwarded-by`. The rules are the same as the [eve channel](./eve)'s. The `agent_*` tools still act as the route-authenticated caller: a forwarded principal applies to published tools only.
+A malformed or oversized header gets `400`. A header sent to a channel without `trustedForwarders`, or from an untrusted or anonymous caller, gets `403`. A forwarded call runs as the forwarded user, and the router is recorded as `eve:forwarded-by`. The rules are the same as the [eve channel](./eve)'s. The `agent_*` tools still act as the route-authenticated caller: a forwarded principal applies to published tools only.
 
 ### Skills
 
-With `skills: true`, the agent's skills are served under `skill://` as [SEP-2640](https://modelcontextprotocol.io/seps/2640) skills: `skills/list`, `skills/get`, `resources/list`, `resources/read`, and `resources/directory/read`. A skill is served only when its frontmatter meets the Agent Skills format.
+With `skills: true`, the agent's skills are served under `skill://` as [SEP-2640](https://modelcontextprotocol.io/seps/2640) skills: `skills/list`, `skills/get`, `resources/list`, `resources/read`, and `resources/directory/read`. A skill is served only when its frontmatter meets the Agent Skills format. eve logs a warning for each skill or file it does not serve.
 
 ## What to read next
 

@@ -13,6 +13,7 @@ import {
 } from "#compiled/@modelcontextprotocol/server/index.js";
 import { z } from "#compiled/zod/index.js";
 import { hasFrontmatter, parseFrontmatter } from "#internal/helpers/gray-matter.js";
+import { createLogger } from "#internal/logging.js";
 import type { McpServerFeature } from "#internal/mcp/streamable-http-server.js";
 import type { JsonObject, JsonValue } from "#shared/json.js";
 import { isSkillEntryFileName, SKILL_ENTRY_FILE_NAME } from "#shared/skill-entry-file.js";
@@ -39,6 +40,16 @@ const SKILL_URI_PREFIX = "skill://";
 const DIRECTORY_MIME_TYPE = "inode/directory";
 /** Files read concurrently while building one skill entry. */
 const READ_CONCURRENCY = 8;
+
+const log = createLogger("mcp.skills");
+const warned = new Set<string>();
+
+/** Logs why a skill or file is not served, once per process. */
+function warnOnce(message: string): void {
+  if (warned.has(message)) return;
+  warned.add(message);
+  log.warn(message);
+}
 
 /** The operations of an agent that the skills surface adapts. */
 export interface McpSkillSource {
@@ -551,20 +562,43 @@ async function snapshotSkill(
   source: McpSkillSource,
   skill: AgentSkillDescription,
 ): Promise<SkillSnapshot | undefined> {
+  const unserved = (reason: string) => {
+    warnOnce(`mcpChannel does not serve the skill "${skill.name}": ${reason}.`);
+    return undefined;
+  };
   const paths = servedPaths(skill);
-  if (paths === undefined) return undefined;
+  if (paths === undefined) {
+    return unserved(`it has no SKILL.md or more than ${MCP_SKILL_MAX_RESOURCES} files`);
+  }
   const document = await readEntryDocument(source, skill);
-  if (document === undefined) return undefined;
-  const files = await mapWithConcurrency(paths, READ_CONCURRENCY, async (path) =>
-    path === SKILL_ENTRY_FILE_NAME ? document : await readFileWithinCap(source, skill.name, path),
-  );
+  if (document === undefined) {
+    return unserved(
+      "its SKILL.md is unreadable, over the file cap, or does not meet the Agent Skills format",
+    );
+  }
+  // Stop reading once the skill is over the limit instead of holding every file first.
+  let total = 0;
+  const files = await mapWithConcurrency(paths, READ_CONCURRENCY, async (path) => {
+    if (total > MCP_SKILL_MAX_TOTAL_BYTES) return undefined;
+    const file =
+      path === SKILL_ENTRY_FILE_NAME ? document : await readFileWithinCap(source, skill.name, path);
+    total += file?.bytes.byteLength ?? 0;
+    return file;
+  });
+  if (total > MCP_SKILL_MAX_TOTAL_BYTES) {
+    return unserved(`its files total more than ${MCP_SKILL_MAX_TOTAL_BYTES} bytes`);
+  }
   const resources: McpSkillResource[] = [];
   const served = new Map<string, SnapshotFile>();
-  let total = 0;
   for (const [index, file] of files.entries()) {
     const path = paths[index];
-    if (file === undefined || path === undefined) continue;
-    total += file.bytes.byteLength;
+    if (path === undefined) continue;
+    if (file === undefined) {
+      warnOnce(
+        `mcpChannel does not serve "${path}" of the skill "${skill.name}": it is unreadable or over ${MAX_SKILL_FILE_BYTES} bytes.`,
+      );
+      continue;
+    }
     served.set(path, { ...file, mimeType: servedMimeType(path, file) });
     resources.push({
       uri: skillFileUri(skill.name, path),
@@ -572,7 +606,6 @@ async function snapshotSkill(
       size: file.bytes.byteLength,
     });
   }
-  if (total > MCP_SKILL_MAX_TOTAL_BYTES) return undefined;
   return {
     name: skill.name,
     description: document.description,
