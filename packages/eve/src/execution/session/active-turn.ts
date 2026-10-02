@@ -156,6 +156,37 @@ export class ActiveTurn {
     }
   }
 
+  /**
+   * Next input for a turn waiting on a person, admitting inbox traffic while
+   * waiting. Run messages come back for the session to apply.
+   */
+  async nextHeldInput(): Promise<
+    | { readonly kind: "delivery"; readonly delivery: DeliverHookPayload }
+    | { readonly kind: "workflow"; readonly message: WorkflowToolRunMessage }
+    | "cancelled"
+  > {
+    while (true) {
+      if (this.signal.aborted) return "cancelled";
+      const selection = this.input.queue.takeHeldInput(this.admitted, this.identity);
+      if (selection !== undefined) {
+        for (const sequence of selection.sequences) this.admitted.delete(sequence);
+        // The next step reads this delivery, so its signal must not interrupt that step.
+        this.resetSteering();
+        if (selection.delivery.caller !== undefined) this.caller = selection.delivery.caller;
+        return { delivery: selection.delivery, kind: "delivery" };
+      }
+      const event = this.runtimeResults.shift();
+      if (event !== undefined) {
+        if (event !== "cancelled" && event.kind === "workflow") return event;
+        continue;
+      }
+      const payload = await this.input.inbox.next();
+      if (payload === undefined)
+        throw new Error("Session inbox closed while the turn waited on a person.");
+      await this.admit(payload);
+    }
+  }
+
   /** Resolves with the id of the call whose timer won, or `undefined` once inbox input is ready. */
   private async waitForInboxOrTimer(
     timers: readonly Promise<string>[],

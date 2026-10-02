@@ -33,6 +33,7 @@ export function resolveSessionStepResult(
   if (stepResult.held?.kind === "tasks") {
     return { action: "held", hold: "tasks", ...values, taskIds: stepResult.held.taskIds };
   }
+  if (stepResult.held?.kind === "input") return { action: "held", hold: "input", ...values };
   if (stepResult.next === null) {
     const { hasRunsToDispatch, pendingCoordinationCallIds, pendingTaskToolCalls } =
       derivePendingState(stepResult.session);

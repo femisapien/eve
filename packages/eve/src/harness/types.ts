@@ -228,13 +228,16 @@ export interface StepResult {
    */
   readonly settledTurn?: SettledTurn;
   /**
-   * Present when the turn stays open because the model ended it while tasks
-   * work. It resumes when a task settles.
+   * Present when the turn stays open: the model ended it while tasks work, and
+   * it resumes when a task settles; or it waits on a person, and resumes when
+   * input arrives.
    */
   readonly held?: TurnHold;
 }
 
-export type TurnHold = { readonly kind: "tasks"; readonly taskIds: readonly string[] };
+export type TurnHold =
+  | { readonly kind: "tasks"; readonly taskIds: readonly string[] }
+  | { readonly kind: "input" };
 
 /**
  * A single step of AI work. Takes the current session and optional user input,

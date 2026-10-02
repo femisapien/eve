@@ -82,6 +82,7 @@ import { collectDeferredCalls } from "#harness/workflow-dispatch.js";
 import { estimateTokens } from "#harness/token-estimate.js";
 import {
   accumulateTurnUsage,
+  bumpSessionRuntimeUsageLimits,
   getSessionUsage,
   getTurnUsageState,
   setTurnUsageState,
@@ -157,6 +158,7 @@ import {
 import { summarizeKnownError, type SemanticErrorSummary } from "#harness/semantic-errors/index.js";
 import {
   isTurnCancellation,
+  SessionLimitDeclinedError,
   throwIfTurnAborted,
   TurnCancelledError,
 } from "#harness/turn-cancellation.js";
@@ -608,7 +610,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     session = resolvedCoordination.session;
 
     const auth = store?.get(AuthKey) ?? null;
-    const applyHumanInput = async (transition: Transition): Promise<StepResult | undefined> => {
+    const applyHumanInput = async (transition: Transition) => {
       const applied = await applyHumanInputTransition({
         emit,
         emissionState,
@@ -617,11 +619,12 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
         transition,
       });
       session = applied.session;
-      return applied.ended;
+      return applied;
     };
     for (const intake of collectHumanInputIntakes(input, session, auth)) {
-      const ended = await applyHumanInput(HumanInput.read(session.state).intake(intake));
-      if (ended !== undefined) return ended;
+      const applied = await applyHumanInput(HumanInput.read(session.state).intake(intake));
+      if (applied.ended !== undefined) return applied.ended;
+      if (applied.messageAnswered) input = { ...input, message: undefined, messageAuth: undefined };
     }
     const turnMessages = resolvedCoordination.messages;
 
@@ -1343,7 +1346,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     const limit = await enforceSessionUsageLimit({ config, emit, emissionState, session });
     if (limit.kind === "failed") return limit.result;
     if (limit.kind === "ask") {
-      const ended = await applyHumanInput(
+      const { ended } = await applyHumanInput(
         HumanInput.read(session.state).interrupt({
           at: requestAt(emissionState),
           request: limit.request,
@@ -1353,7 +1356,23 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       if (ended !== undefined) return ended;
     }
     if ("held" in HumanInput.read(session.state).next()) {
-      throw new Error("Holding a turn for human input is not implemented.");
+      // The turn stays open while it waits on a person. The held history keeps
+      // this step's messages, so a message sent meanwhile is read when it runs.
+      ctx?.set(HistoryStateKey, currentMessages.historyState);
+      emissionState = advanceStep(emissionState);
+      const held = setHarnessEmissionState(
+        { ...session, history: [...currentMessages.history] },
+        emissionState,
+      );
+      await emit?.(
+        createTurnWaitingEvent({
+          on: "input",
+          sequence: emissionState.sequence,
+          turnId: emissionState.turnId,
+          usage: getSessionUsage(held),
+        }),
+      );
+      return { held: { kind: "input" }, next: null, session: held };
     }
 
     let result: HarnessStepResult;
@@ -2429,8 +2448,13 @@ async function applyHumanInputTransition(input: {
   readonly hasDelegatedCaller: boolean;
   readonly session: HarnessSession;
   readonly transition: Transition;
-}): Promise<{ readonly ended?: StepResult; readonly session: HarnessSession }> {
+}): Promise<{
+  readonly ended?: StepResult;
+  readonly messageAnswered?: true;
+  readonly session: HarnessSession;
+}> {
   const { emit, transition } = input;
+  let messageAnswered: true | undefined;
   let session: HarnessSession = {
     ...input.session,
     state: transition.humanInput.write(input.session.state),
@@ -2457,6 +2481,14 @@ async function applyHumanInputTransition(input: {
         continue;
       case "turn.cancelled":
         throw new TurnCancelledError();
+      case "budget.granted":
+        session = bumpSessionRuntimeUsageLimits(session);
+        continue;
+      case "budget.declined":
+        throw new SessionLimitDeclinedError(event.requestId, transition.humanInput);
+      case "message.answered":
+        messageAnswered = true;
+        continue;
       case "turn.failed": {
         // Callers without an emit fn get the raw throw, as for model failures.
         if (!emit) throw new Error(event.message);
@@ -2474,11 +2506,10 @@ async function applyHumanInputTransition(input: {
       case "calls.approved":
       case "responder.check":
       case "answer.forwarded":
-      case "budget.granted":
         throw new Error(`Human input event "${event.type}" is not implemented.`);
     }
   }
-  return { session };
+  return { messageAnswered, session };
 }
 
 /** Appended to the model-facing description of every tool with `endsTurn: true`. */

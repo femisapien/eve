@@ -1,6 +1,6 @@
 import { sleep } from "#compiled/@workflow/core/index.js";
 
-import type { TurnCaller } from "#channel/types.js";
+import type { DeliverHookPayload, TurnCaller } from "#channel/types.js";
 import type { DurableSessionState } from "#execution/durable-session-store.js";
 import { cancelDescendantTurnsStep } from "#execution/cancel-descendant-turns-step.js";
 import { dispatchCoordinationStep } from "#execution/coordination-dispatch-step.js";
@@ -166,6 +166,13 @@ export class SessionExecution {
         };
       }
 
+      if (result.action === "held" && result.hold === "input") {
+        const woke = await this.waitForHeldInput(turn);
+        if (woke === "cancelled") return await this.finishCancelledTurn(turn);
+        nextStepInput = { delivery: woke };
+        continue;
+      }
+
       if (result.action === "held") {
         const woke = await this.waitForHeldTurn(turn);
         if (woke === "cancelled") return await this.finishCancelledTurn(turn);
@@ -275,6 +282,16 @@ export class SessionExecution {
         case "timeout":
           continue;
       }
+    }
+  }
+
+  /** The turn waits on a person. It wakes with the delivery its next step reads. */
+  private async waitForHeldInput(turn: ActiveTurn): Promise<DeliverHookPayload | "cancelled"> {
+    while (true) {
+      const next = await turn.nextHeldInput();
+      if (next === "cancelled") return next;
+      if (next.kind === "delivery") return next.delivery;
+      await this.handleWorkflowMessage(next.message);
     }
   }
 

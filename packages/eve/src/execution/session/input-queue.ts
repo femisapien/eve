@@ -98,6 +98,31 @@ export class SessionInputQueue {
     };
   }
 
+  /**
+   * The first admitted delivery a turn waiting on a person reads: an answer
+   * from anyone, or a message from the turn's own person. Their message reads
+   * at once even with `turnPolicy: "queue"`: queued, it would wait for a turn
+   * that cannot end until they act. One at a time, because deliveries from
+   * different people do not coalesce.
+   */
+  takeHeldInput(admitted: ReadonlySet<number>, turn: SteeringTurn): TurnSelection | undefined {
+    const entry = this.entries.find(
+      (candidate): candidate is QueuedDelivery =>
+        candidate.kind === "delivery" &&
+        admitted.has(candidate.sequence) &&
+        (candidate.delivery.payloads.some((payload) => payload.inputResponses !== undefined) ||
+          isTurnOwnDelivery(candidate.delivery, turn)),
+    );
+    if (entry === undefined) return undefined;
+    this.retain((candidate) => candidate !== entry);
+    return {
+      delivery: entry.delivery,
+      handoffEligible: false,
+      kind: "turn",
+      sequences: [entry.sequence],
+    };
+  }
+
   /** Takes the next turn or control. */
   takeNext(options?: {
     /** Sequence of a delivery admitted while nothing else was pending. */
@@ -169,8 +194,11 @@ export interface SteeringTurn {
  * identity, which is the turn's.
  */
 export function isSteeringDelivery(delivery: DeliverHookPayload, turn: SteeringTurn): boolean {
+  return (delivery.turnPolicy ?? "steer") === "steer" && isTurnOwnDelivery(delivery, turn);
+}
+
+function isTurnOwnDelivery(delivery: DeliverHookPayload, turn: SteeringTurn): boolean {
   return (
-    (delivery.turnPolicy ?? "steer") === "steer" &&
     (delivery.caller === undefined || delivery.caller.callId === turn.callerCallId) &&
     (delivery.auth === undefined || principalOf(delivery.auth) === turn.principal)
   );

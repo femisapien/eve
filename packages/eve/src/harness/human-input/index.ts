@@ -2,6 +2,12 @@ import type { ModelMessage } from "ai";
 
 import type { SessionAuthContext } from "#channel/types.js";
 import type { AuthorizationChallenge } from "#harness/authorization.js";
+import {
+  answerBudget,
+  answerBudgetByText,
+  askBudget,
+  withdrawBudget,
+} from "#harness/human-input/budget.js";
 import type { SessionStateMap, StepInput } from "#harness/types.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
@@ -151,6 +157,10 @@ export type HumanInputEvent =
     }
   /** Grant a fresh budget window: the person chose to continue. */
   | { readonly type: "budget.granted" }
+  /** The person chose to stop: the budget question is resolved; cancel the turn. */
+  | { readonly type: "budget.declined"; readonly requestId: string }
+  /** The message answered a request, so it is not input for the model. */
+  | { readonly type: "message.answered" }
   /** Tell the model something with the turn's next input. */
   | { readonly type: "note"; readonly text: string }
   | { readonly type: "turn.cancelled" }
@@ -175,7 +185,8 @@ export interface RelayRoute {
 
 const STATE_KEY = "eve.harness.humanInput";
 
-interface HumanInputState {
+/** Exported only for the rules files beside this one. */
+export interface HumanInputState {
   /** Every open request, by `requestId`. */
   readonly requests: Readonly<Record<string, OpenRequest>>;
   /** Input that arrived before it could run: a partial answer, or a message behind one. */
@@ -236,11 +247,12 @@ interface Reduced {
 
 function reduce(state: HumanInputState, input: Interrupt | Intake): Reduced {
   switch (input.type) {
+    case "budget.exceeded":
+      return askBudget(state, input);
     // Human input is being rebuilt case by case. Until a case exists, a turn
     // that needs a person fails with a clear error instead of hanging.
     case "approvals.requested":
     case "authorization.required":
-    case "budget.exceeded":
     case "relayed.requested":
       return {
         events: [
@@ -252,9 +264,15 @@ function reduce(state: HumanInputState, input: Interrupt | Intake): Reduced {
         ],
         state,
       };
-    case "answered":
+    case "answered": {
+      // No other kind of request is rebuilt yet, so nothing takes the rest.
+      const budget = answerBudget(state, input.responses);
+      return { events: budget.events, state: budget.state };
+    }
     case "message":
+      return answerBudgetByText(state, input.text) ?? { events: [], state };
     case "cancelled":
+      return withdrawBudget(state);
     case "authorization.completed":
     case "responder.checked":
     case "calls.settled":
