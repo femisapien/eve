@@ -5,17 +5,27 @@ import { iMessageAdapter } from "#compiled/@photon-ai/chat-adapter-imessage/inde
 import {
   type ChannelDriver,
   type PlatformCall,
-  numberedOptions,
 } from "#internal/testing/channel-conformance/harness.js";
 
 const WEBHOOK_SECRET = "photon-conformance-webhook-secret";
 const PERSON = "+15550100";
 let nextChat = 0;
 
+interface PollChoice {
+  readonly title: string;
+}
+
 interface SpectrumContent {
   readonly type: string;
   readonly markdown?: string;
+  readonly options?: readonly PollChoice[];
   readonly text?: string;
+  readonly title?: string;
+}
+
+interface PollHandle {
+  readonly poll: SpectrumContent;
+  readonly option: PollChoice;
 }
 
 interface ContentBuilder {
@@ -27,7 +37,8 @@ interface ContentBuilder {
  * a direct chat. spectrum-ts sends over gRPC rather than `fetch`, so the driver
  * replaces the adapter's Space lookup with a fake Space that records each
  * send; everything above it (webhook verification, parsing, outbound
- * rendering, read receipts) is Photon's own code.
+ * rendering, read receipts) is Photon's own code. Polls are on, so options
+ * render as a native poll a person votes in.
  */
 export function photonDriver(): ChannelDriver {
   nextChat += 1;
@@ -35,12 +46,12 @@ export function photonDriver(): ChannelDriver {
   let sequence = 0;
   let restore: (() => void) | undefined;
 
-  function webhook(text: string): Request {
+  function webhook(content: object): Request {
     sequence += 1;
     const body = JSON.stringify({
       event: "messages",
       message: {
-        content: { text, type: "text" },
+        content,
         direction: "inbound",
         id: `photon-inbound-${sequence}`,
         sender: { id: PERSON },
@@ -66,7 +77,7 @@ export function photonDriver(): ChannelDriver {
 
   return {
     name: "photon",
-    capabilities: ["text-replies"],
+    capabilities: ["buttons", "text-replies"],
     createChannel(record) {
       async function recordSend(method: string, builder: ContentBuilder) {
         sequence += 1;
@@ -105,20 +116,33 @@ export function photonDriver(): ChannelDriver {
       };
       return photonIMessageChannel({
         credentials: () => ({ projectId: "photon-project", projectSecret: "photon-secret" }),
+        polls: true,
         webhookSecret: WEBHOOK_SECRET,
       });
     },
     dispose() {
       restore?.();
     },
-    message: webhook,
+    message: (text) => webhook({ text, type: "text" }),
     findOptions(call, prompt) {
-      const text = postedText(call);
-      if (text === undefined || !text.includes(prompt)) return undefined;
-      return numberedOptions(text);
+      const content = call.body as SpectrumContent;
+      if (call.method !== "send" || content.type !== "poll" || content.title !== prompt) {
+        return undefined;
+      }
+      return (content.options ?? []).map((option) => ({
+        handle: { option, poll: content } satisfies PollHandle,
+        label: option.title,
+      }));
     },
-    press() {
-      throw new Error("iMessage has no pressable HITL controls.");
+    press(option) {
+      const { option: chosen, poll } = option.handle as PollHandle;
+      return webhook({
+        option: chosen,
+        poll,
+        selected: true,
+        title: chosen.title,
+        type: "poll_option",
+      });
     },
     postedText,
   };

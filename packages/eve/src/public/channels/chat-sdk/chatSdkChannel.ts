@@ -25,7 +25,11 @@ import type {
 } from "#compiled/chat/index.js";
 import { Chat, Message, ThreadImpl } from "#compiled/chat/index.js";
 import { defaultAuthorizationEvents } from "#public/channels/chat-sdk/authorization.js";
-import { decodeInputAction, renderInputRequests } from "#public/channels/chat-sdk/input-actions.js";
+import {
+  DEFAULT_INPUT_ACTION_PREFIX,
+  decodeInputAction,
+  renderInputRequests,
+} from "#public/channels/chat-sdk/input-actions.js";
 import { isNotImplemented } from "#public/channels/chat-sdk/notImplemented.js";
 import {
   defineChannel,
@@ -41,7 +45,6 @@ import { chatSdkInstrumentation } from "#public/channels/chat-sdk/audience.js";
 
 const log = createLogger("chat-sdk.channel");
 const DEFAULT_ROUTE = "/eve/v1";
-const DEFAULT_INPUT_ACTION_PREFIX = "eve_input:";
 const DEFAULT_STREAMING_EDIT_INTERVAL_MS = 1_000;
 const MAX_TYPING_STATUS = 80;
 const streamTextByState = new WeakMap<ChatSdkChannelState, string>();

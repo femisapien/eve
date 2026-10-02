@@ -2,6 +2,9 @@ import type { InputRequest } from "#shared/input.js";
 import type { CardChild } from "#compiled/chat/index.js";
 import { Actions, Button, Card, CardText } from "#compiled/chat/index.js";
 
+/** Prefix for default eve HITL button action ids. */
+export const DEFAULT_INPUT_ACTION_PREFIX = "eve_input:";
+
 // A text reply answers a pending request: an option's number, label, or id, or
 // any text when the request has no options or allows a freeform answer.
 const FREEFORM_HINT = "Reply with your answer.";

@@ -15,6 +15,7 @@ import {
   type iMessageWebhookVerifier,
 } from "#compiled/@photon-ai/chat-adapter-imessage/index.js";
 import { photonInboundContent } from "#public/channels/photon/inboundContent.js";
+import { pollInputRequested, pollVote } from "#public/channels/photon/polls.js";
 
 /** Photon project credentials used by {@link photonIMessageChannel}. */
 export type PhotonIMessageChannelCredentials = iMessageCredentialProvider;
@@ -47,6 +48,13 @@ export interface PhotonIMessageChannelConfig {
     ctx: PhotonInboundMessageContext,
     message: Message,
   ) => PhotonInboundResultOrPromise;
+  /**
+   * Experimental. Ask questions and tool approvals as native iMessage polls, so
+   * a person can answer by voting or by typing. Option descriptions are not
+   * shown. Requests without 2 to 10 distinct options stay numbered text.
+   * Defaults to `false`.
+   */
+  readonly polls?: boolean;
   /** Override the default webhook route (`/eve/v1/photon`). */
   readonly route?: string;
   /** Policy for accepted messages that arrive while a turn is active. */
@@ -88,20 +96,25 @@ export function photonIMessageChannel(config: PhotonIMessageChannelConfig): Phot
   const bridge = chatSdkChannel({
     adapters: { imessage },
     concurrency: "concurrent",
-    events: config.events,
+    events: config.polls
+      ? { "input.requested": pollInputRequested, ...config.events }
+      : config.events,
     routes: { imessage: config.route ?? "/eve/v1/photon" },
     state: createMemoryState(),
     streaming: false,
     turnPolicy: config.turnPolicy,
     userName: config.userName ?? "eve",
   });
-  const onMessage = config.onMessage ?? defaultOnMessage;
+  const dispatch = {
+    onMessage: config.onMessage ?? defaultOnMessage,
+    polls: config.polls === true,
+  };
 
   bridge.bot.onDirectMessage(async (thread: Thread, message: Message) => {
-    await dispatchMessage(bridge, onMessage, thread, message);
+    await dispatchMessage(bridge, dispatch, thread, message);
   });
   bridge.bot.onNewMessage(/[\s\S]*/, async (thread: Thread, message: Message) => {
-    await dispatchMessage(bridge, onMessage, thread, message);
+    await dispatchMessage(bridge, dispatch, thread, message);
   });
 
   return bridge.channel;
@@ -130,14 +143,19 @@ async function defaultOnMessage(
 
 async function dispatchMessage(
   bridge: ChatSdkChannelBridge<{ imessage: iMessageAdapter }>,
-  onMessage: NonNullable<PhotonIMessageChannelConfig["onMessage"]>,
+  dispatch: {
+    readonly onMessage: NonNullable<PhotonIMessageChannelConfig["onMessage"]>;
+    readonly polls: boolean;
+  },
   thread: Thread,
   message: Message,
 ): Promise<void> {
-  const result = await onMessage({ thread }, message);
+  const vote = dispatch.polls ? pollVote(message) : undefined;
+  if (vote === null) return;
+  const result = await dispatch.onMessage({ thread }, message);
   if (result === null) return;
   await markReadBestEffort(bridge.bot.getAdapter("imessage"), thread, message);
-  const content = photonInboundContent(message);
+  const content = vote ?? photonInboundContent(message);
   if (content === undefined) return;
   await bridge.send(content, {
     auth: result.auth,

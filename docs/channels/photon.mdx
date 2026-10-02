@@ -47,6 +47,23 @@ export default photonIMessageChannel({
 });
 ```
 
+## Polls
+
+Questions and tool approvals arrive as numbered text by default, and a person
+answers by replying with a number or an option. Set `polls: true` to send each one
+as a native iMessage poll instead. This option is experimental:
+
+```ts
+export default photonIMessageChannel({
+  credentials: connectPhotonCredentials("photon/my-agent"),
+  polls: true,
+});
+```
+
+A vote answers the request the same way a reply with the option's label does, so
+a person can still type an answer. Polls show only option labels, not
+descriptions. A request without 2 to 10 distinct options stays numbered text.
+
 Set `route` to override the webhook path or `webhookVerifier` to use a different
 trusted-forwarder verifier.
 
