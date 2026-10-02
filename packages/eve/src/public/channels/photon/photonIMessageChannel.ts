@@ -54,7 +54,7 @@ export interface PhotonIMessageChannelConfig {
    * shown. Requests without 2 to 10 distinct options stay numbered text.
    * Defaults to `false`.
    */
-  readonly polls?: boolean;
+  readonly questionsAsPolls?: boolean;
   /** Override the default webhook route (`/eve/v1/photon`). */
   readonly route?: string;
   /** Policy for accepted messages that arrive while a turn is active. */
@@ -96,7 +96,7 @@ export function photonIMessageChannel(config: PhotonIMessageChannelConfig): Phot
   const bridge = chatSdkChannel({
     adapters: { imessage },
     concurrency: "concurrent",
-    events: config.polls
+    events: config.questionsAsPolls
       ? { "input.requested": pollInputRequested, ...config.events }
       : config.events,
     routes: { imessage: config.route ?? "/eve/v1/photon" },
@@ -107,7 +107,7 @@ export function photonIMessageChannel(config: PhotonIMessageChannelConfig): Phot
   });
   const dispatch = {
     onMessage: config.onMessage ?? defaultOnMessage,
-    polls: config.polls === true,
+    polls: config.questionsAsPolls === true,
   };
 
   bridge.bot.onDirectMessage(async (thread: Thread, message: Message) => {
