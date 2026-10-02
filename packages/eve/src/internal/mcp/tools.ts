@@ -124,7 +124,7 @@ export function registerMcpTools(server: McpServer, context: McpToolsContext): v
   server.server.setRequestHandler("tools/call", async (request, ctx) => {
     const own = reserved.get(request.params.name);
     if (own === undefined) {
-      return await callMcpTool(server, context, byName, request.params, ctx);
+      return await callMcpTool(context, byName, request.params, ctx);
     }
     return await own.raw.call(request.params.arguments, {
       auth: context.principals,
@@ -155,7 +155,6 @@ function sessionIdFor(principals: McpRequestPrincipals, key: ToolSessionKey): st
 type ToolSessionKey = Parameters<typeof deriveToolSessionId>[0]["key"];
 
 async function callMcpTool(
-  server: McpServer,
   context: McpToolsContext,
   tools: ReadonlyMap<string, AgentToolDescription>,
   params: { readonly arguments?: McpJsonObject; readonly name: string },
@@ -168,7 +167,7 @@ async function callMcpTool(
 
   // The key is honored only from a client that declared the extension; any
   // other client gets the one-off fallback, whatever its `_meta` carries.
-  const rawKey = clientDeclaresExtension(server, context, ctx, MCP_TOOL_SESSIONS_EXTENSION)
+  const rawKey = clientDeclaresExtension(context, ctx, MCP_TOOL_SESSIONS_EXTENSION)
     ? ctx.mcpReq._meta?.[MCP_TOOL_SESSION_META_KEY]
     : undefined;
   if (rawKey !== undefined && typeof rawKey !== "string") {
@@ -215,7 +214,7 @@ async function callMcpTool(
   }
 
   const result = await context.invokeTool(name, args, options);
-  return await toMcpToolResult(server, context, ctx, {
+  return await toMcpToolResult(context, ctx, {
     args,
     carriedApproval: options.approval,
     key,
@@ -337,7 +336,6 @@ function signInRequired(
 }
 
 async function toMcpToolResult(
-  server: McpServer,
   context: McpToolsContext,
   ctx: McpRequestHandlerExtra,
   call: {
@@ -372,7 +370,7 @@ async function toMcpToolResult(
     case "denied":
       return withSandbox(toolError("denied", result.reason ?? "The call was denied."));
     case "approval-required": {
-      if (!clientSupports(server, context, ctx, "form")) {
+      if (!clientSupports(context, ctx, "form")) {
         return withSandbox(
           toolError(
             "input_unsupported",
@@ -416,7 +414,7 @@ async function toMcpToolResult(
           ),
         );
       }
-      if (!clientSupports(server, context, ctx, "url")) {
+      if (!clientSupports(context, ctx, "url")) {
         return withSandbox(
           toolError(
             "input_unsupported",
@@ -503,12 +501,11 @@ function formatNames(challenges: readonly InvokeToolAuthorizationChallenge[]): s
  * SDK's `-32021`, and nothing is signed for a client that cannot answer.
  */
 function clientSupports(
-  server: McpServer,
   context: McpToolsContext,
   ctx: McpRequestHandlerExtra,
   mode: "form" | "url",
 ): boolean {
-  const declared = declaredClientCapabilities(server, context, ctx);
+  const declared = declaredClientCapabilities(context, ctx);
   if (!isJsonObject(declared)) return false;
   const elicitation = declared.elicitation;
   if (!isJsonObject(elicitation)) return false;
@@ -517,23 +514,23 @@ function clientSupports(
 }
 
 function declaredClientCapabilities(
-  server: McpServer,
   context: McpToolsContext,
   ctx: McpRequestHandlerExtra,
 ): unknown {
-  return context.era === "modern"
-    ? ctx.mcpReq.envelope?.[CLIENT_CAPABILITIES_META_KEY]
-    : server.server.getClientCapabilities();
+  // eve serves 2025-11-25 statelessly: every request gets a fresh server, so
+  // a `tools/call` never sees the `initialize` capabilities. That era declares
+  // nothing, so its clients get one-off sessions and `input_unsupported`.
+  if (context.era === "legacy") return undefined;
+  return ctx.mcpReq.envelope?.[CLIENT_CAPABILITIES_META_KEY];
 }
 
 /** Whether the request's declared client capabilities name an extension. */
 function clientDeclaresExtension(
-  server: McpServer,
   context: McpToolsContext,
   ctx: McpRequestHandlerExtra,
   extension: string,
 ): boolean {
-  const declared = declaredClientCapabilities(server, context, ctx);
+  const declared = declaredClientCapabilities(context, ctx);
   if (!isJsonObject(declared)) return false;
   const extensions = declared.extensions;
   return isJsonObject(extensions) && isJsonObject(extensions[extension]);

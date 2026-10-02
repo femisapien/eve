@@ -34,6 +34,7 @@ import {
 import { defineMcpTool } from "#internal/mcp/define-tool.js";
 import {
   createMcpStreamableHttpServer,
+  MCP_LIST_CACHE_HINT,
   McpToolOperationError,
   type McpCallToolResult,
   type McpServerFeature,
@@ -105,14 +106,6 @@ export interface McpChannelInput {
 
 /** Public MCP channel publishing this agent, and optionally its tools and skills, as an MCP server. */
 export type McpChannel = Channel;
-
-/**
- * `ttlMs` / `cacheScope` for the lists eve builds. They are fixed per
- * deployment and identical for every admitted caller, so a client may reuse
- * them for a while. `private` because the response sits behind route auth: a
- * shared cache cannot re-run that auth for the next caller.
- */
-const MCP_LIST_CACHE_HINT = { cacheScope: "private", ttlMs: 5 * 60 * 1000 } as const;
 
 interface McpChannelConfig {
   readonly agent: boolean;

@@ -22,6 +22,18 @@ export const MCP_PROTOCOL_VERSION = "2026-07-28";
  */
 export const MCP_REQUEST_BODY_MAX_BYTES = 1024 * 1024;
 
+/**
+ * Cache hint for the tool lists, skill lists, and skill reads eve builds.
+ * They are fixed per deployment, but clients cache per URL, and a production
+ * alias serves a new deployment's lists under the same URL. So the TTL is how
+ * long a client may see the old lists after a deploy. `private`: route auth
+ * admitted this caller, and a shared cache cannot rerun it for the next one.
+ */
+export const MCP_LIST_CACHE_HINT = {
+  cacheScope: "private",
+  ttlMs: 5 * 60 * 1000,
+} as const satisfies CacheHint;
+
 export interface McpToolDefinition<
   TInputSchema extends StandardSchemaWithJSON = StandardSchemaWithJSON,
 > {

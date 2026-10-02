@@ -272,7 +272,7 @@ The sandbox starts on the first `ctx.getSandbox()` and persists between calls wi
 
 #### Approval and sign-in
 
-A tool that needs approval, or a sign-in to a connection, returns an MCP `input_required` result: a form elicitation under `dev.eve/approval`, or a URL elicitation under `dev.eve/authorization:<connection>`, plus a signed `requestState`. The client retries the same call with the answer in `inputResponses` and the `requestState`. eve only emits elicitation modes the client declared in its capabilities. Otherwise the call returns an error with code `input_unsupported`. A declined or cancelled approval returns `denied`.
+A tool that needs approval, or a sign-in to a connection, returns an MCP `input_required` result: a form elicitation under `dev.eve/approval`, or a URL elicitation under `dev.eve/authorization:<connection>`, plus a signed `requestState`. The client retries the same call with the answer in `inputResponses` and the `requestState`. eve only emits elicitation modes the client declared in its capabilities. Otherwise the call returns an error with code `input_unsupported`. eve serves clients on the 2025-11-25 protocol statelessly, so it never sees their capabilities: they get one-off tool sessions, and tools that need approval or a sign-in return `input_unsupported`. A declined or cancelled approval returns `denied`.
 
 `requestState` is HMAC-signed, expires after 10 minutes, and is bound to the session, the tool name, and the arguments. A state used by another principal, for another tool, or with other arguments is refused with `-32602`. The signature grants nothing by itself: eve evaluates approval again on every call.
 
@@ -301,7 +301,7 @@ A malformed or oversized header gets `400`. A header sent to a channel without `
 
 ### Skills
 
-With `skills: true`, the agent's skills are served under `skill://` as [SEP-2640](https://modelcontextprotocol.io/seps/2640) skills: `skills/list`, `skills/get`, `resources/list`, `resources/read`, and `resources/directory/read`. A skill is served only when its frontmatter meets the Agent Skills format. eve logs a warning for each skill or file it does not serve.
+With `skills: true`, the agent's skills are served under `skill://` as [SEP-2640](https://modelcontextprotocol.io/seps/2640) skills: `skills/list`, `skills/get`, `resources/list`, `resources/read`, and `resources/directory/read`. A skill is served only when its frontmatter meets the Agent Skills format. eve logs a warning for each skill or file it does not serve. Skill lists and reads carry the same cache hint as `tools/list`.
 
 ## What to read next
 

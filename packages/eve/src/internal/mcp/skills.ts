@@ -4,7 +4,6 @@ import { createHash } from "node:crypto";
 import type { AgentDescription, AgentSkillDescription } from "#channel/agent-description.js";
 import { MAX_SKILL_FILE_BYTES, SkillReadError } from "#channel/skill-files.js";
 import {
-  type CacheHint,
   type McpJsonObject,
   type McpServer,
   ProtocolError,
@@ -15,23 +14,15 @@ import { z } from "#compiled/zod/index.js";
 import { parseFrontmatter } from "#internal/helpers/frontmatter.js";
 import { createLogger } from "#internal/logging.js";
 import { isSafeSegment, parseSkillUri, skillFileUri } from "#internal/mcp/skill-uri.js";
-import type { McpServerFeature } from "#internal/mcp/streamable-http-server.js";
-import type { JsonObject, JsonValue } from "#shared/json.js";
+import {
+  MCP_LIST_CACHE_HINT,
+  type McpServerFeature,
+} from "#internal/mcp/streamable-http-server.js";
+import type { JsonObject } from "#shared/json.js";
 import { isSkillEntryFileName, SKILL_ENTRY_FILE_NAME } from "#shared/skill-entry-file.js";
 
 /** SEP-2640 extension identifier. */
 export const MCP_SKILLS_EXTENSION = "io.modelcontextprotocol/skills";
-
-/**
- * Cache hint for skill lists and reads. Lists and files are fixed for the
- * life of a deployment, so the only staleness is a new deployment behind the
- * same URL; a minute bounds that. `private`: the channel's auth admitted this
- * caller, so a shared cache must not hand the result to anyone else.
- */
-export const MCP_SKILLS_CACHE_HINT = {
-  cacheScope: "private",
-  ttlMs: 60_000,
-} as const satisfies CacheHint;
 
 /** SEP-2640 limits a conforming host must accept; skills over them are not served. */
 export const MCP_SKILL_MAX_RESOURCES = 512;
@@ -197,7 +188,7 @@ function registerSkillHandlers(server: McpServer, catalog: SkillCatalog): void {
     async (params) => {
       rejectCursor(params.cursor);
       const skills = (await catalog.served()).map((snapshot) => snapshot.entry);
-      return { skills, ...MCP_SKILLS_CACHE_HINT };
+      return { skills, ...MCP_LIST_CACHE_HINT };
     },
   );
 
@@ -244,12 +235,12 @@ function registerSkillHandlers(server: McpServer, catalog: SkillCatalog): void {
       mimeType: mimeTypeFor(SKILL_ENTRY_FILE_NAME),
       size: snapshot.files.get(SKILL_ENTRY_FILE_NAME)?.bytes.byteLength ?? 0,
     }));
-    return { resources, ...MCP_SKILLS_CACHE_HINT };
+    return { resources, ...MCP_LIST_CACHE_HINT };
   });
 
   low.setRequestHandler("resources/templates/list", async (request) => {
     rejectCursor(request.params?.cursor);
-    return { resourceTemplates: [], ...MCP_SKILLS_CACHE_HINT };
+    return { resourceTemplates: [], ...MCP_LIST_CACHE_HINT };
   });
 
   low.setRequestHandler("resources/read", async (request) => {
@@ -265,7 +256,7 @@ function registerSkillHandlers(server: McpServer, catalog: SkillCatalog): void {
       file.text === undefined
         ? { uri, mimeType, blob: Buffer.from(file.bytes).toString("base64") }
         : { uri, mimeType, text: file.text };
-    return { contents: [contents], ...MCP_SKILLS_CACHE_HINT };
+    return { contents: [contents], ...MCP_LIST_CACHE_HINT };
   });
 }
 
@@ -449,40 +440,17 @@ function parseFrontmatterJson(
   } catch {
     return undefined;
   }
-  const data = toJsonValue(file?.data ?? {});
+  let data: unknown;
+  try {
+    // JSON as `JSON.stringify` writes it: js-yaml's `Date` timestamps become
+    // ISO strings and non-finite numbers `null`, and `JSON.parse` keeps a
+    // `__proto__` key as an own property instead of setting the prototype.
+    data = JSON.parse(JSON.stringify(file?.data ?? {}));
+  } catch {
+    return undefined;
+  }
   if (data === null || typeof data !== "object" || Array.isArray(data)) return undefined;
   return { content: file?.content ?? text, data: data as JsonObject, present: file !== undefined };
-}
-
-/**
- * YAML frontmatter as JSON. js-yaml yields plain JSON values plus `Date` for
- * timestamps, which render as ISO strings, as `JSON.stringify` would.
- */
-function toJsonValue(value: unknown): JsonValue | undefined {
-  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-  if (typeof value === "number") return Number.isFinite(value) ? value : null;
-  if (value instanceof Date) return value.toISOString();
-  if (Array.isArray(value)) return value.map((item) => toJsonValue(item) ?? null);
-  if (typeof value === "object") {
-    const object: Record<string, JsonValue> = {};
-    for (const [key, item] of Object.entries(value)) {
-      const json = toJsonValue(item);
-      // `defineProperty`, not assignment: a `__proto__` key is authored
-      // metadata, and assignment would set the prototype and drop it.
-      if (json !== undefined) defineJsonMember(object, key, json);
-    }
-    return object;
-  }
-  return undefined;
-}
-
-function defineJsonMember(object: Record<string, JsonValue>, key: string, value: JsonValue): void {
-  Object.defineProperty(object, key, {
-    configurable: true,
-    enumerable: true,
-    value,
-    writable: true,
-  });
 }
 
 interface SnapshotFile extends ServedFile {
