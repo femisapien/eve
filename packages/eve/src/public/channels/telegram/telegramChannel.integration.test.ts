@@ -7,6 +7,7 @@ import { workflowEntry } from "#execution/session/entry.js";
 import { createWorkflowRuntime } from "#execution/workflow-runtime.js";
 import { createTestRuntime } from "#internal/testing/app-harness.js";
 import { captureTurnEvents, filterEventsByType } from "#internal/testing/events.js";
+import { mockAgentDescriptionRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
 import { buildWorkflowToolSerializedContext } from "#internal/testing/workflow-tool-run-harness.js";
 import { start } from "#internal/workflow/runtime.js";
 import { telegramContinuationToken } from "#public/channels/telegram/api.js";
@@ -144,6 +145,7 @@ describe("telegram channel", () => {
             method: "POST",
           }),
           {
+            ...mockAgentDescriptionRouteArgs(),
             ...operations,
             attachSession: (() => undefined) as never,
             params: {},
