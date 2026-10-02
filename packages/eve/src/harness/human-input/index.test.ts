@@ -22,7 +22,6 @@ describe("HumanInput", () => {
         prompt: "Alice's session is over budget. Continue?",
         requestId: "limit-1",
       },
-      canAsk: true,
       type: "budget.exceeded",
     });
 

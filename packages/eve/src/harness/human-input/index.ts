@@ -86,13 +86,11 @@ export type Interrupt =
       readonly challenges: readonly AuthorizationChallenge[];
       readonly requester: SessionAuthContext | null;
     }
-  /** The budget ran out before a model call. */
+  /** The budget ran out before a model call, and a person can grant more. */
   | {
       readonly type: "budget.exceeded";
       readonly at: RequestAt;
       readonly request: InputRequest;
-      /** Whether anyone can answer; when not, the turn fails instead. */
-      readonly canAsk: boolean;
     }
   /** A child session or workflow run asks a person, through this session. */
   | {
@@ -110,7 +108,11 @@ export type Intake =
       readonly responder: SessionAuthContext | null;
     }
   /** A message; from the person who started the turn, it steers it. */
-  | { readonly type: "message"; readonly text: string; readonly fromRequester: boolean }
+  | {
+      readonly type: "message";
+      readonly text: string;
+      readonly sender: SessionAuthContext | null;
+    }
   | { readonly type: "cancelled" }
   | {
       readonly type: "authorization.completed";
