@@ -200,7 +200,8 @@ turn, which cascades to the whole delegation tree — the delegating parent neve
 receives an error result it could retry against a fresh quota share. A reply
 that answers neither option joins the held turn while the prompt stays pending;
 eve does not raise another copy, and the model reads the reply once the budget
-is granted. A typed reply answers the prompt only when no other request is open.
+is granted. A typed reply that matches one of the prompt's options answers it, even
+while a tool approval is also open.
 
 Sessions that cannot request input from a human, such as markdown schedules and
 delegated runs without input proxying, skip the prompt and fail the next model

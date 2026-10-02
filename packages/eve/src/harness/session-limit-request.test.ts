@@ -46,7 +46,7 @@ describe("answerSessionLimitRequest", () => {
     expect(answered.stepInput?.message).toBeUndefined();
   });
 
-  it("leaves a typed Continue for the turn while a relayed question is also open", async () => {
+  it("takes a typed Continue while a relayed question is also open", async () => {
     const session = upsertRelayedInputRequests({
       entries: [["ask-1", { childContinuationToken: "child", event: EVENT, kind: "question" }]],
       forChildContinuationToken: "child",
@@ -57,7 +57,7 @@ describe("answerSessionLimitRequest", () => {
       stepInput: { message: "continue" },
     });
 
-    expect(readSessionLimitRequest(answered.session)?.request.requestId).toBe("limit-1");
-    expect(answered.stepInput?.message).toBe("continue");
+    expect(readSessionLimitRequest(answered.session)).toBeUndefined();
+    expect(answered.stepInput?.message).toBeUndefined();
   });
 });

@@ -7,7 +7,6 @@
  */
 import { resolveTextToResponse } from "#channel/resolve-text.js";
 import type { HarnessEmissionState } from "#harness/emission-state.js";
-import { textAnswerable } from "#harness/hitl/machine.js";
 import {
   openTurnInputRequest,
   readTurnInputRequests,
@@ -74,9 +73,7 @@ export async function answerSessionLimitRequest(input: {
     (response) => response.requestId === requestId,
   );
   const typed =
-    structured === undefined &&
-    typeof input.stepInput.message === "string" &&
-    textAnswerable(input.session.state)?.kind === "session-limit"
+    structured === undefined && typeof input.stepInput.message === "string"
       ? resolveTextToResponse(input.stepInput.message, open.request)
       : undefined;
   const response: InputResponse | undefined = structured ?? typed;

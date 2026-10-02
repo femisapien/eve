@@ -386,16 +386,21 @@ describe("routeDeliverPayload message resolution", () => {
           session,
         }),
     },
-  ])("does not answer a question with text while the turn's own $open is open", ({ own }) => {
-    const routed = routeDeliverPayload({
-      payload: { message: "production" },
-      resolveMessage: true,
-      state: own(askSession([["ask-1", {}]])).state,
-    });
+  ])(
+    "answers the only relayed question with text while the turn's own $open is open",
+    ({ own }) => {
+      const routed = routeDeliverPayload({
+        payload: { message: "production" },
+        resolveMessage: true,
+        state: own(askSession([["ask-1", {}]])).state,
+      });
 
-    expect(routed.forSelf).toEqual({ message: "production" });
-    expect(routed.forChildren).toEqual([]);
-  });
+      expect(routed.forSelf).toBeUndefined();
+      expect(routed.forChildren).toMatchObject([
+        { payload: { inputResponses: [{ optionId: "2", requestId: "ask-1" }] } },
+      ]);
+    },
+  );
 
   it("leaves questions alone unless a person's message may resolve them", () => {
     const routed = routeDeliverPayload({

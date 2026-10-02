@@ -8,7 +8,6 @@ import type {
 import { getHarnessEmissionState } from "#harness/emission.js";
 import { resolveInputOutcome } from "#harness/input-request-resolution.js";
 import type { InputRequestEvent } from "#harness/open-approvals.js";
-import { textAnswerable } from "#harness/hitl/machine.js";
 import { readRelayedInputRequests, toRelayedInputRequests } from "#harness/open-input-requests.js";
 import type { WorkflowAskRoute, RelayedInputRequest } from "#harness/open-input-requests.js";
 import type { HarnessEmitFn, HarnessSessionBase, SessionStateMap } from "#harness/types.js";
@@ -312,12 +311,17 @@ function resolveMessageAgainstQuestions(input: {
   if (!input.enabled || (input.payload.inputResponses?.length ?? 0) > 0) return none;
   if (typeof input.payload.message !== "string") return none;
 
-  const answerable = textAnswerable(input.state, { routable: input.routable });
-  if (answerable?.kind !== "relayed") return none;
-  const answer = resolveTextToResponse(input.payload.message, {
-    requestId: answerable.requestId,
-    ...answerable.question,
-  });
+  // Task and subagent questions carry no `ctx.ask()` metadata, so plain text
+  // can't answer them, but they still make the message ambiguous.
+  const pending = [...readRelayedInputRequests(input.state)].filter(
+    ([requestId, route]) => route.kind === "question" && input.routable(requestId, route),
+  );
+  const [only] = pending;
+  if (pending.length !== 1 || only === undefined) return none;
+  const [requestId, route] = only;
+  const question = route.workflowAsk?.question ?? route.question;
+  if (question === undefined) return none;
+  const answer = resolveTextToResponse(input.payload.message, { requestId, ...question });
   return answer === undefined ? none : { consumed: true, responses: [answer] };
 }
 

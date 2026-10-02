@@ -2,7 +2,6 @@ import type { ModelMessage } from "ai";
 
 import type { InputResponse } from "#shared/input.js";
 import { resolveTextToResponses } from "#channel/resolve-text.js";
-import { textAnswerable } from "#harness/hitl/machine.js";
 import { isApprovalRequest } from "#harness/input-request-class.js";
 import {
   answersEveryApproval,
@@ -19,6 +18,7 @@ import type {
 } from "#harness/hitl/pending-input-resolution.js";
 import type { HarnessSession, StepInput } from "#harness/types.js";
 import { readClientContext } from "#internal/client-context.js";
+import { readTurnInputRequests } from "#harness/open-input-requests.js";
 
 export type { RejectedActionBatch };
 export type { ResolvedInputBatch } from "#harness/input-request-resolution.js";
@@ -125,6 +125,12 @@ function canonicalizeInputResponses(responses: readonly InputResponse[]): readon
   return [...byRequestId.values()];
 }
 
+/**
+ * Plain text answers the waiting step's approvals, except those a response
+ * policy must decide. The budget question wins when it is open too. Text that
+ * answers only some approvals still counts: those are answered, and the rest
+ * keep waiting.
+ */
 function resolveTextMessageInput(
   approvals: OpenApprovals,
   stepInput: StepInput | undefined,
@@ -136,12 +142,17 @@ function resolveTextMessageInput(
   if (stepInput.inputResponses?.some((response) => requestIds.has(response.requestId))) {
     return stepInput;
   }
+  const budget = [...readTurnInputRequests(state).values()].some(
+    (entry) => entry.request.kind === "session-limit",
+  );
+  if (budget) return stepInput;
 
-  const answerable = textAnswerable(state);
-  if (answerable?.kind !== "approvals") return stepInput;
-  // One reply answers the step's approvals together, or none of them.
-  const responses = resolveTextToResponses(stepInput.message, answerable.requests);
-  if (responses.length !== answerable.requests.length) return stepInput;
+  const policyDecides = new Set(approvals.responseAuthRequiredRequestIds ?? []);
+  const responses = resolveTextToResponses(
+    stepInput.message,
+    approvals.requests.filter((request) => !policyDecides.has(request.requestId)),
+  );
+  if (responses.length === 0) return stepInput;
 
   return compactStepInput({
     ...stepInput,

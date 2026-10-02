@@ -18,6 +18,7 @@ import { createRuntimeToolCallActionFromToolCall } from "#harness/tool-call-acti
 import { buildToolApproval, buildToolSet } from "#harness/tools.js";
 import type { HarnessSession, HarnessToolMap } from "#harness/types.js";
 import { parkApprovals } from "#internal/testing/approval-fixtures.js";
+import { openSessionLimitRequest } from "#harness/session-limit-request.js";
 
 function grants(session: HarnessSession): ReadonlySet<string> {
   return new Set(readTurnState(session.state).grants);
@@ -791,5 +792,54 @@ describe("pending input batch collection", () => {
 
     expect(result.outcome).toBe("unresolved");
     expect(openApprovalRequestIds(result.session.state)).toEqual(new Set(["approval-1"]));
+  });
+
+  it("takes a typed reply for the approvals no response policy decides; the rest keep waiting", () => {
+    const session = parkApprovals({
+      requests: [approvalRequest("approval-1", "call-1"), approvalRequest("approval-2", "call-2")],
+      responseAuthRequiredRequestIds: ["approval-2"],
+      responseMessages: [batchOutput("call-1", "bash"), batchOutput("call-2", "bash")],
+      session: createHarnessSession(),
+    });
+
+    const result = resolvePendingInput({ session, stepInput: { message: "yes" } });
+
+    expect(result.outcome).toBe("unresolved");
+    expect(openApprovalRequestIds(result.session.state)).toEqual(
+      new Set(["approval-1", "approval-2"]),
+    );
+    expect(getQueuedInput(result.session)).toEqual({
+      inputResponses: [{ optionId: "approve", requestId: "approval-1" }],
+      messageConsumed: true,
+    });
+  });
+
+  it("does not take a typed reply as an approval while the budget question is open", () => {
+    const parked = parkApprovals({
+      requests: [approvalRequest("approval-1", "call-1")],
+      responseMessages: [batchOutput("call-1", "bash")],
+      session: createHarnessSession(),
+    });
+    const session = openSessionLimitRequest(parked, {
+      request: {
+        action: { callId: "limit", input: {}, kind: "tool-call", toolName: "session-limit" },
+        kind: "session-limit",
+        options: [
+          { id: "continue", label: "Continue" },
+          { id: "stop", label: "Stop" },
+        ],
+        prompt: "Continue?",
+        requestId: "limit-1",
+      },
+      sequence: 0,
+      stepIndex: 0,
+      turnId: "turn_0",
+    });
+
+    const result = resolvePendingInput({ session, stepInput: { message: "yes" } });
+
+    expect(result.consumedMessage).toBeUndefined();
+    expect(result.resolvedInputs?.[0]?.inputs.map((entry) => entry.outcome)).toEqual(["ignored"]);
+    expect(grants(result.session).size).toBe(0);
   });
 });
