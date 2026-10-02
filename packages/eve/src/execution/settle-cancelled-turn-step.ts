@@ -1,9 +1,6 @@
 import type { ModelMessage } from "ai";
 
-import {
-  commitCancelledCoordinationBatch,
-  getPendingCoordinationBatch,
-} from "#harness/coordination.js";
+import { readTurnState } from "#harness/turn-state.js";
 import type { DurableSessionState } from "#execution/durable-session-store.js";
 import {
   publishFromSessionStep,
@@ -71,6 +68,10 @@ export async function settleCancelledTurn(
   const durableState = step.durableSession.state;
   // Every request the turn held ends with it: its sign-ins, approvals, and budget question.
   const emissionState = getHarnessEmissionState(durableState);
+  // Read before the cancel: the cancel commits the waiting step and clears it.
+  const owningTurnId =
+    readTurnState(durableState).suspended[0]?.event.turnId ??
+    input.sessionState.emissionState.turnId;
   const cancelled = intake(durableState, { at: emissionState, kind: "cancel" });
   const { published, result: usage } = await publishFromSessionStep(step, {
     origin: "own",
@@ -82,14 +83,10 @@ export async function settleCancelledTurn(
     },
     updateSession(baseSession, emissionState) {
       const session = { ...baseSession, state: adoptHitlState(baseSession.state, cancelled.state) };
-      const owningTurnId =
-        getPendingCoordinationBatch(session.state)?.event.turnId ??
-        input.sessionState.emissionState.turnId;
-      const committed = commitCancelledCoordinationBatch(
-        removeBlockingWorkflowToolRuns({ ...session, outputSchema: undefined }, owningTurnId),
+      const committed = removeBlockingWorkflowToolRuns(
+        { ...session, outputSchema: undefined },
+        owningTurnId,
       );
-      // After the coordination batch, which owns an assistant response it
-      // shares with approvals raised beside its calls.
       const history: ModelMessage[] = [...committed.history];
       for (const effect of cancelled.effects) {
         if (effect.kind === "history") history.push(effect.message);

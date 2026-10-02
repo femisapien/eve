@@ -228,6 +228,8 @@ When a subagent requests input, eve emits the same `input.requested` event on it
 
 For approval requests, a follow-up message that doesn't match an option steers the turn instead of answering it. eve cancels the turn's pending approval, so the call doesn't run and `input.resolved` reports `outcome: "ignored"`, and the model reads the message next. This happens even when the message is sent with `turnPolicy: "queue"`, because a turn held on a person can't end until they act. Calls the person already approved in the same batch still run. A message from someone other than the person the turn serves waits until the turn ends. Cancelling the turn withdraws its approval: the call doesn't run, `input.resolved` reports `outcome: "cancelled"`, and a later answer to it approves nothing.
 
+eve runs an approved call itself, with the tools of the step that asked, after running the tool's approval policy once more. If the policy now denies the call, it doesn't run and its `action.result` reports `status: "rejected"`. The model reads the step's calls once every one of them has a result. Session history holds each call and its result, never the AI SDK's approval parts.
+
 See [Sessions, runs & streaming](/docs/concepts/sessions-runs-and-streaming) for the full event and resume contract that this builds on.
 
 ## Answering from a client or channel

@@ -1,7 +1,7 @@
 import type { ModelMessage } from "ai";
 
-import { validateHarnessModelMessages } from "#harness/messages.js";
-import { openApprovals, type InputRequestEvent } from "#harness/open-approvals.js";
+import { approvalStep, type InputRequestEvent } from "#harness/open-approvals.js";
+import { suspendStep } from "#harness/turn-state.js";
 import type { HarnessSession } from "#harness/types.js";
 import type { InputRequest } from "#shared/input.js";
 
@@ -9,7 +9,7 @@ const DEFAULT_EVENT: InputRequestEvent = { sequence: 0, stepIndex: 0, turnId: "t
 
 /**
  * Builds the state a held turn has after a model step raised tool approvals:
- * the step's response at the tail of history, and one turn entry per request.
+ * the step's response withheld in a suspended step with its requests.
  */
 export function parkApprovals(input: {
   readonly event?: InputRequestEvent;
@@ -19,16 +19,14 @@ export function parkApprovals(input: {
   readonly responseMessages?: readonly ModelMessage[];
   readonly session: HarnessSession;
 }): HarnessSession {
-  return openApprovals({
-    event: input.event ?? DEFAULT_EVENT,
-    requests: input.requests,
-    responseAuthRequiredRequestIds: input.responseAuthRequiredRequestIds,
-    session: {
-      ...input.session,
-      history: validateHarnessModelMessages([
-        ...input.session.history,
-        ...(input.responseMessages ?? []),
-      ]),
-    },
-  });
+  return suspendStep(
+    input.session,
+    approvalStep({
+      event: input.event ?? DEFAULT_EVENT,
+      messages: input.responseMessages ?? [],
+      requests: input.requests,
+      responseAuthRequiredRequestIds: input.responseAuthRequiredRequestIds,
+      tasks: [],
+    }),
+  );
 }

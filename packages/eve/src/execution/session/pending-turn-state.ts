@@ -1,6 +1,6 @@
 import { getPendingAuthorization } from "#harness/authorization.js";
 import { hasOpenApprovals } from "#harness/input-requests.js";
-import { getPendingCoordinationBatch, pendingCoordinationCallIds } from "#harness/coordination.js";
+import { pendingCoordinationCallIds, readRuntimeWaitingStep } from "#harness/coordination.js";
 import { pendingTaskToolCalls, type TaskToolCall } from "#execution/tasks/calls.js";
 import type { HarnessSession } from "#harness/types.js";
 
@@ -12,7 +12,7 @@ export function derivePendingState(session: HarnessSession): {
   readonly pendingCoordinationCallIds?: readonly string[];
   readonly pendingTaskToolCalls?: readonly TaskToolCall[];
 } {
-  const batch = getPendingCoordinationBatch(session.state);
+  const step = readRuntimeWaitingStep(session.state);
   const pendingAuth = getPendingAuthorization(session.state);
   const base = {
     authorizationAttemptIds: pendingAuth?.challenges.flatMap((challenge) =>
@@ -21,10 +21,10 @@ export function derivePendingState(session: HarnessSession): {
     hasPendingAuthorization: pendingAuth !== undefined,
     hasPendingInputBatch: hasOpenApprovals(session.state),
   };
-  if (batch === undefined) return base;
+  if (step === undefined) return base;
   return {
     ...base,
-    pendingCoordinationCallIds: pendingCoordinationCallIds(batch),
-    pendingTaskToolCalls: pendingTaskToolCalls(batch.responseMessages),
+    pendingCoordinationCallIds: pendingCoordinationCallIds(step),
+    pendingTaskToolCalls: pendingTaskToolCalls(step.messages),
   };
 }

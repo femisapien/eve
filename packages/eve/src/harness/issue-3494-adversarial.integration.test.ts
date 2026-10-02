@@ -12,7 +12,8 @@ import { z } from "zod";
 import { ContextContainer, contextStorage } from "#context/container.js";
 import { SessionKey } from "#context/keys.js";
 import { getHarnessEmissionState } from "#harness/emission.js";
-import { getPendingCoordinationBatch } from "#harness/coordination.js";
+import { readRuntimeWaitingStep } from "#harness/coordination.js";
+import { readTurnState } from "#harness/turn-state.js";
 import { readOpenApprovals } from "#harness/open-approvals.js";
 import { createToolLoopHarness } from "#harness/tool-loop.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
@@ -198,7 +199,7 @@ function fixture(
       settledTurn: result.settledTurn,
       historyLastRole: session.history.at(-1)?.role,
       emission: getHarnessEmissionState(session.state),
-      deferred: session.state?.["eve.runtime.deferredStepInput"],
+      queued: readTurnState(session.state).queued,
       pending: [readOpenApprovals(session.state)].flatMap((approvals) =>
         approvals === undefined
           ? []
@@ -240,7 +241,10 @@ function fixture(
       session = update(session);
     },
     // The turn's own requests: its tool approvals and budget question.
-    pending: () => [...readTurnInputRequests(session.state).values()].map((entry) => entry.request),
+    pending: () => [
+      ...(readOpenApprovals(session.state)?.requests ?? []),
+      ...[...readTurnInputRequests(session.state).values()].map((entry) => entry.request),
+    ],
     async gate(...names: string[]) {
       script.push(calls(...names));
       const parked = await drive({ message: `Prepare ${names.join(" and ")}.` });
@@ -254,7 +258,7 @@ function fixture(
       return { inputResponses: [{ requestId: request.requestId, optionId }] };
     },
     async finishRuntime() {
-      const batch = getPendingCoordinationBatch(session.state);
+      const batch = readRuntimeWaitingStep(session.state);
       if (!batch) throw new Error("Expected actual pending coordination batch");
       return drive({
         runtimeActionResults: batch.tasks.map((r) => ({

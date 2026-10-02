@@ -32,7 +32,7 @@ import {
 import { setHarnessEmissionState } from "#harness/emission.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import type { InputRequest } from "#shared/input.js";
-import { getApprovedTools } from "#harness/input-requests.js";
+import { readTurnState } from "#harness/turn-state.js";
 import type { HarnessModelMessage } from "#harness/messages.js";
 import { readOpenApprovals } from "#harness/open-approvals.js";
 import { createToolLoopHarness } from "#harness/tool-loop.js";
@@ -127,7 +127,7 @@ function createPendingApprovalSession(
       : undefined,
     responseMessages: [
       {
-        content: [toolCall, approvalRequest],
+        content: [toolCall],
         role: "assistant",
       },
     ],
@@ -148,13 +148,9 @@ function createTwoPendingApprovalSession(): HarnessSession {
   };
   return parkApprovals({
     requests: [pendingApprovalInputRequest, secondRequest],
-    responseMessages: [],
+    responseMessages: [{ content: [toolCall, secondToolCall], role: "assistant" }],
     session: createBaseSession([
       { content: "Run pwd and whoami.", kind: "user" as const, role: "user" },
-      {
-        content: [toolCall, approvalRequest, secondToolCall, secondApprovalRequest],
-        role: "assistant",
-      },
     ]),
   });
 }
@@ -330,7 +326,7 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       );
       expect(resolveStepDynamicTools).toHaveBeenCalledOnce();
 
-      expect(getApprovedTools(result.session)).toEqual(new Set(["bash:pwd"]));
+      expect(readTurnState(result.session.state).grants).toEqual(["bash:pwd"]);
       expect(execute).toHaveBeenCalledOnce();
       expect(staticExecute).not.toHaveBeenCalled();
     },
@@ -485,10 +481,10 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
         ? [
             "resolve:turn-1:1",
             "authorize:persisted-response",
-            "step.started:persisted-execute",
             "execute:persisted-execute",
+            "step.started:persisted-execute",
           ]
-        : ["resolve:turn-1:1", "step.started:persisted-execute", "execute:persisted-execute"],
+        : ["resolve:turn-1:1", "execute:persisted-execute", "step.started:persisted-execute"],
     );
     expect(handler).toHaveBeenCalledOnce();
     if (testCase.responseAuthorization) {
@@ -689,7 +685,7 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
     });
   });
 
-  it("executes an approval before replaying its message after a limit continuation", async () => {
+  it("runs an approved call before the budget question and reads its message after Continue", async () => {
     const execute = vi.fn(async () => "/workspace");
     const model = new MockLanguageModelV4({
       doStream: [textStreamResult("The command completed."), textStreamResult("Summary complete.")],
@@ -723,7 +719,8 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       message: "Then summarize it.",
     });
 
-    expect(execute).not.toHaveBeenCalled();
+    // eve runs the approved call before the budget gate, which only holds model calls.
+    expect(execute).toHaveBeenCalledOnce();
     const resumed = await runStep(limited.session, {
       inputResponses: [
         {
@@ -737,18 +734,10 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       toolCall.input,
       expect.objectContaining({ toolCallId: toolCall.toolCallId }),
     );
-    expect(typeof resumed.next).toBe("function");
-    if (typeof resumed.next !== "function") {
-      throw new TypeError("Expected the deferred message to run after approval execution.");
-    }
-    await resumed.next(resumed.session);
-
-    expect(model.doStreamCalls).toHaveLength(2);
-    expect(model.doStreamCalls[0]?.prompt.at(-1)?.role).toBe("tool");
-    expect(model.doStreamCalls[1]?.prompt.at(-1)).toMatchObject({
-      content: [{ text: "Then summarize it.", type: "text" }],
-      role: "user",
-    });
+    expect(resumed.settledTurn).toBeDefined();
+    expect(model.doStreamCalls).toHaveLength(1);
+    expect(JSON.stringify(model.doStreamCalls[0]?.prompt)).toContain("Then summarize it.");
+    expect(JSON.stringify(model.doStreamCalls[0]?.prompt)).toContain("/workspace");
   });
 
   it("persists the approved pre-model tool result without an event handler", async () => {
@@ -780,14 +769,10 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       "user",
       "assistant",
       "tool",
-      "tool",
       "assistant",
     ]);
     expect(findPart(result.session.history, "tool-call")).toEqual(toolCall);
-    expect(findPart(result.session.history, "tool-approval-response")).toMatchObject({
-      approvalId: approvalRequest.approvalId,
-      approved: true,
-    });
+    expect(findPart(result.session.history, "tool-approval-response")).toBeUndefined();
     expect(findPart(result.session.history, "tool-result")).toMatchObject({
       output: { type: "text", value: "canonical:/workspace" },
       toolCallId: toolCall.toolCallId,
@@ -822,7 +807,7 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
         requests: [pendingApprovalInputRequest],
         // The parked shape when a gated call shares a step with an ungated one.
         responseMessages: [
-          { content: [toolCall, approvalRequest, siblingCall], role: "assistant" },
+          { content: [toolCall, siblingCall], role: "assistant" },
           { content: [siblingResult], role: "tool" },
         ],
         session: createBaseSession(),
@@ -872,8 +857,10 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       }
       expect(called).toEqual([toolCall.toolCallId, siblingCall.toolCallId]);
       expect(called.filter((id) => !answered.has(id))).toEqual([]);
-      expect(providerPrompt.at(-1)?.role).toBe("tool");
-      expect(ctx.get(HistoryStateKey)).toEqual({});
+      expect(JSON.stringify(providerPrompt)).toContain("Tenant policy");
+      expect(ctx.get(HistoryStateKey)).toMatchObject({
+        availableSkills: runtimeContextAnnouncement,
+      });
       expect(result.session.history.at(-1)).toMatchObject({
         content: [{ text: "The command returned /workspace.", type: "text" }],
         role: "assistant",
@@ -949,14 +936,10 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       "assistant",
       "assistant",
       "tool",
-      "tool",
       "assistant",
     ]);
     expect(findPart(result.session.history, "tool-call")).toEqual(toolCall);
-    expect(findPart(result.session.history, "tool-approval-response")).toMatchObject({
-      approvalId: approvalRequest.approvalId,
-      approved: true,
-    });
+    expect(findPart(result.session.history, "tool-approval-response")).toBeUndefined();
     expect(result.session.history.at(-1)).toMatchObject({
       content: [{ text: "The command returned /workspace.", type: "text" }],
       role: "assistant",

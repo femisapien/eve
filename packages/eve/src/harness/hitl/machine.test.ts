@@ -2,8 +2,10 @@ import { describe, expect, it } from "vitest";
 
 import { getPendingAuthorization, setPendingAuthorization } from "#harness/authorization.js";
 import { intake, textAnswerable } from "#harness/hitl/machine.js";
+import { openApprovalRequestIds } from "#harness/open-approvals.js";
 import { readTurnInputRequests, upsertRelayedInputRequests } from "#harness/open-input-requests.js";
 import { openSessionLimitRequest } from "#harness/session-limit-request.js";
+import { readTurnState } from "#harness/turn-state.js";
 import type { HarnessSession } from "#harness/types.js";
 import { parkApprovals } from "#internal/testing/approval-fixtures.js";
 import type { InputRequest } from "#shared/input.js";
@@ -50,7 +52,6 @@ function heldTurn(): HarnessSession {
               toolName: "send_email",
               type: "tool-call",
             },
-            { approvalId: "approval-1", toolCallId: "call-1", type: "tool-approval-request" },
           ],
           role: "assistant",
         },
@@ -85,6 +86,7 @@ describe("intake: cancel", () => {
     const cancelled = intake(heldTurn().state, { at: AT, kind: "cancel" });
 
     expect(readTurnInputRequests(cancelled.state).size).toBe(0);
+    expect(readTurnState(cancelled.state).suspended[0]).toBeUndefined();
     expect(getPendingAuthorization(cancelled.state)).toBeUndefined();
     expect(cancelled.effects).toEqual([
       {
@@ -117,15 +119,24 @@ describe("intake: cancel", () => {
         }),
         kind: "event",
       },
+      // The withheld response joins history with the waiting call answered.
+      {
+        kind: "history",
+        message: expect.objectContaining({
+          content: [expect.objectContaining({ toolCallId: "call-1", type: "tool-call" })],
+          role: "assistant",
+        }),
+      },
       {
         kind: "history",
         message: {
           content: [
-            expect.objectContaining({ approvalId: "approval-1", approved: false }),
-            expect.objectContaining({
-              output: expect.objectContaining({ type: "execution-denied" }),
+            {
+              output: { reason: "Cancelled before anyone answered.", type: "execution-denied" },
               toolCallId: "call-1",
-            }),
+              toolName: "send_email",
+              type: "tool-result",
+            },
           ],
           role: "tool",
         },
@@ -138,7 +149,8 @@ describe("intake: steer", () => {
   it("ends the turn's sign-ins and tells the model, leaving the approval and budget question open", () => {
     const steered = intake(heldTurn().state, { at: AT, kind: "steer" });
 
-    expect([...readTurnInputRequests(steered.state).keys()]).toEqual(["approval-1", "limit-1"]);
+    expect(openApprovalRequestIds(steered.state)).toEqual(new Set(["approval-1"]));
+    expect([...readTurnInputRequests(steered.state).keys()]).toEqual(["limit-1"]);
     expect(getPendingAuthorization(steered.state)).toBeUndefined();
     expect(steered.effects).toEqual([
       {

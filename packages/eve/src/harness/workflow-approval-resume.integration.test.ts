@@ -6,10 +6,9 @@ import { ContextContainer, contextStorage } from "#context/container.js";
 import { dispatchDynamicInstructionEvent } from "#context/dynamic-instruction-lifecycle.js";
 import { defineInstructions } from "#public/definitions/instructions.js";
 import { SessionIdKey, StepDynamicToolMetadataKey } from "#context/keys.js";
-import {
-  commitCancelledCoordinationBatch,
-  getPendingCoordinationBatch,
-} from "#harness/coordination.js";
+import { readRuntimeWaitingStep } from "#harness/coordination.js";
+import { intake } from "#harness/hitl/machine.js";
+import { validateHarnessModelMessages } from "#harness/messages.js";
 import { getHarnessEmissionState } from "#harness/emission.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import { readOpenApprovals } from "#harness/open-approvals.js";
@@ -121,7 +120,7 @@ describe("workflow approval resume (real AI SDK)", () => {
   it("resumes the held turn before dispatch and replays accompanying input after completion", async () => {
     const fixture = setup([workflow("deploy", always())]);
     const initial = await fixture.step(fixture.session, { message: "Deploy Alice's release." });
-    expect(getPendingCoordinationBatch(initial.session.state)).toBeUndefined();
+    expect(readRuntimeWaitingStep(initial.session.state)).toBeUndefined();
     const [request] = requests(initial.session);
     expect(request).toBeDefined();
     const start = fixture.events.length;
@@ -130,7 +129,7 @@ describe("workflow approval resume (real AI SDK)", () => {
       message: "Tell Alice when deployment finishes.",
     });
     expect(
-      getPendingCoordinationBatch(approved.session.state)?.tasks.map((task) => task.callId),
+      readRuntimeWaitingStep(approved.session.state)?.tasks.map((task) => task.callId),
     ).toEqual(["call-0"]);
     // The approval held its turn, so answering it resumes that turn.
     const resumedTurn = getHarnessEmissionState(approved.session.state).turnId;
@@ -142,9 +141,10 @@ describe("workflow approval resume (real AI SDK)", () => {
     const completed = await fixture.step(approved.session, workflowResult());
     expect(resultCallIds(completed.session)).toEqual(["call-0"]);
     expect(fixture.model.doStreamCalls).toHaveLength(2);
+    // Dispatching the approved workflow calls no model; the turn's one step reads its result.
     expect(
       fixture.events.slice(start).filter((event) => event.type === "step.started"),
-    ).toMatchObject([{ data: { turnId: resumedTurn } }, { data: { turnId: resumedTurn } }]);
+    ).toMatchObject([{ data: { turnId: resumedTurn } }]);
     expect(JSON.stringify(fixture.model.doStreamCalls[1]!.prompt)).not.toContain("Tell Alice");
     expect(typeof completed.next).toBe("function");
     const followUp = await fixture.step(completed.session);
@@ -186,7 +186,7 @@ describe("workflow approval resume (real AI SDK)", () => {
         requestId: request.requestId,
       })),
     });
-    expect(getPendingCoordinationBatch(approved.session.state)?.tasks).toHaveLength(1);
+    expect(readRuntimeWaitingStep(approved.session.state)?.tasks).toHaveLength(1);
     const completed = await fixture.step(approved.session, workflowResult());
     expect(resultCallIds(completed.session)).toEqual(["call-0"]);
     expect(JSON.stringify(fixture.model.doStreamCalls.at(-1)?.prompt)).toContain(
@@ -203,14 +203,14 @@ describe("workflow approval resume (real AI SDK)", () => {
         requestId: request.requestId,
       })),
     });
-    expect(getPendingCoordinationBatch(cancelled.session.state)).toBeUndefined();
+    expect(readRuntimeWaitingStep(cancelled.session.state)).toBeUndefined();
     expect(resultCallIds(cancelled.session)).toEqual(["call-0"]);
   });
 
   it("never dispatches an automatically denied workflow", async () => {
     const fixture = setup([workflow("deploy", () => "denied")]);
     const initial = await fixture.step(fixture.session, { message: "Review Alice's deployment." });
-    expect(getPendingCoordinationBatch(initial.session.state)).toBeUndefined();
+    expect(readRuntimeWaitingStep(initial.session.state)).toBeUndefined();
     expect(requests(initial.session)).toEqual([]);
     expect(resultCallIds(initial.session)).toEqual(["call-0"]);
   });
@@ -224,9 +224,9 @@ describe("workflow approval resume (real AI SDK)", () => {
     const initial = await fixture.step(fixture.session, {
       message: "Prepare Alice's release and check status.",
     });
-    expect(
-      getPendingCoordinationBatch(initial.session.state)?.tasks.map((task) => task.callId),
-    ).toEqual(["call-2"]);
+    expect(readRuntimeWaitingStep(initial.session.state)?.tasks.map((task) => task.callId)).toEqual(
+      ["call-2"],
+    );
     const ordinary = await fixture.step(initial.session, {
       runtimeActionResults: [
         { callId: "call-2", kind: "tool-result", output: "healthy", toolName: "status" },
@@ -239,14 +239,14 @@ describe("workflow approval resume (real AI SDK)", () => {
       })),
     });
     expect(
-      getPendingCoordinationBatch(approved.session.state)?.tasks.map((task) => task.callId),
+      readRuntimeWaitingStep(approved.session.state)?.tasks.map((task) => task.callId),
     ).toEqual(["call-0"]);
     const completed = await fixture.step(approved.session, workflowResult());
     expect(resultCallIds(completed.session).sort()).toEqual(["call-0", "call-1", "call-2"]);
-    expect(getPendingCoordinationBatch(completed.session.state)).toBeUndefined();
+    expect(readRuntimeWaitingStep(completed.session.state)).toBeUndefined();
   });
 
-  it("restores an approved dynamic sibling on a cold workflow continuation", async () => {
+  it("executes an approved dynamic sibling once before a cold workflow continuation", async () => {
     const execute = vi.fn(async () => "notified");
     const preparedTurns: string[] = [];
     const fixture = setup(
@@ -301,15 +301,15 @@ describe("workflow approval resume (real AI SDK)", () => {
         requestId: request.requestId,
       })),
     });
-    expect(execute).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledOnce();
     clearDurableDynamicCallbacks(initial.session.sessionId);
     const completed = await fixture.step(
       JSON.parse(JSON.stringify(approved.session)),
       workflowResult(),
     );
-    expect(preparedTurns).toEqual([origin, origin]);
+    expect(preparedTurns).toEqual([origin]);
     expect(execute).toHaveBeenCalledOnce();
-    expect(resultCallIds(completed.session)).toEqual(["call-0", "call-1"]);
+    expect(resultCallIds(completed.session).sort()).toEqual(["call-0", "call-1"]);
     expect(JSON.stringify(completed.session.history)).toContain("notified");
     expect(fixture.events.filter((event) => event.type === "input.resolved")).toHaveLength(1);
     clearDurableDynamicCallbacks(initial.session.sessionId);
@@ -341,7 +341,7 @@ describe("workflow approval resume (real AI SDK)", () => {
       })),
     });
     expect(
-      getPendingCoordinationBatch(approved.session.state)?.tasks.map((task) => task.callId),
+      readRuntimeWaitingStep(approved.session.state)?.tasks.map((task) => task.callId),
     ).toEqual(["call-0"]);
     const limited = await fixture.step(approved.session, workflowResult());
     expect(resultCallIds(limited.session)).toEqual(["call-0"]);
@@ -355,7 +355,7 @@ describe("workflow approval resume (real AI SDK)", () => {
     expect(resultCallIds(continued.session)).toEqual(["call-0"]);
   });
 
-  it("settles approved siblings without executing them when workflow coordination is cancelled", async () => {
+  it("runs an approved local sibling at once and answers its waiting workflow on cancel", async () => {
     const execute = vi.fn(async () => "notified");
     const fixture = setup([
       workflow("deploy", always()),
@@ -376,11 +376,28 @@ describe("workflow approval resume (real AI SDK)", () => {
         requestId: request.requestId,
       })),
     });
-    const cancelled = commitCancelledCoordinationBatch(approved.session);
+    // eve ran the approved local call; the step waits on the workflow only.
+    expect(execute).toHaveBeenCalledOnce();
+    expect(readRuntimeWaitingStep(approved.session.state)?.tasks).toMatchObject([
+      { callId: "call-0" },
+    ]);
+    const at = getHarnessEmissionState(approved.session.state);
+    const cancel = intake(approved.session.state, { at, kind: "cancel" });
+    const cancelled: HarnessSession = {
+      ...approved.session,
+      history: validateHarnessModelMessages([
+        ...approved.session.history,
+        ...cancel.effects.flatMap((effect) => (effect.kind === "history" ? [effect.message] : [])),
+      ]),
+      state: cancel.state,
+    };
     expect(resultCallIds(cancelled).sort()).toEqual(["call-0", "call-1"]);
+    expect(JSON.stringify(cancelled.history)).toContain(
+      "The turn was cancelled before this call finished.",
+    );
     await fixture.step(cancelled, {
       message: "Alice cancelled the release. Summarize the status.",
     });
-    expect(execute).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledOnce();
   });
 });

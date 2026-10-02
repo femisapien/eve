@@ -12,7 +12,7 @@ import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import type { SessionAuthContext } from "#channel/types.js";
 import { settleDirectApprovalResponse } from "#harness/approval-candidates.js";
 import { coordinateApprovalDelivery } from "#harness/approval-delivery-coordinator.js";
-import { selectApprovalReplayBatch } from "#harness/input-requests.js";
+import { selectApprovingStep } from "#harness/input-requests.js";
 import { readOpenApprovals } from "#harness/open-approvals.js";
 import type { HarnessSession } from "#harness/types.js";
 import type { InputRequest } from "#shared/input.js";
@@ -372,7 +372,7 @@ describe("text approval replay preparation", () => {
     session: HarnessSession;
     stepInput?: import("#harness/types.js").StepInput;
   }) {
-    return selectApprovalReplayBatch(input.session, input.stepInput) !== undefined;
+    return selectApprovingStep(input.session, input.stepInput) !== undefined;
   }
   function sessionWithRequests(
     requests: InputRequest[] = [request],

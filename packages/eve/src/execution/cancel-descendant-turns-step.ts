@@ -1,4 +1,4 @@
-import { getPendingCoordinationBatch } from "#harness/coordination.js";
+import { readTurnState } from "#harness/turn-state.js";
 import { readDurableSession, type DurableSessionState } from "#execution/durable-session-store.js";
 import { cancelWorkflowToolRun } from "#execution/tools/workflow/cancel.js";
 import {
@@ -20,7 +20,7 @@ export async function cancelDescendantTurnsStep(input: {
     const session = readDurableSession(input.sessionState);
     workflowToolRuns = getBlockingWorkflowToolRuns(
       session.state,
-      getPendingCoordinationBatch(session.state)?.event.turnId ??
+      readTurnState(session.state).suspended[0]?.event.turnId ??
         input.sessionState.emissionState.turnId,
     );
   } catch (error) {

@@ -5,8 +5,8 @@ import { resolveRuntimeActionResultsForCallIds } from "#runtime/actions/results.
 import type {
   RuntimeActionRequest,
   RuntimeActionResult,
-  RuntimeWorkflowTaskRequest,
   WorkflowToolCallEntry,
+  RuntimeWorkflowTaskRequest,
 } from "#shared/action-types.js";
 import { markRuntimeWorkflowToolAction } from "#shared/action-types.js";
 import { parseJsonObject, type JsonObject } from "#shared/json.js";
@@ -16,8 +16,16 @@ import {
 } from "#harness/workflow-tool-runs.js";
 import { validateHarnessModelMessages } from "#harness/messages.js";
 import { normalizeToolModelOutput } from "#harness/tool-model-output.js";
-import { extractHistoricalInputRequests } from "#harness/input-extraction.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
+import {
+  answeredCallIds,
+  isSameStep,
+  readTurnState,
+  replaceSuspendedStep,
+  settleSuspendedStep,
+  type SuspendedStep,
+  type ToolResultPart,
+} from "#harness/turn-state.js";
 import { pendingTaskToolCalls } from "#execution/tasks/calls.js";
 import { startsTasks } from "#execution/tasks/tool-entry-point.js";
 import type {
@@ -28,32 +36,8 @@ import type {
   StepInput,
 } from "#harness/types.js";
 
-const PENDING_COORDINATION_BATCH_KEY = "eve.runtime.pendingCoordinationBatch";
-type ToolResponsePart = Extract<ModelMessage, { role: "tool" }>["content"][number];
-type ToolResultPart = Extract<ToolResponsePart, { type: "tool-result" }>;
-
 /**
- * Serializable event coordinates for one pending coordination batch.
- *
- * Runtime action results are projected back onto the parent stream using the
- * same turn and step identity as the originating `actions.requested` batch.
- */
-interface PendingCoordinationEventMetadata {
-  readonly sequence: number;
-  readonly stepIndex: number;
-  readonly turnId: string;
-}
-
-/** Serializable pending coordination batch stored on `session.state`. */
-export interface PendingCoordinationBatch {
-  /** Workflow tool runs pending coordination, including agent tools. */
-  readonly tasks: readonly RuntimeWorkflowTaskRequest[];
-  readonly event: PendingCoordinationEventMetadata;
-  readonly responseMessages: readonly ModelMessage[];
-}
-
-/**
- * Outcome of resolving a pending coordination batch.
+ * Outcome of resolving the runtime calls a suspended step waits on.
  */
 interface ResolvePendingCoordinationResult {
   readonly messages: ModelMessage[];
@@ -61,166 +45,32 @@ interface ResolvePendingCoordinationResult {
   readonly session: HarnessSession;
 }
 
-/** Returns the pending coordination batch stored on the session, if any. */
-export function getPendingCoordinationBatch(
+/** The suspended step while it waits on calls the runtime runs. */
+export function readRuntimeWaitingStep(
   state: SessionStateMap | undefined,
-): PendingCoordinationBatch | undefined {
-  const value = state?.[PENDING_COORDINATION_BATCH_KEY];
-
-  if (typeof value !== "object" || value === null) {
-    return undefined;
-  }
-
-  const batch = value as PendingCoordinationBatch;
-
-  if (
-    !Array.isArray(batch.tasks) ||
-    !Array.isArray(batch.responseMessages) ||
-    typeof batch.event !== "object" ||
-    batch.event === null
-  ) {
-    return undefined;
-  }
-
-  return batch;
+): SuspendedStep | undefined {
+  return readTurnState(state).suspended.find((step) => pendingCoordinationCallIds(step).length > 0);
 }
 
-export function clearPendingCoordinationBatch(session: HarnessSession): HarnessSession {
-  if (session.state?.[PENDING_COORDINATION_BATCH_KEY] === undefined) {
-    return session;
-  }
-  const state = { ...session.state };
-  delete state[PENDING_COORDINATION_BATCH_KEY];
-  return { ...session, state: Object.keys(state).length > 0 ? state : undefined };
+/** The workflow runs a suspended step waits on, which the runtime starts. */
+export function pendingWorkflowTasks(step: SuspendedStep): readonly RuntimeWorkflowTaskRequest[] {
+  const answered = answeredCallIds(step.messages);
+  return step.tasks.filter((task) => !answered.has(task.callId));
 }
 
-/** What the model reads for a call its turn's cancellation stopped before the call settled. */
-export const CANCELLED_CALL_RESULT = "The turn was cancelled before this call finished.";
-
-/**
- * Moves a cancelled turn's pending batch into history instead of dropping it.
- * The model keeps the calls it made, each answered as cancelled, so it sees
- * that the work started and stopped rather than a request left unanswered.
- */
-export function commitCancelledCoordinationBatch(session: HarnessSession): HarnessSession {
-  const batch = getPendingCoordinationBatch(session.state);
-  if (batch === undefined) return session;
-  const cancelledCalls = [
-    ...approvedSiblingCalls(session.history, batch),
-    ...batch.tasks.map((task) => ({ callId: task.callId, toolName: task.toolName })),
-    ...pendingTaskToolCalls(batch.responseMessages).map((call) => ({
-      callId: call.callId,
-      toolName: call.kind,
-    })),
-  ];
-  const cancelledResults = cancelledCalls.map(({ callId, toolName }): ToolResultPart => ({
-    output: { type: "text", value: CANCELLED_CALL_RESULT },
-    toolCallId: callId,
-    toolName,
-    type: "tool-result",
-  }));
-  const history = validateHarnessModelMessages([
-    ...session.history,
-    ...batch.responseMessages,
-    ...(cancelledResults.length === 0
-      ? []
-      : [{ content: cancelledResults, role: "tool" as const }]),
-  ]);
-  return clearPendingCoordinationBatch({ ...session, history });
-}
-
-/** Approved local calls parked with their workflow siblings, which have no result yet. */
-function approvedSiblingCalls(
-  history: readonly ModelMessage[],
-  batch: PendingCoordinationBatch,
-): { readonly callId: string; readonly toolName: string }[] {
-  const tail = batch.responseMessages.at(-1);
-  if (tail?.role !== "tool") return [];
-  const approvalIds = new Set(
-    tail.content.flatMap((part) =>
-      part.type === "tool-approval-response" && part.approved ? [part.approvalId] : [],
-    ),
-  );
-  const settled = new Set([
-    ...tail.content.flatMap((part) => (part.type === "tool-result" ? [part.toolCallId] : [])),
-    ...batch.tasks.map((task) => task.callId),
-  ]);
-  const requests = extractHistoricalInputRequests({
-    history: [...history, ...batch.responseMessages],
-    requestIds: approvalIds,
-  });
-  return [...requests.values()]
-    .map(({ action }) => ({ callId: action.callId, toolName: action.toolName }))
-    .filter(({ callId }) => !settled.has(callId));
+/** Every call without a result a suspended step waits on the runtime for: workflow runs and task tool calls. */
+export function pendingCoordinationCallIds(step: SuspendedStep): readonly string[] {
+  const taskToolCallIds = pendingTaskToolCalls(step.messages).map((call) => call.callId);
+  return [...pendingWorkflowTasks(step).map((request) => request.callId), ...taskToolCallIds];
 }
 
 /**
- * Stores one pending coordination batch on the session.
- */
-export function setPendingCoordinationBatch<T extends { readonly state?: SessionStateMap }>(input: {
-  readonly tasks: readonly RuntimeWorkflowTaskRequest[];
-  readonly event: PendingCoordinationEventMetadata;
-  readonly responseMessages: readonly ModelMessage[];
-  readonly session: T;
-}): T {
-  assertUniqueCoordinationCallIds(input.tasks);
-  const state = { ...input.session.state };
-  state[PENDING_COORDINATION_BATCH_KEY] = {
-    tasks: [...input.tasks],
-    event: input.event,
-    responseMessages: [...input.responseMessages],
-  } satisfies PendingCoordinationBatch;
-
-  return { ...input.session, state };
-}
-
-/** Rejects a batch before any result or side effect can bind ambiguously by call id. */
-export function assertUniqueCoordinationCallIds(
-  requests: readonly { readonly callId: string }[],
-): void {
-  const seen = new Set<string>();
-  for (const request of requests) {
-    if (seen.has(request.callId)) {
-      throw new Error(`Coordination batch contains duplicate callId "${request.callId}".`);
-    }
-    seen.add(request.callId);
-  }
-}
-
-/**
- * Returns the ordered results for the current pending coordination batch when
- * every request has a matching result. Unknown and duplicate results
- * are ignored.
- */
-function resolveReadyCoordinationResults(input: {
-  readonly results: readonly RuntimeActionResult[];
-  readonly session: HarnessSession;
-}): RuntimeActionResult[] | undefined {
-  const batch = getPendingCoordinationBatch(input.session.state);
-
-  if (batch === undefined) {
-    return undefined;
-  }
-
-  return resolveRuntimeActionResultsForCallIds({
-    pendingCallIds: pendingCoordinationCallIds(batch),
-    results: input.results,
-  });
-}
-
-/** Every call a pending batch waits on: workflow runs and task tool calls. */
-export function pendingCoordinationCallIds(batch: PendingCoordinationBatch): readonly string[] {
-  const taskToolCallIds = pendingTaskToolCalls(batch.responseMessages).map((call) => call.callId);
-  return [...batch.tasks.map((request) => request.callId), ...taskToolCallIds];
-}
-
-/**
- * Resolves one pending coordination batch back into model history.
+ * Resolves the runtime calls the suspended step waits on.
  *
- * When all expected runtime action results are present, this appends the
- * stored assistant tool-call messages plus synthesized tool-result messages to
- * history, clears the pending batch, and emits `action.result` events back
- * onto the parent stream.
+ * Once every call has its result, the results join the step's response and
+ * `action.result` events report them at the step's coordinates. The step
+ * commits to history once every call it made has a result; while an approval
+ * beside the calls is still open, the response stays withheld.
  */
 export async function resolvePendingCoordination(input: {
   readonly emit?: HarnessEmitFn;
@@ -229,9 +79,9 @@ export async function resolvePendingCoordination(input: {
   /** Definitions whose `toModelOutput` projects a workflow tool's result for the model. */
   readonly tools?: HarnessToolMap;
 }): Promise<ResolvePendingCoordinationResult> {
-  const batch = getPendingCoordinationBatch(input.session.state);
+  const step = readRuntimeWaitingStep(input.session.state);
 
-  if (batch === undefined) {
+  if (step === undefined) {
     return {
       messages: [...input.session.history],
       outcome: "continue",
@@ -239,9 +89,9 @@ export async function resolvePendingCoordination(input: {
     };
   }
 
-  const readyResults = resolveReadyCoordinationResults({
+  const readyResults = resolveRuntimeActionResultsForCallIds({
+    pendingCallIds: pendingCoordinationCallIds(step),
     results: input.stepInput?.runtimeActionResults ?? [],
-    session: input.session,
   });
 
   if (readyResults === undefined) {
@@ -256,32 +106,14 @@ export async function resolvePendingCoordination(input: {
   // The session withdrew each finished run's open questions when its outcome arrived.
   for (const result of readyResults) {
     if (result.kind !== "tool-result") continue;
-    const record = findBlockingWorkflowToolRun(
-      nextSession.state,
-      result.callId,
-      batch.event.turnId,
-    );
+    const record = findBlockingWorkflowToolRun(nextSession.state, result.callId, step.event.turnId);
     if (record === undefined) continue;
-    nextSession = removeBlockingWorkflowToolRuns(nextSession, batch.event.turnId, record.callId);
+    nextSession = removeBlockingWorkflowToolRuns(nextSession, step.event.turnId, record.callId);
   }
-
-  const state = { ...nextSession.state };
-  delete state[PENDING_COORDINATION_BATCH_KEY];
-  nextSession = {
-    ...nextSession,
-    state: Object.keys(state).length > 0 ? state : undefined,
-  };
 
   if (input.emit !== undefined) {
     for (const result of readyResults) {
-      await input.emit(
-        createActionResultEvent({
-          result,
-          sequence: batch.event.sequence,
-          stepIndex: batch.event.stepIndex,
-          turnId: batch.event.turnId,
-        }),
-      );
+      await input.emit(createActionResultEvent({ result, ...step.event }));
     }
   }
 
@@ -317,20 +149,23 @@ export async function resolvePendingCoordination(input: {
     throw new Error(`Unsupported runtime action result kind "${String(result)}".`);
   }
 
-  const messages = [...nextSession.history, ...batch.responseMessages];
-
-  if (toolResults.length > 0) {
-    // AI SDK reads approved calls and their results only from the tail tool
-    // message, so results join a trailing tool response instead of hiding it.
-    const tail = batch.responseMessages.at(-1);
-    if (tail?.role === "tool") {
-      messages[messages.length - 1] = { content: [...tail.content, ...toolResults], role: "tool" };
-    } else {
-      messages.push({ content: toolResults, role: "tool" });
-    }
-  }
+  const settled = settleSuspendedStep(nextSession, toolResults);
+  const remaining = readTurnState(settled.session.state).suspended.find((candidate) =>
+    isSameStep(candidate, step),
+  );
+  nextSession =
+    remaining === undefined
+      ? settled.session
+      : replaceSuspendedStep(settled.session, remaining, {
+          ...remaining,
+          tasks: pendingWorkflowTasks(remaining),
+        });
+  nextSession = {
+    ...nextSession,
+    history: validateHarnessModelMessages([...nextSession.history, ...settled.commit]),
+  };
   return {
-    messages,
+    messages: [...nextSession.history],
     outcome: "resolved",
     session: nextSession,
   };

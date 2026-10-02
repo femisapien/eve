@@ -7,17 +7,21 @@ import { once } from "#tools/approval/policies.js";
 import type { InputRequest } from "#shared/input.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import {
-  consumeDeferredStepInput,
-  getApprovedTools,
+  consumeQueuedInput,
   openApprovalRequestIds,
   hasStepInput,
   resolvePendingInput,
 } from "#harness/input-requests.js";
-import { getDeferredStepInput } from "#harness/open-approvals.js";
+import { getQueuedInput } from "#harness/open-approvals.js";
+import { readTurnState } from "#harness/turn-state.js";
 import { createRuntimeToolCallActionFromToolCall } from "#harness/tool-call-action.js";
 import { buildToolApproval, buildToolSet } from "#harness/tools.js";
 import type { HarnessSession, HarnessToolMap } from "#harness/types.js";
 import { parkApprovals } from "#internal/testing/approval-fixtures.js";
+
+function grants(session: HarnessSession): ReadonlySet<string> {
+  return new Set(readTurnState(session.state).grants);
+}
 
 function createHarnessSession(): HarnessSession {
   return {
@@ -117,75 +121,7 @@ describe("createRuntimeToolCallActionFromToolCall", () => {
 });
 
 describe("resolvePendingInput", () => {
-  it("defers a follow-up message until after tool approvals are resolved", () => {
-    const session = parkApprovals({
-      requests: [
-        {
-          action: {
-            callId: "approval-call",
-            input: { command: "rm -rf /tmp/demo" },
-            kind: "tool-call",
-            toolName: "bash",
-          },
-          allowFreeform: false,
-          display: "confirmation",
-          kind: "tool-approval",
-          options: [
-            { id: "approve", label: "Yes" },
-            { id: "cancel", label: "No" },
-          ],
-          prompt: "Approve tool call: bash",
-          requestId: "approval-1",
-        } satisfies InputRequest,
-      ],
-      responseMessages: [
-        {
-          content: [
-            {
-              input: { command: "rm -rf /tmp/demo" },
-              toolCallId: "approval-call",
-              toolName: "bash",
-              type: "tool-call",
-            },
-            {
-              approvalId: "approval-1",
-              toolCallId: "approval-call",
-              type: "tool-approval-request",
-            },
-          ],
-          role: "assistant",
-        } satisfies ModelMessage,
-      ],
-      session: createHarnessSession(),
-    });
-
-    // Deliver an approval response AND a message simultaneously.
-    const result = resolvePendingInput({
-      stepInput: {
-        inputResponses: [{ requestId: "approval-1", optionId: "cancel" }],
-        message: "Ignore that and say hi instead.",
-      },
-      session,
-    });
-
-    // The approval should be resolved immediately.
-    expect(result.outcome).toBe("resolved");
-
-    // The follow-up message should be deferred.
-    expect(result.deferredMessage).toBe(true);
-    expect(getDeferredStepInput(result.session)).toBeDefined();
-
-    const deferred = consumeDeferredStepInput({
-      session: result.session,
-    });
-
-    expect(deferred.input).toEqual({
-      message: "Ignore that and say hi instead.",
-    });
-    expect(getDeferredStepInput(deferred.session)).toBeUndefined();
-  });
-
-  it("defers channel context until after tool approvals are resolved", () => {
+  it("keeps turn input delivered with every answer in the step that reads the answers", () => {
     const session = parkApprovals({
       requests: [
         {
@@ -215,11 +151,6 @@ describe("resolvePendingInput", () => {
               toolName: "bash",
               type: "tool-call",
             },
-            {
-              approvalId: "approval-1",
-              toolCallId: "approval-call",
-              type: "tool-approval-request",
-            },
           ],
           role: "assistant",
         } satisfies ModelMessage,
@@ -227,22 +158,49 @@ describe("resolvePendingInput", () => {
       session: createHarnessSession(),
     });
 
-    const context = "<linear_context>issue metadata</linear_context>";
     const result = resolvePendingInput({
       stepInput: {
-        context: [context],
+        context: ["<linear_context>issue metadata</linear_context>"],
         inputResponses: [{ requestId: "approval-1", optionId: "approve" }],
+        message: "Then say hi.",
       },
       session,
     });
 
+    // eve runs the approved call before the model reads the message, so
+    // nothing waits for a later step.
     expect(result.outcome).toBe("resolved");
-    expect(result.messages.at(-1)?.role).toBe("tool");
-    expect(getDeferredStepInput(result.session)).toBeDefined();
+    expect(result.deferredMessage).toBeUndefined();
+    expect(result.deferredContext).toBeUndefined();
+    expect(getQueuedInput(result.session)).toBeUndefined();
+  });
 
-    const deferred = consumeDeferredStepInput({ session: result.session });
-    expect(deferred.input).toEqual({ context: [context] });
-    expect(getDeferredStepInput(deferred.session)).toBeUndefined();
+  it("queues responses for requests the step does not hold", () => {
+    const approval = (requestId: string): InputRequest => ({
+      action: { callId: `${requestId}-call`, input: {}, kind: "tool-call", toolName: "bash" },
+      kind: "tool-approval",
+      prompt: "Approve tool call: bash",
+      requestId,
+    });
+    const session = parkApprovals({
+      requests: [approval("approval-1")],
+      session: createHarnessSession(),
+    });
+
+    const result = resolvePendingInput({
+      session,
+      stepInput: {
+        inputResponses: [
+          { optionId: "approve", requestId: "approval-1" },
+          { optionId: "approve", requestId: "approval-2" },
+        ],
+      },
+    });
+
+    expect(result.outcome).toBe("resolved");
+    expect(getQueuedInput(result.session)).toEqual({
+      inputResponses: [{ optionId: "approve", requestId: "approval-2" }],
+    });
   });
 
   it("resolves approval when follow-up text matches an option", () => {
@@ -275,11 +233,6 @@ describe("resolvePendingInput", () => {
               toolName: "bash",
               type: "tool-call",
             },
-            {
-              approvalId: "approval-1",
-              toolCallId: "approval-call",
-              type: "tool-approval-request",
-            },
           ],
           role: "assistant",
         } satisfies ModelMessage,
@@ -295,19 +248,14 @@ describe("resolvePendingInput", () => {
     expect(result.outcome).toBe("resolved");
     expect(result.deferredMessage).toBeUndefined();
     expect(result.consumedMessage).toBe(true);
-    expect(result.messages.at(-1)).toEqual({
-      content: [
-        {
-          approvalId: "approval-1",
-          approved: true,
-          reason: undefined,
-          type: "tool-approval-response",
-        },
-      ],
-      role: "tool",
-    });
-    expect(getApprovedTools(result.session).has("bash")).toBe(true);
-    expect(getDeferredStepInput(result.session)).toBeUndefined();
+    // The approved call waits in its step, without a result, for eve to run it.
+    expect(readTurnState(result.session.state).suspended[0]).toMatchObject({ requests: [] });
+    expect(readTurnState(result.session.state).suspended[0]?.messages.at(-1)?.role).toBe(
+      "assistant",
+    );
+    expect(result.messages).toEqual(session.history);
+    expect(grants(result.session).has("bash")).toBe(true);
+    expect(getQueuedInput(result.session)).toBeUndefined();
   });
 
   it("records compound approval key when resolveApprovalKey is provided", () => {
@@ -340,11 +288,6 @@ describe("resolvePendingInput", () => {
               toolName: "vercel__list_projects",
               type: "tool-call",
             },
-            {
-              approvalId: "approval-1",
-              toolCallId: "approval-call",
-              type: "tool-approval-request",
-            },
           ],
           role: "assistant",
         } satisfies ModelMessage,
@@ -353,7 +296,7 @@ describe("resolvePendingInput", () => {
     });
 
     const result = resolvePendingInput({
-      resolveApprovalKey: (request) => {
+      approvalKey: (request) => {
         const team = request.action.input?.teamId;
         return typeof team === "string" ? `${request.action.toolName}:${team}` : undefined;
       },
@@ -364,20 +307,12 @@ describe("resolvePendingInput", () => {
     });
 
     expect(result.outcome).toBe("resolved");
-    const approved = getApprovedTools(result.session);
+    const approved = grants(result.session);
     expect(approved.has("vercel__list_projects:team_abc")).toBe(true);
     expect(approved.has("vercel__list_projects")).toBe(false);
   });
 
-  it("emits a matching execution-denied tool-result when the user explicitly denies an approval", () => {
-    /*
-     * AI SDK's `streamText` synthesizes an `execution-denied`
-     * tool-result for the current turn only — on subsequent turns the
-     * persisted `tool-approval-response` gets stripped during provider
-     * prompt conversion, leaving the prior `tool_use` block
-     * unmatched. The harness must emit the matching tool-result
-     * itself so persisted history is replay-safe.
-     */
+  it("answers a denied call with an execution-denied result after the call", () => {
     const session = parkApprovals({
       requests: [
         {
@@ -407,11 +342,6 @@ describe("resolvePendingInput", () => {
               toolName: "bash",
               type: "tool-call",
             },
-            {
-              approvalId: "approval-1",
-              toolCallId: "approval-call",
-              type: "tool-approval-request",
-            },
           ],
           role: "assistant",
         } satisfies ModelMessage,
@@ -427,14 +357,8 @@ describe("resolvePendingInput", () => {
     });
 
     expect(result.outcome).toBe("resolved");
-    expect(result.messages.at(-1)).toEqual({
+    expect(readTurnState(result.session.state).suspended[0]?.messages.at(-1)).toEqual({
       content: [
-        {
-          approvalId: "approval-1",
-          approved: false,
-          reason: "Tool execution was denied.",
-          type: "tool-approval-response",
-        },
         {
           output: { type: "execution-denied", reason: "Tool execution was denied." },
           toolCallId: "approval-call",
@@ -591,7 +515,7 @@ describe("resolvePendingInput", () => {
       session,
       stepInput: { inputResponses: [{ requestId: "approval-1", optionId: "approve" }] },
     });
-    const deferred = consumeDeferredStepInput({
+    const deferred = consumeQueuedInput({
       input: {
         inputResponses: [
           { requestId: "approval-1", optionId: "cancel" },
@@ -601,12 +525,12 @@ describe("resolvePendingInput", () => {
       session: partial.session,
     });
     const result = resolvePendingInput({
-      resolveApprovalKey: (request) => request.requestId,
+      approvalKey: (request) => request.requestId,
       session: deferred.session,
       stepInput: deferred.input,
     });
 
-    expect(getApprovedTools(result.session)).toEqual(new Set(["approval-2"]));
+    expect(grants(result.session)).toEqual(new Set(["approval-2"]));
     expect(result.rejectedActions?.[0]?.results).toEqual([
       expect.objectContaining({
         callId: "call-1",
@@ -652,7 +576,7 @@ describe("resolvePendingInput", () => {
       { inputs: [{ outcome: "ignored", request: { requestId: "approval-1" } }] },
     ]);
     expect(result.rejectedActions?.[0]?.results).toMatchObject([{ callId: "approval-call" }]);
-    expect(getDeferredStepInput(result.session)).toBeUndefined();
+    expect(getQueuedInput(result.session)).toBeUndefined();
     expect(openApprovalRequestIds(result.session.state)).toEqual(new Set());
   });
 
@@ -679,7 +603,7 @@ describe("resolvePendingInput", () => {
       session,
       stepInput: { context: ["channel context"] },
     });
-    const deferred = consumeDeferredStepInput({ session: result.session });
+    const deferred = consumeQueuedInput({ session: result.session });
 
     expect(result.outcome).toBe("unresolved");
     expect(deferred.input).toEqual({ context: ["channel context"] });
@@ -715,11 +639,6 @@ describe("resolvePendingInput", () => {
               toolName: "bash",
               type: "tool-call",
             },
-            {
-              approvalId: "approval-1",
-              toolCallId: "approval-call",
-              type: "tool-approval-request",
-            },
           ],
           role: "assistant",
         } satisfies ModelMessage,
@@ -735,8 +654,7 @@ describe("resolvePendingInput", () => {
     });
 
     expect(result.outcome).toBe("resolved");
-    const approved = getApprovedTools(result.session);
-    expect(approved.has("bash")).toBe(true);
+    expect(grants(result.session).has("bash")).toBe(true);
   });
 
   it("approval survives the authorization park so an auth+approval tool is not approved twice", () => {
@@ -775,11 +693,6 @@ describe("resolvePendingInput", () => {
               toolName: "linear_whoami",
               type: "tool-call",
             },
-            {
-              approvalId: "approval-1",
-              toolCallId: "approval-call",
-              type: "tool-approval-request",
-            },
           ],
           role: "assistant",
         } satisfies ModelMessage,
@@ -812,7 +725,7 @@ describe("resolvePendingInput", () => {
     ]);
 
     const rebuilt = buildToolSet({
-      approvedTools: getApprovedTools(result.session),
+      approvedTools: grants(result.session),
       tools,
     });
     const approval = buildToolApproval(rebuilt);

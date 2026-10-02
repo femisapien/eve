@@ -21,11 +21,8 @@ import {
 } from "#runtime/sessions/runtime-context-keys.js";
 import { deserializeContext } from "#context/serialize.js";
 import type { HarnessSessionBase } from "#harness/types.js";
-import {
-  assertUniqueCoordinationCallIds,
-  getPendingCoordinationBatch,
-  setPendingCoordinationBatch,
-} from "#harness/coordination.js";
+import { pendingWorkflowTasks, readRuntimeWaitingStep } from "#harness/coordination.js";
+import { assertUniqueCoordinationCallIds, replaceSuspendedStep } from "#harness/turn-state.js";
 import { activeTurnId } from "#harness/active-turn-id.js";
 import type { RuntimeActionResult, RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
 import type { SessionParent, SessionTraceRoot } from "#channel/types.js";
@@ -100,10 +97,10 @@ export async function prepareCoordinationDispatch(input: {
   readonly sessionState: DurableSessionState;
 }): Promise<PreparedCoordinationDispatch | undefined> {
   const durableSession = readDurableSession(input.sessionState);
-  const pending = getPendingCoordinationBatch(durableSession.state);
+  const pending = readRuntimeWaitingStep(durableSession.state);
 
   if (pending === undefined) return undefined;
-  const requests = pending.tasks;
+  const requests = pendingWorkflowTasks(pending);
   if (requests.length === 0) return undefined;
   const turnId = pending.event.turnId || activeTurnId(input.sessionState.emissionState);
   const event = pending.event.turnId === turnId ? pending.event : { ...pending.event, turnId };
@@ -122,11 +119,7 @@ export async function prepareCoordinationDispatch(input: {
     return { ...prepared, sessionState: input.sessionState };
   }
 
-  const session = setPendingCoordinationBatch({
-    ...pending,
-    event,
-    session: prepared.session,
-  });
+  const session = replaceSuspendedStep(prepared.session, pending, { ...pending, event });
   return {
     ...prepared,
     session,

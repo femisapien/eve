@@ -31,12 +31,12 @@ import {
 import { BundleKey, ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
 import { startWorkflowTask } from "#execution/tools/workflow/start.js";
-import { getPendingCoordinationBatch, setPendingCoordinationBatch } from "#harness/coordination.js";
+import { readTurnState, suspendStep } from "#harness/turn-state.js";
 import { TurnCancelledError } from "#harness/turn-cancellation.js";
 import { setHarnessEmissionState } from "#harness/emission-state.js";
 import { getPendingAuthorization, setPendingAuthorization } from "#harness/authorization.js";
 import { upsertRelayedInputRequests } from "#harness/open-input-requests.js";
-import { queueDeferredStepInput } from "#harness/open-approvals.js";
+import { queueInput } from "#harness/open-approvals.js";
 import type { HarnessSession, StepFn, StepResult } from "#harness/types.js";
 import { createRuntimeHookRegistry } from "#runtime/hooks/registry.js";
 import {
@@ -690,7 +690,15 @@ describe("dispatchCoordinationStep", () => {
   }
 
   function pendingWorkflowTask(turnId: string): HarnessSession {
-    return setPendingCoordinationBatch({
+    return suspendStep(createStubSession(), {
+      event: { sequence: 3, stepIndex: 2, turnId },
+      messages: [
+        {
+          content: [{ input: {}, toolCallId: "call-1", toolName: "research", type: "tool-call" }],
+          role: "assistant",
+        },
+      ],
+      requests: [],
       tasks: [
         {
           callId: "call-1",
@@ -702,9 +710,6 @@ describe("dispatchCoordinationStep", () => {
           workflowId: "workflow//eve//research",
         },
       ],
-      event: { sequence: 3, stepIndex: 2, turnId },
-      responseMessages: [],
-      session: createStubSession(),
     });
   }
 
@@ -725,7 +730,7 @@ describe("dispatchCoordinationStep", () => {
 
     const persisted = vi.mocked(createDurableSessionState).mock.calls.at(-1)?.[0].session;
     expect(result.stateDelta.sessionState).toBeDefined();
-    expect(getPendingCoordinationBatch(persisted?.state)?.event.turnId).toBe("turn_3");
+    expect(readTurnState(persisted?.state).suspended[0]?.event.turnId).toBe("turn_3");
   });
 
   it.each([
@@ -2572,9 +2577,7 @@ describe("turnStep", () => {
       context: ["Current context"],
       message: "Alice follows up after signing in.",
     };
-    installSessionStoreMocks([
-      inputKind === "deferred" ? queueDeferredStepInput(session, turnInput) : session,
-    ]);
+    installSessionStoreMocks([inputKind === "deferred" ? queueInput(session, turnInput) : session]);
     vi.mocked(getCompiledRuntimeAgentBundle).mockResolvedValue({
       adapterRegistry: {
         adaptersByKind: new Map([[threadContextAdapter.kind, threadContextAdapter]]),

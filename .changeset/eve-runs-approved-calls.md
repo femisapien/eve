@@ -1,0 +1,5 @@
+---
+"eve": patch
+---
+
+eve now runs approved tool calls itself: each approved call re-checks its approval policy, streams `action.partial` and `action.result`, and runs with the tools of the step that asked. A call waiting for approval stays out of session history until every call of its step has a result, and the model is not called while any approval from that step is open. Session history no longer holds the AI SDK's `tool-approval-request` and `tool-approval-response` parts, so code that read approvals from history must read `input.requested` and `input.resolved` events instead. eve no longer adds a `[Pending approvals]` note to history, a reply that answers only some of a step's approvals keeps the turn waiting, answers to requests the step doesn't hold wait for the next step instead of being dropped, and cancelling a turn reports each open approval in its own `input.resolved` event. A typed reply such as "approve" answers only when everything open is one group: one step's approvals together, the budget question alone, or a single relayed question; otherwise it is an ordinary message.

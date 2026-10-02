@@ -53,7 +53,7 @@ import {
   validateHarnessModelMessages,
   type UserModelMessage,
 } from "#harness/messages.js";
-import { consumeDeferredStepInput } from "#harness/open-approvals.js";
+import { consumeQueuedInput } from "#harness/open-approvals.js";
 import type { HarnessSession, StepInput, StepResult } from "#harness/types.js";
 import type {
   DurableStepResult,
@@ -485,7 +485,7 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
               );
               if (startsTurn && isHarnessBetweenTurns(schemaSession)) {
                 const turnInput = createTurnInputMessages(
-                  consumeDeferredStepInput({ session: schemaSession, input: stepInput }).input,
+                  consumeQueuedInput({ session: schemaSession, input: stepInput }).input,
                 );
                 prepareDynamicInstructionPreamble(ctx, history.messages(schemaSession));
                 prepareMemoryPreamble(ctx, {

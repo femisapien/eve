@@ -5,8 +5,9 @@ import {
   createRuntimeActionRequestFromToolCall,
   resolvePendingCoordination,
   resolveToolCallInputObject,
-  setPendingCoordinationBatch,
 } from "#harness/coordination.js";
+import { suspendStep } from "#harness/turn-state.js";
+import type { RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
 import {
   getBlockingWorkflowToolRuns,
   registerWorkflowToolRun,
@@ -236,7 +237,7 @@ describe("createCoordinationRequestFromToolCall", () => {
   });
 });
 
-function createParkedSession(): HarnessSession {
+function createSessionWithUsage(): HarnessSession {
   const base: HarnessSession = {
     agent: { modelReference: { id: "test-model" }, system: "", tools: [] },
     compaction: { recentWindowSize: 10, threshold: 100_000 },
@@ -259,21 +260,29 @@ function createParkedSession(): HarnessSession {
     turnId: "turn_0",
   });
 
-  return setPendingCoordinationBatch({
-    tasks: [
+  return withUsage;
+}
+
+/** The session after a model step called `tasks`, parked until the runtime runs them. */
+function parkTasks(
+  session: HarnessSession,
+  tasks: readonly RuntimeWorkflowTaskRequest[],
+): HarnessSession {
+  return suspendStep(session, {
+    event: { sequence: 0, stepIndex: 0, turnId: "turn_0" },
+    messages: [
       {
-        callId: "call-1",
-        executeInput: { message: "go", target: "researcher" },
-        input: { description: "Research the topic", message: "go" },
-        entry: { entryPoint: "execute" },
-        kind: "workflow-task",
-        toolName: "researcher",
-        workflowId: "workflow://subagent-tool",
+        content: tasks.map((task) => ({
+          input: task.input,
+          toolCallId: task.callId,
+          toolName: task.toolName,
+          type: "tool-call" as const,
+        })),
+        role: "assistant",
       },
     ],
-    event: { sequence: 0, stepIndex: 0, turnId: "turn_0" },
-    responseMessages: [],
-    session: withUsage,
+    requests: [],
+    tasks,
   });
 }
 
@@ -290,33 +299,23 @@ describe("coordination batch identity", () => {
     };
 
     expect(() =>
-      setPendingCoordinationBatch({
-        tasks: [task, { ...task, toolName: "other" }],
-        event: { sequence: 0, stepIndex: 0, turnId: "turn_0" },
-        responseMessages: [],
-        session: createParkedSession(),
-      }),
+      parkTasks(createSessionWithUsage(), [task, { ...task, toolName: "other" }]),
     ).toThrow('duplicate callId "duplicate-call"');
   });
 });
 
 describe("resolvePendingCoordination", () => {
   it("forgets a finished workflow tool run", async () => {
-    const parked = setPendingCoordinationBatch({
-      event: { sequence: 0, stepIndex: 0, turnId: "turn_0" },
-      responseMessages: [],
-      session: createParkedSession(),
-      tasks: [
-        {
-          callId: "call-1",
-          input: { service: "api" },
-          entry: { entryPoint: "execute" },
-          kind: "workflow-task",
-          toolName: "deploy",
-          workflowId: "workflow//./agent/tools/deploy//execute",
-        },
-      ],
-    });
+    const parked = parkTasks(createSessionWithUsage(), [
+      {
+        callId: "call-1",
+        input: { service: "api" },
+        entry: { entryPoint: "execute" },
+        kind: "workflow-task",
+        toolName: "deploy",
+        workflowId: "workflow//./agent/tools/deploy//execute",
+      },
+    ]);
     const session = registerWorkflowToolRun(parked, {
       callId: "call-1",
       toolName: "deploy",
@@ -338,21 +337,16 @@ describe("resolvePendingCoordination", () => {
   });
 
   it("projects a workflow tool's result through its toModelOutput", async () => {
-    const parked = setPendingCoordinationBatch({
-      event: { sequence: 0, stepIndex: 0, turnId: "turn_0" },
-      responseMessages: [],
-      session: createParkedSession(),
-      tasks: [
-        {
-          callId: "call-1",
-          input: { service: "api" },
-          entry: { entryPoint: "execute" },
-          kind: "workflow-task",
-          toolName: "deploy",
-          workflowId: "workflow//./agent/tools/deploy//execute",
-        },
-      ],
-    });
+    const parked = parkTasks(createSessionWithUsage(), [
+      {
+        callId: "call-1",
+        input: { service: "api" },
+        entry: { entryPoint: "execute" },
+        kind: "workflow-task",
+        toolName: "deploy",
+        workflowId: "workflow//./agent/tools/deploy//execute",
+      },
+    ]);
     const tools = new Map([
       [
         "deploy",

@@ -1,3 +1,4 @@
+import { TURN_STATE_KEY } from "#harness/turn-state.js";
 import { getBlockingWorkflowToolRuns } from "#harness/workflow-tool-runs.js";
 import { deserializeContext } from "#context/serialize.js";
 import { readDurableSession, type DurableSessionState } from "#execution/durable-session-store.js";
@@ -21,8 +22,10 @@ export function isSessionStateIdleForHandoff(sessionState: DurableSessionState):
   // These registries are deleted when work settles. Their ordinary readers
   // tolerate malformed values as absent; that must not authorize a handoff.
   // `proxyInputRequests` and `pendingInputBatches` are the stores
-  // `openInputRequests` replaced; they stay so a session an earlier version
-  // parked finishes on the deployment that can still answer it.
+  // `openInputRequests` replaced, and `pendingCoordinationBatch` and
+  // `deferredStepInput` the ones the turn state replaced; they stay so a
+  // session an earlier version parked finishes on the deployment that can
+  // still answer it.
   const pendingKeys = [
     "eve.runtime.pendingAuthorization",
     "eve.runtime.pendingInputBatch",
@@ -33,13 +36,20 @@ export function isSessionStateIdleForHandoff(sessionState: DurableSessionState):
     "eve.runtime.proxyInputRequests",
   ];
   if (pendingKeys.some((key) => state?.[key] !== undefined)) return false;
-  const openRequests = state?.["eve.runtime.openInputRequests"];
-  if (
-    openRequests !== undefined &&
-    (!isObject(openRequests) || Object.keys(openRequests).length > 0)
-  )
-    return false;
+  if (holdsEntries(state?.["eve.runtime.openInputRequests"])) return false;
+  // Grants last the whole session, so only a waiting step or queued input is work.
+  const turnState = state?.[TURN_STATE_KEY];
+  if (turnState !== undefined && (!isObject(turnState) || holdsWork(turnState))) return false;
   return workflowToolRuns.length === 0;
+}
+
+function holdsWork(turnState: Record<string, unknown>): boolean {
+  const { suspended, queued } = turnState;
+  return queued !== undefined || !Array.isArray(suspended) || suspended.length > 0;
+}
+
+function holdsEntries(value: unknown): boolean {
+  return value !== undefined && (!isObject(value) || Object.keys(value).length > 0);
 }
 
 /** Reads durable work using the source deployment's handoff contract. */

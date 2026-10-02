@@ -1,4 +1,4 @@
-import type { SessionAuthContext, SubagentInputRequestHookPayload } from "#channel/types.js";
+import type { SubagentInputRequestHookPayload } from "#channel/types.js";
 import type { InputRequestEvent } from "#harness/open-approvals.js";
 import type { HarnessSessionBase, SessionStateMap } from "#harness/types.js";
 import {
@@ -13,8 +13,6 @@ import {
 } from "#execution/session-inbox/address.js";
 import type { RemoteAgentBinding } from "#eve-channel/support.js";
 import { createInputResolvedEvent, type InputResolvedStreamEvent } from "#protocol/message.js";
-
-type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
 export const OPEN_INPUT_REQUESTS_KEY = "eve.runtime.openInputRequests";
 
@@ -80,10 +78,6 @@ export interface TurnInputRequest {
   /** Coordinates of the `input.requested` the turn emitted for it. */
   readonly event: InputRequestEvent;
   readonly request: InputRequest;
-  /** Auth of the caller whose turn asked; `null` when unauthenticated. */
-  readonly requester?: SessionAuthContext | null;
-  /** Whether a responder must sign in before their answer counts. */
-  readonly responseAuthRequired?: true;
 }
 
 /** One open input request, by who answers it. */
@@ -365,15 +359,7 @@ function parseTurnInputRequest(value: unknown): TurnInputRequest | undefined {
   ) {
     return undefined;
   }
-  const entry: Mutable<TurnInputRequest> = {
-    event,
-    owner: "turn",
-    request: request as InputRequest,
-  };
-  const requester: unknown = Reflect.get(value, "requester");
-  if (typeof requester === "object") entry.requester = requester as SessionAuthContext | null;
-  if (Reflect.get(value, "responseAuthRequired") === true) entry.responseAuthRequired = true;
-  return entry;
+  return { event, owner: "turn", request: request as InputRequest };
 }
 
 function parseRelayedInputRequest(

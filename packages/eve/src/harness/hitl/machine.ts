@@ -3,7 +3,8 @@ import type { ModelMessage } from "ai";
 import { APPROVAL_STATE_KEY, type ApprovalEventCoordinates } from "#harness/approval-candidates.js";
 import { PENDING_AUTHORIZATION_KEY } from "#harness/authorization.js";
 import { withdrawHeldSignIns } from "#harness/held-requests.js";
-import { cancelledApprovalResults } from "#harness/hitl/approval-input-requests.js";
+import { cancelledStepTranscript } from "#harness/hitl/approval-input-requests.js";
+import { readOpenApprovals } from "#harness/open-approvals.js";
 import {
   OPEN_INPUT_REQUESTS_KEY,
   readRelayedInputRequests,
@@ -12,8 +13,9 @@ import {
   type RelayedInputQuestion,
   type RelayedInputRequest,
 } from "#harness/open-input-requests.js";
+import { readTurnState, TURN_STATE_KEY, writeTurnStateMap } from "#harness/turn-state.js";
 import type { SessionStateMap } from "#harness/types.js";
-import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
+import { createInputResolvedEvent, type UnstampedMessageStreamEvent } from "#protocol/message.js";
 import type { InputRequest } from "#shared/input.js";
 
 /**
@@ -25,6 +27,7 @@ const HITL_STATE_KEYS = [
   APPROVAL_STATE_KEY,
   OPEN_INPUT_REQUESTS_KEY,
   PENDING_AUTHORIZATION_KEY,
+  TURN_STATE_KEY,
 ] as const;
 
 const CANCELLED_REASON = "Cancelled.";
@@ -94,24 +97,25 @@ export function textAnswerable(
   } = {},
 ): TextAnswerable | undefined {
   const turn = [...readTurnInputRequests(state).values()];
+  const approvals = readOpenApprovals(state);
   const relayed = [...readRelayedInputRequests(state)].filter(
     ([requestId, route]) => input.routable?.(requestId, route) !== false,
   );
   if (relayed.length === 0) {
     const [only] = turn;
-    if (only === undefined) return undefined;
-    if (turn.length === 1 && only.request.kind === "session-limit") {
-      return { kind: "session-limit", request: only.request };
+    if (approvals !== undefined) {
+      return turn.length === 0 && (approvals.responseAuthRequiredRequestIds?.length ?? 0) === 0
+        ? { kind: "approvals", requests: approvals.requests }
+        : undefined;
     }
-    const approvals = turn.every(
-      (entry) => entry.request.kind === "tool-approval" && entry.responseAuthRequired !== true,
-    );
-    return approvals
-      ? { kind: "approvals", requests: turn.map((entry) => entry.request) }
+    if (only === undefined) return undefined;
+    return turn.length === 1 && only.request.kind === "session-limit"
+      ? { kind: "session-limit", request: only.request }
       : undefined;
   }
   const [first] = relayed;
-  if (turn.length > 0 || relayed.length !== 1 || first === undefined) return undefined;
+  if (turn.length > 0 || approvals !== undefined || relayed.length !== 1 || first === undefined)
+    return undefined;
   const [requestId, route] = first;
   const question =
     route.kind === "question" ? (route.workflowAsk?.question ?? route.question) : undefined;
@@ -133,12 +137,28 @@ export function adoptHitlState(
 
 function cancel(state: SessionStateMap | undefined, at: ApprovalEventCoordinates): HitlTransition {
   const signIns = withdrawHeldSignIns(state, { emissionState: at, reason: CANCELLED_REASON });
-  // Read before the requests retire: each waiting call needs its not-run result.
-  const notRun = cancelledApprovalResults(signIns.state);
+  const steps = readTurnState(signIns.state).suspended;
+  const approvals = steps.flatMap((step) =>
+    step.requests.map((request) =>
+      createInputResolvedEvent({
+        resolutions: [{ kind: request.kind, outcome: "cancelled", requestId: request.requestId }],
+        ...step.event,
+      }),
+    ),
+  );
   const requests = withdrawTurnInputRequests({ state: signIns.state });
-  const effects: HitlEffect[] = [...signIns.events.map(toEvent), ...requests.events.map(toEvent)];
-  if (notRun !== undefined) effects.push({ kind: "history", message: notRun });
-  return { effects, state: requests.session.state };
+  const effects: HitlEffect[] = [
+    ...signIns.events.map(toEvent),
+    ...approvals.map(toEvent),
+    ...requests.events.map(toEvent),
+  ];
+  // Each waiting step's response joins history with every unfinished call answered.
+  for (const message of steps.flatMap(cancelledStepTranscript)) {
+    effects.push({ kind: "history", message });
+  }
+  const turn = readTurnState(requests.session.state);
+  const next = writeTurnStateMap(requests.session.state, { ...turn, suspended: [] });
+  return { effects, state: next };
 }
 
 function steer(state: SessionStateMap | undefined, at: ApprovalEventCoordinates): HitlTransition {

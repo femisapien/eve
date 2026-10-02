@@ -1,22 +1,18 @@
 import type { ModelMessage } from "ai";
 
-import type { InputRequest, InputResponse } from "#shared/input.js";
+import type { InputResponse } from "#shared/input.js";
 import { resolveTextToResponses } from "#channel/resolve-text.js";
 import { textAnswerable } from "#harness/hitl/machine.js";
-import { hasTailApprovalResponse } from "#harness/current-messages.js";
+import { isApprovalRequest } from "#harness/input-request-class.js";
 import {
   answersEveryApproval,
-  getApprovedTools,
   resolveOpenApprovals,
+  type ApprovalResolutionTools,
 } from "#harness/hitl/approval-input-requests.js";
 import type { RejectedActionBatch } from "#harness/hitl/approval-input-requests.js";
 import type { OpenApprovals } from "#harness/open-approvals.js";
-import {
-  getDeferredStepInput,
-  queueDeferredStepInput,
-  readOpenApprovals,
-} from "#harness/open-approvals.js";
-import { compactStepInput, finishResolvedInput } from "#harness/hitl/pending-input-resolution.js";
+import { getQueuedInput, queueInput, readOpenApprovals } from "#harness/open-approvals.js";
+import { compactStepInput } from "#harness/hitl/pending-input-resolution.js";
 import type {
   ResolvePendingInputResult,
   ResolvedStepInput,
@@ -24,14 +20,12 @@ import type {
 import type { HarnessSession, StepInput } from "#harness/types.js";
 import { readClientContext } from "#internal/client-context.js";
 
-export { getApprovedTools };
 export type { RejectedActionBatch };
 export type { ResolvedInputBatch } from "#harness/input-request-resolution.js";
 export {
-  consumeDeferredStepInput,
+  consumeQueuedInput,
   hasOpenApprovals,
   openApprovalRequestIds,
-  openApprovals,
 } from "#harness/open-approvals.js";
 
 /** Returns true when the step input carries user-facing turn input. */
@@ -40,22 +34,22 @@ export function hasStepInput(input?: StepInput): boolean {
   return input.message !== undefined || (input.inputResponses?.length ?? 0) > 0;
 }
 
-/** Stored partial answers are not runnable work until they answer every open approval. */
-export function hasRunnableDeferredStepInput(session: HarnessSession): boolean {
-  const deferred = getDeferredStepInput(session);
-  if (deferred === undefined) return false;
+/** Queued partial answers are not runnable work until they answer every open approval. */
+export function hasRunnableQueuedInput(session: HarnessSession): boolean {
+  const queued = getQueuedInput(session);
+  if (queued === undefined) return false;
   if (
-    deferred.message !== undefined ||
-    (deferred.context?.length ?? 0) > 0 ||
-    readClientContext(deferred) !== undefined ||
-    deferred.outputSchema !== undefined ||
-    (deferred.runtimeActionResults?.length ?? 0) > 0
+    queued.message !== undefined ||
+    (queued.context?.length ?? 0) > 0 ||
+    readClientContext(queued) !== undefined ||
+    queued.outputSchema !== undefined ||
+    (queued.runtimeActionResults?.length ?? 0) > 0
   )
     return true;
 
   const responses = [
-    ...(deferred.inputResponses ?? []),
-    ...(deferred.attributedInputResponses ?? []).map(({ response }) => response),
+    ...(queued.inputResponses ?? []),
+    ...(queued.attributedInputResponses ?? []).map(({ response }) => response),
   ];
   if (responses.length === 0) return false;
   const approvals = readOpenApprovals(session.state);
@@ -63,7 +57,7 @@ export function hasRunnableDeferredStepInput(session: HarnessSession): boolean {
 }
 
 /** Returns the open approvals when this input answers them all and approves at least one. */
-export function selectApprovalReplayBatch(
+export function selectApprovingStep(
   session: HarnessSession,
   stepInput?: StepInput,
 ): OpenApprovals | undefined {
@@ -72,38 +66,27 @@ export function selectApprovalReplayBatch(
   const resolved = resolveTextMessageInput(approvals, stepInput, session.state);
   const responses = canonicalizeInputResponses(resolved?.inputResponses ?? []);
   if (!answersEveryApproval(approvals, responses)) return undefined;
-  return approvals.requests.some((request) =>
-    responses.some(
-      (response) => response.requestId === request.requestId && response.optionId === "approve",
-    ),
+  return approvals.requests.some(
+    (request) =>
+      isApprovalRequest(request) &&
+      responses.some(
+        (response) => response.requestId === request.requestId && response.optionId === "approve",
+      ),
   )
     ? approvals
     : undefined;
 }
 
-/**
- * Resolves pending input at the start of a harness step. Approvals preserve
- * AI SDK's tail-message requirement.
- */
-export function resolvePendingInput(input: {
-  readonly history?: readonly ModelMessage[];
-  readonly resolveApprovalKey?: (request: InputRequest) => string | undefined;
-  readonly session: HarnessSession;
-  readonly stepInput?: StepInput;
-}): ResolvePendingInputResult {
+/** Resolves the open approvals at the start of a harness step. */
+export function resolvePendingInput(
+  input: ApprovalResolutionTools & {
+    readonly history?: readonly ModelMessage[];
+    readonly session: HarnessSession;
+    readonly stepInput?: StepInput;
+  },
+): ResolvePendingInputResult {
   const baseHistory = [...(input.history ?? input.session.history)];
   const approvals = readOpenApprovals(input.session.state);
-  // Finish already-approved work before new approvals or a user message can
-  // hide the approval response from the SDK.
-  if (hasTailApprovalResponse(baseHistory)) {
-    return finishResolvedInput({
-      deferTurnInput: true,
-      leftoverResponses: input.stepInput?.inputResponses ?? [],
-      messages: baseHistory,
-      resolvedStepInput: input.stepInput,
-      session: input.session,
-    });
-  }
   if (approvals === undefined) {
     return { outcome: "continue", messages: baseHistory, session: input.session };
   }
@@ -115,22 +98,23 @@ export function resolvePendingInput(input: {
   const responses = canonicalizeInputResponses(resolvedStepInput?.inputResponses ?? []);
 
   if (responses.length === 0 && resolvedStepInput?.message === undefined) {
-    const deferredInput = compactStepInput(resolvedStepInput);
+    const queued = compactStepInput(resolvedStepInput);
     const session =
-      deferredInput.context !== undefined ||
-      readClientContext(deferredInput) !== undefined ||
-      deferredInput.outputSchema !== undefined
-        ? queueDeferredStepInput(input.session, deferredInput)
+      queued.context !== undefined ||
+      readClientContext(queued) !== undefined ||
+      queued.outputSchema !== undefined
+        ? queueInput(input.session, queued)
         : input.session;
     return { outcome: "unresolved", messages: baseHistory, session };
   }
 
   return resolveOpenApprovals({
+    approvalKey: input.approvalKey,
     approvals,
     baseHistory,
-    resolveApprovalKey: input.resolveApprovalKey,
     resolvedStepInput,
     responses,
+    runsInRuntime: input.runsInRuntime,
     session: input.session,
   });
 }

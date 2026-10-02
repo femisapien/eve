@@ -4,7 +4,7 @@ import type { RuntimeToolResultActionResult } from "#shared/action-types.js";
 import type { InputResponse } from "#shared/input.js";
 import type { ResolvedInputBatch } from "#harness/input-request-resolution.js";
 import type { InputRequestEvent, OpenApprovals } from "#harness/open-approvals.js";
-import { queueDeferredStepInput } from "#harness/open-approvals.js";
+import { queueInput } from "#harness/open-approvals.js";
 import type { HarnessSession, StepInput } from "#harness/types.js";
 import { attachClientContext, readClientContext } from "#internal/client-context.js";
 
@@ -46,15 +46,6 @@ export function responsesForApprovals(
   );
 }
 
-export function appendResolvedBatchTranscript(
-  messages: ModelMessage[],
-  toolParts: readonly ToolResponsePart[],
-): void {
-  if (toolParts.length > 0) {
-    messages.push({ content: [...toolParts], role: "tool" });
-  }
-}
-
 export function finishResolvedInput(input: {
   readonly deferTurnInput: boolean;
   readonly leftoverResponses: readonly InputResponse[];
@@ -64,8 +55,7 @@ export function finishResolvedInput(input: {
   readonly resolvedStepInput: ResolvedStepInput | undefined;
   readonly session: HarnessSession;
 }): ResolvePendingInputResult {
-  // AI SDK collects approval responses only from the tail tool message. Turn
-  // input must replay after that isolated approval response.
+  // Deferred turn input replays on a later step, after the work it waits behind.
   const deferredInput: {
     context?: StepInput["context"];
     inputResponses?: StepInput["inputResponses"];
@@ -101,7 +91,7 @@ export function finishResolvedInput(input: {
       messages: input.messages,
       rejectedActions: input.rejectedActions,
       resolvedInputs: input.resolvedInputs,
-      session: queueDeferredStepInput(input.session, deferredInput),
+      session: queueInput(input.session, deferredInput),
     };
   }
 

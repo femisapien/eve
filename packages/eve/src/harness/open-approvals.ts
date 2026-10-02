@@ -1,33 +1,27 @@
 import { contextStorage } from "#context/container.js";
 import type { SessionAuthContext } from "#channel/types.js";
 import { AuthKey, SessionKey } from "#context/keys.js";
-import type { InputRequest } from "#shared/input.js";
-import type { HarnessSession, SessionStateMap, StepInput } from "#harness/types.js";
+import { isApprovalRequest } from "#harness/input-request-class.js";
 import { coalesceTurnInputs } from "#harness/messages.js";
 import {
-  openTurnInputRequest,
-  readTurnInputRequests,
-  retireOpenInputRequests,
-} from "#harness/open-input-requests.js";
-
-type Mutable<T> = { -readonly [K in keyof T]: T[K] };
-
-const DEFERRED_STEP_INPUT_KEY = "eve.runtime.deferredStepInput";
+  readApprovalStep,
+  readTurnState,
+  writeTurnState,
+  type StepCoordinates,
+  type SuspendedStep,
+} from "#harness/turn-state.js";
+import type { HarnessSession, SessionStateMap, StepInput } from "#harness/types.js";
+import type { InputRequest } from "#shared/input.js";
 
 /**
  * Stream-emit coordinates carried so a request's resolution can attribute its
  * events to the turn and step that asked for it.
  */
-export interface InputRequestEvent {
-  readonly sequence: number;
-  readonly stepIndex: number;
-  readonly turnId: string;
-}
+export type InputRequestEvent = StepCoordinates;
 
 /**
- * The tool approvals one model step raised, read from the turn's entries in
- * the open input requests. A held turn does not call the model while an
- * approval is open, so only one step's approvals can be open at once.
+ * The tool approvals the suspended step waits on. A held turn does not call the
+ * model while an approval is open, so only one step's approvals can be open.
  */
 export interface OpenApprovals {
   readonly event: InputRequestEvent;
@@ -52,55 +46,48 @@ export function openApprovalRequestIds(state: SessionStateMap | undefined): Read
 
 /** The open tool approvals, or `undefined` when none are open. */
 export function readOpenApprovals(state: SessionStateMap | undefined): OpenApprovals | undefined {
-  const approvals = [...readTurnInputRequests(state).values()].filter(
-    (entry) => entry.request.kind === "tool-approval",
-  );
-  const first = approvals[0];
-  if (first === undefined) return undefined;
-  const responseAuthRequiredRequestIds = approvals
-    .filter((entry) => entry.responseAuthRequired === true)
-    .map((entry) => entry.request.requestId);
-  const open: Mutable<OpenApprovals> = {
-    event: first.event,
-    requester: first.requester ?? null,
-    requests: approvals.map((entry) => entry.request),
+  const step = readApprovalStep(state);
+  if (step === undefined) return undefined;
+  const open: { -readonly [K in keyof OpenApprovals]: OpenApprovals[K] } = {
+    event: step.event,
+    requester: step.requester ?? null,
+    requests: step.requests,
   };
-  if (responseAuthRequiredRequestIds.length > 0) {
-    open.responseAuthRequiredRequestIds = responseAuthRequiredRequestIds;
+  if ((step.responseAuthRequiredRequestIds?.length ?? 0) > 0) {
+    open.responseAuthRequiredRequestIds = step.responseAuthRequiredRequestIds;
   }
   return open;
 }
 
-/** Closes every open tool approval; other open input requests stay open. */
-export function closeApprovals(session: HarnessSession): HarnessSession {
-  return retireOpenInputRequests(session, [...openApprovalRequestIds(session.state)]);
+/** The requester recorded on the step that raised the open approval `requestId`. */
+export function openApprovalRequester(
+  state: SessionStateMap | undefined,
+  requestId: string,
+): SessionAuthContext | null {
+  const approvals = readOpenApprovals(state);
+  if (!approvals?.requests.some((request) => request.requestId === requestId)) return null;
+  return approvals.requester;
 }
 
-/** Opens the tool approvals one model step raised, as turn entries. */
-export function openApprovals(input: {
+/** The suspended step a model step that raised approvals becomes. */
+export function approvalStep(input: {
   readonly event: InputRequestEvent;
+  readonly messages: SuspendedStep["messages"];
   readonly requests: readonly InputRequest[];
   readonly responseAuthRequiredRequestIds?: readonly string[];
-  readonly session: HarnessSession;
-}): HarnessSession {
-  if (hasOpenApprovals(input.session.state)) {
-    throw new Error(
-      "eve internal error: a model step raised tool approvals while earlier approvals are open. A held turn must not call the model until every approval is answered or withdrawn.",
-    );
+  readonly tasks: SuspendedStep["tasks"];
+}): SuspendedStep {
+  const step: { -readonly [K in keyof SuspendedStep]: SuspendedStep[K] } = {
+    event: input.event,
+    messages: input.messages,
+    requester: currentRequester(),
+    requests: input.requests,
+    tasks: input.tasks,
+  };
+  if ((input.responseAuthRequiredRequestIds?.length ?? 0) > 0) {
+    step.responseAuthRequiredRequestIds = input.responseAuthRequiredRequestIds;
   }
-  const requester = currentRequester();
-  const responseAuthRequired = new Set(input.responseAuthRequiredRequestIds ?? []);
-  let session = input.session;
-  for (const request of input.requests) {
-    const entry: Mutable<Parameters<typeof openTurnInputRequest>[1]> = {
-      event: input.event,
-      request,
-      requester,
-    };
-    if (responseAuthRequired.has(request.requestId)) entry.responseAuthRequired = true;
-    session = openTurnInputRequest(session, entry);
-  }
-  return session;
+  return step;
 }
 
 /**
@@ -113,79 +100,52 @@ function currentRequester(): SessionAuthContext | null {
   return auth?.principalType === "anonymous" ? null : auth;
 }
 
-/** The requester recorded on the open approval `requestId`. */
-export function openApprovalRequester(
+/** Keys `once()` approvals granted, except those an open approval still asks about. */
+export function grantedApprovalKeys(
   state: SessionStateMap | undefined,
-  requestId: string,
-): SessionAuthContext | null {
-  return readTurnInputRequests(state).get(requestId)?.requester ?? null;
+  approvalKey: (request: InputRequest) => string | undefined,
+): ReadonlySet<string> {
+  const granted = new Set(readTurnState(state).grants);
+  for (const request of readOpenApprovals(state)?.requests ?? []) {
+    if (isApprovalRequest(request)) granted.delete(approvalKey(request) ?? request.action.toolName);
+  }
+  return granted;
 }
 
 // ---------------------------------------------------------------------------
-// Deferred step input
+// Queued input
 // ---------------------------------------------------------------------------
 
 /**
- * Merges any queued follow-up input into the current step input and clears it
- * from session state.
- *
- * Used when the harness has to process a pending tool-approval response first
- * and defer the user's new message to the next internal model step.
+ * Merges queued input into the current step input and clears it from the turn
+ * state. Input queues when it can't run yet: a partial answer, input behind a
+ * response-policy pass, or input behind approved workflow calls.
  */
-export function consumeDeferredStepInput(input: {
+export function consumeQueuedInput(input: {
   readonly input?: StepInput;
   readonly session: HarnessSession;
 }): {
   readonly input?: StepInput;
   readonly session: HarnessSession;
 } {
-  const deferredInput = getDeferredStepInput(input.session);
-
-  if (deferredInput === undefined) {
-    return input;
-  }
-
-  const session = clearDeferredStepInput(input.session);
-
-  if (input.input === undefined) {
-    return {
-      input: deferredInput,
-      session,
-    };
-  }
-
+  const queued = getQueuedInput(input.session);
+  if (queued === undefined) return input;
+  const turn = readTurnState(input.session.state);
+  const session = writeTurnState(input.session, { ...turn, queued: undefined });
   return {
-    input: coalesceTurnInputs(deferredInput, input.input),
+    input: input.input === undefined ? queued : coalesceTurnInputs(queued, input.input),
     session,
   };
 }
 
-export function getDeferredStepInput(session: HarnessSession): StepInput | undefined {
-  return session.state?.[DEFERRED_STEP_INPUT_KEY] as StepInput | undefined;
+export function getQueuedInput(session: {
+  readonly state?: SessionStateMap;
+}): StepInput | undefined {
+  return readTurnState(session.state).queued;
 }
 
-export function queueDeferredStepInput(session: HarnessSession, input: StepInput): HarnessSession {
-  const existing = getDeferredStepInput(session);
-  const deferredInput = existing === undefined ? input : coalesceTurnInputs(existing, input);
-  const state = { ...session.state };
-  state[DEFERRED_STEP_INPUT_KEY] = deferredInput;
-
-  return {
-    ...session,
-    state,
-  };
-}
-
-function clearDeferredStepInput(session: HarnessSession): HarnessSession {
-  if (session.state?.[DEFERRED_STEP_INPUT_KEY] === undefined) {
-    return session;
-  }
-
-  const state = { ...session.state };
-  delete state[DEFERRED_STEP_INPUT_KEY];
-
-  return {
-    ...session,
-    state: Object.keys(state).length > 0 ? state : undefined,
-  };
+export function queueInput(session: HarnessSession, input: StepInput): HarnessSession {
+  const turn = readTurnState(session.state);
+  const queued = turn.queued === undefined ? input : coalesceTurnInputs(turn.queued, input);
+  return writeTurnState(session, { ...turn, queued });
 }
