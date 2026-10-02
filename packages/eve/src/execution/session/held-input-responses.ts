@@ -38,11 +38,12 @@ export async function mapHeldInputResponsesStep(
 }
 
 /**
- * Maps each answer the held turn can't route as sent through the channel's
- * `deliver` hook, and keeps what maps to a `routable` request. Every other
- * answer stays as sent for the turn's own `deliver` call.
+ * Maps each answer the session can't route as sent through the channel's
+ * `deliver` hook, and keeps what maps to a `routable` request: one the held
+ * turn waits on, or one the session relays. Every other answer stays as sent
+ * for the turn's own `deliver` call.
  */
-async function deliverChannelInputResponses(
+export async function deliverChannelInputResponses(
   input: SessionStepState & {
     readonly delivery: DeliverHookPayload;
     readonly routable: (response: InputResponse) => boolean;

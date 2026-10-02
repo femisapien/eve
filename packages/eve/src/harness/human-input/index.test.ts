@@ -6,8 +6,10 @@ import {
   type HumanInputEvent,
   type Intake,
   type Interrupt,
+  type RelayRoute,
+  type RequestAt,
 } from "#harness/human-input/index.js";
-import type { InputRequest } from "#shared/input.js";
+import type { InputRequest, InputResponse } from "#shared/input.js";
 
 const AT = { sequence: 1, stepIndex: 0, turnId: "turn_1" };
 
@@ -114,9 +116,10 @@ describe("HumanInput", () => {
   it("fails a turn that needs a person until that case is rebuilt", () => {
     const { events, humanInput } = HumanInput.read(undefined).interrupt({
       at: AT,
-      requests: [BUDGET],
-      route: { childContinuationToken: "child" },
-      type: "relayed.requested",
+      callIds: ["call-1"],
+      challenges: [],
+      requester: null,
+      type: "authorization.required",
     });
 
     expect(events).toEqual([
@@ -523,5 +526,306 @@ describe("the budget question", () => {
     const closed = asked().intake(answer("continue")).humanInput;
 
     expect(closed.intake(answer("stop")).events).toEqual([]);
+  });
+});
+
+describe("relayed requests", () => {
+  const CHILD_AT = { sequence: 4, stepIndex: 2, turnId: "child_turn_0" };
+  const BOB = { childContinuationToken: "bob-token", runId: "run-bob" };
+
+  function question(requestId: string, allowFreeform = false): InputRequest {
+    return {
+      action: { callId: `call-${requestId}`, input: {}, kind: "tool-call", toolName: "ask" },
+      allowFreeform,
+      kind: "question",
+      options: [
+        { id: "staging", label: "Staging" },
+        { id: "production", label: "Production" },
+      ],
+      prompt: "Where should Bob deploy?",
+      requestId,
+    };
+  }
+
+  function relayed(
+    requests: readonly InputRequest[],
+    route: RelayRoute = BOB,
+    at: RequestAt = CHILD_AT,
+    from: HumanInput = HumanInput.read(undefined),
+  ) {
+    return from.interrupt({ at, requests, route, type: "relayed.requested" });
+  }
+
+  function delivered(
+    responses: readonly InputResponse[],
+    message?: { readonly text: string; readonly delegated: boolean },
+  ): Intake {
+    return { responses, type: "delivered", ...(message !== undefined && { message }) };
+  }
+
+  function forwarded(events: readonly HumanInputEvent[]) {
+    return events.flatMap((event) => (event.type === "answer.forwarded" ? [event] : []));
+  }
+
+  function resolutions(events: readonly HumanInputEvent[]) {
+    return events.flatMap((event) =>
+      event.type === "publish" && event.event.type === "input.resolved" ? [event.event.data] : [],
+    );
+  }
+
+  it("asks at the child's coordinates and holds the turn, leaving the model to the call that asked", () => {
+    const { events, humanInput } = relayed([question("q")]);
+
+    expect(events).toEqual([
+      {
+        event: { data: { ...CHILD_AT, requests: [question("q")] }, type: "input.requested" },
+        relayed: true,
+        type: "publish",
+      },
+      { type: "turn.held" },
+    ]);
+    expect(humanInput.next()).toEqual({ run: "model" });
+    expect(humanInput.openRequestIds()).toEqual(new Set());
+    // The route survives the session store, as it would across steps.
+    expect(HumanInput.read(humanInput.write(undefined)).relayedRequestIds()).toEqual(
+      new Set(["q"]),
+    );
+  });
+
+  it("replaces a child's earlier batch from the same source, withdrawing what it left open", () => {
+    const first = relayed([question("old")]).humanInput;
+    const other = relayed([question("other")], { ...BOB, inputSource: "second" }, CHILD_AT, first);
+
+    const { events, humanInput } = relayed(
+      [question("new")],
+      BOB,
+      { ...CHILD_AT, sequence: 9 },
+      other.humanInput,
+    );
+
+    expect(resolutions(events)).toEqual([
+      {
+        ...CHILD_AT,
+        resolutions: [{ kind: "question", outcome: "cancelled", requestId: "old" }],
+      },
+    ]);
+    expect(humanInput.relayedRequestIds()).toEqual(new Set(["other", "new"]));
+  });
+
+  it("forwards each answer to whoever asked and resolves it there, leaving other answers to the turn", () => {
+    const alice = { childContinuationToken: "alias", childSessionInbox: { sessionId: "alice" } };
+    const bob = { childContinuationToken: "alias", childSessionInbox: { sessionId: "bob" } };
+    const asked = relayed(
+      [question("b")],
+      bob,
+      CHILD_AT,
+      relayed([question("a")], alice).humanInput,
+    );
+
+    const { events, humanInput } = asked.humanInput.intake(
+      delivered([
+        { optionId: "staging", requestId: "a" },
+        { optionId: "production", requestId: "b" },
+        { optionId: "approve", requestId: "own" },
+      ]),
+    );
+
+    expect(forwarded(events)).toEqual([
+      {
+        responses: [{ optionId: "staging", requestId: "a" }],
+        route: alice,
+        type: "answer.forwarded",
+      },
+      {
+        responses: [{ optionId: "production", requestId: "b" }],
+        route: bob,
+        type: "answer.forwarded",
+      },
+    ]);
+    expect(resolutions(events)).toEqual([
+      {
+        ...CHILD_AT,
+        resolutions: [
+          {
+            kind: "question",
+            outcome: "answered",
+            requestId: "a",
+            response: { optionId: "staging", requestId: "a" },
+          },
+        ],
+      },
+      {
+        ...CHILD_AT,
+        resolutions: [
+          {
+            kind: "question",
+            outcome: "answered",
+            requestId: "b",
+            response: { optionId: "production", requestId: "b" },
+          },
+        ],
+      },
+    ]);
+    expect(humanInput.write(undefined)).toBeUndefined();
+  });
+
+  it("takes the first answer to a request, and none once it closed", () => {
+    const asked = relayed([question("q")]).humanInput;
+
+    const first = asked.intake(
+      delivered([
+        { optionId: "staging", requestId: "q" },
+        { optionId: "production", requestId: "q" },
+      ]),
+    );
+
+    expect(forwarded(first.events)[0]?.responses).toEqual([
+      { optionId: "staging", requestId: "q" },
+    ]);
+    expect(
+      first.humanInput.intake(delivered([{ optionId: "production", requestId: "q" }])).events,
+    ).toEqual([]);
+  });
+
+  it("closes a batch without approvals at its first answer, the rest ignored", () => {
+    const asked = relayed([question("q1"), question("q2")]).humanInput;
+
+    const { events, humanInput } = asked.intake(
+      delivered([{ optionId: "staging", requestId: "q1" }]),
+    );
+
+    expect(resolutions(events)[0]?.resolutions).toEqual([
+      expect.objectContaining({ outcome: "answered", requestId: "q1" }),
+      { kind: "question", outcome: "ignored", requestId: "q2" },
+    ]);
+    expect(humanInput.relayedRequestIds()).toEqual(new Set());
+  });
+
+  it("closes a batch with approvals once every approval is answered", () => {
+    const asked = relayed([approval("a1"), approval("a2"), question("q")]).humanInput;
+
+    const partial = asked.intake(delivered([{ optionId: "approve", requestId: "a1" }]));
+    expect(resolutions(partial.events)[0]?.resolutions).toEqual([
+      expect.objectContaining({ outcome: "approved", requestId: "a1" }),
+    ]);
+    expect(partial.humanInput.relayedRequestIds()).toEqual(new Set(["a2", "q"]));
+
+    const complete = partial.humanInput.intake(
+      delivered([{ optionId: "cancel", requestId: "a2" }]),
+    );
+    expect(resolutions(complete.events)[0]?.resolutions).toEqual([
+      expect.objectContaining({ outcome: "denied", requestId: "a2" }),
+      { kind: "question", outcome: "ignored", requestId: "q" },
+    ]);
+    expect(complete.humanInput.relayedRequestIds()).toEqual(new Set());
+  });
+
+  it.each([
+    { answers: true, name: "names an option of the only relayed question", text: "production" },
+    {
+      answers: true,
+      name: "is free text the only relayed question allows",
+      requests: [question("q", true)],
+      text: "Use the canary pool",
+    },
+    {
+      answers: false,
+      name: "names no option",
+      text: "Actually, check the logs first.",
+    },
+    {
+      answers: false,
+      name: "could answer either of two relayed questions",
+      requests: [question("q"), question("q2")],
+      text: "production",
+    },
+    { answers: false, delegated: true, name: "comes from a delegating caller", text: "production" },
+    {
+      answers: false,
+      explicit: [{ optionId: "staging", requestId: "q" }],
+      name: "comes with explicit answers, which win",
+      text: "production",
+    },
+  ])(
+    "a typed reply that $name answers it: $answers",
+    ({ answers, delegated = false, explicit = [], requests = [question("q")], text }) => {
+      // A separate batch from another child, so each question has its own.
+      let asked = HumanInput.read(undefined);
+      for (const [index, request] of requests.entries()) {
+        asked = relayed(
+          [request],
+          { childContinuationToken: `child-${index}` },
+          CHILD_AT,
+          asked,
+        ).humanInput;
+      }
+      // Whatever else is open does not matter.
+      asked = asked.interrupt(requested([approval("own")])).humanInput;
+
+      const { events } = asked.intake(delivered(explicit, { delegated, text }));
+
+      expect(events.some((event) => event.type === "message.answered")).toBe(answers);
+      if (answers) {
+        expect(forwarded(events)[0]?.responses).toEqual([
+          text === "production"
+            ? { optionId: "production", requestId: "q" }
+            : { requestId: "q", text },
+        ]);
+      }
+    },
+  );
+
+  it("cancels this turn when a relayed budget question is answered Stop", () => {
+    const asked = relayed([BUDGET]).humanInput;
+
+    const { events } = asked.intake(delivered([{ optionId: "stop", requestId: BUDGET.requestId }]));
+
+    expect(forwarded(events)).toHaveLength(1);
+    expect(events.at(-1)).toEqual({ type: "turn.cancelled" });
+  });
+
+  it("withdraws what an ended run relayed, and everything on a cancel", () => {
+    const alice = { childContinuationToken: "alice-token", runId: "run-alice" };
+    const asked = relayed(
+      [question("b")],
+      BOB,
+      CHILD_AT,
+      relayed([question("a")], alice).humanInput,
+    );
+
+    const ended = asked.humanInput.intake({ runId: "run-bob", type: "run.ended" });
+    expect(resolutions(ended.events)).toEqual([
+      { ...CHILD_AT, resolutions: [{ kind: "question", outcome: "cancelled", requestId: "b" }] },
+    ]);
+    expect(ended.humanInput.relayedRequestIds()).toEqual(new Set(["a"]));
+
+    const cancelled = ended.humanInput.intake({ type: "cancelled" });
+    expect(resolutions(cancelled.events)).toEqual([
+      { ...CHILD_AT, resolutions: [{ kind: "question", outcome: "cancelled", requestId: "a" }] },
+    ]);
+    expect(cancelled.humanInput.write(undefined)).toBeUndefined();
+  });
+
+  it("tells a run its question is withdrawn, closing it only while still open", () => {
+    const ask = { ...BOB, control: "bob-control" };
+    const asked = relayed([question("q")], ask).humanInput;
+    const withdraw: Intake = {
+      control: "bob-control",
+      requestId: "q",
+      runId: "run-bob",
+      type: "withdraw.requested",
+    };
+
+    const open = asked.intake(withdraw);
+    expect(open.events).toEqual([
+      { control: "bob-control", requestId: "q", type: "question.withdrawn" },
+      expect.objectContaining({ event: expect.objectContaining({ type: "input.resolved" }) }),
+    ]);
+    expect(open.humanInput.relayedRequestIds()).toEqual(new Set());
+
+    const answered = asked.intake(delivered([{ optionId: "staging", requestId: "q" }])).humanInput;
+    expect(answered.intake(withdraw).events).toEqual([
+      { control: "bob-control", requestId: "q", type: "question.withdrawn" },
+    ]);
   });
 });

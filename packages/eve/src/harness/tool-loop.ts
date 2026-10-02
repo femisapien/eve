@@ -2642,7 +2642,10 @@ async function applyHumanInputTransition(input: {
         return { ended: { next, session }, messageAnswered, session };
       }
       case "responder.check":
+      // Relayed requests never reach the turn: steps around it apply these.
       case "answer.forwarded":
+      case "question.withdrawn":
+      case "turn.held":
         throw new Error(`Human input event "${event.type}" is not implemented.`);
     }
   }
