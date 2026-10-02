@@ -1733,10 +1733,13 @@ describe("createToolLoopHarness", () => {
     expect(vi.mocked(ToolLoopAgent)).toHaveBeenCalledTimes(1);
     expect(resumed.next).toBeNull();
     expect(getSessionUsageLimitViolation(resumed.session)).toBeNull();
-    // The answer is not a message for the model.
+    // The answer shows as sent, but it is not a message for the model.
     expect(
       events.filter((event) => event.type === "message.received").map((e) => e.data.message),
-    ).toEqual(["Hi again"]);
+    ).toEqual(["Hi again", "continue"]);
+    expect(resumed.session.history).not.toContainEqual(
+      expect.objectContaining({ content: "continue", role: "user" }),
+    );
   });
 
   it("cancels the turn when the user declines the limit continuation prompt", async () => {
@@ -6671,9 +6674,11 @@ describe("createToolLoopHarness", () => {
     const result = await runStep(session, { message: "Delete the temp directory." });
 
     expect(typeof result.next).toBe("function");
+    // The AI SDK's approval records never reach history; the call and its result do.
     expect(result.session.history).toEqual([
       { content: "Delete the temp directory.", kind: "user" as const, role: "user" },
-      ...responseMessages,
+      { content: [toolCall], role: "assistant" },
+      { content: [responseMessages[1]!.content[1]], role: "tool" },
     ]);
     expect(events.filter((event) => event.type === "input.requested")).toEqual([]);
     expect(events.filter((event) => event.type === "actions.requested")).toHaveLength(1);

@@ -2,7 +2,11 @@ import type { LanguageModel, ModelMessage, UserContent } from "ai";
 
 import type { SessionAuthContext, SessionCapabilities } from "#channel/types.js";
 import type { AlsContext } from "#context/container.js";
-import type { RuntimeIdentity, UnstampedMessageStreamEvent } from "#protocol/message.js";
+import type {
+  RuntimeIdentity,
+  StepStartedStreamEvent,
+  UnstampedMessageStreamEvent,
+} from "#protocol/message.js";
 import type { RuntimeActionResult } from "#shared/action-types.js";
 import type { RuntimeModelReference } from "#runtime/agent/bootstrap.js";
 import type { InputResponse } from "#shared/input.js";
@@ -228,9 +232,9 @@ export interface StepResult {
    */
   readonly settledTurn?: SettledTurn;
   /**
-   * Present when the turn stays open: the model ended it while tasks work, and
-   * it resumes when a task settles; or it waits on a person, and resumes when
-   * input arrives.
+   * Present when the turn stays open: the model ended it while tasks work, or
+   * it waits on a person. It resumes when a task settles, or when the person
+   * answers, steers, or cancels.
    */
   readonly held?: TurnHold;
 }
@@ -305,6 +309,17 @@ export interface ToolLoopHarnessConfig {
    * Omitted in production until an instrumentation runtime opts in.
    */
   readonly instrumentation?: SessionInstrumentation;
+  /** Restores the turn's runtime resources, such as its connections, before approved calls run. */
+  readonly prepareApprovalTurn?: (event: {
+    readonly sequence: number;
+    readonly turnId: string;
+  }) => Promise<void>;
+  /** Restores the step-scoped tools of the step that asked, before its approved calls run. */
+  readonly resolveStepDynamicTools?: (input: {
+    readonly ctx: AlsContext;
+    readonly event: StepStartedStreamEvent;
+    readonly messages: readonly ModelMessage[];
+  }) => Promise<void>;
   readonly dispatchDynamicModelEvent?: (input: {
     readonly ctx: AlsContext;
     readonly event: UnstampedMessageStreamEvent;
