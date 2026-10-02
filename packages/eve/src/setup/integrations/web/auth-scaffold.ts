@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { dirname, join, relative, sep } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
 
 import { appendEnv } from "#setup/append-env.js";
 import { writeTextFile } from "#setup/scaffold/files.js";
@@ -40,7 +40,9 @@ export async function prepareWebAuthScaffold(input: {
       .filter(([path]) => path !== "app/layout.tsx")
       .map(([path, source]) => ({
         path: join(webRoot, path),
-        source,
+        source: source.replaceAll("__EVE_INIT_APP_NAME__", () =>
+          JSON.stringify(basename(input.agentAppRoot)).slice(1, -1),
+        ),
         previous: WEB_APP_TEMPLATE_FILES[path as keyof typeof WEB_APP_TEMPLATE_FILES],
       })),
     { path: channelPath, source: channel, previous: WEB_CHANNEL_TEMPLATES.default },

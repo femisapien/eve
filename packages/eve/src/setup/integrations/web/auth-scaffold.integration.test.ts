@@ -1,6 +1,6 @@
 import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   WEB_APP_TEMPLATE_FILES,
@@ -44,6 +44,12 @@ describe("Web Chat auth scaffold", () => {
       const layout = await readFile(layoutPath, "utf8");
       const write = await prepareWebAuthScaffold(input);
       await write();
+      const signIn = await readFile(
+        join(input.environmentRoot, "apps/web/app/_components/web-chat-auth.tsx"),
+        "utf8",
+      );
+      expect(signIn).toContain(JSON.stringify(basename(input.agentAppRoot)));
+      expect(signIn).not.toContain("__EVE_INIT_APP_NAME__");
       const channel = await readFile(input.channelPath, "utf8");
       const importPath = /import \{ auth \} from "(.+)"/.exec(channel)?.[1];
       expect(importPath).toBeDefined();

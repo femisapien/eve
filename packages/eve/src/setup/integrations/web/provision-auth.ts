@@ -34,7 +34,7 @@ class AppApiError extends Error {
   constructor(status: number, code?: string) {
     super(
       status === 401 || status === 403
-        ? "Vercel denied Web Chat auth setup. Run `vercel login` and check that you can manage apps and environment variables in this team."
+        ? "Vercel denied Web Chat auth setup. Run `vercel login` and check that you can manage apps and environment variables in this team, or ask a team owner to run setup."
         : code === "app_limit_reached"
           ? "This team has reached its Vercel App limit. Remove an unused app in team settings and retry."
           : "Vercel could not configure Web Chat authentication. Retry `eve add channel/web --skip-install`.",
