@@ -20,7 +20,7 @@ import { createInputResolvedEvent, type InputResolvedStreamEvent } from "#protoc
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
-const OPEN_INPUT_REQUESTS_KEY = "eve.runtime.openInputRequests";
+export const OPEN_INPUT_REQUESTS_KEY = "eve.runtime.openInputRequests";
 
 const OPEN_INPUT_REQUEST_KINDS = {
   question: true,

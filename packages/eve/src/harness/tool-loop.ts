@@ -1,4 +1,4 @@
-import { withdrawHeldSignIns } from "#harness/held-requests.js";
+import { intake } from "#harness/hitl/machine.js";
 import { setTimeout as delay } from "node:timers/promises";
 import { GenerationSteering } from "#harness/generation-steering.js";
 import { interruptStreamOnFailure } from "#harness/interruptible-stream.js";
@@ -673,21 +673,14 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     // A new message reaching an open turn steers it: the turn moves past the
     // sign-ins it waits on, and its unanswered approvals resolve below.
     if (turnInput?.message !== undefined || staleConversion.kind === "converted") {
-      const withdrawal = withdrawHeldSignIns(session.state, {
-        emissionState,
-        reason: STEERED_SIGN_IN_REASON,
-      });
-      session = { ...session, state: withdrawal.state };
-      if (emit) for (const event of withdrawal.events) await emit(event);
-      if (withdrawal.withdrawn.length > 0) {
-        const names = [...new Set(withdrawal.withdrawn.map((challenge) => challenge.name))];
-        effectiveStepInput = {
-          ...effectiveStepInput,
-          context: [
-            ...(effectiveStepInput?.context ?? []),
-            `Sign-in to ${names.join(", ")} was cancelled because the user sent a new message instead. Ask to sign in again only if the new message still needs it.`,
-          ],
-        };
+      const steered = intake(session.state, { at: emissionState, kind: "steer" });
+      session = { ...session, state: steered.state };
+      for (const effect of steered.effects) {
+        if (effect.kind === "event" && emit) await emit(effect.event);
+        if (effect.kind === "note") {
+          const context = [...(effectiveStepInput?.context ?? []), effect.text];
+          effectiveStepInput = { ...effectiveStepInput, context };
+        }
       }
     }
     const preambleStepInput =
@@ -2738,8 +2731,6 @@ async function holdTurnForRequest(
   );
   return next;
 }
-
-const STEERED_SIGN_IN_REASON = "Cancelled because a new message arrived.";
 
 /** Appended to the model-facing description of every tool with `endsTurn: true`. */
 const ENDS_TURN_TOOL_NOTE =

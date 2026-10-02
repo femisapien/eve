@@ -301,7 +301,7 @@ export const AuthorizationHookKey = new ContextKey<string>("eve.authorizationHoo
 // Session state persistence (internal — used by framework only)
 // ---------------------------------------------------------------------------
 
-const PENDING_AUTHORIZATION_KEY = "eve.runtime.pendingAuthorization";
+export const PENDING_AUTHORIZATION_KEY = "eve.runtime.pendingAuthorization";
 
 export interface PendingAuthorizationState {
   readonly challenges: readonly AuthorizationChallenge[];

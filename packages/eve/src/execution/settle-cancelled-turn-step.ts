@@ -1,3 +1,5 @@
+import type { ModelMessage } from "ai";
+
 import {
   commitCancelledCoordinationBatch,
   getPendingCoordinationBatch,
@@ -14,10 +16,8 @@ import {
 } from "#execution/session/state-delta.js";
 import { relayWithdrawnRequests } from "#execution/tools/workflow/withdraw-step.js";
 import { emitCancelledTurn } from "#harness/cancelled-turn-emission.js";
-import { withdrawHeldSignIns } from "#harness/held-requests.js";
-import { cancelOpenApprovals } from "#harness/hitl/approval-input-requests.js";
-import type { HarnessModelMessage } from "#harness/messages.js";
-import { withdrawTurnInputRequests } from "#harness/open-input-requests.js";
+import { adoptHitlState, intake } from "#harness/hitl/machine.js";
+import { validateHarnessModelMessages, type HarnessModelMessage } from "#harness/messages.js";
 import { getHarnessEmissionState, setHarnessEmissionState } from "#harness/emission.js";
 import { removeBlockingWorkflowToolRuns } from "#harness/workflow-tool-runs.js";
 import {
@@ -26,8 +26,6 @@ import {
   takeSessionUsageDelta,
 } from "#harness/turn-tag-state.js";
 import type { TokenUsage } from "#shared/token-usage.js";
-
-const CANCELLED_REASON = "Cancelled.";
 
 export interface CancelledTurnSettleResult {
   readonly serializedContext: Record<string, unknown>;
@@ -73,35 +71,31 @@ export async function settleCancelledTurn(
   const durableState = step.durableSession.state;
   // Every request the turn held ends with it: its sign-ins, approvals, and budget question.
   const emissionState = getHarnessEmissionState(durableState);
-  const withdraw = { emissionState, reason: CANCELLED_REASON };
-  const withdrawal = withdrawHeldSignIns(durableState, withdraw);
-  const turnRequests = withdrawTurnInputRequests(step.durableSession).events;
+  const cancelled = intake(durableState, { at: emissionState, kind: "cancel" });
   const { published, result: usage } = await publishFromSessionStep(step, {
     origin: "own",
     async publish(emit) {
-      for (const event of withdrawal.events) await emit(event);
-      for (const event of turnRequests) await emit(event);
+      for (const effect of cancelled.effects) {
+        if (effect.kind === "event") await emit(effect.event);
+      }
       return await emitCancelledTurn(emit, emissionState, getSessionUsage(step.durableSession));
     },
     updateSession(baseSession, emissionState) {
-      const session = {
-        ...baseSession,
-        state: withdrawHeldSignIns(baseSession.state, withdraw).state,
-      };
+      const session = { ...baseSession, state: adoptHitlState(baseSession.state, cancelled.state) };
       const owningTurnId =
         getPendingCoordinationBatch(session.state)?.event.turnId ??
         input.sessionState.emissionState.turnId;
+      const committed = commitCancelledCoordinationBatch(
+        removeBlockingWorkflowToolRuns({ ...session, outputSchema: undefined }, owningTurnId),
+      );
+      // After the coordination batch, which owns an assistant response it
+      // shares with approvals raised beside its calls.
+      const history: ModelMessage[] = [...committed.history];
+      for (const effect of cancelled.effects) {
+        if (effect.kind === "history") history.push(effect.message);
+      }
       const cancelledSession = setHarnessEmissionState(
-        // The turn's own requests end with it. Approvals first write a not-run
-        // result for each waiting call, after the coordination batch, which
-        // owns an assistant response it shares with approvals beside its calls.
-        withdrawTurnInputRequests(
-          cancelOpenApprovals(
-            commitCancelledCoordinationBatch(
-              removeBlockingWorkflowToolRuns({ ...session, outputSchema: undefined }, owningTurnId),
-            ),
-          ),
-        ).session,
+        { ...committed, history: validateHarnessModelMessages(history) },
         emissionState,
       );
       if (!input.reportUsage || getTurnUsageState(session.state) === undefined) {

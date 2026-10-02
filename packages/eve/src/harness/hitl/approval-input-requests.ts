@@ -27,7 +27,6 @@ import type {
   ToolResponsePart,
 } from "#harness/hitl/pending-input-resolution.js";
 import type { HarnessSession } from "#harness/types.js";
-import { validateHarnessModelMessages } from "#harness/messages.js";
 
 const APPROVED_TOOLS_KEY = "eve.runtime.hitl.approvedTools";
 const TOOL_EXECUTION_DENIED_CODE = "TOOL_EXECUTION_DENIED";
@@ -124,18 +123,19 @@ const CANCELLED_APPROVAL_REASON = "Cancelled before anyone answered.";
  * Withdraws the open tool approvals when their turn is cancelled. Each held
  * call goes into history with a not-run result, so no call is left without one.
  */
-export function cancelOpenApprovals(session: HarnessSession): HarnessSession {
-  const approvals = readOpenApprovals(session.state);
-  if (approvals === undefined) return session;
-  const messages: ModelMessage[] = [...session.history];
+/**
+ * The not-run results the open approvals' waiting calls get when their turn is
+ * cancelled, as one tool message; `undefined` when no approval is open.
+ */
+export function cancelledApprovalResults(state: HarnessSession["state"]): ModelMessage | undefined {
+  const approvals = readOpenApprovals(state);
+  if (approvals === undefined) return undefined;
+  const messages: ModelMessage[] = [];
   appendResolvedBatchTranscript(
     messages,
     buildApprovalBatchToolResponseParts(approvals, [], CANCELLED_APPROVAL_REASON),
   );
-  return {
-    ...closeApprovals(session),
-    history: validateHarnessModelMessages(messages),
-  };
+  return messages[0];
 }
 
 /** Returns the approval keys recorded when earlier approvals resolved. */
