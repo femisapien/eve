@@ -126,6 +126,16 @@
  *             only the module names its session state key, so every approval,
  *             sign-in, budget question, and relayed request goes through
  *             `HumanInput` and nothing else reads or changes that state.
+ *   rule 50 — Human input effect executors live in one place. The I/O that
+ *             carries out what `HumanInput` reports (running approved calls
+ *             and response policies, forwarding answers, withdrawing a run's
+ *             question, mapping channel answer ids) lives only in
+ *             `harness/human-input-effects/` and `execution/human-input-effects/`.
+ *             Outside them, code imports only their appliers, and only they
+ *             and the boundary name the events that need I/O. Files there
+ *             never branch on request kinds or outcomes: the boundary decides,
+ *             they do the I/O and report back. Rule 49 already limits their
+ *             imports from `harness/human-input/` to its `index.ts`.
  *
  * Baselines for rules with pre-existing violations live in
  * `guard-invariants-baseline.json`. Counts and allowlists in that file
@@ -246,6 +256,7 @@ function isTsLike(relPath) {
  *   rule47: Violation[];
  *   rule48: Violation[];
  *   rule49: Violation[];
+ *   rule50: Violation[];
  *   symlinks: string[];
  * }} state
  */
@@ -280,6 +291,7 @@ async function scanRepo(state) {
     checkRule47(posix, lines, state.rule47);
     checkRule48(posix, lines, state.rule48);
     checkRule49(posix, lines, state.rule49);
+    checkRule50(posix, lines, state.rule50);
   }
 }
 
@@ -549,6 +561,71 @@ function checkRule49(posix, lines, violations) {
         file: posix,
         line: idx + 1,
         message: `names the human-input state key "${HUMAN_INPUT_STATE_KEY}" outside harness/human-input/. Read and write it through HumanInput.read and HumanInput.write.`,
+      });
+    }
+  });
+}
+
+// ---------- Rule 50: human input effect executors live in one place ----------
+
+const HUMAN_INPUT_EFFECTS_DIRS = [
+  "packages/eve/src/harness/human-input-effects/",
+  "packages/eve/src/execution/human-input-effects/",
+];
+// The appliers, and the session workflow's entry to the steps that apply.
+const HUMAN_INPUT_EFFECTS_ENTRY_RE =
+  /(?:harness\/human-input-effects\/apply|execution\/human-input-effects\/(?:apply|workflow))\.js["']/;
+const HUMAN_INPUT_EFFECTS_IMPORT_RE =
+  /\b(?:from|import)\s*\(?\s*["'][^"']*\/human-input-effects\/[^"']+["']/;
+// Events that need I/O to carry out; naming one is carrying it out.
+const HUMAN_INPUT_IO_EVENT_RE =
+  /["'](?:calls\.approved|responder\.check|answer\.forwarded|question\.withdrawn|sign-in\.completed)["']/;
+const HUMAN_INPUT_EFFECT_DECISIONS = [
+  '"tool-approval"',
+  '"session-limit"',
+  '"approved"',
+  '"denied"',
+  "outcome ===",
+];
+
+/** @param {string} posix @param {string[]} lines @param {Violation[]} violations */
+function checkRule50(posix, lines, violations) {
+  if (
+    !posix.startsWith("packages/eve/src/") ||
+    /\.(?:test|integration\.test|scenario\.test)\.ts$/.test(posix)
+  )
+    return;
+  if (HUMAN_INPUT_EFFECTS_DIRS.some((dir) => posix.startsWith(dir))) {
+    lines.forEach((line, idx) => {
+      const decision = HUMAN_INPUT_EFFECT_DECISIONS.find((needle) => line.includes(needle));
+      if (decision === undefined) return;
+      violations.push({
+        rule: 50,
+        file: posix,
+        line: idx + 1,
+        message: `branches on human input (${decision}) in an effect executor. Decide in harness/human-input/ and have the executor only do the I/O for the event it is given and report the result back as an intake.`,
+      });
+    });
+    return;
+  }
+  if (posix.startsWith(HUMAN_INPUT_DIR)) return;
+  lines.forEach((line, idx) => {
+    if (HUMAN_INPUT_EFFECTS_IMPORT_RE.test(line) && !HUMAN_INPUT_EFFECTS_ENTRY_RE.test(line)) {
+      violations.push({
+        rule: 50,
+        file: posix,
+        line: idx + 1,
+        message:
+          "imports a human input effect executor directly. Go through its layer's applier (human-input-effects/apply.ts, or execution/human-input-effects/workflow.ts from the session workflow) so one place carries out what HumanInput reports.",
+      });
+    }
+    if (HUMAN_INPUT_IO_EVENT_RE.test(line)) {
+      violations.push({
+        rule: 50,
+        file: posix,
+        line: idx + 1,
+        message:
+          "names a human input event that needs I/O outside the effects directories. Carry it out in harness/human-input-effects/ or execution/human-input-effects/, the only callers of that I/O.",
       });
     }
   });
@@ -1584,6 +1661,7 @@ async function main() {
     rule47: /** @type {Violation[]} */ ([]),
     rule48: /** @type {Violation[]} */ ([]),
     rule49: /** @type {Violation[]} */ ([]),
+    rule50: /** @type {Violation[]} */ ([]),
     symlinks: /** @type {string[]} */ ([]),
   };
 
@@ -1699,6 +1777,7 @@ async function main() {
   violations.push(...state.rule47);
   violations.push(...state.rule48);
   violations.push(...state.rule49);
+  violations.push(...state.rule50);
 
   if (violations.length === 0) {
     process.stdout.write("[eve:guard:invariants] ok — all mechanical lints passed.\n");
