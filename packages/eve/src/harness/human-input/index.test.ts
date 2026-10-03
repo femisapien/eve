@@ -1070,8 +1070,8 @@ describe("approval response policies", () => {
 
     const { events, humanInput } = answered.humanInput.intake({
       candidateId: carolsCandidate,
+      ran: { kind: "returned", value: { status: "allowed" } },
       type: "responder.checked",
-      verdict: "allowed",
     });
 
     expect(candidates(events)).toEqual([
@@ -1093,8 +1093,8 @@ describe("approval response policies", () => {
     expect(
       humanInput.intake({
         candidateId: bobsCandidate,
+        ran: { kind: "returned", value: { status: "allowed" } },
         type: "responder.checked",
-        verdict: "allowed",
       }).events,
     ).toEqual([]);
   });
@@ -1104,8 +1104,8 @@ describe("approval response policies", () => {
 
     const { events } = answered.humanInput.intake({
       candidateId: checks(answered.events)[0]!.candidateId,
+      ran: { kind: "returned", value: { status: "allowed" } },
       type: "responder.checked",
-      verdict: "allowed",
     });
 
     expect(published(events, "approval.settled")[0]?.data.outcome).toBe("cancelled");
@@ -1120,9 +1120,8 @@ describe("approval response policies", () => {
     const firstId = checks(first.events)[0]!.candidateId;
     const rejected = first.humanInput.intake({
       candidateId: firstId,
-      reason: "Wrong responder.",
+      ran: { kind: "returned", value: { reason: "Wrong responder.", status: "rejected" } },
       type: "responder.checked",
-      verdict: "rejected",
     });
 
     expect(candidates(rejected.events)).toEqual([
@@ -1155,8 +1154,8 @@ describe("approval response policies", () => {
     const answered = guarded().intake(answerAs(BOB));
     const { events, humanInput } = answered.humanInput.intake({
       candidateId: checks(answered.events)[0]!.candidateId,
+      ran: { kind: "threw" },
       type: "responder.checked",
-      verdict: "failed",
     });
 
     expect(candidates(events)).toEqual([
@@ -1174,9 +1173,11 @@ describe("approval response policies", () => {
     const candidateId = checks(answered.events)[0]!.candidateId;
     const signIn = answered.humanInput.intake({
       candidateId,
-      challenges: [challenge("r1", { name: "reviewer", principalId: "bob", requester: BOB })],
+      ran: {
+        challenges: [challenge("r1", { name: "reviewer", principalId: "bob", requester: BOB })],
+        kind: "threw",
+      },
       type: "responder.checked",
-      verdict: "authorization-required",
     });
 
     expect(published(signIn.events, "authorization.required")[0]?.data).toMatchObject({
@@ -1202,9 +1203,8 @@ describe("approval response policies", () => {
     const candidateId = checks(answered.events)[0]!.candidateId;
     const signIn = answered.humanInput.intake({
       candidateId,
-      challenges: [challenge("r1", { name: "reviewer" })],
+      ran: { challenges: [challenge("r1", { name: "reviewer" })], kind: "threw" },
       type: "responder.checked",
-      verdict: "authorization-required",
     }).humanInput;
 
     expect(signIn.intake({ now: NOW + 10 * 60_000 - 1, type: "time" }).events).toEqual([]);
@@ -1230,9 +1230,8 @@ describe("approval response policies", () => {
     const candidateId = checks(answered.events)[0]!.candidateId;
     const signIn = answered.humanInput.intake({
       candidateId,
-      challenges: [challenge("r1", { name: "reviewer" })],
+      ran: { challenges: [challenge("r1", { name: "reviewer" })], kind: "threw" },
       type: "responder.checked",
-      verdict: "authorization-required",
     }).humanInput;
 
     for (const intake of [

@@ -7,7 +7,7 @@
  * withdraws what nobody can answer anymore.
  */
 import { resolveTextToResponse } from "#channel/resolve-text.js";
-import { SESSION_LIMIT_STOP_OPTION_ID } from "#harness/session-limit-continuation.js";
+import { SESSION_LIMIT_STOP_OPTION_ID } from "#harness/human-input/budget-question.js";
 import {
   createInputRequestedEvent,
   createInputResolvedEvent,

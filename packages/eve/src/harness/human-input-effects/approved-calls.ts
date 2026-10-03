@@ -1,14 +1,20 @@
 import type { ModelMessage, ToolResultPart, ToolSet, TypedToolResult } from "ai";
 
 import { createRuntimeToolResultFromValue } from "#harness/action-result-helpers.js";
-import { isInlineAuthorizationToolResult } from "#harness/inline-tool-authorization.js";
+import type { RequestAt } from "#harness/human-input/index.js";
+import {
+  findInlineAuthorizationSignals,
+  isInlineAuthorizationToolResult,
+} from "#harness/inline-tool-authorization.js";
 import { emitNestedToolActions } from "#harness/nested-actions.js";
 import { normalizeToolModelOutput } from "#harness/tool-model-output.js";
 import { projectDeltaPresentation, projectResultPresentation } from "#harness/tool-presentation.js";
 import { buildToolSet, recheckApprovedCall } from "#harness/tools.js";
 import { throwIfTurnAborted } from "#harness/turn-cancellation.js";
-import type { HarnessEmitFn, HarnessToolMap } from "#harness/types.js";
+import type { HarnessEmitFn, HarnessSession, HarnessToolMap } from "#harness/types.js";
+import { collectDeferredCalls } from "#harness/workflow-dispatch.js";
 import { createActionPartialEvent, createActionResultEvent } from "#protocol/message.js";
+import type { RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
 import { isAsyncIterable } from "#shared/async-iterable.js";
 import { toError } from "#shared/errors.js";
 import type { InputRequest } from "#shared/input.js";
@@ -21,7 +27,7 @@ import { parseJsonObject } from "#shared/json.js";
  * first: a call it now refuses doesn't run and reports `rejected`. A call that
  * returns a sign-in gets no result here; `signIns` lists it.
  */
-export async function runApprovedCalls(input: {
+async function runApprovedCalls(input: {
   readonly abortSignal: AbortSignal | undefined;
   /** Where the calls' events sit in the stream: the step that asked. */
   readonly at: { readonly sequence: number; readonly stepIndex: number; readonly turnId: string };
@@ -144,4 +150,71 @@ export async function runApprovedCalls(input: {
     });
   }
   return { results, signIns };
+}
+
+/** Approved calls that run as runtime work: the step parks on them as a coordination batch. */
+export interface ApprovedRuntimeCalls {
+  readonly at: RequestAt;
+  readonly tasks: readonly RuntimeWorkflowTaskRequest[];
+}
+
+/** What running approved calls left for the applier to report or park on. */
+export interface ApprovedWork {
+  readonly results: readonly ToolResultPart[];
+  readonly runtimeCalls?: ApprovedRuntimeCalls;
+  readonly session: HarnessSession;
+  readonly signIns?: ReturnType<typeof findInlineAuthorizationSignals>;
+}
+
+/**
+ * Runs the calls a person approved, with the tools of the step that asked:
+ * local calls run now, and workflow calls become runtime work the step parks on.
+ */
+export async function runApprovedWork(input: {
+  readonly abortSignal: AbortSignal | undefined;
+  readonly at: RequestAt;
+  readonly emit: HarnessEmitFn | undefined;
+  readonly messages: readonly ModelMessage[];
+  readonly requests: readonly InputRequest[];
+  readonly session: HarnessSession;
+  readonly tools: HarnessToolMap;
+}): Promise<ApprovedWork> {
+  const { at, session, tools } = input;
+  for (const request of input.requests) {
+    if (!tools.has(request.action.toolName)) {
+      throw new Error(
+        "The approved tool is no longer available. Request a new tool call and approval.",
+      );
+    }
+  }
+  const runsInRuntime = (request: InputRequest) =>
+    tools.get(request.action.toolName)?.workflowId !== undefined;
+  const local = await runApprovedCalls({
+    abortSignal: input.abortSignal,
+    at,
+    emit: input.emit,
+    messages: input.messages,
+    requests: input.requests.filter((request) => !runsInRuntime(request)),
+    tools,
+  });
+  const runtime = input.requests.filter(runsInRuntime);
+  const deferred =
+    runtime.length === 0
+      ? undefined
+      : collectDeferredCalls({
+          session,
+          toolCalls: runtime.map(({ action }) => ({
+            input: action.input,
+            toolCallId: action.callId,
+            toolName: action.toolName,
+          })),
+          tools,
+          turnId: at.turnId,
+        });
+  return {
+    results: local.results,
+    runtimeCalls: deferred === undefined ? undefined : { at, tasks: deferred.workflowRequests },
+    session: deferred?.session ?? session,
+    signIns: findInlineAuthorizationSignals(local.signIns),
+  };
 }

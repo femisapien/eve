@@ -61,13 +61,11 @@ import {
   createContextClearedEvent,
   createResultCompletedEvent,
   createSessionWaitingEvent,
-  createStepStartedEvent,
   createTurnWaitingEvent,
   type UnstampedMessageStreamEvent,
 } from "#protocol/message.js";
 import type { RuntimeTraceContext } from "#protocol/message.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
-import type { InputRequest } from "#shared/input.js";
 import {
   hydrateSandboxAttachments,
   stageAttachmentsToSandbox,
@@ -83,7 +81,6 @@ import { collectDeferredCalls } from "#harness/workflow-dispatch.js";
 import { estimateTokens } from "#harness/token-estimate.js";
 import {
   accumulateTurnUsage,
-  bumpSessionRuntimeUsageLimits,
   getSessionUsage,
   getTurnUsageState,
   setTurnUsageState,
@@ -116,13 +113,17 @@ import {
 } from "#harness/turn-client-context.js";
 import type { InstrumentationAttempt, InstrumentationStepScope } from "#instrumentation/runtime.js";
 import {
+  approvalsRequested,
   HumanInput,
-  type HumanInputEvent,
-  type Intake,
-  type Interrupt,
   type RequestAt,
-  type Transition,
+  withoutApprovalParts,
 } from "#harness/human-input/index.js";
+import {
+  applyHumanInput,
+  applyStepArrivals,
+  holdForInput,
+  type StepEffects,
+} from "#harness/human-input-effects/apply.js";
 import {
   coalesceTurnInputs,
   createFrameworkUserMessage,
@@ -138,18 +139,7 @@ import {
   validateHarnessModelMessages,
 } from "#harness/messages.js";
 import { normalizeProviderToolHistory } from "#harness/provider-tool-history.js";
-import {
-  findInlineAuthorizationSignals,
-  withoutCalls,
-} from "#harness/inline-tool-authorization.js";
-import { checkResponder } from "#harness/response-policy.js";
-import {
-  PendingAuthorizationResultKey,
-  ReceivedAuthorizationCallbacksKey,
-} from "#harness/authorization.js";
-import { runApprovedCalls } from "#harness/approved-calls.js";
-import type { RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
-import { readAnswerText } from "#internal/input-text.js";
+import { findInlineAuthorizationSignals } from "#harness/inline-tool-authorization.js";
 import {
   appendTaskContext,
   isTaskTool,
@@ -169,12 +159,7 @@ import {
   extractUpstreamRejectionMessage,
 } from "#harness/model-call-error.js";
 import { summarizeKnownError, type SemanticErrorSummary } from "#harness/semantic-errors/index.js";
-import {
-  isTurnCancellation,
-  SessionLimitDeclinedError,
-  throwIfTurnAborted,
-  TurnCancelledError,
-} from "#harness/turn-cancellation.js";
+import { isTurnCancellation, throwIfTurnAborted } from "#harness/turn-cancellation.js";
 import type { JsonObject, JsonValue } from "#shared/json.js";
 import { extractWorkflowStreamWriteErrorDetails } from "#harness/workflow-stream-error.js";
 import { getAdvertisedTools } from "#harness/advertised-tools.js";
@@ -641,62 +626,18 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
           : coalesceTurnInputs(resolvedCoordination.followingInput, input),
     );
     const auth = store?.get(AuthKey) ?? null;
-    let messageAnswered = false;
-    let approvedRuntimeCalls: ApprovedRuntimeCalls | undefined;
-    const applyHumanInput = async (transition: Transition): Promise<StepResult | undefined> => {
-      const applied = await applyHumanInputTransition({
-        emit,
-        emissionState,
-        hasDelegatedCaller,
-        checkResponder: async (check, current) =>
-          await checkResponder(
-            check,
-            await prepareStepTools({ at: check.at, config, projectHistory, session: current }),
-          ),
-        runApproved: (approved) =>
-          runApprovedWork({
-            ...approved,
-            abortSignal: config.abortSignal,
-            config,
-            emit,
-            projectHistory,
-          }),
-        session,
-        transition,
-      });
-      session = applied.session;
-      messageAnswered ||= applied.messageAnswered;
-      approvedRuntimeCalls ??= applied.runtimeCalls;
-      return applied.ended;
-    };
-    for (const intake of collectHumanInputIntakes(accepted.input, session, auth)) {
-      const ended = await applyHumanInput(HumanInput.read(session.state).intake(intake));
-      if (ended !== undefined) return ended;
-    }
-    const turnInput = messageAnswered ? withoutMessage(accepted.input) : accepted.input;
-    if (approvedRuntimeCalls !== undefined) {
-      // The turn's message is read after the approved calls' results; its
-      // answers were already applied.
-      const following = withoutAnswers(turnInput);
-      return {
-        next: null,
-        session: setHarnessEmissionState(
-          setPendingCoordinationBatch({
-            event: approvedRuntimeCalls.at,
-            followingInput: following?.message === undefined ? undefined : following,
-            responseMessages: [],
-            session,
-            tasks: approvedRuntimeCalls.tasks,
-          }),
-          advanceStep(emissionState),
-        ),
-      };
-    }
-    // A message that answers nothing still joins history, so it is read once
-    // the turn runs again; the hold before the model call keeps it.
-    if ("held" in HumanInput.read(session.state).next() && turnInput?.message === undefined) {
-      return await holdForInput({ emit, emissionState, session });
-    }
+    const humanInputEffects: StepEffects = { config, projectHistory };
+    const arrived = await applyStepArrivals({
+      auth,
+      effects: humanInputEffects,
+      emit,
+      emissionState,
+      session,
+      stepInput: accepted.input,
+    });
+    if ("result" in arrived) return arrived.result;
+    session = arrived.session;
+    const { turnInput } = arrived;
     const turnMessages =
       resolvedCoordination.outcome === "resolved" && !commitsCoordination
         ? resolvedCoordination.messages
@@ -1428,14 +1369,18 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     const limit = await enforceSessionUsageLimit({ config, emit, emissionState, session });
     if (limit.kind === "failed") return limit.result;
     if (limit.kind === "ask") {
-      const ended = await applyHumanInput(
-        HumanInput.read(session.state).interrupt({
+      const applied = await applyHumanInput({
+        effects: humanInputEffects,
+        emit,
+        session,
+        transition: HumanInput.read(session.state).interrupt({
           at: requestAt(emissionState),
           request: limit.request,
           type: "budget.exceeded",
         }),
-      );
-      if (ended !== undefined) return ended;
+      });
+      session = applied.session;
+      if (applied.ended !== undefined) return applied.ended;
     }
     if ("held" in HumanInput.read(session.state).next()) {
       // The held history keeps this step's messages, so a message sent
@@ -1687,7 +1632,6 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
         auth,
         coordinationTools: modelCallCoordinationTools,
         endsTurnTools: modelCallEndsTurnTools,
-        hasDelegatedCaller,
       });
     } catch (error) {
       throwIfTurnAborted(config.abortSignal);
@@ -2260,7 +2204,6 @@ async function handleStepResult(input: {
   readonly coordinationTools: HarnessToolMap;
   /** Tools that can end the turn in this step, with their `endsTurn` option. */
   readonly endsTurnTools: EndsTurnTools;
-  readonly hasDelegatedCaller: boolean;
   readonly session: HarnessSession;
 }): Promise<StepResult> {
   const { config, emit, promptMessages, result, runStep } = input;
@@ -2316,30 +2259,25 @@ async function handleStepResult(input: {
   );
 
   // A step whose calls need a person ends here: human input decides what follows.
-  const humanInput = (interrupt: Interrupt) =>
-    applyHumanInputTransition({
-      emit,
-      emissionState,
-      hasDelegatedCaller: input.hasDelegatedCaller,
-      session: baseSession,
-      transition: HumanInput.read(baseSession.state).interrupt(interrupt),
-    });
   const approvalRequests = extractToolApprovalInputRequests({
     content: result.content ?? [],
     excludedCallIds: invalidInputToolCallIds,
   });
   if (approvalRequests.length > 0) {
-    const approvalTools = buildResponseAuthorizationTools({
-      authoredTools: config.tools,
-      context: contextStorage.getStore(),
-    });
-    const applied = await humanInput({
-      approvalKeys: approvalKeys(approvalTools, approvalRequests),
-      at: requestAt(emissionState),
-      requester: input.auth,
-      requests: approvalRequests,
-      responsePolicyRequestIds: responsePolicyRequestIds(approvalTools, approvalRequests),
-      type: "approvals.requested",
+    const applied = await applyHumanInput({
+      emit,
+      session: baseSession,
+      transition: HumanInput.read(baseSession.state).interrupt(
+        approvalsRequested({
+          at: requestAt(emissionState),
+          requester: input.auth,
+          requests: approvalRequests,
+          tools: buildResponseAuthorizationTools({
+            authoredTools: config.tools,
+            context: contextStorage.getStore(),
+          }),
+        }),
+      ),
     });
     if (applied.ended !== undefined) return applied.ended;
     baseSession = applied.session;
@@ -2347,10 +2285,8 @@ async function handleStepResult(input: {
   const signIns = findInlineAuthorizationSignals(result.toolResults);
   if (signIns !== undefined) {
     // The step's messages join history here, so the calls that asked can leave it.
-    const applied = await applyHumanInputTransition({
+    const applied = await applyHumanInput({
       emit,
-      emissionState,
-      hasDelegatedCaller: input.hasDelegatedCaller,
       session: {
         ...baseSession,
         history: validateHarnessModelMessages([...promptMessages, ...responseMessages]),
@@ -2510,325 +2446,6 @@ function requestAt(emissionState: ReturnType<typeof getHarnessEmissionState>): R
     stepIndex: emissionState.stepIndex,
     turnId: emissionState.turnId,
   };
-}
-
-/**
- * What arrived for the turn, in the form human input reads it. Answers always
- * go to it; a message goes to it only while the turn waits on a person.
- */
-function collectHumanInputIntakes(
-  input: StepInput | undefined,
-  session: HarnessSession,
-  auth: SessionAuthContext | null,
-): Intake[] {
-  const now = Date.now();
-  // Time goes first, so an answer that expired never runs its policy.
-  const intakes: Intake[] = [{ now, type: "time" }];
-  const callbacks = contextStorage.getStore()?.get(ReceivedAuthorizationCallbacksKey) ?? [];
-  for (const { attemptId, callback, connectionName } of callbacks) {
-    intakes.push(
-      callback === undefined
-        ? { attemptId, connectionName, outcome: "failed", type: "authorization.completed" }
-        : {
-            attemptId,
-            callback,
-            connectionName,
-            outcome: "authorized",
-            type: "authorization.completed",
-          },
-    );
-  }
-  if ((input?.inputResponses?.length ?? 0) > 0) {
-    intakes.push({ now, responder: auth, responses: input!.inputResponses!, type: "answered" });
-  }
-  for (const attributed of input?.attributedInputResponses ?? []) {
-    intakes.push({
-      now,
-      responder: attributed.auth,
-      responses: [attributed.response],
-      type: "answered",
-    });
-  }
-  if (input?.message !== undefined && "held" in HumanInput.read(session.state).next()) {
-    intakes.push({
-      sender: input.messageAuth ?? auth,
-      text: readAnswerText(input) ?? "",
-      type: "message",
-    });
-  }
-  return intakes;
-}
-
-/** Approved calls that run as runtime work: the step parks on them as a coordination batch. */
-interface ApprovedRuntimeCalls {
-  readonly at: RequestAt;
-  readonly tasks: readonly RuntimeWorkflowTaskRequest[];
-}
-
-/** What running approved calls left for the applier to report or park on. */
-interface ApprovedWork {
-  readonly results: readonly ToolResultPart[];
-  readonly runtimeCalls?: ApprovedRuntimeCalls;
-  readonly session: HarnessSession;
-  readonly signIns?: ReturnType<typeof findInlineAuthorizationSignals>;
-}
-
-/**
- * Applies what human input reported. Each event has one meaning here, so the
- * harness decides nothing about a person's input. Returns the step's result
- * when an event ended the turn.
- */
-async function applyHumanInputTransition(input: {
-  readonly emit?: ToolLoopHarnessConfig["handleEvent"];
-  readonly emissionState: ReturnType<typeof getHarnessEmissionState>;
-  readonly hasDelegatedCaller: boolean;
-  /** Absent where no answer can arrive, such as where a model step asks. */
-  readonly runApproved?: (approved: {
-    readonly at: RequestAt;
-    readonly requests: readonly InputRequest[];
-    readonly session: HarnessSession;
-  }) => Promise<ApprovedWork>;
-  /** Absent where no answer can arrive, as for `runApproved`. */
-  readonly checkResponder?: (
-    check: Extract<HumanInputEvent, { readonly type: "responder.check" }>,
-    session: HarnessSession,
-  ) => Promise<Extract<Intake, { readonly type: "responder.checked" }>>;
-  readonly session: HarnessSession;
-  readonly transition: Transition;
-}): Promise<{
-  readonly ended?: StepResult;
-  readonly messageAnswered: boolean;
-  readonly runtimeCalls?: ApprovedRuntimeCalls;
-  readonly session: HarnessSession;
-}> {
-  const { emit, transition } = input;
-  let session: HarnessSession = {
-    ...input.session,
-    state: transition.humanInput.write(input.session.state),
-  };
-  let messageAnswered = false;
-  let runtimeCalls: ApprovedRuntimeCalls | undefined;
-  const applyNested = async (nested: Transition) => {
-    const applied = await applyHumanInputTransition({ ...input, session, transition: nested });
-    session = applied.session;
-    runtimeCalls ??= applied.runtimeCalls;
-    return applied.ended;
-  };
-  for (const event of transition.events) {
-    switch (event.type) {
-      case "publish":
-        await emit?.(event.event);
-        continue;
-      case "history.appended":
-        session = {
-          ...session,
-          history: validateHarnessModelMessages([...session.history, event.message]),
-        };
-        continue;
-      case "note":
-        session = {
-          ...session,
-          history: validateHarnessModelMessages([
-            ...session.history,
-            createFrameworkUserMessage("context.instruction", event.text),
-          ]),
-        };
-        continue;
-      case "message.answered":
-        messageAnswered = true;
-        continue;
-      case "calls.stopped":
-        session = {
-          ...session,
-          history: validateHarnessModelMessages(
-            withoutCalls(session.history, new Set(event.callIds)),
-          ),
-        };
-        continue;
-      case "sign-in.completed": {
-        const ctx = contextStorage.getStore();
-        if (ctx === undefined) continue;
-        ctx.set(PendingAuthorizationResultKey, [
-          ...(ctx.get(PendingAuthorizationResultKey) ?? []),
-          event.result,
-        ]);
-        if (event.requester !== null) ctx.set(AuthKey, event.requester);
-        continue;
-      }
-      case "responder.check": {
-        if (input.checkResponder === undefined) {
-          throw new Error("Response policies can run only where answers arrive.");
-        }
-        const checked = await input.checkResponder(event, session);
-        const ended = await applyNested(HumanInput.read(session.state).intake(checked));
-        if (ended !== undefined) return { ended, messageAnswered, session };
-        continue;
-      }
-      case "calls.approved": {
-        if (input.runApproved === undefined) {
-          throw new Error("Approved calls can run only where answers arrive.");
-        }
-        const work = await input.runApproved({ ...event, session });
-        session = work.session;
-        runtimeCalls ??= work.runtimeCalls;
-        const settled = await applyNested(
-          HumanInput.read(session.state).intake({
-            results:
-              work.results.length === 0 ? [] : [{ content: [...work.results], role: "tool" }],
-            type: "calls.settled",
-          }),
-        );
-        if (settled !== undefined) return { ended: settled, messageAnswered, session };
-        if (work.signIns !== undefined) {
-          const ended = await applyNested(
-            HumanInput.read(session.state).interrupt({
-              at: event.at,
-              callIds: work.signIns.callIds,
-              challenges: work.signIns.challenges,
-              requester: null,
-              type: "authorization.required",
-            }),
-          );
-          if (ended !== undefined) return { ended, messageAnswered, session };
-        }
-        continue;
-      }
-      case "turn.cancelled":
-        throw new TurnCancelledError();
-      case "budget.granted":
-        session = bumpSessionRuntimeUsageLimits(session);
-        continue;
-      case "budget.declined":
-        throw new SessionLimitDeclinedError(event.requestId, transition.humanInput);
-      // Relayed requests never reach the turn: steps around it apply these.
-      case "answer.forwarded":
-      case "question.withdrawn":
-      case "turn.held":
-        throw new Error(`Human input event "${event.type}" is not implemented.`);
-    }
-  }
-  return { messageAnswered, runtimeCalls, session };
-}
-
-/**
- * Runs the calls a person approved, with the tools of the step that asked:
- * local calls run now, and workflow calls become runtime work the step parks on.
- */
-async function runApprovedWork(input: {
-  readonly abortSignal: AbortSignal | undefined;
-  readonly at: RequestAt;
-  readonly config: ToolLoopHarnessConfig;
-  readonly emit?: ToolLoopHarnessConfig["handleEvent"];
-  readonly projectHistory: (
-    messages: readonly ModelMessage[],
-    state: HarnessSession["state"],
-  ) => readonly ModelMessage[];
-  readonly requests: readonly InputRequest[];
-  readonly session: HarnessSession;
-}): Promise<ApprovedWork> {
-  const { at, session } = input;
-  const tools = await prepareStepTools(input);
-  for (const request of input.requests) {
-    if (!tools.has(request.action.toolName)) {
-      throw new Error(
-        "The approved tool is no longer available. Request a new tool call and approval.",
-      );
-    }
-  }
-  const runsInRuntime = (request: InputRequest) =>
-    tools.get(request.action.toolName)?.workflowId !== undefined;
-  const local = await runApprovedCalls({
-    abortSignal: input.abortSignal,
-    at,
-    emit: input.emit,
-    messages: input.projectHistory(session.history, session.state),
-    requests: input.requests.filter((request) => !runsInRuntime(request)),
-    tools,
-  });
-  const runtime = input.requests.filter(runsInRuntime);
-  const deferred =
-    runtime.length === 0
-      ? undefined
-      : collectDeferredCalls({
-          session,
-          toolCalls: runtime.map(({ action }) => ({
-            input: action.input,
-            toolCallId: action.callId,
-            toolName: action.toolName,
-          })),
-          tools,
-          turnId: at.turnId,
-        });
-  return {
-    results: local.results,
-    runtimeCalls: deferred === undefined ? undefined : { at, tasks: deferred.workflowRequests },
-    session: deferred?.session ?? session,
-    signIns: findInlineAuthorizationSignals(local.signIns),
-  };
-}
-
-/** The tools of the step at `at`, as its approvals and response policies saw them. */
-async function prepareStepTools(input: {
-  readonly at: RequestAt;
-  readonly config: ToolLoopHarnessConfig;
-  readonly projectHistory: (
-    messages: readonly ModelMessage[],
-    state: HarnessSession["state"],
-  ) => readonly ModelMessage[];
-  readonly session: HarnessSession;
-}): Promise<HarnessToolMap> {
-  const { at, config, session } = input;
-  const ctx = contextStorage.getStore();
-  await config.prepareApprovalTurn?.(at);
-  if (ctx !== undefined) {
-    await config.resolveStepDynamicTools?.({
-      ctx,
-      event: createStepStartedEvent({
-        modelId: session.agent.modelReference?.id ?? "dynamic",
-        ...at,
-      }),
-      messages: input.projectHistory(session.history, session.state),
-    });
-  }
-  return buildResponseAuthorizationTools({ authoredTools: config.tools, context: ctx });
-}
-
-/**
- * The turn waits on a person, as it waits on a task: it reports `turn.waiting`
- * and resumes in the same turn once the person answers, steers, or cancels.
- */
-async function holdForInput(input: {
-  readonly emit?: ToolLoopHarnessConfig["handleEvent"];
-  readonly emissionState: ReturnType<typeof getHarnessEmissionState>;
-  readonly session: HarnessSession;
-}): Promise<StepResult> {
-  const next = advanceStep(input.emissionState);
-  await input.emit?.(
-    createTurnWaitingEvent({
-      on: "input",
-      sequence: next.sequence,
-      turnId: next.turnId,
-      usage: getSessionUsage(input.session),
-    }),
-  );
-  return {
-    held: { kind: "input" },
-    next: null,
-    session: setHarnessEmissionState(input.session, next),
-  };
-}
-
-/** A message that answered requests isn't turn input, nor is the context sent with it. */
-function withoutMessage(input: StepInput | undefined): StepInput | undefined {
-  if (input === undefined) return undefined;
-  const { context: _context, message: _message, ...rest } = input;
-  return rest;
-}
-
-function withoutAnswers(input: StepInput | undefined): StepInput | undefined {
-  if (input === undefined) return undefined;
-  const { attributedInputResponses: _attributed, inputResponses: _responses, ...rest } = input;
-  return rest;
 }
 
 /** Appended to the model-facing description of every tool with `endsTurn: true`. */
@@ -3234,51 +2851,6 @@ async function maybeCompact(input: {
   }
 
   return { compacted: true, messages, session: replaceSessionHistory(session, messages) };
-}
-
-/** The approvals whose tool defines a response policy, which decides who may answer. */
-function responsePolicyRequestIds(
-  tools: HarnessToolMap,
-  requests: readonly InputRequest[],
-): readonly string[] {
-  return requests
-    .filter((request) => {
-      const approval = tools.get(request.action.toolName)?.approval;
-      return (
-        approval !== undefined && typeof approval !== "function" && approval.response !== undefined
-      );
-    })
-    .map((request) => request.requestId);
-}
-
-/** The key a `once()` approval of each request grants, for tools with an `approvalKey`. */
-function approvalKeys(
-  tools: HarnessToolMap,
-  requests: readonly InputRequest[],
-): Readonly<Record<string, string>> {
-  const keys: Record<string, string> = {};
-  for (const request of requests) {
-    const approvalKey = tools.get(request.action.toolName)?.approvalKey;
-    if (approvalKey !== undefined) keys[request.requestId] = approvalKey(request.action.input);
-  }
-  return keys;
-}
-
-/** Drops the AI SDK's approval request and response parts, and messages they leave empty. */
-function withoutApprovalParts(messages: readonly ModelMessage[]): ModelMessage[] {
-  return messages.flatMap((message): ModelMessage[] => {
-    if (message.role === "assistant" && typeof message.content !== "string") {
-      const content = message.content.filter((part) => part.type !== "tool-approval-request");
-      if (content.length === message.content.length) return [message];
-      return content.length === 0 ? [] : [{ ...message, content }];
-    }
-    if (message.role === "tool") {
-      const content = message.content.filter((part) => part.type !== "tool-approval-response");
-      if (content.length === message.content.length) return [message];
-      return content.length === 0 ? [] : [{ ...message, content }];
-    }
-    return [message];
-  });
 }
 
 /**

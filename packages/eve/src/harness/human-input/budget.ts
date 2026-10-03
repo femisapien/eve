@@ -11,7 +11,7 @@ import {
   isSessionLimitContinuationRequestId,
   SESSION_LIMIT_CONTINUE_OPTION_ID,
   SESSION_LIMIT_STOP_OPTION_ID,
-} from "#harness/session-limit-continuation.js";
+} from "#harness/human-input/budget-question.js";
 import {
   createInputRequestedEvent,
   createInputResolvedEvent,

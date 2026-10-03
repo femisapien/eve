@@ -52,6 +52,10 @@ import {
   type OpenRelayed,
 } from "./relayed.js";
 import { staleAnswersAsText } from "./stale-answers.js";
+import { arrivalsOf } from "./arrivals.js";
+
+export { approvalsRequested, withoutApprovalParts } from "./approvals.js";
+export { createSessionLimitContinuationRequest } from "./budget-question.js";
 
 /**
  * Everything a turn waits on from a person: tool approvals, sign-ins, the
@@ -113,6 +117,11 @@ export class HumanInput {
     readonly displayMessage?: string | UserContent;
   } {
     return staleAnswersAsText(input, this.openRequestIds());
+  }
+
+  /** What arrived for the turn's step, as the intakes to hand to `intake`, in order. */
+  arrivals(input: Omit<Parameters<typeof arrivalsOf>[0], "held">): readonly Intake[] {
+    return arrivalsOf({ ...input, held: "held" in this.next() });
   }
 
   /** The approval keys `once()` approvals granted, which approval policies read. */
@@ -220,16 +229,11 @@ export type Intake =
       readonly outcome: "authorized" | "failed";
     }
   /** The runtime ran a response policy that `responder.check` asked for. */
-  | ({ readonly type: "responder.checked"; readonly candidateId: string } & (
-      | { readonly verdict: "allowed" }
-      | { readonly verdict: "rejected"; readonly reason: string }
-      | { readonly verdict: "failed"; readonly reason?: string }
-      /** The policy needs the responder to sign in first. */
-      | {
-          readonly verdict: "authorization-required";
-          readonly challenges: readonly AuthorizationChallenge[];
-        }
-    ))
+  | {
+      readonly type: "responder.checked";
+      readonly candidateId: string;
+      readonly ran: PolicyRun;
+    }
   /** The runtime ran the calls `calls.approved` asked for. */
   | { readonly type: "calls.settled"; readonly results: readonly ModelMessage[] }
   | { readonly type: "time"; readonly now: number }
@@ -326,6 +330,17 @@ export interface Transition {
 }
 
 export type Next = { readonly run: "model" } | { readonly held: "input" };
+
+/** What running a response policy did, before human input reads it as a verdict. */
+export type PolicyRun =
+  /** The tool no longer defines a response policy. */
+  | { readonly kind: "missing" }
+  | {
+      readonly kind: "returned";
+      readonly value: { readonly status: string; readonly reason?: string };
+    }
+  /** It threw or timed out; `challenges` when it threw for the responder to sign in. */
+  | { readonly kind: "threw"; readonly challenges?: readonly AuthorizationChallenge[] };
 
 /** Where a relayed request's answer goes. */
 export interface RelayRoute {

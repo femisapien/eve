@@ -18,6 +18,7 @@ import type {
   HumanInputEvent,
   HumanInputState,
   Intake,
+  PolicyRun,
   RequestAt,
 } from "#harness/human-input/index.js";
 import { closeSignIns, requireSignIns, waitsOnSignIn } from "#harness/human-input/sign-ins.js";
@@ -32,6 +33,7 @@ import type { InputResponse } from "#shared/input.js";
 const CANDIDATE_TTL_MS = 10 * 60_000;
 const UNAUTHENTICATED_FEEDBACK = "Authentication is required to respond to this approval.";
 const FAILED_REASON = "We couldn’t verify your response. Please try again.";
+const UNAVAILABLE_REASON = "Approval authorization is temporarily unavailable. Please try again.";
 const EXPIRED_REASON = "The approval response expired. Please submit a new response.";
 const SETTLED_REASON = "Another response settled this approval.";
 
@@ -155,13 +157,14 @@ export function checkedCandidate(
   const candidate = auditOf(state).activeCandidates[input.candidateId];
   const approval = candidate === undefined ? undefined : state.requests[candidate.requestId];
   if (candidate === undefined || approval?.kind !== "tool-approval") return { events: [], state };
-  switch (input.verdict) {
+  const verdict = verdictOf(input.ran);
+  switch (verdict.verdict) {
     case "allowed":
       return settle(state, approval, candidate);
     case "rejected":
-      return finish(state, [candidate], "rejected", input.reason);
+      return finish(state, [candidate], "rejected", verdict.reason);
     case "failed":
-      return finish(state, [candidate], "failed", input.reason ?? FAILED_REASON);
+      return finish(state, [candidate], "failed", verdict.reason ?? FAILED_REASON);
     case "authorization-required": {
       const audit = auditOf(state);
       const waiting: ActiveCandidate = { ...candidate, status: "authorization-required" };
@@ -173,7 +176,7 @@ export function checkedCandidate(
         {
           at: approval.at,
           callIds: [],
-          challenges: input.challenges.map((challenge) => ({
+          challenges: verdict.challenges.map((challenge) => ({
             ...challenge,
             candidateId: candidate.candidateId,
           })),
@@ -181,6 +184,34 @@ export function checkedCandidate(
         },
       );
     }
+  }
+}
+
+type Verdict =
+  | { readonly verdict: "allowed" }
+  | { readonly verdict: "rejected"; readonly reason?: string }
+  | { readonly verdict: "failed"; readonly reason?: string }
+  | {
+      readonly verdict: "authorization-required";
+      readonly challenges: readonly AuthorizationChallenge[];
+    };
+
+/**
+ * A policy allows or rejects by what it returns. Anything else fails the
+ * candidate, except a throw that asks the responder to sign in first.
+ */
+function verdictOf(ran: PolicyRun): Verdict {
+  switch (ran.kind) {
+    case "missing":
+      return { reason: UNAVAILABLE_REASON, verdict: "failed" };
+    case "returned":
+      if (ran.value.status === "allowed") return { verdict: "allowed" };
+      if (ran.value.status === "rejected") return { reason: ran.value.reason, verdict: "rejected" };
+      return { verdict: "failed" };
+    case "threw":
+      return ran.challenges === undefined
+        ? { verdict: "failed" }
+        : { challenges: ran.challenges, verdict: "authorization-required" };
   }
 }
 

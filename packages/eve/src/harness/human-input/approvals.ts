@@ -8,9 +8,10 @@ import {
   createInputResolvedEvent,
   type InputResolution,
 } from "#protocol/message.js";
+import type { HarnessToolMap } from "#harness/types.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
 
-import type { HumanInputEvent, RequestAt } from "./index.js";
+import type { HumanInputEvent, Interrupt, RequestAt } from "./index.js";
 
 // The tool approval rules. A model step's calls open one request each; the
 // step's approvals resolve together once each has an answer, or when the turn
@@ -50,6 +51,63 @@ const NOT_RUN_REASONS: Record<Exclude<Outcome, "approved"> | "cancelled", string
   ignored: "Ignored because the user continued without responding.",
   invalid: "Invalid approval response.",
 };
+
+/**
+ * What a model step's approval requests ask, read from the tools that made
+ * them: the key a `once()` approval grants, and whether a response policy
+ * decides who may answer.
+ */
+export function approvalsRequested(input: {
+  readonly at: RequestAt;
+  readonly requester: SessionAuthContext | null;
+  readonly requests: readonly InputRequest[];
+  readonly tools: HarnessToolMap;
+}): Extract<Interrupt, { readonly type: "approvals.requested" }> {
+  const approvalKeys: Record<string, string> = {};
+  const responsePolicyRequestIds: string[] = [];
+  for (const request of input.requests) {
+    const tool = input.tools.get(request.action.toolName);
+    if (tool?.approvalKey !== undefined) {
+      approvalKeys[request.requestId] = tool.approvalKey(request.action.input);
+    }
+    const approval = tool?.approval;
+    if (
+      approval !== undefined &&
+      typeof approval !== "function" &&
+      approval.response !== undefined
+    ) {
+      responsePolicyRequestIds.push(request.requestId);
+    }
+  }
+  return {
+    approvalKeys,
+    at: input.at,
+    requester: input.requester,
+    requests: input.requests,
+    responsePolicyRequestIds,
+    type: "approvals.requested",
+  };
+}
+
+/**
+ * Drops the AI SDK's approval request and response parts, and messages they
+ * leave empty: eve answers approvals itself, so they never reach history.
+ */
+export function withoutApprovalParts(messages: readonly ModelMessage[]): ModelMessage[] {
+  return messages.flatMap((message): ModelMessage[] => {
+    if (message.role === "assistant" && typeof message.content !== "string") {
+      const content = message.content.filter((part) => part.type !== "tool-approval-request");
+      if (content.length === message.content.length) return [message];
+      return content.length === 0 ? [] : [{ ...message, content }];
+    }
+    if (message.role === "tool") {
+      const content = message.content.filter((part) => part.type !== "tool-approval-response");
+      if (content.length === message.content.length) return [message];
+      return content.length === 0 ? [] : [{ ...message, content }];
+    }
+    return [message];
+  });
+}
 
 /** A model step's calls ask for approval: each becomes an open request, and the turn holds. */
 export function openApprovals<S extends ApprovalState>(
