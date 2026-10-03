@@ -9,10 +9,8 @@ import { cancelDescendantTurnsStep } from "#execution/cancel-descendant-turns-st
 import { turnStep } from "#execution/session/turn-step.js";
 import type { DeliverHookPayload, SessionCapabilities, TurnCaller } from "#channel/types.js";
 import { dispatchCoordinationStep } from "#execution/coordination-dispatch-step.js";
-import {
-  forwardRelayedAnswersStep,
-  type ForwardedRelayedAnswers,
-} from "#execution/relayed-answers-step.js";
+import type { ForwardedRelayedAnswers } from "#execution/human-input-effects/apply.js";
+import { forwardRelayedAnswersStep } from "#execution/human-input-effects/steps.js";
 import { interruptWorkflowToolRun } from "#execution/tools/workflow/interrupt.js";
 import { HumanInput } from "#harness/human-input/index.js";
 import { publishTurnWaitingStep } from "#execution/session/turn-waiting-step.js";
@@ -47,7 +45,10 @@ vi.mock("#compiled/@workflow/core/index.js", async (importOriginal) => ({
   getWorkflowMetadata: () => ({ url: "https://parent.example" }),
 }));
 vi.mock("#execution/coordination-dispatch-step.js", () => ({ dispatchCoordinationStep: vi.fn() }));
-vi.mock("#execution/relayed-answers-step.js", () => ({ forwardRelayedAnswersStep: vi.fn() }));
+vi.mock("#execution/human-input-effects/steps.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("#execution/human-input-effects/steps.js")>()),
+  forwardRelayedAnswersStep: vi.fn(),
+}));
 
 vi.mock("#execution/session/turn-step.js", () => ({
   turnStep: vi.fn(),

@@ -2,7 +2,7 @@ import type {
   SubagentAuthorizationEventHookPayload,
   SubagentInputRequestHookPayload,
 } from "#channel/types.js";
-import { applyHumanInputEvents } from "#execution/human-input-events.js";
+import { applyHumanInputEvents } from "#execution/human-input-effects/apply.js";
 import {
   publishFromSessionStep,
   restoreSessionStep,

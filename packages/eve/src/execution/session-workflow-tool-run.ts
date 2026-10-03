@@ -11,8 +11,7 @@ import type {
   WorkflowToolRunWithdrawMessage,
 } from "#execution/tools/workflow/messages.js";
 import type { SessionStateCursor } from "#execution/session/state-cursor.js";
-import { withdrawRelayedRequestsStep } from "#execution/tools/workflow/withdraw-step.js";
-import { HumanInput } from "#harness/human-input/index.js";
+import { withdrawRelayedRequests } from "#execution/human-input-effects/workflow.js";
 import {
   workflowToolRunOutcomeToToolResult,
   workflowToolRunRequestToInputRequestPayload,
@@ -93,12 +92,7 @@ async function handleWorkflowToolRunOutcome(
 
   const result = workflowToolRunOutcomeToToolResult(message);
   if (!isInboxToolResultFromRecordedWorkflowToolRun(state, result)) return undefined;
-  if (HumanInput.read(state).relayedRequestIds().size > 0) {
-    const { runId } = message.from;
-    await cursor.advance((current) =>
-      withdrawRelayedRequestsStep({ ...current, intake: { runId, type: "run.ended" } }),
-    );
-  }
+  await withdrawRelayedRequests(cursor, { runId: message.from.runId, type: "run.ended" });
   return result;
 }
 
@@ -134,15 +128,10 @@ async function handleWorkflowToolRunWithdraw(
   input: HandlerInput<WorkflowToolRunWithdrawMessage>,
 ): Promise<void> {
   const { cursor, message } = input;
-  await cursor.advance((state) =>
-    withdrawRelayedRequestsStep({
-      ...state,
-      intake: {
-        control: message.control,
-        requestId: message.replyTo,
-        runId: message.from.runId,
-        type: "withdraw.requested",
-      },
-    }),
-  );
+  await withdrawRelayedRequests(cursor, {
+    control: message.control,
+    requestId: message.replyTo,
+    runId: message.from.runId,
+    type: "withdraw.requested",
+  });
 }

@@ -23,7 +23,7 @@ import {
 } from "#execution/tasks/table.js";
 import { ignoreGoneTarget } from "#execution/tasks/workflow-target.js";
 import { countRunUsage } from "#execution/agent-sessions/usage.js";
-import { relayHumanInputEvents } from "#execution/human-input-events.js";
+import { relayHumanInputEvents } from "#execution/human-input-effects/apply.js";
 import {
   publishSessionEvents,
   type PublishedSessionEvents,

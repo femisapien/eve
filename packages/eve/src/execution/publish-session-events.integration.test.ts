@@ -2,7 +2,7 @@ import { expect, it } from "vitest";
 
 import { replaceDurableSessionSnapshot } from "#execution/durable-session-store.js";
 import { emitWorkflowToolRunReportStep } from "#execution/tools/workflow/emit-workflow-tool-run-report-step.js";
-import { withdrawRelayedRequestsStep } from "#execution/tools/workflow/withdraw-step.js";
+import { withdrawRelayedRequestsStep } from "#execution/human-input-effects/steps.js";
 import { HumanInput } from "#harness/human-input/index.js";
 import { createTestRuntime } from "#internal/testing/app-harness.js";
 import { createTestSessionState } from "#internal/testing/session-state.js";

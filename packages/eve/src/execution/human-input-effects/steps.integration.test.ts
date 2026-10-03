@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 
 import { readDurableSession } from "#execution/durable-session-store.js";
-import { forwardRelayedAnswersStep } from "#execution/relayed-answers-step.js";
+import { forwardRelayedAnswersStep } from "#execution/human-input-effects/steps.js";
 import { resumeSessionInbox } from "#execution/session-inbox/resume.js";
 import { HumanInput } from "#harness/human-input/index.js";
 import { createTestRuntime } from "#internal/testing/app-harness.js";

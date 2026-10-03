@@ -4,44 +4,16 @@ import { AuthKey } from "#context/keys.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
 import { setChannelContext } from "#execution/channel-context.js";
 import type { SessionStepState } from "#execution/publish-session-events.js";
-import {
-  withSessionStateDelta,
-  type WithSessionStateDelta,
-} from "#execution/session/state-delta.js";
 import { ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
 import type { InputResponse } from "#shared/input.js";
 
 /**
- * Maps a delivery's channel-specific answers to the requests a held turn waits
- * on, so the turn can tell they answer it. Telegram buttons, for example,
- * carry compact callback ids that only its `deliver` hook resolves against
- * channel state. Returns the mapped delivery, or `undefined` when the channel
- * maps none of them to one of `requestIds`.
- */
-export async function mapHeldInputResponsesStep(
-  input: SessionStepState & {
-    readonly delivery: DeliverHookPayload;
-    readonly requestIds: readonly string[];
-  },
-): Promise<WithSessionStateDelta<{ readonly delivery: DeliverHookPayload | undefined }>> {
-  "use step";
-  return await withSessionStateDelta(input, async () => {
-    const requestIds = new Set(input.requestIds);
-    const mapped = await deliverChannelInputResponses({
-      ...input,
-      routable: (response) => requestIds.has(response.requestId),
-    });
-    return mapped.delivery === input.delivery
-      ? { delivery: undefined }
-      : { delivery: mapped.delivery, serializedContext: mapped.serializedContext };
-  });
-}
-
-/**
- * Maps each answer the session can't route as sent through the channel's
- * `deliver` hook, and keeps what maps to a `routable` request: one the held
- * turn waits on, or one the session relays. Every other answer stays as sent
- * for the turn's own `deliver` call.
+ * Some channels answer with ids only their `deliver` hook resolves against
+ * channel state, such as Telegram's compact button callbacks. Maps each
+ * answer the session can't route as sent through that hook, and keeps what
+ * maps to a `routable` request, which human input names (one the held turn
+ * waits on, or one the session relays). Every other answer stays as sent for
+ * the turn's own `deliver` call.
  */
 export async function deliverChannelInputResponses(
   input: SessionStepState & {

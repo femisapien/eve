@@ -90,7 +90,7 @@ function turnStep(
 }
 import { captureLogRecords } from "#internal/testing/log-records.js";
 import { runSessionStateStep } from "#internal/testing/session-state-step.js";
-import { mapHeldInputResponsesStep } from "#execution/session/held-input-responses.js";
+import { mapHeldInputResponsesStep } from "#execution/human-input-effects/steps.js";
 
 // The harness runs outside a workflow body here, where run attributes cannot
 // be written; the attribute contract is covered by emit.test.ts.

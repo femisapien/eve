@@ -1,4 +1,4 @@
-import { forwardRelayedAnswers } from "#execution/relayed-answers.js";
+import { forwardRelayedAnswers } from "#execution/human-input-effects/workflow.js";
 import type {
   SessionControl,
   SessionInputQueue,

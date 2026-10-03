@@ -21,7 +21,7 @@ import {
   applyHumanInputEvents,
   partitionRelayed,
   relayHumanInputEvents,
-} from "#execution/human-input-events.js";
+} from "#execution/human-input-effects/apply.js";
 import { getHarnessEmissionState, setHarnessEmissionState } from "#harness/emission.js";
 import { removeBlockingWorkflowToolRuns } from "#harness/workflow-tool-runs.js";
 import {

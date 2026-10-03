@@ -1,7 +1,9 @@
 import type { DeliverHookPayload, TurnCaller } from "#channel/types.js";
-import { forwardRelayedAnswers } from "#execution/relayed-answers.js";
+import {
+  forwardRelayedAnswers,
+  mapHeldInputResponses,
+} from "#execution/human-input-effects/workflow.js";
 import { admitSessionInboxPayload } from "#execution/session/admission.js";
-import { mapHeldInputResponsesStep } from "#execution/session/held-input-responses.js";
 import {
   isSteeringMessage,
   type SteeringOptions,
@@ -199,12 +201,9 @@ export class ActiveTurn {
         // such as Telegram's compact button callbacks.
         if (this.mappedForHeldRequest.has(sequence)) continue;
         this.mappedForHeldRequest.add(sequence);
-        const target = delivery;
-        const mapped = await this.input.cursor.advance((state) =>
-          mapHeldInputResponsesStep({ delivery: target, requestIds: [...requestIds], ...state }),
-        );
-        if (mapped.delivery === undefined) continue;
-        delivery = mapped.delivery;
+        const mapped = await mapHeldInputResponses(this.input.cursor, delivery, requestIds);
+        if (mapped === undefined) continue;
+        delivery = mapped;
       }
       this.admitted.delete(sequence);
       this.input.queue.replaceDelivery(sequence, undefined);
