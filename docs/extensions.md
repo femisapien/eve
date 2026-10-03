@@ -9,6 +9,8 @@ Ready-made extensions can also be distributed through an eve integration registr
 
 This enables sharing many different capability sets. A browser extension might include several tools for navigating a site. A self-improving extension could pair hooks with dynamic instructions.
 
+The `eve` package also ships the [code extension](/docs/extensions/code) for repository work. Mount `eve/extensions/code` to add patch editing, sandbox search, repository-scoped GitHub commands, coding skills, and a read-only worker subagent.
+
 ## Author: create an extension
 
 ### Create the package
@@ -370,6 +372,7 @@ At build time, eve checks the extension's generated capability metadata. If the 
 ## What to read next
 
 - [Integrations](/integrations): browse ready-to-install extensions using the Extensions filter
+- [Code Extension](/docs/extensions/code): mount eve's built-in coding capabilities
 - [Tools](/docs/tools): static tools, approval, and tool output
 - [Dynamic capabilities](/docs/guides/dynamic-capabilities): dynamic connections, tools, skills, and instructions
 - [Instructions](/docs/instructions): static and TypeScript instructions

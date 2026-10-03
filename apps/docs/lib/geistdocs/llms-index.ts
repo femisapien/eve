@@ -49,6 +49,7 @@ Documentation links below point directly to Markdown. Remove the \`.md\` suffix 
 
 - [Add Integrations](${EVE_ORIGIN}/docs/install-integrations.md): Discover and add official or third-party integrations.
 - [Extensions](${EVE_ORIGIN}/docs/extensions.md): Package and mount reusable eve capabilities.
+- [Code Extension](${EVE_ORIGIN}/docs/extensions/code.md): Mount eve's built-in patch, search, GitHub, review, and worker capabilities.
 - [Remote Agents](${EVE_ORIGIN}/docs/guides/remote-agents.md): Call another eve deployment as a subagent.
 - [Agent Client Protocol (ACP)](${EVE_ORIGIN}/docs/protocols/acp.md): Use local or deployed eve agents from ACP clients.
 - [Universal Commerce Protocol (UCP)](${EVE_ORIGIN}/docs/protocols/ucp.md): Serve a UCP profile from a custom eve channel.
