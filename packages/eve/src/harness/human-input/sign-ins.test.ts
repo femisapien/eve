@@ -3,6 +3,9 @@ import { describe, expect, it } from "vitest";
 import {
   ALICE,
   Turn,
+  answer,
+  approval,
+  approvalsRequested,
   callback,
   cancel,
   challenge,
@@ -72,6 +75,81 @@ describe("sign-ins", () => {
       { message: { content: [clock], role: "assistant" }, type: "history.appended" },
       { message: { content: [result(clock, "noon")], role: "tool" }, type: "history.appended" },
     ]);
+  });
+
+  describe("a step suspended on an approval", () => {
+    const probe = {
+      input: {},
+      toolCallId: "call-probe",
+      toolName: "auth-probe",
+      type: "tool-call" as const,
+    };
+    const publish = approval("publish");
+    const publishCall = {
+      input: {},
+      toolCallId: publish.action!.callId,
+      toolName: "publish",
+      type: "tool-call" as const,
+    };
+    const signal = {
+      output: { type: "json" as const, value: { signIn: true } },
+      toolCallId: probe.toolCallId,
+      toolName: probe.toolName,
+      type: "tool-result" as const,
+    };
+    /** One step checked Alice's access (a sign-in) and asked to publish (an approval). */
+    const step = [
+      { content: [probe, publishCall], role: "assistant" as const },
+      { content: [signal], role: "tool" as const },
+    ];
+    const held = Turn.idle()
+      .interrupt(approvalsRequested([publish], { messages: step }))
+      .interrupt(signInRequired([challenge("a1")], [probe.toolCallId]));
+
+    it("stays suspended without the call that asked, so the waiting call never enters history", () => {
+      expect(held.appended()).toEqual([]);
+      expect(held.humanInput.suspendedMessages()).toEqual([
+        { content: [publishCall], role: "assistant" },
+      ]);
+      expect(held.stored().next()).toEqual({ held: "input" });
+    });
+
+    it("a cancel appends the step with a not-run result for the waiting call", () => {
+      const cancelled = held.intake(cancel);
+
+      expect(cancelled.appended()).toEqual([
+        { content: [publishCall], role: "assistant" },
+        {
+          content: [
+            expect.objectContaining({ toolCallId: publishCall.toolCallId, type: "tool-result" }),
+          ],
+          role: "tool",
+        },
+      ]);
+      expect(cancelled.storesNothing()).toBe(true);
+    });
+
+    it("the approved call's own sign-in leaves the step too, and the turn holds on the newer attempt", () => {
+      const approved = held.intake(answer("approve", publish.requestId));
+      const run = approved.reported("calls.approved");
+      expect(run).toHaveLength(1);
+
+      const resumed = approved
+        .intake({
+          results: [],
+          running: [],
+          stopped: [publishCall.toolCallId],
+          type: "calls.settled",
+        })
+        .interrupt(signInRequired([challenge("a2")], [publishCall.toolCallId]));
+
+      expect(resumed.appended()).toEqual([]);
+      expect(resumed.humanInput.suspendedMessages()).toEqual([]);
+      expect(outcomes(resumed)).toEqual([
+        { attemptId: "a1", outcome: "failed", reason: SUPERSEDED },
+      ]);
+      expect(resumed.stored().next()).toEqual({ held: "input" });
+    });
   });
 
   it("only a callback closes a sign-in, so no answer is routed to it", () => {

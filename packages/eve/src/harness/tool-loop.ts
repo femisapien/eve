@@ -2341,7 +2341,9 @@ async function handleStepResult(input: {
   }
   const signIns = findInlineAuthorizationSignals(result.toolResults);
   if (signIns !== undefined) {
-    // The step joins history without the calls that asked for a sign-in.
+    // The calls that asked for a sign-in leave the step. With approvals open,
+    // the step is already suspended and stays out of history; otherwise it
+    // joins history without them.
     const applied = await applyHumanInput({
       emit,
       emissionState,
@@ -2351,7 +2353,7 @@ async function handleStepResult(input: {
         at: requestAt(emissionState),
         callIds: signIns.callIds,
         challenges: signIns.challenges,
-        messages: responseMessages,
+        messages: approvalRequests.length > 0 ? [] : responseMessages,
         requester: input.auth,
         type: "authorization.required",
       }),

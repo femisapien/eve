@@ -2,10 +2,11 @@
  * The sign-in rules. A tool call, or a responder's approval policy, that needs
  * a sign-in opens one request per attempt, keyed by the attempt's id, and the
  * turn holds until a callback closes it. The call that asked never joins
- * history: the step joins it without that call and its result, so the model
- * calls it again once the person has signed in. A newer attempt
- * for the same sign-in replaces an older one; steering or cancelling the turn
- * declines every open sign-in.
+ * history: it leaves its step, so the model calls it again once the person has
+ * signed in. A step whose other calls all have results joins history without
+ * it; a step suspended on an approval stays suspended, out of history, until
+ * the approval resolves. A newer attempt for the same sign-in replaces an
+ * older one; steering or cancelling the turn declines every open sign-in.
  */
 import type { ModelMessage } from "ai";
 
@@ -39,8 +40,10 @@ const SUPERSEDED_REASON = "Superseded by a newer authorization attempt.";
 /**
  * Opens a sign-in for each challenge and holds the turn. Within one ask and
  * against the sign-ins already open, the latest attempt for a sign-in wins and
- * the older one fails as superseded. The step's `messages` join history
- * without `callIds`, the calls that asked.
+ * the older one fails as superseded. `callIds`, the calls that asked, leave
+ * their step. While the step is suspended (its approvals are open, so
+ * `messages` is empty: the suspended step is the step), it stays suspended
+ * without them; otherwise the step's `messages` join history without them.
  */
 export function requireSignIns(
   state: HumanInputState,
@@ -66,9 +69,16 @@ export function requireSignIns(
     const signIn: OpenSignIn = { at: input.at, challenge, kind: "authorization" };
     requests[attemptKey(challenge)] = signIn;
   }
+  const stopped = new Set(input.callIds);
   const events: HumanInputEvent[] = [];
-  for (const message of withoutCalls(input.messages, new Set(input.callIds))) {
-    events.push({ message, type: "history.appended" });
+  let next: HumanInputState = { ...state, requests };
+  if (state.suspended !== undefined) {
+    const messages = withoutCalls(state.suspended.messages, stopped);
+    next = { ...next, suspended: { ...state.suspended, messages } };
+  } else {
+    for (const message of withoutCalls(input.messages, stopped)) {
+      events.push({ message, type: "history.appended" });
+    }
   }
   for (const open of superseded) {
     events.push(completed(open.challenge, input.at, "failed", SUPERSEDED_REASON));
@@ -85,7 +95,7 @@ export function requireSignIns(
       type: "publish",
     });
   }
-  return { events, state: { ...state, requests } };
+  return { events, state: next };
 }
 
 /**
