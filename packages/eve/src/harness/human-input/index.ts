@@ -6,6 +6,10 @@ import type { SessionStateMap, StepInput } from "#harness/types.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
 
+import { arrivalsOf } from "./arrivals.js";
+
+export { approvalsRequested } from "./approvals.js";
+
 /**
  * Everything a turn waits on from a person: tool approvals, sign-ins, the
  * budget question, and requests relayed from child sessions and workflow runs.
@@ -50,6 +54,11 @@ export class HumanInput {
     return Object.keys(this.#state.requests).length === 0 ? { run: "model" } : { held: "input" };
   }
 
+  /** What arrived for the turn's step, as the intakes to hand to `intake`, in order. */
+  arrivals(input: Omit<Parameters<typeof arrivalsOf>[0], "held">): readonly Intake[] {
+    return arrivalsOf({ ...input, held: "held" in this.next() });
+  }
+
   #apply(reduced: Reduced): Transition {
     return { events: reduced.events, humanInput: new HumanInput(reduced.state) };
   }
@@ -86,13 +95,11 @@ export type Interrupt =
       readonly challenges: readonly AuthorizationChallenge[];
       readonly requester: SessionAuthContext | null;
     }
-  /** The budget ran out before a model call. */
+  /** The budget ran out before a model call, and a person can grant more. */
   | {
       readonly type: "budget.exceeded";
       readonly at: RequestAt;
       readonly request: InputRequest;
-      /** Whether anyone can answer; when not, the turn fails instead. */
-      readonly canAsk: boolean;
     }
   /** A child session or workflow run asks a person, through this session. */
   | {
@@ -110,7 +117,11 @@ export type Intake =
       readonly responder: SessionAuthContext | null;
     }
   /** A message; from the person who started the turn, it steers it. */
-  | { readonly type: "message"; readonly text: string; readonly fromRequester: boolean }
+  | {
+      readonly type: "message";
+      readonly text: string;
+      readonly sender: SessionAuthContext | null;
+    }
   | { readonly type: "cancelled" }
   | {
       readonly type: "authorization.completed";
