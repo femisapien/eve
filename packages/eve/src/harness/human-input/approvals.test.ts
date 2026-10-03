@@ -11,7 +11,18 @@ import {
   cancel,
   heldOnApprovals,
   message,
+  stepResponse,
 } from "#internal/testing/human-input.js";
+
+/** What Alice's call to `toolName` returned when it ran. */
+function ran(toolName: string, value: { readonly [key: string]: boolean }) {
+  return {
+    output: { type: "json" as const, value },
+    toolCallId: `call-${toolName}`,
+    toolName,
+    type: "tool-result" as const,
+  };
+}
 
 /** What Alice's call to `toolName` returns when it never runs. */
 function notRun(toolName: string, reason: string) {
@@ -75,19 +86,28 @@ describe("tool approvals", () => {
       ["deploy", "denied"],
       ["delete_repo", "invalid"],
     ]);
-    expect(turn.appended()).toEqual([
-      {
-        content: [
-          notRun("deploy", "Tool execution was denied."),
-          notRun("delete_repo", "Invalid approval response."),
-        ],
-        role: "tool",
-      },
-    ]);
+    // The step waits for the approved call's result before it joins history.
+    expect(turn.appended()).toEqual([]);
     expect(turn.published("action.result").map((event) => event.data.status)).toEqual([
       "rejected",
       "rejected",
     ]);
+    const settled = turn.stored().intake({
+      results: [{ content: [ran("send_email", { sent: true })], role: "tool" }],
+      type: "calls.settled",
+    });
+    expect(settled.appended()).toEqual([
+      ...stepResponse([approval("send_email"), approval("deploy"), approval("delete_repo")]),
+      {
+        content: [
+          notRun("deploy", "Tool execution was denied."),
+          notRun("delete_repo", "Invalid approval response."),
+          ran("send_email", { sent: true }),
+        ],
+        role: "tool",
+      },
+    ]);
+    expect(settled.stored().humanInput.suspendedMessages()).toEqual([]);
   });
 
   it("the last answer to a request wins", () => {
@@ -119,13 +139,25 @@ describe("tool approvals", () => {
     expect(turn.reported("calls.approved")).toEqual([
       { at: AT, requests: [approval("send_email")], type: "calls.approved" },
     ]);
-    expect(turn.appended()).toEqual([
+    expect(turn.appended()).toEqual([]);
+    expect(turn.next()).toEqual({ run: "model" });
+    expect(
+      turn
+        .intake({
+          results: [{ content: [ran("send_email", { sent: true })], role: "tool" }],
+          type: "calls.settled",
+        })
+        .appended(),
+    ).toEqual([
+      ...stepResponse([approval("send_email"), approval("deploy")]),
       {
-        content: [notRun("deploy", "Ignored because the user continued without responding.")],
+        content: [
+          notRun("deploy", "Ignored because the user continued without responding."),
+          ran("send_email", { sent: true }),
+        ],
         role: "tool",
       },
     ]);
-    expect(turn.next()).toEqual({ run: "model" });
   });
 
   it("a cancel resolves each open approval as cancelled at the step that asked", () => {
@@ -144,12 +176,96 @@ describe("tool approvals", () => {
       },
     ]);
     expect(turn.appended()).toEqual([
+      ...stepResponse([approval("deploy")]),
       { content: [notRun("deploy", "Cancelled before anyone answered.")], role: "tool" },
     ]);
     expect(turn.storesNothing()).toBe(true);
   });
 
-  it("the results of the calls the runtime ran join history", () => {
+  it("asking keeps the step out of history until every call it made has a result", () => {
+    const held = heldOnApprovals("deploy").stored();
+
+    expect(held.events.filter((event) => event.type === "history.appended")).toEqual([]);
+    expect(held.humanInput.suspendedMessages()).toEqual(stepResponse([approval("deploy")]));
+
+    const denied = held.intake(answer("cancel", "deploy"));
+    expect(denied.appended()).toEqual([
+      ...stepResponse([approval("deploy")]),
+      { content: [notRun("deploy", "Tool execution was denied.")], role: "tool" },
+    ]);
+    expect(denied.storesNothing()).toBe(true);
+  });
+
+  it("calls that ran beside open approvals wait with the step, and join history with it", () => {
+    // The step also made a runtime call, so the coordination batch held its response.
+    const step = [
+      {
+        content: [
+          { input: {}, toolCallId: "call-deploy", toolName: "deploy", type: "tool-call" as const },
+          { input: {}, toolCallId: "call-build", toolName: "build", type: "tool-call" as const },
+        ],
+        role: "assistant" as const,
+      },
+      { content: [ran("build", { built: true })], role: "tool" as const },
+    ];
+    const settled = Turn.idle()
+      .interrupt(approvalsRequested([approval("deploy")], { messages: [] }))
+      .intake({ results: step, type: "calls.settled" });
+
+    expect(settled.appended()).toEqual([]);
+    expect(settled.stored().next()).toEqual({ held: "input" });
+
+    expect(settled.stored().intake(answer("cancel", "deploy")).appended()).toEqual([
+      step[0],
+      {
+        content: [ran("build", { built: true }), notRun("deploy", "Tool execution was denied.")],
+        role: "tool",
+      },
+    ]);
+  });
+
+  it("an approved call that runs as runtime work takes the step with it", () => {
+    const approved = heldOnApprovals("deploy").intake(answer("approve", "deploy"));
+    const dispatched = approved.stored().intake({
+      results: [],
+      running: ["call-deploy"],
+      type: "calls.settled",
+    });
+
+    expect(dispatched.appended()).toEqual([]);
+    expect(dispatched.reported("calls.dispatched")).toEqual([
+      { at: AT, messages: stepResponse([approval("deploy")]), type: "calls.dispatched" },
+    ]);
+    expect(dispatched.stored().humanInput.suspendedMessages()).toEqual([]);
+  });
+
+  it("a cancel while a step waits answers every call it made", () => {
+    const turn = Turn.idle()
+      .interrupt(
+        approvalsRequested([approval("deploy")], {
+          messages: [
+            {
+              content: [
+                { input: {}, toolCallId: "call-deploy", toolName: "deploy", type: "tool-call" },
+                { input: {}, toolCallId: "call-lookup", toolName: "lookup", type: "tool-call" },
+              ],
+              role: "assistant",
+            },
+          ],
+        }),
+      )
+      .intake(cancel);
+
+    expect(turn.appended().at(-1)).toEqual({
+      content: [
+        notRun("deploy", "Cancelled before anyone answered."),
+        notRun("lookup", "Cancelled before anyone answered."),
+      ],
+      role: "tool",
+    });
+  });
+
+  it("results for a step parked with its calls already in history join history directly", () => {
     const results = [
       {
         content: [

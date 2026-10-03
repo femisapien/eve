@@ -1,3 +1,5 @@
+import type { ModelMessage } from "ai";
+
 import type { SessionAuthContext } from "#channel/types.js";
 import { setPendingCoordinationBatch } from "#harness/coordination.js";
 import { advanceStep, emitFailedStep, setHarnessEmissionState } from "#harness/emission.js";
@@ -24,6 +26,8 @@ type Emit = ToolLoopHarnessConfig["handleEvent"];
 interface Applied {
   readonly ended?: StepResult;
   readonly messageAnswered: boolean;
+  /** The suspended step's response, which goes with approved calls that run as runtime work. */
+  readonly dispatched?: readonly ModelMessage[];
   readonly runtimeCalls?: ApprovedRuntimeCalls;
   readonly session: HarnessSession;
 }
@@ -51,10 +55,12 @@ export async function applyHumanInput(input: {
   };
   let messageAnswered = false;
   let runtimeCalls: ApprovedRuntimeCalls | undefined;
+  let dispatched: readonly ModelMessage[] | undefined;
   const applyNested = async (nested: Transition) => {
     const applied = await applyHumanInput({ ...input, session, transition: nested });
     session = applied.session;
     runtimeCalls ??= applied.runtimeCalls;
+    dispatched ??= applied.dispatched;
     return applied.ended;
   };
   for (const event of transition.events) {
@@ -80,6 +86,9 @@ export async function applyHumanInput(input: {
       case "message.answered":
         messageAnswered = true;
         continue;
+      case "calls.dispatched":
+        dispatched = event.messages;
+        continue;
       case "calls.approved": {
         if (effects === undefined) {
           throw new Error("Approved calls can run only where answers arrive.");
@@ -89,7 +98,10 @@ export async function applyHumanInput(input: {
           ...event,
           abortSignal: effects.config.abortSignal,
           emit,
-          messages: effects.projectHistory(session.history, session.state),
+          messages: [
+            ...effects.projectHistory(session.history, session.state),
+            ...HumanInput.read(session.state).suspendedMessages(),
+          ],
           session,
           tools,
         });
@@ -99,10 +111,13 @@ export async function applyHumanInput(input: {
           HumanInput.read(session.state).intake({
             results:
               work.results.length === 0 ? [] : [{ content: [...work.results], role: "tool" }],
+            running: work.runtimeCalls?.tasks.map((task) => task.callId) ?? [],
             type: "calls.settled",
           }),
         );
-        if (settled !== undefined) return { ended: settled, messageAnswered, session };
+        if (settled !== undefined) {
+          return { ended: settled, messageAnswered, dispatched, runtimeCalls, session };
+        }
         if (work.signIns !== undefined) {
           const ended = await applyNested(
             HumanInput.read(session.state).interrupt({
@@ -113,7 +128,9 @@ export async function applyHumanInput(input: {
               type: "authorization.required",
             }),
           );
-          if (ended !== undefined) return { ended, messageAnswered, session };
+          if (ended !== undefined) {
+            return { ended, messageAnswered, dispatched, runtimeCalls, session };
+          }
         }
         continue;
       }
@@ -139,7 +156,7 @@ export async function applyHumanInput(input: {
         throw new Error(`Human input event "${event.type}" is not implemented.`);
     }
   }
-  return { messageAnswered, runtimeCalls, session };
+  return { messageAnswered, dispatched, runtimeCalls, session };
 }
 
 /**
@@ -163,6 +180,7 @@ export async function applyStepArrivals(input: {
   let { session } = input;
   let messageAnswered = false;
   let runtimeCalls: ApprovedRuntimeCalls | undefined;
+  let dispatched: readonly ModelMessage[] | undefined;
   const arrivals = HumanInput.read(session.state).arrivals({ sender: input.auth, stepInput });
   for (const intake of arrivals) {
     const applied = await applyHumanInput({
@@ -176,6 +194,7 @@ export async function applyStepArrivals(input: {
     session = applied.session;
     messageAnswered ||= applied.messageAnswered;
     runtimeCalls ??= applied.runtimeCalls;
+    dispatched ??= applied.dispatched;
     if (applied.ended !== undefined) return { result: applied.ended };
   }
   const turnInput = messageAnswered ? withoutMessage(stepInput) : stepInput;
@@ -190,7 +209,8 @@ export async function applyStepArrivals(input: {
           setPendingCoordinationBatch({
             event: runtimeCalls.at,
             followingInput: following?.message === undefined ? undefined : following,
-            responseMessages: [],
+            // The step's response waits with its runtime calls, out of history.
+            responseMessages: dispatched ?? [],
             session,
             tasks: runtimeCalls.tasks,
           }),

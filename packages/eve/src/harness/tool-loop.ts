@@ -613,16 +613,23 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       return { next: null, session: resolvedCoordination.session };
     }
     session = resolvedCoordination.session;
-    // Calls that ran beside open approvals join history now, so the approvals'
-    // results follow them.
-    const commitsCoordination =
+    // Calls that ran beside open approvals join the suspended step, which
+    // joins history once the approvals' calls have results too.
+    const settlesBesideApprovals =
       resolvedCoordination.outcome === "resolved" &&
       HumanInput.read(session.state).openRequestIds().size > 0;
-    if (commitsCoordination) {
-      session = {
-        ...session,
-        history: validateHarnessModelMessages(resolvedCoordination.messages),
-      };
+    if (settlesBesideApprovals) {
+      const settled = await applyHumanInput({
+        emissionState,
+        hasDelegatedCaller,
+        session,
+        transition: HumanInput.read(session.state).intake({
+          results: resolvedCoordination.messages.slice(session.history.length),
+          type: "calls.settled",
+        }),
+      });
+      if (settled.ended !== undefined) return settled.ended;
+      session = settled.session;
     }
 
     const accepted = HumanInput.read(session.state).acceptInput(
@@ -647,7 +654,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     session = arrived.session;
     const { turnInput } = arrived;
     const turnMessages =
-      resolvedCoordination.outcome === "resolved" && !commitsCoordination
+      resolvedCoordination.outcome === "resolved" && !settlesBesideApprovals
         ? resolvedCoordination.messages
         : [...session.history];
 
@@ -2273,6 +2280,31 @@ async function handleStepResult(input: {
     content: result.content ?? [],
     excludedCallIds: invalidInputToolCallIds,
   });
+  const advertisedCoordinationTools = getAdvertisedTools({
+    session: baseSession,
+    tools: input.coordinationTools,
+  });
+  // Only unanswered calls can dispatch: automatic denials already have results,
+  // and a call waiting for approval runs once approved.
+  const blockedCallIds = new Set([
+    ...approvalRequests.map((request) => request.action.callId),
+    ...extractToolResultCallIds(responseMessages),
+  ]);
+  const deferredToolCalls = ((result.toolCalls ?? []) as TypedToolCall<ToolSet>[])
+    .filter((toolCall) => !invalidInputToolCallIds.has(toolCall.toolCallId))
+    .filter((toolCall) => !blockedCallIds.has(toolCall.toolCallId))
+    .filter((toolCall) => isDeferredHarnessTool(input.coordinationTools.get(toolCall.toolName)))
+    .filter((toolCall) => {
+      if (isDeferredHarnessTool(advertisedCoordinationTools.get(toolCall.toolName))) {
+        return true;
+      }
+      log.warn("deferred tool call blocked because tool is not advertised", {
+        callId: toolCall.toolCallId,
+        sessionId: baseSession.sessionId,
+        toolName: toolCall.toolName,
+      });
+      return false;
+    });
   if (approvalRequests.length > 0) {
     const applied = await applyHumanInput({
       emit,
@@ -2282,6 +2314,9 @@ async function handleStepResult(input: {
       transition: HumanInput.read(baseSession.state).interrupt(
         approvalsRequested({
           at: requestAt(emissionState),
+          // The step waits out of history until every call it made has a
+          // result. With runtime calls, the coordination batch holds it.
+          messages: deferredToolCalls.length > 0 ? [] : responseMessages,
           requester: input.auth,
           requests: approvalRequests,
           tools: buildResponseAuthorizationTools({
@@ -2313,31 +2348,6 @@ async function handleStepResult(input: {
     throw new Error("Holding a turn for a sign-in is not implemented.");
   }
 
-  const advertisedCoordinationTools = getAdvertisedTools({
-    session: baseSession,
-    tools: input.coordinationTools,
-  });
-  // Only unanswered calls can dispatch: automatic denials already have results,
-  // and a call waiting for approval runs once approved.
-  const blockedCallIds = new Set([
-    ...approvalRequests.map((request) => request.action.callId),
-    ...extractToolResultCallIds(responseMessages),
-  ]);
-  const deferredToolCalls = ((result.toolCalls ?? []) as TypedToolCall<ToolSet>[])
-    .filter((toolCall) => !invalidInputToolCallIds.has(toolCall.toolCallId))
-    .filter((toolCall) => !blockedCallIds.has(toolCall.toolCallId))
-    .filter((toolCall) => isDeferredHarnessTool(input.coordinationTools.get(toolCall.toolName)))
-    .filter((toolCall) => {
-      if (isDeferredHarnessTool(advertisedCoordinationTools.get(toolCall.toolName))) {
-        return true;
-      }
-      log.warn("deferred tool call blocked because tool is not advertised", {
-        callId: toolCall.toolCallId,
-        sessionId: baseSession.sessionId,
-        toolName: toolCall.toolName,
-      });
-      return false;
-    });
   const deferred = collectDeferredCalls({
     session: baseSession,
     toolCalls: deferredToolCalls,
@@ -2367,15 +2377,12 @@ async function handleStepResult(input: {
     };
   }
 
-  // The calls wait in history, without results, until their approvals resolve.
+  // The step waits in human input, out of history, until its approvals resolve.
   if (approvalRequests.length > 0) {
     return await holdForInput({
       emit,
       emissionState,
-      session: {
-        ...baseSession,
-        history: validateHarnessModelMessages([...promptMessages, ...responseMessages]),
-      },
+      session: { ...baseSession, history: validateHarnessModelMessages(promptMessages) },
     });
   }
 

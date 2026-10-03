@@ -12,11 +12,19 @@ import type { HarnessToolMap } from "#harness/types.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
 
 import type { HumanInputEvent, Interrupt, RequestAt } from "./index.js";
+import {
+  releaseStep,
+  unansweredCalls,
+  withMessages,
+  withResults,
+  type SuspendedStepState,
+} from "./suspended-step.js";
 
 // The tool approval rules. A model step's calls open one request each; the
 // step's approvals resolve together once each has an answer, or when the turn
 // moves past them. Approved calls run in the runtime (`calls.approved`); every
-// other call gets a not-run result, so history always answers the step's calls.
+// other call gets a not-run result. The step itself waits out of history and
+// joins it only once every call it made has a result.
 
 /** An open approval, as the session stores it. */
 export interface OpenApproval {
@@ -31,7 +39,7 @@ export interface OpenApproval {
 }
 
 /** The state the approval rules read and change. */
-interface ApprovalState {
+interface ApprovalState extends SuspendedStepState {
   readonly requests: Readonly<Record<string, { readonly kind: string }>>;
   readonly grants: readonly string[];
 }
@@ -57,6 +65,8 @@ const NOT_RUN_REASONS: Record<Exclude<Outcome, "approved"> | "cancelled", string
  */
 export function approvalsRequested(input: {
   readonly at: RequestAt;
+  /** The step's response, held out of history; see the interrupt's `messages`. */
+  readonly messages: readonly ModelMessage[];
   readonly requester: SessionAuthContext | null;
   readonly requests: readonly InputRequest[];
   readonly tools: HarnessToolMap;
@@ -80,6 +90,7 @@ export function approvalsRequested(input: {
   return {
     approvalKeys,
     at: input.at,
+    messages: input.messages,
     requester: input.requester,
     requests: input.requests,
     responsePolicyRequestIds,
@@ -107,11 +118,15 @@ export function withoutApprovalParts(messages: readonly ModelMessage[]): ModelMe
   });
 }
 
-/** A model step's calls ask for approval: each becomes an open request, and the turn holds. */
+/**
+ * A model step's calls ask for approval: each becomes an open request, the
+ * step is suspended out of history, and the turn holds.
+ */
 export function openApprovals<S extends ApprovalState>(
   state: S,
   input: {
     readonly at: RequestAt;
+    readonly messages: readonly ModelMessage[];
     readonly requests: readonly InputRequest[];
     readonly requester: SessionAuthContext | null;
     readonly approvalKeys: Readonly<Record<string, string>>;
@@ -133,7 +148,7 @@ export function openApprovals<S extends ApprovalState>(
   }
   return {
     events: [publish(createInputRequestedEvent({ ...input.at, requests: input.requests }))],
-    state: { ...state, requests },
+    state: { ...state, requests, suspended: { at: input.at, messages: [...input.messages] } },
   };
 }
 
@@ -175,10 +190,14 @@ export function receiveMessage<S extends ApprovalState>(state: S, text: string):
   return { ...answered, events: [{ type: "message.answered" }, ...answered.events] };
 }
 
-/** The turn was cancelled: every open approval is cancelled, and its call never runs. */
+/**
+ * The turn was cancelled: every open approval is cancelled, and its call never
+ * runs. The suspended step joins history with a not-run result for each call
+ * still without one.
+ */
 export function cancelApprovals<S extends ApprovalState>(state: S): Reduced<S> {
   const open = openApprovalsOf(state);
-  if (open.length === 0) return { events: [], state };
+  if (open.length === 0 && state.suspended === undefined) return { events: [], state };
   const events: HumanInputEvent[] = open.map((approval) =>
     publish(
       createInputResolvedEvent({
@@ -193,19 +212,47 @@ export function cancelApprovals<S extends ApprovalState>(state: S): Reduced<S> {
       }),
     ),
   );
-  events.push({
-    message: notRunMessage(open.map((approval) => notRunPart(approval, "cancelled"))),
-    type: "history.appended",
-  });
-  return { events, state: { ...state, requests: withoutApprovals(state.requests) } };
+  const cancelled = open.map((approval) => notRunPart(approval, "cancelled"));
+  const approvalCallIds = new Set(open.map((approval) => approval.request.action.callId));
+  for (const call of unansweredCalls(state.suspended?.messages ?? [])) {
+    if (approvalCallIds.has(call.toolCallId)) continue;
+    cancelled.push({
+      output: { reason: NOT_RUN_REASONS.cancelled, type: "execution-denied" },
+      toolCallId: call.toolCallId,
+      toolName: call.toolName,
+      type: "tool-result",
+    });
+  }
+  const released = releaseStep({ ...state, requests: withoutApprovals(state.requests) }, cancelled);
+  return { events: [...events, ...released.events], state: released.state };
 }
 
-/** The runtime ran the approved calls: their results join history, and the turn goes on. */
+/**
+ * Calls of the suspended step settled: approved calls eve ran, or runtime
+ * calls that ran beside open approvals. Their results join the step. Once no
+ * approval is open, the step joins history and the turn goes on, unless some
+ * approved calls still run as runtime work (`running`): then the step goes
+ * with them (`calls.dispatched`) and joins history with their results.
+ */
 export function settleCalls<S extends ApprovalState>(
   state: S,
   results: readonly ModelMessage[],
+  running: readonly string[] = [],
 ): Reduced<S> {
-  return { events: results.map((message) => ({ message, type: "history.appended" })), state };
+  const { suspended } = state;
+  // A step parked before steps were held out of history has its calls there.
+  if (suspended === undefined) {
+    return { events: results.map((message) => ({ message, type: "history.appended" })), state };
+  }
+  const messages = withMessages(suspended.messages, results);
+  const settled = { ...state, suspended: { ...suspended, messages } };
+  if (openApprovalsOf(state).length > 0) return { events: [], state: settled };
+  if (running.length === 0) return releaseStep(settled, []);
+  const { suspended: _dispatched, ...rest } = settled;
+  return {
+    events: [{ at: suspended.at, messages, type: "calls.dispatched" }],
+    state: rest as unknown as S,
+  };
 }
 
 /**
@@ -272,12 +319,21 @@ function resolveApprovals<S extends ApprovalState>(state: S): Reduced<S> {
     publish(createInputResolvedEvent({ ...at, resolutions })),
     ...rejected,
   ];
-  if (notRun.length > 0) events.push({ message: notRunMessage(notRun), type: "history.appended" });
-  if (approved.length > 0) events.push({ at, requests: approved, type: "calls.approved" });
-  return {
-    events,
-    state: { ...state, grants: [...grants], requests: withoutApprovals(state.requests) },
-  };
+  const resolved = { ...state, grants: [...grants], requests: withoutApprovals(state.requests) };
+  if (approved.length === 0) {
+    const released = releaseStep(resolved, notRun);
+    return { events: [...events, ...released.events], state: released.state };
+  }
+  // The step waits for the approved calls' results; see `settleCalls`.
+  const suspended =
+    resolved.suspended === undefined
+      ? undefined
+      : { ...resolved.suspended, messages: withResults(resolved.suspended.messages, notRun) };
+  if (suspended === undefined && notRun.length > 0) {
+    events.push({ message: notRunMessage(notRun), type: "history.appended" });
+  }
+  events.push({ at, requests: approved, type: "calls.approved" });
+  return { events, state: suspended === undefined ? resolved : { ...resolved, suspended } };
 }
 
 function outcomeOf(answer: InputResponse | undefined): Outcome {

@@ -16,6 +16,7 @@ import {
   type OpenApproval,
 } from "./approvals.js";
 import { staleAnswersAsText } from "./stale-answers.js";
+import type { SuspendedStep } from "./suspended-step.js";
 import { arrivalsOf } from "./arrivals.js";
 
 export { approvalsRequested, withoutApprovalParts } from "./approvals.js";
@@ -84,6 +85,15 @@ export class HumanInput {
     return arrivalsOf({ ...input, held: "held" in this.next() });
   }
 
+  /**
+   * The suspended step's messages: the response of a step whose calls wait,
+   * held out of history until each has a result. Tools that run for it read
+   * them after history.
+   */
+  suspendedMessages(): readonly ModelMessage[] {
+    return this.#state.suspended?.messages ?? [];
+  }
+
   /** The approval keys `once()` approvals granted, which approval policies read. */
   grantedApprovalKeys(): ReadonlySet<string> {
     return grantedApprovalKeys(this.#state);
@@ -112,6 +122,12 @@ export type Interrupt =
   | {
       readonly type: "approvals.requested";
       readonly at: RequestAt;
+      /**
+       * The step's response, which waits out of history until every call it
+       * made has a result. Empty when the coordination batch holds it, because
+       * the step also made runtime calls.
+       */
+      readonly messages: readonly ModelMessage[];
       readonly requests: readonly InputRequest[];
       readonly requester: SessionAuthContext | null;
       /** Each request's approval key (the tool's `approvalKey`), when its tool has one. */
@@ -166,8 +182,16 @@ export type Intake =
       readonly candidateId: string;
       readonly verdict: "allowed" | "rejected" | "failed" | "authorization-required";
     }
-  /** The runtime ran the calls `calls.approved` asked for. */
-  | { readonly type: "calls.settled"; readonly results: readonly ModelMessage[] }
+  /**
+   * Calls of the suspended step settled: those `calls.approved` asked for, or
+   * runtime calls that ran beside open approvals. `running` names the
+   * approved calls that still run as runtime work.
+   */
+  | {
+      readonly type: "calls.settled";
+      readonly results: readonly ModelMessage[];
+      readonly running?: readonly string[];
+    }
   | { readonly type: "time"; readonly now: number }
   /** A workflow run or child session ended; nobody can answer what it relayed. */
   | { readonly type: "run.ended"; readonly runId: string };
@@ -188,6 +212,15 @@ export type HumanInputEvent =
       readonly type: "calls.approved";
       readonly at: RequestAt;
       readonly requests: readonly InputRequest[];
+    }
+  /**
+   * The step's remaining calls run as runtime work: park on them with these
+   * messages, the step's response, which joins history with their results.
+   */
+  | {
+      readonly type: "calls.dispatched";
+      readonly at: RequestAt;
+      readonly messages: readonly ModelMessage[];
     }
   /** The message answered open requests, so the turn doesn't read it as input. */
   | { readonly type: "message.answered" }
@@ -232,6 +265,8 @@ interface HumanInputState {
   readonly queued?: StepInput;
   /** Approval keys a `once()` approval granted for the rest of the session. */
   readonly grants: readonly string[];
+  /** The model step whose calls wait, held out of history. */
+  readonly suspended?: SuspendedStep;
 }
 
 type OpenRequest =
@@ -265,6 +300,7 @@ function isEmpty(state: HumanInputState): boolean {
   return (
     Object.keys(state.requests).length === 0 &&
     state.queued === undefined &&
+    state.suspended === undefined &&
     state.grants.length === 0
   );
 }
@@ -296,7 +332,7 @@ function reduce(state: HumanInputState, input: Interrupt | Intake): Reduced {
     case "cancelled":
       return cancelApprovals(state);
     case "calls.settled":
-      return settleCalls(state, input.results);
+      return settleCalls(state, input.results, input.running);
     // Human input is being rebuilt case by case. Until a case exists, a turn
     // that needs a person fails with a clear error instead of hanging.
     case "authorization.required":

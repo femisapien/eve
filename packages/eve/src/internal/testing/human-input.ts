@@ -109,6 +109,27 @@ export function approval(toolName: string, requestId = toolName): InputRequest {
   };
 }
 
+/** The response of Alice's model step that made the calls `requests` ask about. */
+export function stepResponse(requests: readonly InputRequest[]): ModelMessage[] {
+  return [
+    {
+      content: requests.flatMap((request) =>
+        request.action === undefined
+          ? []
+          : [
+              {
+                input: request.action.input,
+                toolCallId: request.action.callId,
+                toolName: request.action.toolName,
+                type: "tool-call" as const,
+              },
+            ],
+      ),
+      role: "assistant",
+    },
+  ];
+}
+
 /** Alice's model step made calls whose tools ask a person to approve them. */
 export function approvalsRequested(
   requests: readonly InputRequest[],
@@ -117,6 +138,7 @@ export function approvalsRequested(
   return {
     approvalKeys: {},
     at: AT,
+    messages: stepResponse(requests),
     requester: ALICE,
     requests,
     responsePolicyRequestIds: [],
