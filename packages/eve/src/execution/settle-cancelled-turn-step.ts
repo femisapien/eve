@@ -30,6 +30,7 @@ import {
   takeSessionUsageDelta,
 } from "#harness/turn-tag-state.js";
 import type { TokenUsage } from "#shared/token-usage.js";
+import { cancelBashJobs } from "#execution/sandbox/bash-jobs.js";
 
 const CANCELLED_REASON = "Cancelled.";
 
@@ -83,6 +84,7 @@ export async function settleCancelledTurn(
     origin: "own",
     async publish(emit) {
       const emissionState = getHarnessEmissionState(durableState);
+      await cancelBashJobs(step.ctx, emissionState.turnId);
       for (const event of declinedSignInEvents(
         withdrawal.withdrawn,
         CANCELLED_REASON,

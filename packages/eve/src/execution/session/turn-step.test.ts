@@ -9,6 +9,7 @@ import type {
   SubagentInputRequestHookPayload,
 } from "#channel/types.js";
 import { ContextContainer, loadContext } from "#context/container.js";
+import { BashJobsKey, registerBashJob } from "#execution/sandbox/bash-jobs.js";
 import { ContextKey } from "#context/key.js";
 import {
   AuthKey,
@@ -33,7 +34,7 @@ import { deserializeContext, serializeContext } from "#context/serialize.js";
 import { startWorkflowTask } from "#execution/tools/workflow/start.js";
 import { getPendingCoordinationBatch, setPendingCoordinationBatch } from "#harness/coordination.js";
 import { TurnCancelledError } from "#harness/turn-cancellation.js";
-import { setHarnessEmissionState } from "#harness/emission-state.js";
+import { getHarnessEmissionState, setHarnessEmissionState } from "#harness/emission-state.js";
 import { getPendingAuthorization, setPendingAuthorization } from "#harness/authorization.js";
 import { upsertProxyInputRequests } from "#harness/proxy-input-requests.js";
 import { appendPendingInputBatch } from "#harness/input-requests.js";
@@ -967,6 +968,12 @@ describe("turnStep", () => {
         callCount++;
         if (callCount === 51) {
           loadContext().set(ThreadKey, "discarded call 51");
+          registerBashJob(loadContext(), {
+            identity: "boot:123",
+            outputDirectory: "/tmp/.eve/jobs/yielded",
+            pid: 123,
+            turnId: "cancelled-turn",
+          });
           controller.abort(new TurnCancelledError());
           return {
             next: continueStep,
@@ -1004,6 +1011,14 @@ describe("turnStep", () => {
     expect(result.action).toBe("cancelled");
     expect(callCount).toBe(51);
     expect(result.serializedContext).toMatchObject({ [ThreadKey.name]: "completed call 50" });
+    expect(result.serializedContext[BashJobsKey.name]).toEqual([
+      {
+        identity: "boot:123",
+        outputDirectory: "/tmp/.eve/jobs/yielded",
+        pid: 123,
+        turnId: "cancelled-turn",
+      },
+    ]);
     expect(result.history).toHaveLength(50);
     expect(result.history.at(-1)).toEqual({
       content: "model call 50",
@@ -1913,11 +1928,31 @@ describe("turnStep", () => {
     const session = createStubSession();
     installSessionStoreMocks([session]);
     vi.mocked(createExecutionNodeStep).mockImplementation(() => {
-      return async (stepSession): Promise<StepResult> => ({
-        next: null,
-        session: stepSession,
-        settledTurn: { output: "settled answer" },
-      });
+      return async (stepSession): Promise<StepResult> => {
+        const emission = getHarnessEmissionState(stepSession.state);
+        const turnId = emission.turnId || `turn_${emission.sequence}`;
+        registerBashJob(loadContext(), {
+          turnId,
+          pid: 123,
+          outputDirectory: "/tmp/owned",
+          identity: "boot:123",
+        });
+        registerBashJob(loadContext(), {
+          turnId: "another-turn",
+          pid: 456,
+          outputDirectory: "/tmp/other",
+          identity: "boot:456",
+        });
+        return {
+          next: null,
+          session: setHarnessEmissionState(stepSession, {
+            ...emission,
+            turnId: "",
+            sequence: emission.sequence + 1,
+          }),
+          settledTurn: { output: "settled answer" },
+        };
+      };
     });
 
     const result = await turnStep({
@@ -1934,6 +1969,9 @@ describe("turnStep", () => {
       action: "park",
       settled: { output: "settled answer" },
     });
+    expect(result.serializedContext[BashJobsKey.name]).toEqual([
+      { turnId: "another-turn", pid: 456, outputDirectory: "/tmp/other", identity: "boot:456" },
+    ]);
   });
 
   it("keeps a settled turn when cancellation arrives after its waiting boundary", async () => {

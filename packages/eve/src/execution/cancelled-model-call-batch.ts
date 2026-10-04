@@ -8,6 +8,7 @@ import type { DurableStepResult } from "#execution/session/turn-step-types.js";
 import type { HarnessSession, StepInput, StepResult } from "#harness/types.js";
 import { preserveSerializedInstrumentationState } from "#instrumentation/state.js";
 import { preserveSerializedAgentTraceState } from "#tracing/agent-trace-context-store.js";
+import { BashJobsKey } from "#execution/sandbox/bash-jobs.js";
 
 export interface CompletedModelCallCheckpoint {
   readonly result: StepResult;
@@ -33,6 +34,7 @@ export async function createCancelledModelCallBatchResult(input: {
   const checkpointContext = {
     ...(input.checkpoint?.serializedContext ?? input.beforeBatchContext),
     [TurnDeliveryIdsKey.name]: interruptedContext[TurnDeliveryIdsKey.name],
+    [BashJobsKey.name]: interruptedContext[BashJobsKey.name],
   };
 
   return {

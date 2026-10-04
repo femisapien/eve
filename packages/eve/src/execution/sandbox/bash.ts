@@ -5,6 +5,9 @@ import { shellQuote } from "#execution/sandbox/shell-quote.js";
 import { streamToBuffer } from "#execution/sandbox/stream-utils.js";
 import { MAX_OUTPUT_BYTES, truncateTail } from "#execution/sandbox/truncate-output.js";
 import { isEveDevEnvironment } from "#internal/application/dev-environment.js";
+import { contextStorage } from "#context/container.js";
+import { SessionKey } from "#context/keys.js";
+import { BASH_PROCESS_IDENTITY, registerBashJob } from "#execution/sandbox/bash-jobs.js";
 
 /** How long a `bash` call waits before it leaves the command running in the background. */
 export const BASH_YIELD_SECONDS = 30;
@@ -201,17 +204,29 @@ async function claimRunningJob(
   const marker = `eve-bash:${jobId}`;
   const raw = await sandbox.run({
     command: [
+      BASH_PROCESS_IDENTITY,
       `cd ${shellQuote(directory)} 2>/dev/null && mkdir claimed 2>/dev/null || exit 0`,
       `kill -USR1 "$(cat launcher)" 2>/dev/null`,
-      `printf '%s %s %s %s\\n' ${marker} "$(cat pid)" "$(($(wc -c < stdout)))" "$(($(wc -c < stderr)))"`,
+      `identity=$(identity "$(cat pid)" | base64 | tr -d '\\n')`,
+      `printf '%s %s %s %s %s\\n' ${marker} "$(cat pid)" "$(($(wc -c < stdout)))" "$(($(wc -c < stderr)))" "$identity"`,
       `tail -c ${MAX_OUTPUT_BYTES} stdout`,
       `tail -c ${MAX_OUTPUT_BYTES} stderr >&2`,
     ].join("\n"),
   });
   // Output a login profile prints comes before the marker.
-  const match = new RegExp(`(?:^|\\n)${marker} (\\d+) (\\d+) (\\d+)\\n`).exec(raw.stdout);
+  const match = new RegExp(`(?:^|\\n)${marker} (\\d+) (\\d+) (\\d+) ([^\\n]*)\\n`).exec(raw.stdout);
   if (match === null) return undefined;
   const pid = Number(match[1]);
+  const ctx = contextStorage.getStore();
+  const session = ctx?.get(SessionKey);
+  if (session !== undefined && match[4] !== "") {
+    registerBashJob(ctx!, {
+      identity: Buffer.from(match[4]!, "base64").toString().trimEnd(),
+      outputDirectory: directory,
+      pid,
+      turnId: session.turn.id,
+    });
+  }
   const stdout = raw.stdout.slice(match.index + match[0].length);
   const omitted = {
     stderr: Math.max(0, Number(match[3]) - Buffer.byteLength(raw.stderr)),

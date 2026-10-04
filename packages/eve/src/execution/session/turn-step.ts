@@ -1,3 +1,4 @@
+import { BashJobsKey } from "#execution/sandbox/bash-jobs.js";
 import { bindDynamicConnections } from "#execution/dynamic-connections.js";
 import { deriveSessionTitle } from "#execution/eve-workflow-attributes.js";
 import { setEveAttributes } from "#runtime/attributes/emit.js";
@@ -571,6 +572,16 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
     // Re-stamp the current address after handlers add a continuation alias.
     const aliased = reconcileSessionContinuationToken(ctx, stepResult.session);
     agentTraceState.pruneAgentTraceState(ctx, aliased.sessionId, aliased.state);
+    if (
+      stepResult.settledTurn !== undefined ||
+      (stepResult.next !== null && typeof stepResult.next === "object" && "done" in stepResult.next)
+    ) {
+      const turnId = activeTurnId(initialEmissionState);
+      ctx.set(
+        BashJobsKey,
+        (ctx.get(BashJobsKey) ?? []).filter((job) => job.turnId !== turnId),
+      );
+    }
     const nextSerializedContext = serializeContext(ctx);
     stepResult = { ...stepResult, session: aliased };
 

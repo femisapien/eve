@@ -11,6 +11,20 @@ import type { SandboxSession } from "#shared/sandbox-session.js";
 
 import { executeBashOnSandbox } from "./bash.js";
 import { buildSandboxSession } from "./session.js";
+import { ContextContainer, contextStorage } from "#context/container.js";
+import { SandboxKey, SessionKey } from "#context/keys.js";
+import { deserializeContext, serializeContext } from "#context/serialize.js";
+import { cancelBashJobs } from "./bash-jobs.js";
+import { compileFromMemory } from "#internal/testing/compile-from-memory.js";
+import { installBundledCompiledArtifacts } from "#runtime/loaders/bundled-artifacts.js";
+import { createRuntimeSession, withRuntimeSession } from "#runtime/sessions/runtime-session.js";
+import { createTestSessionState } from "#internal/testing/session-state.js";
+import { runSessionStateStep } from "#internal/testing/session-state-step.js";
+import { settleCancelledTurnStep } from "#execution/settle-cancelled-turn-step.js";
+
+import { defineSandbox } from "#public/definitions/sandbox.js";
+import { defineSandboxProvider } from "#shared/sandbox-provider.js";
+import { createBundledRuntimeCompiledArtifactsSource } from "#runtime/compiled-artifacts-source.js";
 
 const createScratchDirectory = useTemporaryDirectories();
 
@@ -81,6 +95,123 @@ describe("executeBashOnSandbox with a real shell", () => {
 
     await expect(call).rejects.toThrow();
     await vi.waitFor(() => expect(isProcessAlive(childPid)).toBe(false), { timeout: 10_000 });
+  });
+
+  it("cancels a yielded job after restoring its owner, without stopping sibling work", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    const { home, sandbox } = await createHostSandbox();
+    const context = new ContextContainer();
+    const access = {
+      get: async () => sandbox,
+      captureState: async () => ({ session: null }),
+      stop: async () => {},
+    };
+    context.setVirtualContext(SandboxKey, access);
+    context.setVirtualContext(SessionKey, {
+      auth: { current: null, initiator: null },
+      sessionId: "first-session",
+      turn: { id: "first", sequence: 0 },
+    });
+    const firstPidFile = join(home, "first.pid");
+    const siblingPidFile = join(home, "sibling.pid");
+    const start = (pidFile: string) =>
+      executeBashOnSandbox(sandbox, {
+        command: `sleep 60 & echo $! > ${pidFile}; wait`,
+      });
+    const first = contextStorage.run(context, () =>
+      executeBashOnSandbox(sandbox, {
+        command: `bash -c 'trap "" TERM; sleep 60' & echo $! > ${firstPidFile}; wait`,
+      }),
+    );
+    const sibling = start(siblingPidFile);
+    const firstPid = await readPid(firstPidFile);
+    const siblingPid = await readPid(siblingPidFile);
+    await vi.advanceTimersByTimeAsync(30_000);
+    const jobs = await Promise.all([first, sibling]);
+    vi.useRealTimers();
+    try {
+      for (const job of jobs) {
+        if (job.status !== "running") throw new Error("Expected a yielded command.");
+      }
+      const restored = await deserializeContext(serializeContext(context));
+      restored.setVirtualContext(SandboxKey, access);
+      expect(isProcessAlive(firstPid)).toBe(true);
+      expect(isProcessAlive(siblingPid)).toBe(true);
+
+      const handle = {
+        sandbox,
+        async onRuntimeShutdown() {},
+        async onSessionDelete() {},
+        async onSessionStop() {},
+      };
+      const provider = defineSandboxProvider({
+        name: "host-bash",
+        environment: () => ({
+          prepare: async () => null,
+          resume: async () => handle,
+          start: async () => ({ handle, state: null }),
+        }),
+      });
+      const compiled = await compileFromMemory({
+        name: "test-agent",
+        model: "openai/gpt-5.4",
+        modules: [
+          {
+            logicalPath: "sandbox.ts",
+            loadNamespace: async () => {
+              const environment = provider.environment();
+              return { environment, default: defineSandbox(() => environment.open()) };
+            },
+          },
+        ],
+      });
+      const base = createTestSessionState({ sessionId: "first-session" });
+      const state = { sessionStarted: true, sequence: 0, stepIndex: 1, turnId: "first" };
+      await withRuntimeSession(createRuntimeSession("test-agent"), async () => {
+        installBundledCompiledArtifacts({
+          ...compiled,
+          sandboxPreparedArtifacts: {
+            kind: "eve-sandbox-prepared-artifacts",
+            version: 2,
+            entries: [{ nodeId: "__root__", providerName: "host-bash", artifact: null }],
+          },
+        });
+        return runSessionStateStep(
+          {
+            history: [],
+            reportUsage: false,
+            sessionWritable: new WritableStream({ write() {} }),
+            serializedContext: {
+              ...serializeContext(restored),
+              "eve.auth": null,
+              "eve.bundle": { source: createBundledRuntimeCompiledArtifactsSource() },
+              "eve.channel": { kind: "http", state: {} },
+              "eve.sessionId": "first-session",
+            },
+            sessionState: {
+              ...base,
+              emissionState: state,
+              snapshot: {
+                session: { ...base.snapshot.session, state: { "eve.harness.emission": state } },
+              },
+            },
+          },
+          settleCancelledTurnStep,
+        );
+      });
+
+      await vi.waitFor(() => expect(isProcessAlive(firstPid)).toBe(false), { timeout: 10_000 });
+      expect(isProcessAlive(siblingPid)).toBe(true);
+      await cancelBashJobs(restored, "first");
+      expect(isProcessAlive(siblingPid)).toBe(true);
+    } finally {
+      for (const job of jobs) {
+        if (job.status === "running") {
+          await runHostBash(`kill -- -${job.pid}`, home);
+          await rm(job.outputDirectory, { force: true, recursive: true });
+        }
+      }
+    }
   });
 });
 
