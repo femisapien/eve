@@ -1,4 +1,8 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import * as sandboxAccess from "#execution/sandbox/ensure.js";
+import { mockSandbox } from "#internal/testing/mocks/mock-sandbox.js";
+import { BashJobsKey } from "#execution/sandbox/bash-jobs.js";
+import { setLogRecordSubscriber, type LogRecord } from "#internal/logging.js";
 
 import type { SessionStateMap } from "#harness/types.js";
 import { readDurableSession } from "#execution/durable-session-store.js";
@@ -66,6 +70,98 @@ function spend<T extends { readonly state?: SessionStateMap }>(
 }
 
 describe("settleCancelledTurnStep", () => {
+  it.each(["unavailable", "run-rejected", "nonzero"])(
+    "settles cancellation and preserves jobs when sandbox cleanup is %s",
+    async (failure) => {
+      const logs: LogRecord[] = [];
+      const sandbox = mockSandbox({
+        run: async () => {
+          if (failure === "run-rejected") throw new Error("sandbox transport unavailable");
+          return { exitCode: 1, stdout: "", stderr: "stop failed" };
+        },
+      });
+      const access = vi.spyOn(sandboxAccess, "ensureSandboxAccess").mockResolvedValue({
+        ...sandbox.access,
+        get: async () => {
+          if (failure === "unavailable") throw new Error("sandbox resume failed");
+          return sandbox.session;
+        },
+      });
+      const jobs = [
+        {
+          turnId: "turn_1",
+          pid: 123,
+          outputDirectory: "/tmp/.eve/jobs/owned",
+          identity: "boot:123",
+        },
+      ];
+      setLogRecordSubscriber((record) => logs.push(record));
+      try {
+        const result = await settleCancelledTurn({
+          history: [],
+          reportUsage: false,
+          serializedContext: { ...serializedContext, [BashJobsKey.name]: jobs },
+          sessionState: (() => {
+            const base = createTestSessionState();
+            const state = { sequence: 1, sessionStarted: true, stepIndex: 1, turnId: "turn_1" };
+            return {
+              ...base,
+              emissionState: state,
+              snapshot: {
+                session: { ...base.snapshot.session, state: { "eve.harness.emission": state } },
+              },
+            };
+          })(),
+        });
+        expect(result.events.map((event) => event.type)).toEqual([
+          "turn.cancelled",
+          "session.waiting",
+        ]);
+        expect(result.sessionState.emissionState.turnId).toBe("");
+        expect(result.serializedContext[BashJobsKey.name]).toEqual(jobs);
+        expect(logs).toContainEqual(
+          expect.objectContaining({
+            level: "warn",
+            fields: expect.objectContaining({ turnId: "turn_1" }),
+          }),
+        );
+      } finally {
+        access.mockRestore();
+        setLogRecordSubscriber(undefined);
+      }
+    },
+  );
+  it("stops jobs from the first interrupted turn before its preamble was checkpointed", async () => {
+    const sandbox = mockSandbox();
+    const access = vi.spyOn(sandboxAccess, "ensureSandboxAccess").mockResolvedValue(sandbox.access);
+    try {
+      const result = await settleCancelledTurn({
+        history: [],
+        reportUsage: false,
+        serializedContext: {
+          ...serializedContext,
+          [BashJobsKey.name]: [
+            {
+              turnId: "turn_0",
+              pid: 123,
+              outputDirectory: "/tmp/.eve/jobs/owned",
+              identity: "boot:123",
+            },
+          ],
+        },
+        sessionState: createTestSessionState(),
+      });
+      expect(sandbox.commandLog).toHaveLength(1);
+      expect(result.serializedContext[BashJobsKey.name]).toEqual([]);
+      expect(result.events.map((event) => event.type)).toEqual([
+        "turn.cancelled",
+        "session.waiting",
+      ]);
+    } finally {
+      access.mockRestore();
+    }
+  });
+
   it.each([
     { reportUsage: true, reported: 50, nextSettled: 0 },
     { reportUsage: false, reported: undefined, nextSettled: 50 },

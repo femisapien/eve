@@ -1,5 +1,5 @@
 import { contextStorage, type ContextContainer } from "#context/container.js";
-import { TurnDeliveryIdsKey } from "#context/keys.js";
+import { SandboxKey, TurnDeliveryIdsKey } from "#context/keys.js";
 import { preserveSerializedSessionDynamicModelSelection } from "#context/serialized-dynamic-model-selection.js";
 import { serializeContext } from "#context/serialize.js";
 import { preserveCancelledTurnMessage } from "#execution/cancelled-turn-message.js";
@@ -24,7 +24,13 @@ export async function createCancelledModelCallBatchResult(input: {
   readonly stepInput: StepInput | undefined;
 }): Promise<DurableStepResult> {
   const interruptedContext = serializeContext(input.ctx);
-  const checkpointSession = input.checkpoint?.result.session ?? input.initialSession;
+  const previousSession = input.checkpoint?.result.session ?? input.initialSession;
+  const jobs = input.ctx.get(BashJobsKey) ?? [];
+  // Jobs from the discarded call still belong to the sandbox it opened.
+  const sandboxState =
+    jobs.length > 0 ? await input.ctx.get(SandboxKey)?.captureState() : undefined;
+  const checkpointSession =
+    sandboxState === undefined ? previousSession : { ...previousSession, sandboxState };
   const cancelledSession =
     input.checkpoint === undefined
       ? await contextStorage.run(input.ctx, () =>

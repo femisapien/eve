@@ -13,6 +13,7 @@ import { BashJobsKey, registerBashJob } from "#execution/sandbox/bash-jobs.js";
 import { ContextKey } from "#context/key.js";
 import {
   AuthKey,
+  SandboxKey,
   ChannelInstrumentationKey,
   ContinuationHookTokensKey,
   ContinuationTokenKey,
@@ -955,76 +956,93 @@ describe("turnStep", () => {
     ]);
   });
 
-  it("checkpoints completed batched model calls when explicit cancellation aborts the active call", async () => {
-    const bundle = createTurnStepTestBundle(100);
-    vi.mocked(getCompiledRuntimeAgentBundle).mockResolvedValue(bundle);
-    installSessionStoreMocks([createStubSession()]);
+  it.each([1, 51])(
+    "checkpoints completed batched model calls and first-use sandbox state when cancellation aborts call %i",
+    async (cancelAt) => {
+      const bundle = createTurnStepTestBundle(100);
+      vi.mocked(getCompiledRuntimeAgentBundle).mockResolvedValue(bundle);
+      installSessionStoreMocks([createStubSession()]);
 
-    const controller = new AbortController();
-    const continueStep: StepFn = async (session) => ({ next: null, session });
-    let callCount = 0;
-    vi.mocked(createExecutionNodeStep).mockImplementation(() => {
-      return async (session): Promise<StepResult> => {
-        callCount++;
-        if (callCount === 51) {
-          loadContext().set(ThreadKey, "discarded call 51");
-          registerBashJob(loadContext(), {
-            identity: "boot:123",
-            outputDirectory: "/tmp/.eve/jobs/yielded",
-            pid: 123,
-            turnId: "cancelled-turn",
-          });
-          controller.abort(new TurnCancelledError());
+      const controller = new AbortController();
+      const continueStep: StepFn = async (session) => ({ next: null, session });
+      let callCount = 0;
+      const sandboxState = {
+        session: {
+          providerName: "first-use",
+          state: { id: "original-sandbox" },
+          stateProtocolVersion: 1,
+        },
+      };
+      const getSandbox = vi.fn(async () => {
+        throw new Error("Must not open another sandbox");
+      });
+      vi.mocked(createExecutionNodeStep).mockImplementation(() => {
+        return async (session): Promise<StepResult> => {
+          callCount++;
+          if (callCount === cancelAt) {
+            loadContext().setVirtualContext(SandboxKey, {
+              captureState: async () => sandboxState,
+              get: getSandbox,
+              stop: async () => {},
+            });
+            loadContext().set(ThreadKey, "discarded call 51");
+            registerBashJob(loadContext(), {
+              identity: "boot:123",
+              outputDirectory: "/tmp/.eve/jobs/yielded",
+              pid: 123,
+              turnId: "cancelled-turn",
+            });
+            controller.abort(new TurnCancelledError());
+            throw controller.signal.reason;
+          }
+          loadContext().set(ThreadKey, `completed call ${String(callCount)}`);
           return {
             next: continueStep,
             session: {
               ...session,
               history: [
                 ...session.history,
-                { content: "discarded model call 51", role: "assistant" as const },
+                { content: `model call ${String(callCount)}`, role: "assistant" as const },
               ],
             },
           };
-        }
-        loadContext().set(ThreadKey, `completed call ${String(callCount)}`);
-        return {
-          next: continueStep,
-          session: {
-            ...session,
-            history: [
-              ...session.history,
-              { content: `model call ${String(callCount)}`, role: "assistant" as const },
-            ],
-          },
         };
-      };
-    });
+      });
 
-    const result = await turnStep({
-      abortSignal: controller.signal,
-      input: { kind: "deliver", payloads: [{ message: "run a long chain" }] },
-      sessionWritable: createTestWritable(),
-      serializedContext: createSerializedContext(),
-      sessionState: createStubSessionState(),
-    });
+      const result = await turnStep({
+        abortSignal: controller.signal,
+        input: { kind: "deliver", payloads: [{ message: "run a long chain" }] },
+        sessionWritable: createTestWritable(),
+        serializedContext: createSerializedContext(),
+        sessionState: createStubSessionState(),
+      });
 
-    expect(result.action).toBe("cancelled");
-    expect(callCount).toBe(51);
-    expect(result.serializedContext).toMatchObject({ [ThreadKey.name]: "completed call 50" });
-    expect(result.serializedContext[BashJobsKey.name]).toEqual([
-      {
-        identity: "boot:123",
-        outputDirectory: "/tmp/.eve/jobs/yielded",
-        pid: 123,
-        turnId: "cancelled-turn",
-      },
-    ]);
-    expect(result.history).toHaveLength(50);
-    expect(result.history.at(-1)).toEqual({
-      content: "model call 50",
-      role: "assistant",
-    });
-  });
+      expect(result.action).toBe("cancelled");
+      expect(callCount).toBe(cancelAt);
+      expect(result.sessionState.snapshot.session.sandboxState).toEqual(sandboxState);
+      expect(getSandbox).not.toHaveBeenCalled();
+      if (cancelAt > 1) {
+        expect(result.serializedContext).toMatchObject({
+          [ThreadKey.name]: `completed call ${cancelAt - 1}`,
+        });
+      }
+      expect(result.serializedContext[BashJobsKey.name]).toEqual([
+        {
+          identity: "boot:123",
+          outputDirectory: "/tmp/.eve/jobs/yielded",
+          pid: 123,
+          turnId: "cancelled-turn",
+        },
+      ]);
+      if (cancelAt > 1) {
+        expect(result.history).toHaveLength(cancelAt - 1);
+        expect(result.history.at(-1)).toEqual({
+          content: `model call ${cancelAt - 1}`,
+          role: "assistant",
+        });
+      }
+    },
+  );
 
   it("keeps one model call per Workflow step by default", async () => {
     const bundle = createTurnStepTestBundle();

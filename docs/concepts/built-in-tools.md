@@ -53,7 +53,7 @@ cat /tmp/.eve/jobs/3f9a1c2e/exit      # exit code, once the command has finished
 kill -- -4312                         # stop the command's whole process group
 ```
 
-The command keeps running until it exits, the model stops it, its owning turn is cancelled, or the sandbox stops. Cancelling a turn force-stops commands it already returned as `running` with `SIGKILL`, including their subprocesses, without stopping other agents' commands in a shared sandbox. A normally completed turn releases ownership: commands deliberately left running by that turn continue across later turns and require an explicit stop. Output files stay in the sandbox until the sandbox stops. The `just-bash` provider has no background processes, so it runs every command to completion.
+The command keeps running until it exits, the model stops it, its owning turn is cancelled, or the sandbox stops. Cancelling a turn force-stops commands it already returned as `running` with `SIGKILL`, including their subprocesses, without stopping other agents' commands in a shared sandbox. A normally completed turn releases ownership: commands deliberately left running by that turn continue across later turns and require an explicit stop. If sandbox cleanup fails, cancellation still settles and logs a warning; those commands may require an explicit stop. Output files stay in the sandbox until the sandbox stops. The `just-bash` provider has no background processes, so it runs every command to completion.
 
 Override its description, approval policy, or executor by wrapping the exported definition:
 

@@ -30,9 +30,12 @@ import {
   takeSessionUsageDelta,
 } from "#harness/turn-tag-state.js";
 import type { TokenUsage } from "#shared/token-usage.js";
+import { activeTurnId } from "#harness/active-turn-id.js";
 import { cancelBashJobs } from "#execution/sandbox/bash-jobs.js";
+import { createLogger } from "#internal/logging.js";
 
 const CANCELLED_REASON = "Cancelled.";
+const log = createLogger("execution.cancelled-turn");
 
 export interface CancelledTurnSettleResult {
   readonly serializedContext: Record<string, unknown>;
@@ -84,7 +87,18 @@ export async function settleCancelledTurn(
     origin: "own",
     async publish(emit) {
       const emissionState = getHarnessEmissionState(durableState);
-      await cancelBashJobs(step.ctx, emissionState.turnId);
+      try {
+        await cancelBashJobs(step.ctx, activeTurnId(emissionState));
+      } catch (error) {
+        log.warn(
+          "Could not stop cancelled turn sandbox jobs; inspect the sandbox and stop them explicitly.",
+          {
+            error,
+            sessionId: step.durableSession.sessionId,
+            turnId: activeTurnId(emissionState),
+          },
+        );
+      }
       for (const event of declinedSignInEvents(
         withdrawal.withdrawn,
         CANCELLED_REASON,
