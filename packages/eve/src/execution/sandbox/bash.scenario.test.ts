@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
-import { rm, writeFile } from "node:fs/promises";
+import { mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 
@@ -14,7 +14,8 @@ import { buildSandboxSession } from "./session.js";
 import { ContextContainer, contextStorage } from "#context/container.js";
 import { SandboxKey, SessionKey } from "#context/keys.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
-import { cancelBashJobs } from "./bash-jobs.js";
+import { BashJobsKey, cancelBashJobs } from "./bash-jobs.js";
+import { captureLogRecords } from "#internal/testing/log-records.js";
 import { compileFromMemory } from "#internal/testing/compile-from-memory.js";
 import { withBundledCompiledArtifacts } from "#runtime/loaders/bundled-artifacts.js";
 import { createTestSessionState } from "#internal/testing/session-state.js";
@@ -96,123 +97,173 @@ describe("executeBashOnSandbox with a real shell", () => {
     await vi.waitFor(() => expect(isProcessAlive(childPid)).toBe(false), { timeout: 10_000 });
   });
 
-  it("cancels a yielded job after restoring its owner, without stopping sibling work", async () => {
-    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
-    const { home, sandbox } = await createHostSandbox();
-    const context = new ContextContainer();
-    const access = {
-      get: async () => sandbox,
-      captureState: async () => ({ session: null }),
-      stop: async () => {},
-    };
-    context.setVirtualContext(SandboxKey, access);
-    context.setVirtualContext(SessionKey, {
-      auth: { current: null, initiator: null },
-      sessionId: "first-session",
-      turn: { id: "first", sequence: 0 },
-    });
-    const firstPidFile = join(home, "first.pid");
-    const siblingPidFile = join(home, "sibling.pid");
-    const start = (pidFile: string) =>
-      executeBashOnSandbox(sandbox, {
-        command: `sleep 60 & echo $! > ${pidFile}; wait`,
-      });
-    const first = contextStorage.run(context, () =>
-      executeBashOnSandbox(sandbox, {
-        command: `bash -c 'trap "" TERM; sleep 60' & echo $! > ${firstPidFile}; wait`,
-      }),
-    );
-    const sibling = start(siblingPidFile);
-    const firstPid = await readPid(firstPidFile);
-    const siblingPid = await readPid(siblingPidFile);
-    await vi.advanceTimersByTimeAsync(30_000);
-    const jobs = await Promise.all([first, sibling]);
-    vi.useRealTimers();
-    try {
-      for (const job of jobs) {
-        if (job.status !== "running") throw new Error("Expected a yielded command.");
-      }
-      const restored = await deserializeContext(serializeContext(context));
-      restored.setVirtualContext(SandboxKey, access);
-      expect(isProcessAlive(firstPid)).toBe(true);
-      expect(isProcessAlive(siblingPid)).toBe(true);
-
-      const handle = {
-        sandbox,
-        async onRuntimeShutdown() {},
-        async onSessionDelete() {},
-        async onSessionStop() {},
+  it.each([false, true])(
+    "cancels every owned yielded job after restoration while preserving sibling work (first exit write fails: %s)",
+    async (failFirstExitWrite) => {
+      const { records } = captureLogRecords();
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      const { home, sandbox } = await createHostSandbox();
+      const context = new ContextContainer();
+      const access = {
+        get: async () => sandbox,
+        captureState: async () => ({ session: null }),
+        stop: async () => {},
       };
-      const provider = defineSandboxProvider({
-        name: "host-bash",
-        environment: () => ({
-          prepare: async () => null,
-          resume: async () => handle,
-          start: async () => ({ handle, state: null }),
-        }),
+      context.setVirtualContext(SandboxKey, access);
+      context.setVirtualContext(SessionKey, {
+        auth: { current: null, initiator: null },
+        sessionId: "first-session",
+        turn: { id: "first", sequence: 0 },
       });
-      const compiled = await compileFromMemory({
-        name: "test-agent",
-        model: "openai/gpt-5.4",
-        modules: [
+      const firstPidFile = join(home, "first.pid");
+      const secondPidFile = join(home, "second.pid");
+      const siblingPidFile = join(home, "sibling.pid");
+      const start = (pidFile: string) =>
+        executeBashOnSandbox(sandbox, {
+          command: `sleep 60 & echo $! > ${pidFile}; wait`,
+        });
+      const first = contextStorage.run(context, () =>
+        executeBashOnSandbox(sandbox, {
+          command: `bash -c 'trap "" TERM; sleep 60' & echo $! > ${firstPidFile}; wait`,
+        }),
+      );
+      const second = contextStorage.run(context, () => start(secondPidFile));
+      const siblingContext = new ContextContainer();
+      siblingContext.setVirtualContext(SandboxKey, access);
+      siblingContext.setVirtualContext(SessionKey, {
+        auth: { current: null, initiator: null },
+        sessionId: "sibling-session",
+        turn: { id: "sibling", sequence: 0 },
+      });
+      const sibling = contextStorage.run(siblingContext, () => start(siblingPidFile));
+      const calls = [first, second, sibling];
+      let jobs: Awaited<ReturnType<typeof executeBashOnSandbox>>[] = [];
+      try {
+        const firstPid = await readPid(firstPidFile);
+        const secondPid = await readPid(secondPidFile);
+        const siblingPid = await readPid(siblingPidFile);
+        await vi.advanceTimersByTimeAsync(30_000);
+        jobs = await Promise.all(calls);
+        vi.useRealTimers();
+        for (const job of jobs) {
+          if (job.status !== "running") throw new Error("Expected a yielded command.");
+        }
+        const siblingJobs = siblingContext.get(BashJobsKey) ?? [];
+        expect(siblingJobs).toHaveLength(1);
+        const ownedJobs = context.get(BashJobsKey) ?? [];
+        expect(ownedJobs).toHaveLength(2);
+        if (jobs[0]?.status !== "running") throw new Error("Expected a yielded first command.");
+        const firstGroupPid = jobs[0].pid;
+        context.set(BashJobsKey, [
+          ...ownedJobs.toSorted(
+            (left, right) =>
+              Number(right.pid === firstGroupPid) - Number(left.pid === firstGroupPid),
+          ),
+          ...siblingJobs,
+        ]);
+        if (failFirstExitWrite && jobs[0]?.status === "running") {
+          // A failed receipt write must not prevent later owned groups from being stopped.
+          await mkdir(join(jobs[0].outputDirectory, "exit"));
+        }
+        const restored = await deserializeContext(serializeContext(context));
+        restored.setVirtualContext(SandboxKey, access);
+        expect(isProcessAlive(firstPid)).toBe(true);
+        expect(isProcessAlive(secondPid)).toBe(true);
+        expect(isProcessAlive(siblingPid)).toBe(true);
+
+        const handle = {
+          sandbox,
+          async onRuntimeShutdown() {},
+          async onSessionDelete() {},
+          async onSessionStop() {},
+        };
+        const provider = defineSandboxProvider({
+          name: "host-bash",
+          environment: () => ({
+            prepare: async () => null,
+            resume: async () => handle,
+            start: async () => ({ handle, state: null }),
+          }),
+        });
+        const compiled = await compileFromMemory({
+          name: "test-agent",
+          model: "openai/gpt-5.4",
+          modules: [
+            {
+              logicalPath: "sandbox.ts",
+              loadNamespace: async () => {
+                const environment = provider.environment();
+                return { environment, default: defineSandbox(() => environment.open()) };
+              },
+            },
+          ],
+        });
+        const base = createTestSessionState({ sessionId: "first-session" });
+        const state = { sessionStarted: true, sequence: 0, stepIndex: 1, turnId: "first" };
+        await withBundledCompiledArtifacts(
           {
-            logicalPath: "sandbox.ts",
-            loadNamespace: async () => {
-              const environment = provider.environment();
-              return { environment, default: defineSandbox(() => environment.open()) };
+            ...compiled,
+            sandboxPreparedArtifacts: {
+              kind: "eve-sandbox-prepared-artifacts",
+              version: 2,
+              entries: [{ nodeId: "__root__", providerName: "host-bash", artifact: null }],
             },
           },
-        ],
-      });
-      const base = createTestSessionState({ sessionId: "first-session" });
-      const state = { sessionStarted: true, sequence: 0, stepIndex: 1, turnId: "first" };
-      await withBundledCompiledArtifacts(
-        {
-          ...compiled,
-          sandboxPreparedArtifacts: {
-            kind: "eve-sandbox-prepared-artifacts",
-            version: 2,
-            entries: [{ nodeId: "__root__", providerName: "host-bash", artifact: null }],
-          },
-        },
-        async () =>
-          runSessionStateStep(
-            {
-              history: [],
-              reportUsage: false,
-              sessionWritable: new WritableStream({ write() {} }),
-              serializedContext: {
-                ...serializeContext(restored),
-                "eve.auth": null,
-                "eve.bundle": { source: createBundledRuntimeCompiledArtifactsSource() },
-                "eve.channel": { kind: "http", state: {} },
-                "eve.sessionId": "first-session",
-              },
-              sessionState: {
-                ...base,
-                emissionState: state,
-                snapshot: {
-                  session: { ...base.snapshot.session, state: { "eve.harness.emission": state } },
+          async () =>
+            runSessionStateStep(
+              {
+                history: [],
+                reportUsage: false,
+                sessionWritable: new WritableStream({ write() {} }),
+                serializedContext: {
+                  ...serializeContext(restored),
+                  "eve.auth": null,
+                  "eve.bundle": { source: createBundledRuntimeCompiledArtifactsSource() },
+                  "eve.channel": { kind: "http", state: {} },
+                  "eve.sessionId": "first-session",
+                },
+                sessionState: {
+                  ...base,
+                  emissionState: state,
+                  snapshot: {
+                    session: { ...base.snapshot.session, state: { "eve.harness.emission": state } },
+                  },
                 },
               },
-            },
-            settleCancelledTurnStep,
-          ),
-      );
+              settleCancelledTurnStep,
+            ),
+        );
 
-      await vi.waitFor(() => expect(isProcessAlive(firstPid)).toBe(false), { timeout: 10_000 });
-      expect(isProcessAlive(siblingPid)).toBe(true);
-      await cancelBashJobs(restored, "first");
-      expect(isProcessAlive(siblingPid)).toBe(true);
-    } finally {
-      for (const job of jobs) {
-        if (job.status === "running") {
-          await runHostBash(`kill -- -${job.pid}`, home);
-          await rm(job.outputDirectory, { force: true, recursive: true });
+        await vi.waitFor(() => expect(isProcessAlive(firstPid)).toBe(false), { timeout: 10_000 });
+        await vi.waitFor(() => expect(isProcessAlive(secondPid)).toBe(false), { timeout: 10_000 });
+        if (jobs[1]?.status !== "running") throw new Error("Expected a yielded second command.");
+        expect(readFileSync(join(jobs[1].outputDirectory, "exit"), "utf8").trim()).toBe("137");
+        expect(isProcessAlive(siblingPid)).toBe(true);
+        if (failFirstExitWrite) {
+          expect(records).toContainEqual(expect.objectContaining({ level: "warn" }));
+          if (jobs[0]?.status !== "running") throw new Error("Expected a yielded first command.");
+          await rm(join(jobs[0].outputDirectory, "exit"), { recursive: true });
+        }
+        await cancelBashJobs(restored, "first");
+        expect(isProcessAlive(siblingPid)).toBe(true);
+      } finally {
+        // Even an early PID wait failure must yield the calls so their groups can be cleaned up.
+        if (vi.isFakeTimers()) await vi.advanceTimersByTimeAsync(30_000);
+        vi.useRealTimers();
+        if (jobs.length === 0) {
+          jobs = (await Promise.allSettled(calls)).flatMap((result) =>
+            result.status === "fulfilled" ? [result.value] : [],
+          );
+        }
+        for (const job of jobs) {
+          if (job.status === "running") {
+            await runHostBash(`kill -KILL -- -${job.pid}`, home);
+            await rm(job.outputDirectory, { force: true, recursive: true });
+          }
         }
       }
-    }
-  });
+    },
+  );
 });
 
 async function createHostSandbox(): Promise<{

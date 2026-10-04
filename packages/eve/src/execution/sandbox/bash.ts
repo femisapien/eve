@@ -7,6 +7,7 @@ import { MAX_OUTPUT_BYTES, truncateTail } from "#execution/sandbox/truncate-outp
 import { isEveDevEnvironment } from "#internal/application/dev-environment.js";
 import { contextStorage } from "#context/container.js";
 import { SessionKey } from "#context/keys.js";
+import { createLogger } from "#internal/logging.js";
 import { BASH_PROCESS_IDENTITY, registerBashJob } from "#execution/sandbox/bash-jobs.js";
 
 /** How long a `bash` call waits before it leaves the command running in the background. */
@@ -16,6 +17,7 @@ export const BASH_YIELD_SECONDS = 30;
 const JOB_ROOT = "/tmp/.eve/jobs";
 
 const MAX_LOG_COMMAND_LENGTH = 240;
+const log = createLogger("execution.sandbox.bash");
 
 // The launcher runs the command in its own process group with its output in
 // files, so the command can outlive this call. If the command finishes first,
@@ -219,13 +221,26 @@ async function claimRunningJob(
   const pid = Number(match[1]);
   const ctx = contextStorage.getStore();
   const session = ctx?.get(SessionKey);
-  if (session !== undefined && match[4] !== "") {
+  const identity = Buffer.from(match[4] ?? "", "base64")
+    .toString()
+    .trimEnd();
+  if (session !== undefined && identity !== "") {
     registerBashJob(ctx!, {
-      identity: Buffer.from(match[4]!, "base64").toString().trimEnd(),
+      identity,
       outputDirectory: directory,
       pid,
       turnId: session.turn.id,
     });
+  } else if (session !== undefined) {
+    log.warn(
+      "Could not track yielded bash command identity; stop it explicitly if it remains running.",
+      {
+        sessionId: session.sessionId,
+        turnId: session.turn.id,
+        pid,
+        outputDirectory: directory,
+      },
+    );
   }
   const stdout = raw.stdout.slice(match.index + match[0].length);
   const omitted = {

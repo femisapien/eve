@@ -1,5 +1,10 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { ContextContainer, contextStorage } from "#context/container.js";
+import { SessionKey } from "#context/keys.js";
+import { captureLogRecords } from "#internal/testing/log-records.js";
+import { BashJobsKey } from "./bash-jobs.js";
+
 import { EVE_DEV_ENV_FLAG } from "#internal/application/optional-package-install.js";
 import type { SandboxCommandResult, SandboxSession } from "#shared/sandbox-session.js";
 
@@ -16,6 +21,48 @@ describe("executeBashOnSandbox", () => {
       process.env[EVE_DEV_ENV_FLAG] = previousDevFlag;
     }
     vi.restoreAllMocks();
+    vi.useRealTimers();
+  });
+
+  it("warns when a yielded command cannot be tracked without registering an unsafe identity", async () => {
+    const { records } = captureLogRecords();
+    vi.useFakeTimers();
+    const context = new ContextContainer();
+    context.setVirtualContext(SessionKey, {
+      auth: { current: null, initiator: null },
+      sessionId: "session-untracked",
+      turn: { id: "turn-untracked", sequence: 0 },
+    });
+    const sandbox: SandboxSession = {
+      ...createTestSandboxSession({ exitCode: 0, stderr: "", stdout: "" }),
+      spawn: async () => ({
+        kill: async () => {},
+        stderr: new ReadableStream(),
+        stdout: new ReadableStream(),
+        wait: () => new Promise(() => {}),
+      }),
+      run: async ({ command }) => {
+        const marker = /eve-bash:[0-9a-f]+/.exec(command)?.[0];
+        if (marker === undefined) throw new Error("Expected a job claim.");
+        return { exitCode: 0, stderr: "", stdout: `${marker} 123 0 0 \n` };
+      },
+    };
+    const call = contextStorage.run(context, () =>
+      executeBashOnSandbox(sandbox, { command: "long-command" }),
+    );
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(await call).toMatchObject({ status: "running", pid: 123 });
+    expect(context.get(BashJobsKey)).toBeUndefined();
+    expect(records).toContainEqual(
+      expect.objectContaining({
+        level: "warn",
+        fields: expect.objectContaining({
+          sessionId: "session-untracked",
+          turnId: "turn-untracked",
+          pid: 123,
+        }),
+      }),
+    );
   });
 
   it("logs sandbox command progress in dev without adding to stderr", async () => {

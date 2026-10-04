@@ -37,12 +37,16 @@ export async function cancelBashJobs(ctx: AlsContext, turnId: string): Promise<v
   const commands = owned.map(({ outputDirectory, pid, identity }) => {
     const directory = shellQuote(outputDirectory);
     // Boot and start time also protect jobs after sandbox recreation or PID reuse.
-    return `if [ ! -f ${directory}/exit ] && [ "$(cat ${directory}/pid 2>/dev/null)" = ${pid} ] && [ "$(identity ${pid})" = ${shellQuote(identity)} ]; then
+    return `(
+if [ ! -f ${directory}/exit ] && [ "$(cat ${directory}/pid 2>/dev/null)" = ${pid} ] && [ "$(identity ${pid})" = ${shellQuote(identity)} ]; then
   kill -KILL -- -${pid} 2>/dev/null || { kill -0 -- -${pid} 2>/dev/null && exit 1; }
   [ -f ${directory}/exit ] || printf '137\\n' > ${directory}/exit || exit 1
-fi`;
+fi
+) || status=1`;
   });
-  const result = await sandbox.run({ command: `${BASH_PROCESS_IDENTITY}\n${commands.join("\n")}` });
+  const result = await sandbox.run({
+    command: `${BASH_PROCESS_IDENTITY}\nstatus=0\n${commands.join("\n")}\nexit "$status"`,
+  });
   if (result.exitCode !== 0) throw new Error("Could not stop cancelled bash jobs.");
   ctx.set(
     BashJobsKey,

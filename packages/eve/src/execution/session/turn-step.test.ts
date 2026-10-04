@@ -1040,6 +1040,13 @@ describe("turnStep", () => {
           content: `model call ${cancelAt - 1}`,
           role: "assistant",
         });
+      } else {
+        expect(result.history).toEqual([
+          expect.objectContaining({
+            role: "user",
+            content: "thread=unset; user=run a long chain",
+          }),
+        ]);
       }
     },
   );
@@ -1942,55 +1949,68 @@ describe("turnStep", () => {
     });
   });
 
-  it("carries a settled turn through the typed park action when no work remains pending", async () => {
-    const session = createStubSession();
-    installSessionStoreMocks([session]);
-    vi.mocked(createExecutionNodeStep).mockImplementation(() => {
-      return async (stepSession): Promise<StepResult> => {
-        const emission = getHarnessEmissionState(stepSession.state);
-        const turnId = emission.turnId || `turn_${emission.sequence}`;
-        registerBashJob(loadContext(), {
-          turnId,
-          pid: 123,
-          outputDirectory: "/tmp/owned",
-          identity: "boot:123",
-        });
-        registerBashJob(loadContext(), {
-          turnId: "another-turn",
-          pid: 456,
-          outputDirectory: "/tmp/other",
-          identity: "boot:456",
-        });
-        return {
-          next: null,
-          session: setHarnessEmissionState(stepSession, {
-            ...emission,
-            turnId: "",
-            sequence: emission.sequence + 1,
-          }),
-          settledTurn: { output: "settled answer" },
+  it.each(["settled", "failed", "done", "waiting"])(
+    "tracks job ownership when the turn returns %s",
+    async (boundary) => {
+      const session = createStubSession();
+      installSessionStoreMocks([session]);
+      vi.mocked(createExecutionNodeStep).mockImplementation(() => {
+        return async (stepSession): Promise<StepResult> => {
+          const emission = getHarnessEmissionState(stepSession.state);
+          const turnId = emission.turnId || `turn_${emission.sequence}`;
+          registerBashJob(loadContext(), {
+            turnId,
+            pid: 123,
+            outputDirectory: "/tmp/owned",
+            identity: "boot:123",
+          });
+          registerBashJob(loadContext(), {
+            turnId: "another-turn",
+            pid: 456,
+            outputDirectory: "/tmp/other",
+            identity: "boot:456",
+          });
+          return {
+            next: boundary === "done" ? { done: true, output: "finished answer" } : null,
+            session:
+              boundary === "failed"
+                ? setHarnessEmissionState(stepSession, {
+                    ...emission,
+                    turnId: "",
+                    sequence: emission.sequence + 1,
+                  })
+                : stepSession,
+            ...(boundary === "settled" && { settledTurn: { output: "settled answer" } }),
+          };
         };
-      };
-    });
+      });
 
-    const result = await turnStep({
-      input: {
-        kind: "deliver",
-        payloads: [{ message: "hello" }],
-      },
-      sessionWritable: createTestWritable(),
-      serializedContext: createSerializedContext(),
-      sessionState: createStubSessionState(),
-    });
+      const result = await turnStep({
+        input: {
+          kind: "deliver",
+          payloads: [{ message: "hello" }],
+        },
+        sessionWritable: createTestWritable(),
+        serializedContext: createSerializedContext(),
+        sessionState: createStubSessionState(),
+      });
 
-    expect(result).toMatchObject({
-      action: "park",
-      settled: { output: "settled answer" },
-    });
-    expect(result.serializedContext[BashJobsKey.name]).toEqual([
-      { turnId: "another-turn", pid: 456, outputDirectory: "/tmp/other", identity: "boot:456" },
-    ]);
-  });
+      if (boundary === "settled") {
+        expect(result).toMatchObject({ action: "park", settled: { output: "settled answer" } });
+      } else if (boundary === "done") {
+        expect(result).toMatchObject({ action: "done", output: "finished answer" });
+      } else {
+        expect(result.action).toBe("park");
+        expect(result).not.toHaveProperty("settled");
+      }
+      expect(result.serializedContext[BashJobsKey.name]).toEqual([
+        ...(boundary === "waiting"
+          ? [{ turnId: "turn_0", pid: 123, outputDirectory: "/tmp/owned", identity: "boot:123" }]
+          : []),
+        { turnId: "another-turn", pid: 456, outputDirectory: "/tmp/other", identity: "boot:456" },
+      ]);
+    },
+  );
 
   it("keeps a settled turn when cancellation arrives after its waiting boundary", async () => {
     const controller = new AbortController();

@@ -572,9 +572,14 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
     // Re-stamp the current address after handlers add a continuation alias.
     const aliased = reconcileSessionContinuationToken(ctx, stepResult.session);
     agentTraceState.pruneAgentTraceState(ctx, aliased.sessionId, aliased.state);
+    const nextEmissionState = getHarnessEmissionState(stepResult.session.state);
     if (
       stepResult.settledTurn !== undefined ||
-      (stepResult.next !== null && typeof stepResult.next === "object" && "done" in stepResult.next)
+      (stepResult.next !== null &&
+        typeof stepResult.next === "object" &&
+        "done" in stepResult.next) ||
+      (isHarnessBetweenTurns(stepResult.session) &&
+        nextEmissionState.sequence > initialEmissionState.sequence)
     ) {
       const turnId = activeTurnId(initialEmissionState);
       ctx.set(
