@@ -956,9 +956,15 @@ describe("turnStep", () => {
     ]);
   });
 
-  it.each([1, 51])(
-    "checkpoints completed batched model calls and first-use sandbox state when cancellation aborts call %i",
-    async (cancelAt) => {
+  it.each([
+    { cancelAt: 1, captureFails: false },
+    { cancelAt: 51, captureFails: false },
+    { cancelAt: 1, captureFails: true },
+    { cancelAt: 51, captureFails: true },
+  ])(
+    "checkpoints cancellation at call $cancelAt (sandbox capture fails: $captureFails)",
+    async ({ cancelAt, captureFails }) => {
+      const { records } = captureLogRecords();
       const bundle = createTurnStepTestBundle(100);
       vi.mocked(getCompiledRuntimeAgentBundle).mockResolvedValue(bundle);
       installSessionStoreMocks([createStubSession()]);
@@ -981,7 +987,10 @@ describe("turnStep", () => {
           callCount++;
           if (callCount === cancelAt) {
             loadContext().setVirtualContext(SandboxKey, {
-              captureState: async () => sandboxState,
+              captureState: async () => {
+                if (captureFails) throw new Error("sandbox checkpoint unavailable");
+                return sandboxState;
+              },
               get: getSandbox,
               stop: async () => {},
             });
@@ -1019,21 +1028,38 @@ describe("turnStep", () => {
 
       expect(result.action).toBe("cancelled");
       expect(callCount).toBe(cancelAt);
-      expect(result.sessionState.snapshot.session.sandboxState).toEqual(sandboxState);
+      expect(result.sessionState.snapshot.session.sandboxState).toEqual(
+        captureFails ? (cancelAt === 1 ? undefined : { session: null }) : sandboxState,
+      );
       expect(getSandbox).not.toHaveBeenCalled();
       if (cancelAt > 1) {
         expect(result.serializedContext).toMatchObject({
           [ThreadKey.name]: `completed call ${cancelAt - 1}`,
         });
       }
-      expect(result.serializedContext[BashJobsKey.name]).toEqual([
-        {
-          identity: "boot:123",
-          outputDirectory: "/tmp/.eve/jobs/yielded",
-          pid: 123,
-          turnId: "cancelled-turn",
-        },
-      ]);
+      expect(result.serializedContext[BashJobsKey.name]).toEqual(
+        captureFails
+          ? undefined
+          : [
+              {
+                identity: "boot:123",
+                outputDirectory: "/tmp/.eve/jobs/yielded",
+                pid: 123,
+                turnId: "cancelled-turn",
+              },
+            ],
+      );
+      if (captureFails) {
+        expect(records).toContainEqual(
+          expect.objectContaining({
+            level: "warn",
+            fields: expect.objectContaining({
+              jobs: [{ pid: 123, outputDirectory: "/tmp/.eve/jobs/yielded" }],
+            }),
+          }),
+        );
+      }
+
       if (cancelAt > 1) {
         expect(result.history).toHaveLength(cancelAt - 1);
         expect(result.history.at(-1)).toEqual({

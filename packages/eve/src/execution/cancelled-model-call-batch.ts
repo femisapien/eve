@@ -8,7 +8,10 @@ import type { DurableStepResult } from "#execution/session/turn-step-types.js";
 import type { HarnessSession, StepInput, StepResult } from "#harness/types.js";
 import { preserveSerializedInstrumentationState } from "#instrumentation/state.js";
 import { preserveSerializedAgentTraceState } from "#tracing/agent-trace-context-store.js";
+import { createLogger } from "#internal/logging.js";
 import { BashJobsKey } from "#execution/sandbox/bash-jobs.js";
+
+const log = createLogger("execution.cancelled-model-call-batch");
 
 export interface CompletedModelCallCheckpoint {
   readonly result: StepResult;
@@ -27,8 +30,23 @@ export async function createCancelledModelCallBatchResult(input: {
   const previousSession = input.checkpoint?.result.session ?? input.initialSession;
   const jobs = input.ctx.get(BashJobsKey) ?? [];
   // Jobs from the discarded call still belong to the sandbox it opened.
-  const sandboxState =
-    jobs.length > 0 ? await input.ctx.get(SandboxKey)?.captureState() : undefined;
+  let sandboxState: HarnessSession["sandboxState"];
+  let serializedJobs = interruptedContext[BashJobsKey.name];
+  if (jobs.length > 0) {
+    try {
+      sandboxState = await input.ctx.get(SandboxKey)?.captureState();
+    } catch (error) {
+      // Without the owning sandbox, discarded jobs cannot safely survive rollback.
+      serializedJobs = (input.checkpoint?.serializedContext ?? input.beforeBatchContext)[
+        BashJobsKey.name
+      ];
+      log.warn("Could not checkpoint cancelled sandbox jobs; inspect and stop them explicitly.", {
+        error,
+        sessionId: previousSession.sessionId,
+        jobs: jobs.map(({ pid, outputDirectory }) => ({ pid, outputDirectory })),
+      });
+    }
+  }
   const checkpointSession =
     sandboxState === undefined ? previousSession : { ...previousSession, sandboxState };
   const cancelledSession =
@@ -40,7 +58,7 @@ export async function createCancelledModelCallBatchResult(input: {
   const checkpointContext = {
     ...(input.checkpoint?.serializedContext ?? input.beforeBatchContext),
     [TurnDeliveryIdsKey.name]: interruptedContext[TurnDeliveryIdsKey.name],
-    [BashJobsKey.name]: interruptedContext[BashJobsKey.name],
+    [BashJobsKey.name]: serializedJobs,
   };
 
   return {
