@@ -200,7 +200,7 @@ describe("executeBashOnSandbox with a real shell", () => {
         });
         const base = createTestSessionState({ sessionId: "first-session" });
         const state = { sessionStarted: true, sequence: 0, stepIndex: 1, turnId: "first" };
-        await withBundledCompiledArtifacts(
+        const cancelled = await withBundledCompiledArtifacts(
           {
             ...compiled,
             sandboxPreparedArtifacts: {
@@ -234,17 +234,31 @@ describe("executeBashOnSandbox with a real shell", () => {
             ),
         );
 
+        expect(cancelled.serializedContext[BashJobsKey.name]).toEqual(siblingJobs);
         await vi.waitFor(() => expect(isProcessAlive(firstPid)).toBe(false), { timeout: 10_000 });
         await vi.waitFor(() => expect(isProcessAlive(secondPid)).toBe(false), { timeout: 10_000 });
         if (jobs[1]?.status !== "running") throw new Error("Expected a yielded second command.");
         expect(readFileSync(join(jobs[1].outputDirectory, "exit"), "utf8").trim()).toBe("137");
+        if (!failFirstExitWrite && jobs[0]?.status === "running") {
+          expect(readFileSync(join(jobs[0].outputDirectory, "exit"), "utf8").trim()).toBe("137");
+        }
         expect(isProcessAlive(siblingPid)).toBe(true);
         if (failFirstExitWrite) {
-          expect(records).toContainEqual(expect.objectContaining({ level: "warn" }));
+          expect(records).toContainEqual(
+            expect.objectContaining({
+              level: "warn",
+              fields: expect.objectContaining({ sessionId: "first-session", turnId: "first" }),
+            }),
+          );
           if (jobs[0]?.status !== "running") throw new Error("Expected a yielded first command.");
           await rm(join(jobs[0].outputDirectory, "exit"), { recursive: true });
         }
-        await cancelBashJobs(restored, "first");
+        const cancelledContext = await deserializeContext({
+          [BashJobsKey.name]: cancelled.serializedContext[BashJobsKey.name],
+        });
+        cancelledContext.setVirtualContext(SandboxKey, access);
+        await cancelBashJobs(cancelledContext, "first");
+        expect(cancelledContext.get(BashJobsKey)).toEqual(siblingJobs);
         expect(isProcessAlive(siblingPid)).toBe(true);
       } finally {
         // Even an early PID wait failure must yield the calls so their groups can be cleaned up.

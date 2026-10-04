@@ -32,24 +32,28 @@ export async function cancelBashJobs(ctx: AlsContext, turnId: string): Promise<v
   const jobs = ctx.get(BashJobsKey) ?? [];
   const owned = jobs.filter((job) => job.turnId === turnId);
   if (owned.length === 0) return;
-  const sandbox = await ctx.require(SandboxKey).get();
-  if (sandbox === null) return;
-  const commands = owned.map(({ outputDirectory, pid, identity }) => {
-    const directory = shellQuote(outputDirectory);
-    // Boot and start time also protect jobs after sandbox recreation or PID reuse.
-    return `(
+  try {
+    const sandbox = await ctx.require(SandboxKey).get();
+    if (sandbox === null) return;
+    const commands = owned.map(({ outputDirectory, pid, identity }) => {
+      const directory = shellQuote(outputDirectory);
+      // Boot and start time also protect jobs after sandbox recreation or PID reuse.
+      return `(
 if [ ! -f ${directory}/exit ] && [ "$(cat ${directory}/pid 2>/dev/null)" = ${pid} ] && [ "$(identity ${pid})" = ${shellQuote(identity)} ]; then
   kill -KILL -- -${pid} 2>/dev/null || { kill -0 -- -${pid} 2>/dev/null && exit 1; }
   [ -f ${directory}/exit ] || printf '137\\n' > ${directory}/exit || exit 1
 fi
 ) || status=1`;
-  });
-  const result = await sandbox.run({
-    command: `${BASH_PROCESS_IDENTITY}\nstatus=0\n${commands.join("\n")}\nexit "$status"`,
-  });
-  if (result.exitCode !== 0) throw new Error("Could not stop cancelled bash jobs.");
-  ctx.set(
-    BashJobsKey,
-    jobs.filter((job) => job.turnId !== turnId),
-  );
+    });
+    const result = await sandbox.run({
+      command: `${BASH_PROCESS_IDENTITY}\nstatus=0\n${commands.join("\n")}\nexit "$status"`,
+    });
+    if (result.exitCode !== 0) throw new Error("Could not stop cancelled bash jobs.");
+  } finally {
+    // Settlement ends ownership; failed cleanup is reported for an explicit stop.
+    ctx.set(
+      BashJobsKey,
+      jobs.filter((job) => job.turnId !== turnId),
+    );
+  }
 }

@@ -985,7 +985,7 @@ describe("turnStep", () => {
               get: getSandbox,
               stop: async () => {},
             });
-            loadContext().set(ThreadKey, "discarded call 51");
+            loadContext().set(ThreadKey, `discarded call ${callCount}`);
             registerBashJob(loadContext(), {
               identity: "boot:123",
               outputDirectory: "/tmp/.eve/jobs/yielded",
@@ -1949,7 +1949,7 @@ describe("turnStep", () => {
     });
   });
 
-  it.each(["settled", "failed", "done", "waiting"])(
+  it.each(["settled", "recoverable-failure boundary", "done", "waiting"])(
     "tracks job ownership when the turn returns %s",
     async (boundary) => {
       const session = createStubSession();
@@ -1973,7 +1973,7 @@ describe("turnStep", () => {
           return {
             next: boundary === "done" ? { done: true, output: "finished answer" } : null,
             session:
-              boundary === "failed"
+              boundary === "recoverable-failure boundary"
                 ? setHarnessEmissionState(stepSession, {
                     ...emission,
                     turnId: "",

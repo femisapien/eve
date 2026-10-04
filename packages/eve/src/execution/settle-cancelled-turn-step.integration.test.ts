@@ -70,8 +70,8 @@ function spend<T extends { readonly state?: SessionStateMap }>(
 }
 
 describe("settleCancelledTurnStep", () => {
-  it.each(["unavailable", "run-rejected", "nonzero"])(
-    "settles cancellation and preserves jobs when sandbox cleanup is %s",
+  it.each(["unavailable", "run-rejected", "nonzero", "no-sandbox"])(
+    "settles cancellation and releases only owned records when sandbox cleanup is %s",
     async (failure) => {
       const logs: LogRecord[] = [];
       const sandbox = mockSandbox({
@@ -84,7 +84,7 @@ describe("settleCancelledTurnStep", () => {
         ...sandbox.access,
         get: async () => {
           if (failure === "unavailable") throw new Error("sandbox resume failed");
-          return sandbox.session;
+          return failure === "no-sandbox" ? null : sandbox.session;
         },
       });
       const jobs = [
@@ -93,6 +93,12 @@ describe("settleCancelledTurnStep", () => {
           pid: 123,
           outputDirectory: "/tmp/.eve/jobs/owned",
           identity: "boot:123",
+        },
+        {
+          turnId: "sibling",
+          pid: 456,
+          outputDirectory: "/tmp/.eve/jobs/sibling",
+          identity: "boot:456",
         },
       ];
       setLogRecordSubscriber((record) => logs.push(record));
@@ -118,13 +124,14 @@ describe("settleCancelledTurnStep", () => {
           "session.waiting",
         ]);
         expect(result.sessionState.emissionState.turnId).toBe("");
-        expect(result.serializedContext[BashJobsKey.name]).toEqual(jobs);
-        expect(logs).toContainEqual(
-          expect.objectContaining({
-            level: "warn",
-            fields: expect.objectContaining({ turnId: "turn_1" }),
-          }),
-        );
+        expect(result.serializedContext[BashJobsKey.name]).toEqual([jobs[1]]);
+        if (failure !== "no-sandbox")
+          expect(logs).toContainEqual(
+            expect.objectContaining({
+              level: "warn",
+              fields: expect.objectContaining({ turnId: "turn_1" }),
+            }),
+          );
       } finally {
         access.mockRestore();
         setLogRecordSubscriber(undefined);
