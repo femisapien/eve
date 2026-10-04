@@ -16,8 +16,7 @@ import { SandboxKey, SessionKey } from "#context/keys.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
 import { cancelBashJobs } from "./bash-jobs.js";
 import { compileFromMemory } from "#internal/testing/compile-from-memory.js";
-import { installBundledCompiledArtifacts } from "#runtime/loaders/bundled-artifacts.js";
-import { createRuntimeSession, withRuntimeSession } from "#runtime/sessions/runtime-session.js";
+import { withBundledCompiledArtifacts } from "#runtime/loaders/bundled-artifacts.js";
 import { createTestSessionState } from "#internal/testing/session-state.js";
 import { runSessionStateStep } from "#internal/testing/session-state-step.js";
 import { settleCancelledTurnStep } from "#execution/settle-cancelled-turn-step.js";
@@ -167,38 +166,39 @@ describe("executeBashOnSandbox with a real shell", () => {
       });
       const base = createTestSessionState({ sessionId: "first-session" });
       const state = { sessionStarted: true, sequence: 0, stepIndex: 1, turnId: "first" };
-      await withRuntimeSession(createRuntimeSession("test-agent"), async () => {
-        installBundledCompiledArtifacts({
+      await withBundledCompiledArtifacts(
+        {
           ...compiled,
           sandboxPreparedArtifacts: {
             kind: "eve-sandbox-prepared-artifacts",
             version: 2,
             entries: [{ nodeId: "__root__", providerName: "host-bash", artifact: null }],
           },
-        });
-        return runSessionStateStep(
-          {
-            history: [],
-            reportUsage: false,
-            sessionWritable: new WritableStream({ write() {} }),
-            serializedContext: {
-              ...serializeContext(restored),
-              "eve.auth": null,
-              "eve.bundle": { source: createBundledRuntimeCompiledArtifactsSource() },
-              "eve.channel": { kind: "http", state: {} },
-              "eve.sessionId": "first-session",
-            },
-            sessionState: {
-              ...base,
-              emissionState: state,
-              snapshot: {
-                session: { ...base.snapshot.session, state: { "eve.harness.emission": state } },
+        },
+        async () =>
+          runSessionStateStep(
+            {
+              history: [],
+              reportUsage: false,
+              sessionWritable: new WritableStream({ write() {} }),
+              serializedContext: {
+                ...serializeContext(restored),
+                "eve.auth": null,
+                "eve.bundle": { source: createBundledRuntimeCompiledArtifactsSource() },
+                "eve.channel": { kind: "http", state: {} },
+                "eve.sessionId": "first-session",
+              },
+              sessionState: {
+                ...base,
+                emissionState: state,
+                snapshot: {
+                  session: { ...base.snapshot.session, state: { "eve.harness.emission": state } },
+                },
               },
             },
-          },
-          settleCancelledTurnStep,
-        );
-      });
+            settleCancelledTurnStep,
+          ),
+      );
 
       await vi.waitFor(() => expect(isProcessAlive(firstPid)).toBe(false), { timeout: 10_000 });
       expect(isProcessAlive(siblingPid)).toBe(true);
