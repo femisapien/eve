@@ -91,7 +91,7 @@ The target disables tool replacement by default, including in development. Keep 
 This example uses Vercel OIDC to authenticate two eval projects and grants both permission to replace tools:
 
 ```ts title="agent/channels/eve.ts"
-import { localDev, vercelOidc, vercelSubject } from "eve/channels/auth";
+import { vercelOidc, vercelSubject } from "eve/channels/auth";
 import { eveChannel } from "eve/channels/eve";
 
 const evalSubjects = [
@@ -100,14 +100,24 @@ const evalSubjects = [
 ];
 
 export default eveChannel({
-  auth: [vercelOidc({ subjects: evalSubjects }), localDev()],
-  allowToolStubs: (auth) =>
-    auth.authenticator === "local-dev" ||
-    (auth.subject !== undefined && evalSubjects.includes(auth.subject)),
+  auth: [vercelOidc({ subjects: evalSubjects })],
+  allowToolStubs: { subjects: evalSubjects },
 });
 ```
 
-Replace the example subjects with your eval projects. The callback checks the authenticated caller against this list of exact subjects. It also permits local development through `localDev()`. `EVE_EVAL_AUTH_TOKEN` supplies the runner's bearer token; the target still decides whether that caller may replace tools.
+Replace the example subjects with your eval projects. Both settings use the same whole-string `*` pattern matching. `vercelSubject` defaults to the production environment; pass `environment: "*"` to allow all environments for that eval project. Only subjects listed in `allowToolStubs` receive replacement permission, including callers from the target's own project. An empty list or a caller without a subject is denied. `EVE_EVAL_AUTH_TOKEN` supplies the runner's bearer token; the target still decides whether that caller may replace tools.
+
+A callback is also available for custom claims or authenticators without a subject. For a local-only development channel:
+
+```ts title="agent/channels/eve.ts"
+import { localDev } from "eve/channels/auth";
+import { eveChannel } from "eve/channels/eve";
+
+export default eveChannel({
+  auth: [localDev()],
+  allowToolStubs: (caller) => caller.authenticator === "local-dev",
+});
+```
 
 Only the authenticated identity that created a stubbed session can send later messages, answer approvals, control the session, or read its results. eve rechecks that identity's replacement permission on each request. The same access rule applies to local child sessions.
 

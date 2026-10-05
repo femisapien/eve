@@ -1,5 +1,6 @@
 import { RunExpiredError, WorkflowRunNotFoundError } from "#compiled/@workflow/errors/index.js";
 import type { SessionAuthContext } from "#channel/types.js";
+import { areTokenClaimMatchersSatisfied } from "#channel/auth/token-claims.js";
 import type { EveChannelInput } from "#eve-channel/types.js";
 import { invocationOwnerKey } from "#internal/invocation/metadata.js";
 import { getWorld } from "#internal/workflow/runtime.js";
@@ -9,7 +10,12 @@ export async function authorizeToolStubs(
   config: EveChannelInput,
   auth: SessionAuthContext,
 ): Promise<Response | undefined> {
-  if ((await config.allowToolStubs?.(auth)) === true) return undefined;
+  const policy = config.allowToolStubs;
+  const allowed =
+    typeof policy === "function"
+      ? await policy(auth)
+      : areTokenClaimMatchersSatisfied({ sub: auth.subject }, { subjects: policy?.subjects ?? [] });
+  if (allowed === true) return undefined;
   return Response.json(
     { ok: false, error: "Tool stubbing is not permitted for this caller." },
     { status: 403 },

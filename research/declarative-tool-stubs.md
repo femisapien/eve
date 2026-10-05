@@ -43,7 +43,9 @@ The first stub failure is recorded before its response is released. The eval run
 
 ## Authorization
 
-Reuse existing route authentication. `eveChannel({ allowToolStubs })` grants replacement to a verified eval principal and defaults to disabled. Bind sessions and local descendants to that principal independently of `onMessage` projection. Recheck ownership and permission on continuation, approvals, controls, and streams. An eval bearer token does not implicitly grant overrides. Playback hooks have unguessable tokens; caller-supplied context cannot manufacture a trusted scope.
+Reuse existing route authentication. Configure `eveChannel({ auth, allowToolStubs: { subjects: evalSubjects } })` with the eval runners' subjects. Reuse the existing `*` subject-pattern matcher; do not inherit OIDC's implicit current-project acceptance. An omitted policy, empty list, or missing caller subject grants no replacement permission. A callback remains available for custom claims and subjectless authenticators such as local development.
+
+Bind sessions and local descendants to the verified principal independently of `onMessage` projection. Recheck ownership and permission on continuation, approvals, controls, and streams. An eval bearer token does not implicitly grant overrides. Playback hooks have unguessable tokens; caller-supplied context cannot manufacture a trusted scope.
 
 ## Verification
 
