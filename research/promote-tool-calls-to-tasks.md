@@ -18,10 +18,10 @@ compaction loses its pid, and no client sees it.
 This plan lets any tool start as an ordinary tool call and continue as a task when it runs long:
 
 1. **`execute` runs inline, as today.** A call that returns settles as a normal tool result.
-2. **A tool that also defines `task(handoff, ctx)` can promote a call.** The tool decides what is
-   slow. It races its work against whatever it wants, and returns `ctx.continueAsTask(handoff)`
-   to continue as a task. The model gets a task receipt, and the `task` body continues the work
-   durably from `handoff`.
+2. **A tool that also defines `continueTask(handoff, ctx)` can promote a call.** The tool decides
+   what is slow. It races its work against whatever it wants, and returns
+   `ctx.continueAsTask(handoff)` to continue as a task. The model gets a task receipt, and the
+   `continueTask` body continues the work durably from `handoff`.
 3. **Once promoted, a call is an ordinary task.** `task_cancel`, `session.cancel()`, held turns,
    `task.result`, the `[Tasks]` note, and `task.started` / `task.settled` all apply unchanged.
 4. **A handoff is never dropped.** If the turn is cancelled while `execute` runs, or before the
@@ -47,38 +47,39 @@ export default defineTool({
     if (result !== undefined) return result;
     return ctx.continueAsTask({ jobId: job.id }, { progress: `Exported ${job.percent}% so far.` });
   },
-  async task({ jobId }, ctx) {
+  async continueTask({ jobId }, ctx) {
     "use workflow";
     return await waitForExport(jobId, ctx.abortSignal);
   },
 });
 ```
 
-- **`task(handoff, ctx)`** is optional on `defineTool`. It is a workflow body, so it starts with
-  `"use workflow"`, receives `WorkflowToolContext`, and follows every rule of a `task()` body on
-  `defineWorkflowTool`. Its return value is the call's result. It must match the tool's
-  `outputSchema` and is projected by the same `toModelOutput`, so the model sees one output shape
-  whether or not the call was promoted.
+- **`continueTask(handoff, ctx)`** is optional on `defineTool`. It is a workflow body, so it starts
+  with `"use workflow"`, receives `WorkflowToolContext`, and follows every rule of a `task()` body
+  on `defineWorkflowTool`. It isn't named `task` because `task` on `defineWorkflowTool` means every
+  call is a task. Its return value is the call's result. It must match the tool's `outputSchema` and
+  is projected by the same `toModelOutput`, so the model sees one output shape whether or not the
+  call was promoted.
 - **`ctx.continueAsTask(handoff, options?)`** returns the value `execute` must return to promote
-  the call. `handoff` must be serializable; it is the `task` body's first argument. Optional
+  the call. `handoff` must be serializable; it is the `continueTask` body's first argument. Optional
   `progress` is model-visible text included in the receipt, such as why the call moved and its
   output so far. eve has no deadline of its own: when and why to promote is the tool's decision.
-  Calling it in a tool without `task` throws:
+  Calling it in a tool without `continueTask` throws:
 
   ```text
-  ctx.continueAsTask() requires a task(handoff, ctx) body on tool "{toolName}".
+  ctx.continueAsTask() requires a continueTask(handoff, ctx) body on tool "{toolName}".
   ```
 
-- **Cancellation is handed off too.** When `ctx.abortSignal` aborts while `execute` holds work
-  the task body could stop, `execute` returns `ctx.continueAsTask(handoff)` instead of cleaning up
-  itself. eve starts the task with its `abortSignal` already aborted, and the body's cleanup runs
-  in steps after the cancel, the same path as a later `task_cancel`.
-- **Steps in a task body can reach the session sandbox.** `getSandbox()` on
+- **Cancellation is handed off too.** When `ctx.abortSignal` aborts while `execute` holds work the
+  `continueTask` body could stop, `execute` returns `ctx.continueAsTask(handoff)` instead of
+  cleaning up itself. eve starts the task with its `abortSignal` already aborted, and the body's
+  cleanup runs in steps after the cancel, the same path as a later `task_cancel`.
+- **Steps in a `continueTask` body can reach the session sandbox.** `getSandbox()` on
   `WorkflowStepToolContext` attaches to the sandbox the session already uses, by reference, as a
   child session's sandbox does today. It never creates or replaces a sandbox, and throws when the
   session has none. `bash` needs this, and so does any workflow tool that works with files.
 
-Dynamic tools from `defineDynamic` can't define `task`, as they can't define workflow bodies
+Dynamic tools from `defineDynamic` can't define `continueTask`, as they can't define workflow bodies
 today. Workflow `execute` tools and MCP tools are out of scope (see [Follow-ups](#follow-ups)).
 
 ## Observable semantics
@@ -107,7 +108,7 @@ or a handoff, so the tool's own race bounds that delay.
 **After promotion, task rules apply.** Steering never aborts a task. The model reads the steering
 message with the task still working, and decides whether to keep it or stop it with
 `task_cancel`. Only `task_cancel`, `session.cancel()`, a failed turn, and the end of the session
-abort the task body's `abortSignal`.
+abort the `continueTask` body's `abortSignal`.
 
 **Cancellation.**
 
@@ -129,7 +130,7 @@ starts the task's run itself, and the session adopts or cancels it.
 ```text
 model step (tool call)            session                         task run
 execute returns continueAsTask(h)
-  start run keyed (session, callId) ─────────────────────────────▶ task(h, ctx)
+  start run keyed (session, callId) ─────────────────────────────▶ continueTask(h, ctx)
   tool result = receipt
                      inbox: task.started(callId) ─▶ held on record
 step commits ──────▶ call committed? ─ yes ─▶ working
@@ -154,7 +155,7 @@ step commits ──────▶ call committed? ─ yes ─▶ working
 ## The provided `bash` tool
 
 `bash` keeps its fast path, its launcher, and its 30-second race, and moves the job's lifetime
-into a task body:
+into a `continueTask` body:
 
 ```ts
 export default defineTool({
@@ -167,7 +168,7 @@ export default defineTool({
     if (result !== undefined) return result;
     return ctx.continueAsTask(job.handoff, { progress: await job.progress() });
   },
-  async task(job, ctx) {
+  async continueTask(job, ctx) {
     "use workflow";
     return await watchJob(job, ctx.abortSignal); // durable waits on the exit file; kills the process group on abort
   },
@@ -195,14 +196,12 @@ export default defineTool({
 
 ## Open questions
 
-- **Name of the body.** `task` matches the vocabulary and the context type. It also means "every
-  call is a task" on `defineWorkflowTool`, where the same key would read differently.
 - **Steering plain tools.** Steering aborts a workflow `execute` call's `abortSignal` but not a
   plain tool's, which surprises authors. Changing that is a separate decision for all plain
   tools. It would affect only the time before a handoff: a promoted call is a task either way.
-- **Waiting in `bash`'s task body.** The session never polls, but `watchJob` must wait on a file
-  in the sandbox. The options are durable sleeps with backoff, which add steps over a long run,
-  or one long step blocked on `sandbox.run`, which holds compute.
+- **Waiting in `bash`'s `continueTask` body.** The session never polls, but `watchJob` must wait on
+  a file in the sandbox. The options are durable sleeps with backoff, which add steps over a long
+  run, or one long step blocked on `sandbox.run`, which holds compute.
 
 ## Follow-ups
 
