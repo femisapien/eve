@@ -168,3 +168,51 @@ describe("tool stubs", () => {
     expect(() => parseToolStubs(rules)).toThrow();
   });
 });
+
+it("does not consume another rule's sequence or advance on unmatched calls", () => {
+  const playback = new StubPlayback(
+    parseToolStubs([
+      {
+        id: "open",
+        tool: "lookup",
+        match: { status: { const: "open" } },
+        responses: ["open-1", "open-2"],
+      },
+      {
+        id: "closed",
+        tool: "lookup",
+        match: { status: { const: "closed" } },
+        responses: ["closed-1", "closed-2"],
+      },
+    ]),
+  );
+  const call = (callId: string, status: string) =>
+    playback.call({ callId, tool: "lookup", input: { status } });
+  expect(call("a", "open")).toMatchObject({ response: "open-1" });
+  expect(call("b", "absent")).toEqual({ kind: "real" });
+  expect(call("c", "closed")).toMatchObject({ response: "closed-1" });
+  expect(call("d", "open")).toMatchObject({ response: "open-2" });
+  expect(call("e", "closed")).toMatchObject({ response: "closed-2" });
+});
+
+it("requires the field even for a true constraint and fails overlapping partial matches", () => {
+  const playback = new StubPlayback(
+    parseToolStubs([
+      { id: "present", tool: "lookup", match: { status: true }, response: "any" },
+      { id: "open", tool: "lookup", match: { status: { const: "open" } }, response: "open" },
+    ]),
+  );
+  expect(playback.call({ callId: "missing", tool: "lookup", input: {} })).toEqual({ kind: "real" });
+  expect(playback.call({ callId: "null", tool: "lookup", input: { status: null } })).toMatchObject({
+    response: "any",
+  });
+  expect(
+    playback.call({ callId: "overlap", tool: "lookup", input: { status: "open" } }),
+  ).toMatchObject({ kind: "error", error: expect.stringContaining("Ambiguous") });
+});
+
+it("includes the final visited string in the configuration size limit", () => {
+  expect(() =>
+    parseToolStubs([{ id: "x".repeat(1_000_001), tool: "list", response: null }]),
+  ).toThrow(/size/);
+});

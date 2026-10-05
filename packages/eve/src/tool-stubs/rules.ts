@@ -125,7 +125,7 @@ function boundStubConfiguration(value: unknown): void {
   let size = 0;
   while (pending.length > 0) {
     const entry = pending.pop()!;
-    if (++nodes > 20_000 || entry.depth > 32 || size > 1_000_000) {
+    if (++nodes > 20_000 || entry.depth > 32) {
       throw new Error("Tool stubs exceed the size or nesting limit.");
     }
     if (typeof entry.value === "string") size += entry.value.length;
@@ -136,5 +136,6 @@ function boundStubConfiguration(value: unknown): void {
         pending.push({ value: child, depth: entry.depth + 1 });
       }
     }
+    if (size > 1_000_000) throw new Error("Tool stubs exceed the size or nesting limit.");
   }
 }
