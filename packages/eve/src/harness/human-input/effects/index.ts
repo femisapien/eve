@@ -14,4 +14,9 @@ export {
   type TurnHost,
   type TurnPhase,
 } from "./turn.js";
-export { commitSessionStep, SessionHost, type ForwardedRelayedAnswers } from "./session.js";
+export {
+  cancelParkedTurn,
+  commitSessionStep,
+  relaySubagentEvent,
+  type ForwardedRelayedAnswers,
+} from "./session.js";

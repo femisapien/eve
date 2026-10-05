@@ -16,7 +16,7 @@ import {
 import { emitCancelledTurn } from "#harness/cancelled-turn-emission.js";
 import { HumanInput } from "#harness/human-input/index.js";
 import { type HarnessModelMessage, validateHarnessModelMessages } from "#harness/messages.js";
-import { SessionHost } from "#harness/human-input/effects/index.js";
+import { cancelParkedTurn } from "#harness/human-input/effects/index.js";
 import { getHarnessEmissionState, setHarnessEmissionState } from "#harness/emission.js";
 import { removeBlockingWorkflowToolRuns } from "#harness/workflow-tool-runs.js";
 import {
@@ -60,13 +60,12 @@ export async function settleCancelledTurnStep(
 export async function settleCancelledTurn(
   input: CancelledTurnSettleInput,
 ): Promise<CancelledTurnSettleResult> {
-  const host = new SessionHost();
   const parked = readDurableSession(input.sessionState);
   // The turn that made the held step's calls owns the runs they started.
   const owningTurnId =
     HumanInput.read(parked.state).heldStep()?.at.turnId ?? input.sessionState.emissionState.turnId;
   // The held step joins history with each call it waited on answered as not run.
-  const cancelled = await HumanInput.commit(host, parked, { type: "cancelled" });
+  const cancelled = await cancelParkedTurn(parked);
   // The cancel stopped every child and run, so channels stop offering what they asked.
   const withdrawn = await relaySessionEvents(
     {
@@ -76,7 +75,7 @@ export async function settleCancelledTurn(
         state: input.sessionState,
       }),
     },
-    host.relayed,
+    cancelled.relayed,
   );
   const step = {
     ...(await restoreSessionStep({ ...withdrawn, sessionWritable: input.sessionWritable })),
@@ -86,7 +85,7 @@ export async function settleCancelledTurn(
   const { published, result: usage } = await publishFromSessionStep(step, {
     origin: "own",
     async publish(emit) {
-      for (const event of host.own) await emit(event);
+      for (const event of cancelled.own) await emit(event);
       const emissionState = getHarnessEmissionState(durableState);
       return await emitCancelledTurn(emit, emissionState, getSessionUsage(step.durableSession));
     },
@@ -98,7 +97,7 @@ export async function settleCancelledTurn(
       const cancelledSession = setHarnessEmissionState(
         {
           ...committed,
-          history: validateHarnessModelMessages([...committed.history, ...host.history]),
+          history: validateHarnessModelMessages([...committed.history, ...cancelled.history]),
         },
         emissionState,
       );

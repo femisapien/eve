@@ -235,6 +235,26 @@ function samePrincipal(
   return left.id === right.id && left.issuer === right.issuer;
 }
 
+/**
+ * The event a workflow run reports for its own sign-in, to the session that
+ * relays it: `authorization.required` as the sign-in opens, or
+ * `authorization.completed` with its `outcome`.
+ */
+export function runSignInEvent(
+  challenge: AuthorizationChallenge,
+  at: RequestAt & { readonly taskId?: string },
+  outcome?: "authorized" | "failed",
+) {
+  const fields = { ...authorizationEventFields(challenge), ...at };
+  return outcome === undefined
+    ? createAuthorizationRequiredEvent({
+        ...fields,
+        description: `Sign in to ${challenge.name} to continue.`,
+        webhookUrl: challenge.hookUrl,
+      })
+    : createAuthorizationCompletedEvent({ ...fields, outcome });
+}
+
 /** The `authorization.completed` a sign-in publishes as it closes. */
 export function completed(
   challenge: AuthorizationChallenge,

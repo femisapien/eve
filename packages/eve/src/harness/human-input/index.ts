@@ -77,6 +77,7 @@ import { arrivalsOf } from "./arrivals.js";
 export { approvalsRequested, withoutApprovalParts } from "./approvals.js";
 export { createSessionLimitContinuationRequest } from "./budget-question.js";
 export { CANCELLED_CALL_RESULT } from "./suspended-step.js";
+export { runSignInEvent } from "./sign-ins.js";
 export type { HeldCall, HeldStep } from "./suspended-step.js";
 
 /**

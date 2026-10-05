@@ -8,9 +8,9 @@ import {
 import type { Intake } from "#harness/human-input/index.js";
 
 import {
+  commitSessionStep,
   forwardRelayedAnswers,
   mapHeldInputResponses,
-  withdrawRelayedRequests,
   type ForwardedRelayedAnswers,
 } from "./session.js";
 
@@ -35,7 +35,10 @@ export async function withdrawRelayedRequestsStep(
   },
 ): Promise<SessionStateTransition> {
   "use step";
-  return await withSessionStateDelta(input, withdrawRelayedRequests);
+  return await withSessionStateDelta(input, async (target) => {
+    const { ending: _none, ...published } = await commitSessionStep(target, [target.intake]);
+    return published;
+  });
 }
 
 /** Maps a delivery's channel-specific answers for a held turn; see `mapHeldInputResponses`. */
