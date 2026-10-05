@@ -39,7 +39,7 @@ import type {
 } from "#tracing/lib/index.js";
 
 interface EveSessionTracingInput {
-  readonly tracingFor: (agentName: string | undefined) => AgentTracing;
+  readonly tracing: AgentTracing;
   readonly idGenerator: AgentSpanIdGenerator;
   readonly environment: ConversationEnvironment;
   readonly frameworkVersion: string;
@@ -109,7 +109,7 @@ export function createEveSessionTracing(input: EveSessionTracingInput): EveSessi
     const turn = await input.stateStore.get("turn", turnKey(sessionId, turnId));
     if (turn === undefined || !isSampledTrace(turn.context)) return undefined;
     const session = await input.stateStore.get("session", sessionId);
-    return input.tracingFor(turn.agentName).resume({
+    return input.tracing.resume({
       identity: eveTurnIdentity({ sessionId, rootSessionId: turn.rootSessionId, turnId }),
       context: context ?? withChannelAudience(ROOT_CONTEXT, session?.channelAudience),
     });
@@ -152,8 +152,9 @@ export function createEveSessionTracing(input: EveSessionTracingInput): EveSessi
       subagentName: (event.parentLineage ?? session.parentLineage)?.subagentName,
     };
     if (isSampledTrace(reserved)) {
-      const operation = await input.tracingFor(agentName).turn({
+      const operation = await input.tracing.turn({
         ...eveActivationMetadata({ session, turn, sessionId: event.sessionId }),
+        agentName,
         identity: eveTurnIdentity({ ...event, sessionId: event.sessionId }),
         framework: { name: "eve", version: input.frameworkVersion },
         capture: eveCapture(reserved),

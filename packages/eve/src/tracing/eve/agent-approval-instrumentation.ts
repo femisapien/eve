@@ -10,7 +10,7 @@ import type { AgentTracing } from "#tracing/lib/index.js";
 
 /** Approval spans live in their action's trace tree; hook state keeps only the locator. */
 export function createAgentApprovalInstrumentation(input: {
-  readonly tracingFor: (agentName: string | undefined) => AgentTracing;
+  readonly tracing: AgentTracing;
   readonly actionStateFor: (
     sessionId: string,
     turnId: string,
@@ -20,16 +20,9 @@ export function createAgentApprovalInstrumentation(input: {
   NonNullable<InstrumentationProviderDefinition["events"]>,
   "input.requested" | "input.resolved"
 > {
-  async function approvalFor(
-    sessionId: string,
-    turnId: string,
-    callId: string,
-    requestId: string,
-    request?: unknown,
-  ) {
+  async function actionFor(sessionId: string, turnId: string, callId: string) {
     const state = await input.actionStateFor(sessionId, turnId, callId);
-    const action = state === undefined ? undefined : await resumeAction(input.tracingFor, state);
-    return action?.approval({ requestId, request });
+    return state === undefined ? undefined : resumeAction(input.tracing, state);
   }
 
   async function onRequested(
@@ -37,13 +30,8 @@ export function createAgentApprovalInstrumentation(input: {
     ctx: InstrumentationHandlerContext,
   ): Promise<void> {
     if (event.kind !== "tool-approval" || ctx.state.get() !== undefined) return;
-    const approval = await approvalFor(
-      event.scope.sessionId,
-      event.scope.turnId,
-      event.action.callId,
-      event.requestId,
-      event.request,
-    );
+    const action = await actionFor(event.scope.sessionId, event.scope.turnId, event.action.callId);
+    const approval = await action?.approval({ requestId: event.requestId, request: event.request });
     if (approval === undefined) return;
     ctx.state.set({
       callId: event.action.callId,
@@ -61,7 +49,7 @@ export function createAgentApprovalInstrumentation(input: {
     const { callId, sessionId, turnId } = stored as Record<string, unknown>;
     if (typeof callId !== "string" || typeof sessionId !== "string" || typeof turnId !== "string")
       return;
-    const approval = await approvalFor(sessionId, turnId, callId, event.requestId);
+    const approval = (await actionFor(sessionId, turnId, callId))?.findApproval(event.requestId);
     if (approval === undefined) return;
     if (event.outcome === "failed") await approval.fail(event.error);
     else

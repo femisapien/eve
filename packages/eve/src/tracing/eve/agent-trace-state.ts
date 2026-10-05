@@ -52,19 +52,14 @@ export interface AgentTurnChannelDeliveryTraceState {
   readonly requestTraceContext?: SpanContext;
 }
 
-/** Locates an action in its turn's trace tree, after the turn's own state is gone. */
+/** Locates an action's turn after the turn's own state is gone. */
 export interface AgentActionTraceState {
-  readonly agentName?: string;
   readonly attemptId?: string;
-  readonly attemptIndex: number;
   readonly callId: string;
   readonly channelAudience?: ChannelAudience;
   readonly context: SpanContext;
-  readonly kind?: string;
-  readonly name: string;
   readonly rootSessionId?: string;
   readonly sessionId: string;
-  readonly stepIndex: number;
   readonly turnId: string;
 }
 

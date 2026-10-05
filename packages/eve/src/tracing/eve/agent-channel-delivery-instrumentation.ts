@@ -9,7 +9,7 @@ import type {
 import { contextStorage } from "#context/container.js";
 import { ActiveChannelDeliveriesKey } from "#context/keys.js";
 import type { JsonValue } from "#shared/json.js";
-import { contentAttribute } from "#tracing/lib/index.js";
+import { contentAttribute } from "#tracing/lib/otel.js";
 import type { AgentTraceStateStore } from "#tracing/eve/agent-trace-state.js";
 import { isSampledTrace } from "#shared/trace-policy.js";
 

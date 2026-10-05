@@ -49,23 +49,15 @@ export function eveCapture(reference: SpanContext | undefined) {
   };
 }
 
-/** One tracing instance per agent name, so invocation spans carry the turn's agent. */
+/** eve's agent tracing, checkpointed in its workflow-context trace state. */
 export function createEveTracing(input: {
   readonly telemetry: AgentTelemetry;
   readonly stateStore: AgentTraceStateStore;
-}): (agentName: string | undefined) => AgentTracing {
+}): AgentTracing {
   const checkpointer: TraceCheckpointer = {
     get: (key) => input.stateStore.get("checkpoint", key),
     set: (key, value) => input.stateStore.set("checkpoint", key, value),
     delete: (key) => input.stateStore.delete("checkpoint", key),
   };
-  const agents = new Map<string, AgentTracing>();
-  return (agentName) => {
-    let tracing = agents.get(agentName ?? "");
-    if (tracing === undefined) {
-      tracing = createAgentTracing({ agentName, telemetry: input.telemetry, checkpointer });
-      agents.set(agentName ?? "", tracing);
-    }
-    return tracing;
-  };
+  return createAgentTracing({ telemetry: input.telemetry, checkpointer });
 }

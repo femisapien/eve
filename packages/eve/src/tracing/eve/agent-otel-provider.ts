@@ -73,50 +73,45 @@ export function createAgentOtelInstrumentation(
   const environment = input.environment ?? resolveInstrumentationEnvironment();
   const recordInputs = input.recordInputs ?? false;
   const recordOutputs = input.recordOutputs ?? false;
-  const tracingFor = createEveTracing(input);
+  const tracing = createEveTracing(input);
   // Attempts run in one process; a lost serverless worker retries the whole step.
-  const steps = new Map<string, { attempt: AttemptOperation; agentName?: string }>();
+  const steps = new Map<string, AttemptOperation>();
   const modelSpans = new Map<string, Map<string, ModelOperation>>();
-  const sessionTracing = createEveSessionTracing({ ...input, environment, tracingFor });
+  const sessionTracing = createEveSessionTracing({ ...input, environment, tracing });
   const { prepareSessionTrace, prepareTurnTrace } = sessionTracing;
 
   /** The attempt in its turn's tree, hydrating it when another process started it. */
   async function attemptFor(scope: InstrumentationAttemptScope) {
     const known = steps.get(scope.attemptId);
     if (known !== undefined) return known;
-    const turn = await turnState(scope);
-    const operation = await sessionTracing.turnFor(
+    const turn = await sessionTracing.turnFor(
       scope.sessionId,
       scope.turnId,
       withChannelAudience(ROOT_CONTEXT, scope.channelAudience),
     );
-    if (operation === undefined || operation.finished) return undefined;
-    const attempt = await operation.attempt({
-      stepIndex: scope.stepIndex,
-      attempt: scope.attemptIndex,
-    });
-    return { attempt, agentName: turn?.agentName };
+    const index = { stepIndex: scope.stepIndex, attempt: scope.attemptIndex };
+    return turn?.findAttempt(index) ?? (turn?.finished === false ? turn.attempt(index) : undefined);
   }
 
   const actions = createAgentActionInstrumentation({
-    tracingFor,
+    tracing,
     attemptFor,
     recordInputs,
     recordOutputs,
     stateStore: input.stateStore,
   });
   const approvals = createAgentApprovalInstrumentation({
-    tracingFor,
+    tracing,
     actionStateFor: actions.stateFor,
   });
   const tools = createAgentToolInstrumentation({
-    tracingFor,
+    tracing,
     actionStateFor: actions.stateFor,
-    attemptFor: async (scope) => steps.get(scope.attemptId),
+    attemptFor: (scope) => steps.get(scope.attemptId),
     recordInputs,
     recordOutputs,
   });
-  const memory = createAgentMemoryInstrumentation({ ...input, environment, tracingFor });
+  const memory = createAgentMemoryInstrumentation({ ...input, environment, tracing });
 
   const capturePolicy = createEveCapturePolicy({
     stateStore: input.stateStore,
@@ -158,20 +153,20 @@ export function createAgentOtelInstrumentation(
           ? undefined
           : [{ relationship: "execution.delivery", context: activeSpanContext }],
     });
-    steps.set(event.scope.attemptId, { attempt, agentName: turn.agentName });
+    steps.set(event.scope.attemptId, attempt);
   };
 
   const onStepTerminal = async (event: InstrumentationStepAttemptTerminalEvent): Promise<void> => {
     const failure = event.type === "step.attempt.failed" ? { error: event.error } : undefined;
     await drainOpenSpans(event);
     await tools.drain(event.scope.attemptId, failure);
-    const step = steps.get(event.scope.attemptId) ?? (await attemptFor(event.scope));
+    const attempt = steps.get(event.scope.attemptId) ?? (await attemptFor(event.scope));
     steps.delete(event.scope.attemptId);
     if (failure !== undefined) {
       // A failed attempt also fails the actions it started.
-      await step?.attempt.fail(failure.error);
+      await attempt?.fail(failure.error);
       await actions.forgetAttempt(event.scope);
-    } else await step?.attempt.complete();
+    } else await attempt?.complete();
   };
 
   const onSessionTransition = async (
@@ -188,9 +183,9 @@ export function createAgentOtelInstrumentation(
   };
 
   const onModelCallStarted = async (event: InstrumentationModelCallStartedEvent): Promise<void> => {
-    const step = steps.get(event.scope.attemptId);
-    if (step === undefined) return;
-    const operation = await step.attempt.modelCall(
+    const attempt = steps.get(event.scope.attemptId);
+    if (attempt === undefined) return;
+    const operation = await attempt.modelCall(
       {
         provider: event.model.provider,
         modelId: event.model.modelId,
@@ -232,12 +227,12 @@ export function createAgentOtelInstrumentation(
   });
 
   const onStepMetadata = (event: InstrumentationStepAttemptMetadataEvent): void => {
-    const step = steps.get(event.scope.attemptId);
-    if (step === undefined) return;
+    const attempt = steps.get(event.scope.attemptId);
+    if (attempt === undefined) return;
     // Vercel AI Gateway reports per-call cost in providerMetadata.gateway;
     // attributes exist only when it was actually the gateway serving the call.
     const cost = readGatewayCostData(event.providerMetadata);
-    if (cost !== undefined) step.attempt.attributes(gatewayCostAttributes(cost));
+    if (cost !== undefined) attempt.attributes(gatewayCostAttributes(cost));
   };
 
   return {

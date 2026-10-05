@@ -50,7 +50,7 @@ import {
 } from "#instrumentation/memory.js";
 import { ConversationIdKey, ParentSessionKey } from "#context/keys.js";
 import type { ConversationContext } from "#shared/conversation-context.js";
-import { withCapture } from "#tracing/lib/index.js";
+import { withCapture } from "#tracing/lib/otel.js";
 import type { SamplingOperation as AgentSamplingOperation } from "#tracing/eve/otel-registration.js";
 import {
   isSampledTrace,

@@ -42,10 +42,10 @@ import {
 } from "#instrumentation/lifecycle.js";
 import type { ChannelAudience } from "#shared/channel-audience.js";
 import { channelAudienceFromContext } from "#tracing/eve/channel-audience-context.js";
-import { activeTraceOperation } from "#tracing/lib/index.js";
+import { activeTraceOperation } from "#tracing/lib/otel.js";
 import { contentFilteringProcessor } from "#tracing/eve/content-span-processor.js";
 import { parseLocalTraceSegment } from "#tracing/local/trace-reader.js";
-import { CONTENT_ATTRIBUTE_LIMIT } from "#tracing/lib/index.js";
+import { CONTENT_ATTRIBUTE_LIMIT } from "#tracing/lib/otel.js";
 import type { TraceCapturePolicy } from "#tracing/eve/otel-declaration.js";
 import type { TraceCaptureContext } from "#shared/trace-policy.js";
 import {

@@ -40,33 +40,24 @@ export interface AgentActionContext {
   readonly spanContext: SpanContext;
 }
 
-/** Finds an action in its turn's trace tree, in this or a later process. */
+/** Finds an open action in its turn's trace tree, in this or a later process. */
 export async function resumeAction(
-  tracingFor: (agentName: string | undefined) => AgentTracing,
+  tracing: AgentTracing,
   state: AgentActionTraceState,
 ): Promise<ActionOperation | undefined> {
-  try {
-    const turn = await tracingFor(state.agentName).resume({
-      identity: eveTurnIdentity(state),
-      context: withChannelAudience(ROOT_CONTEXT, state.channelAudience),
-    });
-    const attempt = await turn?.attempt({
-      stepIndex: state.stepIndex,
-      attempt: state.attemptIndex,
-    });
-    return await attempt?.action({ callId: state.callId, name: state.name, kind: state.kind });
-  } catch {
-    // The action's turn finished without it, so there is no span left to complete.
-    return undefined;
-  }
+  const turn = await tracing.resume({
+    identity: eveTurnIdentity(state),
+    context: withChannelAudience(ROOT_CONTEXT, state.channelAudience),
+  });
+  return turn?.findAction(state.callId);
 }
 
 /** Builds durable `agent.action` spans around eve's runtime dispatch boundary. */
 export function createAgentActionInstrumentation(input: {
-  readonly tracingFor: (agentName: string | undefined) => AgentTracing;
+  readonly tracing: AgentTracing;
   readonly attemptFor: (
     scope: InstrumentationAttemptScope,
-  ) => Promise<{ attempt: AttemptOperation; agentName?: string } | undefined>;
+  ) => Promise<AttemptOperation | undefined>;
   readonly recordInputs: boolean;
   readonly recordOutputs: boolean;
   readonly stateStore: AgentTraceStateStore;
@@ -74,26 +65,21 @@ export function createAgentActionInstrumentation(input: {
   const onStarted = async (event: InstrumentationActionStartedEvent): Promise<void> => {
     let state = await input.stateStore.get("action", event.idempotencyKey);
     if (state === undefined) {
-      const step = await input.attemptFor(event.scope);
-      if (step === undefined) return;
-      const operation = await step.attempt.action({
+      const attempt = await input.attemptFor(event.scope);
+      if (attempt === undefined) return;
+      const operation = await attempt.action({
         callId: event.callId,
         kind: event.kind,
         name: event.name,
         arguments: input.recordInputs ? event.input : undefined,
       });
       state = {
-        agentName: step.agentName,
         attemptId: event.scope.attemptId,
-        attemptIndex: event.scope.attemptIndex,
         callId: event.callId,
         channelAudience: normalizeChannelAudience(event.scope.channelAudience),
         context: { ...operation.reference, isRemote: false },
-        kind: event.kind,
-        name: event.name,
         rootSessionId: event.scope.rootSessionId,
         sessionId: event.scope.sessionId,
-        stepIndex: event.scope.stepIndex,
         turnId: event.scope.turnId,
       };
       await input.stateStore.set("action", event.idempotencyKey, state);
@@ -107,7 +93,7 @@ export function createAgentActionInstrumentation(input: {
     const state = await input.stateStore.get("action", event.idempotencyKey);
     if (state === undefined) return;
     try {
-      const operation = await resumeAction(input.tracingFor, state);
+      const operation = await resumeAction(input.tracing, state);
       await operation?.complete(actionCompletion(event, input.recordOutputs));
     } finally {
       await input.stateStore.delete("action", event.idempotencyKey);

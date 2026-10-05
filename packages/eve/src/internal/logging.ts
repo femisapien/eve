@@ -11,7 +11,7 @@ import { inspect } from "node:util";
 import { isNonEmptyString, isObject } from "#shared/guards.js";
 import type { JsonObject, JsonValue } from "#shared/json.js";
 import { currentCapture } from "#tracing/lib/index.js";
-import { truncateTelemetryText } from "#tracing/lib/index.js";
+import { truncateTelemetryText } from "#tracing/lib/otel.js";
 
 const MAX_INSPECT_STRING_LENGTH = 8 * 1024;
 const MAX_DETAIL_BYTES = 16 * 1024;

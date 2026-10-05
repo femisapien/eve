@@ -4,7 +4,8 @@ import type { Configuration, SpanProcessor, SpanProcessorOrName } from "./otel-c
 
 import { AgentSpanIdGenerator } from "#tracing/lib/index.js";
 import type { OtelConfiguration } from "./otel-configuration.js";
-import { invocationName, type Attributes } from "#tracing/lib/index.js";
+import { type Attributes } from "#tracing/lib/index.js";
+import { invocationName } from "#tracing/lib/otel.js";
 export type SamplingOperation = { readonly name: string; readonly attributes?: Attributes };
 
 const REGISTRATION_SPAN_NAME = "agent.tracing.registration";

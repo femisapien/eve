@@ -11,15 +11,13 @@ const OPEN_TOOLS = 10000;
 
 /** Tool executions finish in the process that ran them; a lost worker retries the step. */
 export function createAgentToolInstrumentation(input: {
-  readonly tracingFor: (agentName: string | undefined) => AgentTracing;
+  readonly tracing: AgentTracing;
   readonly actionStateFor: (
     sessionId: string,
     turnId: string,
     callId: string,
   ) => Promise<AgentActionTraceState | undefined>;
-  readonly attemptFor: (
-    scope: InstrumentationAttemptScope,
-  ) => Promise<{ attempt: AttemptOperation } | undefined>;
+  readonly attemptFor: (scope: InstrumentationAttemptScope) => AttemptOperation | undefined;
   readonly recordInputs: boolean;
   readonly recordOutputs: boolean;
 }) {
@@ -32,12 +30,10 @@ export function createAgentToolInstrumentation(input: {
       event.scope.turnId,
       event.callId,
     );
-    const action = state === undefined ? undefined : await resumeAction(input.tracingFor, state);
+    const action = state === undefined ? undefined : await resumeAction(input.tracing, state);
     const handle =
       action === undefined
-        ? await (
-            await input.attemptFor(event.scope)
-          )?.attempt.toolCall({
+        ? await input.attemptFor(event.scope)?.toolCall({
             callId: event.callId,
             name: event.toolName,
             arguments: input.recordInputs ? event.input : undefined,

@@ -14,10 +14,11 @@ import type { ConversationEnvironment } from "#shared/conversation-context.js";
 import type { AgentTraceStateStore } from "#tracing/eve/agent-trace-state.js";
 import { withChannelAudience } from "#tracing/eve/channel-audience-context.js";
 import { eveTurnIdentity } from "#tracing/eve/operation-input.js";
-import { activeTraceOperation, type AgentTracing } from "#tracing/lib/index.js";
+import { type AgentTracing } from "#tracing/lib/index.js";
+import { activeTraceOperation } from "#tracing/lib/otel.js";
 
 export function createAgentMemoryInstrumentation(input: {
-  tracingFor: (agentName: string | undefined) => AgentTracing;
+  tracing: AgentTracing;
   environment: ConversationEnvironment;
   recordOutputs?: boolean;
   stateStore: AgentTraceStateStore;
@@ -75,7 +76,7 @@ export function createAgentMemoryInstrumentation(input: {
           return { recordCount: result.recordCount, records: result.outputRecords };
         },
       };
-      const memory = input.tracingFor(turn?.agentName ?? session?.agentName).memory;
+      const memory = input.tracing.memory;
       return operation.operationName === "search_memory"
         ? await memory.search(data, execute)
         : await memory.write(data, execute);

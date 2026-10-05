@@ -6,17 +6,15 @@ import {
   type TextMapSetter,
 } from "@opentelemetry/api";
 
+import { otelTelemetry, type CaptureDecision, type ContentSerializer } from "#tracing/lib/index.js";
 import {
   activeTraceOperation,
   contentAttribute,
   mcpLifecycle,
-  otelTelemetry,
   truncateTelemetryText,
-  type CaptureDecision,
-  type ContentSerializer,
   type McpLifecycle,
   type McpUpdate,
-} from "#tracing/lib/index.js";
+} from "#tracing/lib/otel.js";
 import { eveOutputMapping } from "./profile.js";
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
