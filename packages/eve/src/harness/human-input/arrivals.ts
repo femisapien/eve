@@ -3,7 +3,7 @@ import type { ReceivedAuthorizationCallback } from "#harness/authorization.js";
 import type { StepInput } from "#harness/types.js";
 import { readAnswerText } from "#internal/input-text.js";
 
-import type { Intake } from "./index.js";
+import type { InputOf } from "./index.js";
 
 /**
  * What arrived for a turn's step, as the intakes human input reads, in the
@@ -17,10 +17,10 @@ export function arrivalsOf(input: {
   /** Who the turn runs as, the sender of answers that name no one else. */
   readonly sender: SessionAuthContext | null;
   readonly stepInput: StepInput | undefined;
-}): Intake[] {
+}): InputOf<"pre-step">[] {
   const { now, sender, stepInput } = input;
   // Time goes first, so an answer that expired never runs its policy.
-  const intakes: Intake[] = [{ now, type: "time" }];
+  const intakes: InputOf<"pre-step">[] = [{ now, type: "time" }];
   for (const { attemptId, callback, connectionName } of input.callbacks) {
     intakes.push(
       callback === undefined

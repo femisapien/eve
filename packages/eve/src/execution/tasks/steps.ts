@@ -39,7 +39,7 @@ import type {
   WorkflowToolRunOutcomeMessage,
 } from "#execution/tools/workflow/messages.js";
 import { workflowToolRunFailureOutput } from "#execution/tools/workflow/owner-inbox.js";
-import type { Intake } from "#harness/human-input/index.js";
+import type { InputOf } from "#harness/human-input/index.js";
 import { resumeHook } from "#internal/workflow/runtime.js";
 import {
   createTaskSettledEvent,
@@ -156,7 +156,7 @@ async function cancelTasks(
 }
 
 /** Nobody can answer what an ended run relayed, so channels must stop offering it. */
-function runsEnded(runIds: readonly string[]): readonly Intake[] {
+function runsEnded(runIds: readonly string[]): readonly InputOf<"parked">[] {
   return runIds.map((runId) => ({ runId, type: "run.ended" }));
 }
 

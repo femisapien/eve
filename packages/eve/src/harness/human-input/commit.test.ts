@@ -5,7 +5,9 @@ import {
   type Carried,
   type EventOrigin,
   type HostEvent,
+  type HostEventOf,
   type HumanInputHost,
+  type Phase,
 } from "#harness/human-input/index.js";
 import type { SessionStateMap } from "#harness/types.js";
 import {
@@ -22,13 +24,17 @@ interface Session {
 }
 
 /** A host that records what `commit` hands it, and reports `report` back for the events it carries. */
-class RecordingHost implements HumanInputHost<Session> {
+class RecordingHost<P extends Phase> implements HumanInputHost<Session, P> {
+  readonly phase: P;
   readonly published: [EventOrigin, UnstampedMessageStreamEvent][] = [];
   readonly carried: HostEvent["type"][] = [];
+  readonly report: Partial<Record<HostEvent["type"], Carried<Session, P>["report"]>>;
 
-  readonly report: Partial<Record<HostEvent["type"], Carried<Session>["report"]>>;
-
-  constructor(report: Partial<Record<HostEvent["type"], Carried<Session>["report"]>> = {}) {
+  constructor(
+    phase: P,
+    report: Partial<Record<HostEvent["type"], Carried<Session, P>["report"]>> = {},
+  ) {
+    this.phase = phase;
     this.report = report;
   }
 
@@ -40,7 +46,7 @@ class RecordingHost implements HumanInputHost<Session> {
     return { sequence: 9, turnId: "turn_1" };
   }
 
-  async carry(event: HostEvent, session: Session): Promise<Carried<Session>> {
+  async carry(event: HostEventOf<P>, session: Session): Promise<Carried<Session, P>> {
     this.carried.push(event.type);
     const report = this.report[event.type];
     return report === undefined ? { session } : { report, session };
@@ -49,7 +55,7 @@ class RecordingHost implements HumanInputHost<Session> {
 
 describe("HumanInput.commit", () => {
   it("stores what the rules leave and publishes what they report", async () => {
-    const host = new RecordingHost();
+    const host = new RecordingHost("pre-step");
 
     const { ending, session } = await HumanInput.commit(
       host,
@@ -68,7 +74,7 @@ describe("HumanInput.commit", () => {
   });
 
   it("ends the turn as cancelled when the person stops at the budget question, keeping the answer", async () => {
-    const host = new RecordingHost();
+    const host = new RecordingHost("pre-step");
     const asked = await HumanInput.commit(host, {}, overBudget());
 
     const stopped = await HumanInput.commit(
@@ -87,11 +93,15 @@ describe("HumanInput.commit", () => {
   });
 
   it("commits what a host reports back, in order, through the same rules", async () => {
-    const host = new RecordingHost({
+    const host = new RecordingHost("post-step", {
       "calls.approved": [{ results: [], running: [], type: "calls.settled" }],
     });
     const held = await HumanInput.commit(host, {}, approvalsRequested([approval("deploy")]));
-    const answered = await HumanInput.commit(host, held.session, answer("approve", "deploy"));
+    const answered = await HumanInput.commit(
+      new RecordingHost("pre-step"),
+      held.session,
+      answer("approve", "deploy"),
+    );
 
     const approved = await HumanInput.commit(host, answered.session, { type: "approved.run" });
 
@@ -103,7 +113,7 @@ describe("HumanInput.commit", () => {
   });
 
   it("reports the turn waits on input when it holds, at the step the host holds at", async () => {
-    const host = new RecordingHost();
+    const host = new RecordingHost("pre-step");
 
     const held = await HumanInput.commit(host, { state: { other: 1 } }, { type: "turn.holding" });
 
@@ -114,7 +124,7 @@ describe("HumanInput.commit", () => {
   });
 
   it("closes the question a budget Stop answered, publishing nothing, for the session the cancel settles from", async () => {
-    const host = new RecordingHost();
+    const host = new RecordingHost("pre-step");
     const beforeStop = await HumanInput.commit(host, {}, overBudget());
     const stopped = await HumanInput.commit(
       host,
@@ -128,7 +138,9 @@ describe("HumanInput.commit", () => {
       requestId: stopped.ending.requestId,
       type: "budget.stopped",
     });
-    const cancelled = await HumanInput.commit(host, settled.session, { type: "cancelled" });
+    const cancelled = await HumanInput.commit(new RecordingHost("parked"), settled.session, {
+      type: "cancelled",
+    });
 
     expect(settled.session.state).toBeUndefined();
     // The cancel finds nothing to withdraw, so the question resolves once.

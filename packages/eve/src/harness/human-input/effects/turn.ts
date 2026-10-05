@@ -1,3 +1,5 @@
+import type { ModelMessage } from "ai";
+
 import type { SessionAuthContext } from "#channel/types.js";
 import { contextStorage } from "#context/container.js";
 import { AuthKey } from "#context/keys.js";
@@ -15,10 +17,9 @@ import {
   HumanInput,
   type Carried,
   type Ending,
-  type HostEvent,
+  type HostEventOf,
   type HumanInputHost,
-  type Intake,
-  type Interrupt,
+  type InputOf,
 } from "#harness/human-input/index.js";
 import { createFrameworkUserMessage, validateHarnessModelMessages } from "#harness/messages.js";
 import { bumpSessionRuntimeUsageLimits, getSessionUsage } from "#harness/turn-tag-state.js";
@@ -44,29 +45,19 @@ export type TurnPhase = "pre-step" | "post-step";
 /**
  * Carries out, in the tool loop's step, what human input reports. Each event
  * has one meaning here, so the tool loop decides nothing about a person's
- * input. Running approved calls and response policies needs `effects`, which
- * only the step before a model call passes, where answers arrive.
+ * input. Each phase has its host, which carries out only that phase's events.
  */
-export class TurnHost implements HumanInputHost<HarnessSession> {
-  readonly phase: TurnPhase;
-  /** A message answered open requests, so the turn doesn't read it as input. */
-  messageAnswered = false;
-  /** The turn input that waited behind the suspended step's calls, which joined history. */
-  following: StepInput | undefined;
-  readonly #effects: StepEffects | undefined;
+abstract class TurnStepHost {
   readonly #emit: Emit | undefined;
   readonly #emissionState: HarnessEmissionState;
 
-  constructor(input: {
-    readonly effects?: StepEffects;
-    readonly emit?: Emit;
-    readonly emissionState: HarnessEmissionState;
-    readonly phase: TurnPhase;
-  }) {
-    this.phase = input.phase;
-    this.#effects = input.effects;
+  constructor(input: { readonly emit?: Emit; readonly emissionState: HarnessEmissionState }) {
     this.#emit = input.emit;
     this.#emissionState = input.emissionState;
+  }
+
+  protected get emit(): Emit | undefined {
+    return this.#emit;
   }
 
   async publish(event: UnstampedMessageStreamEvent): Promise<void> {
@@ -78,31 +69,44 @@ export class TurnHost implements HumanInputHost<HarnessSession> {
     const next = advanceStep(this.#emissionState);
     return { sequence: next.sequence, turnId: next.turnId, usage: getSessionUsage(session) };
   }
+}
 
-  async carry(event: HostEvent, session: HarnessSession): Promise<Carried<HarnessSession>> {
+/**
+ * The step before a model call, where what arrived for the turn is read:
+ * answers, messages, callbacks, the budget. Running response policies needs
+ * `effects`; a host that commits only a budget Stop has none.
+ */
+export class PreStepHost
+  extends TurnStepHost
+  implements HumanInputHost<HarnessSession, "pre-step">
+{
+  readonly phase = "pre-step";
+  /** A message answered open requests, so the turn doesn't read it as input. */
+  messageAnswered = false;
+  readonly #effects: StepEffects | undefined;
+
+  constructor(input: {
+    readonly effects?: StepEffects;
+    readonly emit?: Emit;
+    readonly emissionState: HarnessEmissionState;
+  }) {
+    super(input);
+    this.#effects = input.effects;
+  }
+
+  async carry(
+    event: HostEventOf<"pre-step">,
+    session: HarnessSession,
+  ): Promise<Carried<HarnessSession, "pre-step">> {
     switch (event.type) {
       case "history.appended":
-        return {
-          session: {
-            ...session,
-            history: validateHarnessModelMessages([...session.history, event.message]),
-          },
-        };
+        return { session: appended(session, event.message) };
       case "note":
         return {
-          session: {
-            ...session,
-            history: validateHarnessModelMessages([
-              ...session.history,
-              createFrameworkUserMessage("context.instruction", event.text),
-            ]),
-          },
+          session: appended(session, createFrameworkUserMessage("context.instruction", event.text)),
         };
       case "message.answered":
         this.messageAnswered = true;
-        return { session };
-      case "input.resumed":
-        this.following = event.input;
         return { session };
       case "sign-in.completed": {
         const ctx = contextStorage.getStore();
@@ -118,17 +122,55 @@ export class TurnHost implements HumanInputHost<HarnessSession> {
       case "budget.granted":
         return { session: bumpSessionRuntimeUsageLimits(session) };
       case "responder.check": {
-        const effects = this.#needEffects(event.type);
-        const tools = await prepareStepTools(effects, event.at, session);
+        if (this.#effects === undefined) {
+          throw new Error(`Human input event "${event.type}" needs the step's tools.`);
+        }
+        const tools = await prepareStepTools(this.#effects, event.at, session);
         return { report: [await checkResponder(event, tools)], session };
       }
+    }
+  }
+}
+
+/**
+ * The step after a model call, or the step a person's approval runs without
+ * one: where the calls a step made are held, dispatched, and settled.
+ */
+export class PostStepHost
+  extends TurnStepHost
+  implements HumanInputHost<HarnessSession, "post-step">
+{
+  readonly phase = "post-step";
+  /** The turn input that waited behind the suspended step's calls, which joined history. */
+  following: StepInput | undefined;
+  readonly #effects: StepEffects;
+
+  constructor(input: {
+    readonly effects: StepEffects;
+    readonly emit?: Emit;
+    readonly emissionState: HarnessEmissionState;
+  }) {
+    super(input);
+    this.#effects = input.effects;
+  }
+
+  async carry(
+    event: HostEventOf<"post-step">,
+    session: HarnessSession,
+  ): Promise<Carried<HarnessSession, "post-step">> {
+    switch (event.type) {
+      case "history.appended":
+        return { session: appended(session, event.message) };
+      case "input.resumed":
+        this.following = event.input;
+        return { session };
       case "calls.approved": {
-        const effects = this.#needEffects(event.type);
+        const effects = this.#effects;
         const tools = await prepareStepTools(effects, event.at, session);
         const work = await runApprovedWork({
           ...event,
           abortSignal: effects.config.abortSignal,
-          emit: this.#emit,
+          emit: this.emit,
           messages: [
             ...effects.projectHistory(session.history, session.state),
             ...HumanInput.read(session.state).suspendedMessages(),
@@ -136,29 +178,28 @@ export class TurnHost implements HumanInputHost<HarnessSession> {
           session,
           tools,
         });
-        const settled: Intake = {
-          results: work.results.length === 0 ? [] : [{ content: [...work.results], role: "tool" }],
-          running: work.runtimeCalls?.tasks ?? [],
-          ...(work.signIns !== undefined && { signIns: work.signIns }),
-          type: "calls.settled",
+        return {
+          report: [
+            {
+              results:
+                work.results.length === 0 ? [] : [{ content: [...work.results], role: "tool" }],
+              running: work.runtimeCalls?.tasks ?? [],
+              ...(work.signIns !== undefined && { signIns: work.signIns }),
+              type: "calls.settled",
+            },
+          ],
+          session: work.session,
         };
-        return { report: [settled], session: work.session };
       }
-      // Relayed requests never reach the turn: the session steps around it carry these.
-      case "answer.forwarded":
-      case "question.withdrawn":
-        throw new Error(`Human input event "${event.type}" is carried while the turn is parked.`);
     }
   }
+}
 
-  #needEffects(type: HostEvent["type"]): StepEffects {
-    if (this.#effects === undefined) {
-      throw new Error(
-        `Human input event "${type}" is carried before a model call, where answers arrive.`,
-      );
-    }
-    return this.#effects;
-  }
+/** A host in the tool loop's step. */
+export type TurnHost = PreStepHost | PostStepHost;
+
+function appended(session: HarnessSession, message: ModelMessage): HarnessSession {
+  return { ...session, history: validateHarnessModelMessages([...session.history, message]) };
 }
 
 /**
@@ -166,10 +207,10 @@ export class TurnHost implements HumanInputHost<HarnessSession> {
  * when that ended the turn: the person stopped at the budget question, which
  * ends it as cancelled.
  */
-export async function commitTurn(
-  host: TurnHost,
+export async function commitTurn<P extends TurnPhase>(
+  host: HumanInputHost<HarnessSession, P>,
   session: HarnessSession,
-  input: Interrupt | Intake,
+  input: NoInfer<InputOf<P>>,
 ): Promise<{ readonly ended?: StepResult; readonly session: HarnessSession }> {
   const committed = await HumanInput.commit(host, session, input);
   if (committed.ending === undefined) return { session: committed.session };
@@ -197,7 +238,7 @@ export async function applyStepArrivals(input: {
 > {
   const { effects, emit, emissionState, stepInput } = input;
   let { session } = input;
-  const host = new TurnHost({ effects, emit, emissionState, phase: "pre-step" });
+  const host = new PreStepHost({ effects, emit, emissionState });
   const arrivals = HumanInput.read(session.state).arrivals({
     callbacks: contextStorage.getStore()?.get(ReceivedAuthorizationCallbacksKey) ?? [],
     now: Date.now(),
@@ -242,7 +283,7 @@ async function runApprovedStep(input: {
   | { readonly session: HarnessSession; readonly turnInput: StepInput | undefined }
 > {
   const { effects, emit, emissionState } = input;
-  const host = new TurnHost({ effects, emit, emissionState, phase: "post-step" });
+  const host = new PostStepHost({ effects, emit, emissionState });
   const following = followingInput(input.turnInput);
   const ran = await commitTurn(host, input.session, {
     ...(following !== undefined && { following }),
@@ -274,9 +315,10 @@ export async function holdForInput(input: {
   readonly host: TurnHost;
   readonly session: HarnessSession;
 }): Promise<StepResult> {
-  const { session } = await HumanInput.commit(input.host, input.session, {
-    type: "turn.holding",
-  });
+  const { session } =
+    input.host instanceof PreStepHost
+      ? await HumanInput.commit(input.host, input.session, { type: "turn.holding" })
+      : await HumanInput.commit(input.host, input.session, { type: "turn.holding" });
   return {
     held: { kind: "input" },
     next: null,
@@ -294,10 +336,7 @@ export async function settledByEnding(
   ending: Ending,
 ): Promise<HarnessSession> {
   if (ending.declined !== "budget") return session;
-  const host = new TurnHost({
-    emissionState: getHarnessEmissionState(session.state),
-    phase: "pre-step",
-  });
+  const host = new PreStepHost({ emissionState: getHarnessEmissionState(session.state) });
   const settled = await HumanInput.commit(host, session, {
     requestId: ending.requestId,
     type: "budget.stopped",

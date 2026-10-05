@@ -112,11 +112,12 @@ export class HumanInput {
    * Returns the session with its human input, and how the turn ended when an
    * event ended it.
    */
-  static async commit<S extends Stateful>(
-    host: HumanInputHost<S>,
+  static async commit<S extends Stateful, P extends Phase>(
+    host: HumanInputHost<S, P>,
     session: S,
-    input: Interrupt | Intake,
+    input: NoInfer<InputOf<P>>,
   ): Promise<Committed<S>> {
+    assertPhase(INPUT_PHASES, input.type, host.phase);
     const reduced = reduce(readState(session.state), input);
     let current: S = { ...session, state: store(session.state, reduced.state) };
     for (const event of reduced.events) {
@@ -136,7 +137,8 @@ export class HumanInput {
             session: current,
           };
         default: {
-          const carried = await host.carry(event, current);
+          assertPhase(EVENT_PHASES, event.type, host.phase);
+          const carried = await host.carry(event as HostEventOf<P>, current);
           current = carried.session;
           for (const reported of carried.report ?? []) {
             const nested = await HumanInput.commit(host, current, reported);
@@ -177,7 +179,7 @@ export class HumanInput {
   }
 
   /** What arrived for the turn's step, as the intakes to hand to `intake`, in order. */
-  arrivals(input: Omit<Parameters<typeof arrivalsOf>[0], "held">): readonly Intake[] {
+  arrivals(input: Omit<Parameters<typeof arrivalsOf>[0], "held">): readonly InputOf<"pre-step">[] {
     return arrivalsOf({ ...input, held: "held" in this.next() });
   }
 
@@ -253,6 +255,22 @@ export class HumanInput {
 }
 
 /**
+ * Fails an input or event committed in a phase it doesn't belong to. Types
+ * keep a host to its phase; this keeps a cast or an untyped caller to it too.
+ */
+function assertPhase<Table extends Readonly<Record<string, readonly Phase[]>>>(
+  table: Table,
+  type: keyof Table & string,
+  phase: Phase,
+): void {
+  if (!table[type]!.includes(phase)) {
+    throw new Error(
+      `Human input "${type}" can't be committed ${phase === "parked" ? "while the turn is parked" : phase}.`,
+    );
+  }
+}
+
+/**
  * The rules alone: the session state `input` leaves and the events it
  * reports, with nothing carried out. Only rule tests call this; the runtime
  * commits.
@@ -277,11 +295,81 @@ type CommittedEvent = "publish" | "turn.held" | "turn.cancelled" | "budget.decli
 export type HostEvent = Exclude<HumanInputEvent, { readonly type: CommittedEvent }>;
 
 /**
- * Where human input is committed: the turn's steps before and after a model
- * call, and the session steps around a parked turn. A host carries out what
- * only its phase can, such as running an approved call, and reports back.
+ * When human input is committed: in the turn's step before its model call,
+ * after it, or in the session steps around a parked turn.
  */
-export interface HumanInputHost<S extends Stateful> {
+export type Phase = "pre-step" | "post-step" | "parked";
+
+/**
+ * The phases each input is committed in. Each kind of request opens in one
+ * phase and resolves in one: approvals, response policies and sign-ins open
+ * post-step and resolve pre-step; the budget question opens and resolves
+ * pre-step; relayed requests open and resolve parked. The calls a step made
+ * settle post-step. A cancel stops the turn in whatever phase it is in; what
+ * it closes settles once the turn has stopped, parked.
+ */
+const INPUT_PHASES = {
+  "turn.holding": ["pre-step", "post-step"],
+  "approvals.requested": ["post-step"],
+  "authorization.required": ["post-step"],
+  "calls.dispatched": ["post-step"],
+  "approved.run": ["post-step"],
+  "budget.exceeded": ["pre-step"],
+  "relayed.requested": ["parked"],
+  "relayed.authorization": ["parked"],
+  answered: ["pre-step"],
+  message: ["pre-step"],
+  cancelled: ["parked"],
+  "authorization.completed": ["pre-step"],
+  "responder.checked": ["pre-step"],
+  "calls.settled": ["post-step"],
+  time: ["pre-step"],
+  "budget.stopped": ["pre-step"],
+  "run.ended": ["parked"],
+  delivered: ["parked"],
+  "withdraw.requested": ["parked"],
+} as const satisfies { readonly [T in (Interrupt | Intake)["type"]]: readonly Phase[] };
+
+/**
+ * The phases a host carries each event out in: what an input in that phase
+ * can report. A history append happens in every phase.
+ */
+const EVENT_PHASES = {
+  "history.appended": ["pre-step", "post-step", "parked"],
+  note: ["pre-step"],
+  "message.answered": ["pre-step", "parked"],
+  "sign-in.completed": ["pre-step"],
+  "budget.granted": ["pre-step"],
+  "responder.check": ["pre-step"],
+  "calls.approved": ["post-step"],
+  "input.resumed": ["post-step"],
+  "answer.forwarded": ["parked"],
+  "question.withdrawn": ["parked"],
+} as const satisfies { readonly [T in HostEvent["type"]]: readonly Phase[] };
+
+type In<Table extends Readonly<Record<string, readonly Phase[]>>, P extends Phase> = {
+  [T in keyof Table]: P extends Table[T][number] ? T : never;
+}[keyof Table];
+
+/** What may be committed in phase `P`. */
+export type InputOf<P extends Phase> = Extract<
+  Interrupt | Intake,
+  { readonly type: In<typeof INPUT_PHASES, P> }
+>;
+
+/** What a host in phase `P` carries out. */
+export type HostEventOf<P extends Phase> = Extract<
+  HostEvent,
+  { readonly type: In<typeof EVENT_PHASES, P> }
+>;
+
+/**
+ * Where human input is committed, in one phase. A host carries out what only
+ * its phase can, such as running an approved call, and reports back what to
+ * commit next, in the same phase.
+ */
+export interface HumanInputHost<S extends Stateful, P extends Phase> {
+  readonly phase: P;
   publish(event: UnstampedMessageStreamEvent, origin: EventOrigin): Promise<void>;
   /** The step a `turn.waiting` reports at, and the session's usage. */
   waitingAt(session: S): {
@@ -289,13 +377,13 @@ export interface HumanInputHost<S extends Stateful> {
     readonly turnId: string;
     readonly usage?: TokenUsage;
   };
-  carry(event: HostEvent, session: S): Promise<Carried<S>>;
+  carry(event: HostEventOf<P>, session: S): Promise<Carried<S, P>>;
 }
 
 /** What carrying out an event left: the session, and what to commit next, in order. */
-export interface Carried<S> {
+export interface Carried<S, P extends Phase> {
   readonly session: S;
-  readonly report?: readonly (Interrupt | Intake)[];
+  readonly report?: readonly InputOf<P>[];
 }
 
 /** How human input ended the turn: cancelled, or by a Stop at the budget question. */
@@ -660,8 +748,8 @@ function parseState(value: unknown): HumanInputState {
  * Publishes `turn.waiting` at the step `host` holds at: the only place a turn
  * reports it waits on input.
  */
-async function publishWaiting<S extends Stateful>(
-  host: HumanInputHost<S>,
+async function publishWaiting<S extends Stateful, P extends Phase>(
+  host: HumanInputHost<S, P>,
   session: S,
   origin: EventOrigin,
 ): Promise<void> {

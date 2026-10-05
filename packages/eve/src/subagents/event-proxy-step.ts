@@ -14,7 +14,7 @@ import {
   type SessionStateTransition,
 } from "#execution/session/state-delta.js";
 import { SessionHost } from "#harness/human-input/effects/index.js";
-import { HumanInput, type Interrupt } from "#harness/human-input/index.js";
+import { HumanInput, type InputOf } from "#harness/human-input/index.js";
 
 type SubagentEventHookPayload =
   | SubagentAuthorizationEventHookPayload
@@ -71,7 +71,7 @@ export async function emitProxiedSubagentEvent(
 
 function relayedInterrupt(
   input: RelayedBy & { readonly hookPayload: SubagentEventHookPayload },
-): Interrupt {
+): InputOf<"parked"> {
   const { control, hookPayload, runId } = input;
   if (hookPayload.kind === "subagent-authorization-event") {
     return {

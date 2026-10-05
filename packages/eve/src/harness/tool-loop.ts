@@ -124,7 +124,8 @@ import {
   applyStepArrivals,
   commitTurn,
   holdForInput,
-  TurnHost,
+  PostStepHost,
+  PreStepHost,
   type StepEffects,
 } from "#harness/human-input/effects/index.js";
 import {
@@ -601,6 +602,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
 
     // The held step's runtime calls join it once every one has a result; the
     // step joins history once none of its calls waits.
+    const humanInputEffects: StepEffects = { config, projectHistory };
     let following: StepInput | undefined;
     const runtimeCalls = HumanInput.read(session.state).runtimeCalls();
     if (runtimeCalls !== undefined) {
@@ -614,7 +616,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       });
       if (results === undefined) return { next: null, session };
       // The held step's settle: the post-step of the step that made the calls.
-      const host = new TurnHost({ emissionState, phase: "post-step" });
+      const host = new PostStepHost({ effects: humanInputEffects, emissionState });
       const settled = await commitTurn(host, results.session, {
         // Workflow tool results join history here, so their files leave as refs too.
         results: await stageToolResultMedia([results.message]),
@@ -633,7 +635,6 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
           : coalesceTurnInputs(following, input),
     );
     const auth = store?.get(AuthKey) ?? null;
-    const humanInputEffects: StepEffects = { config, projectHistory };
     const arrived = await applyStepArrivals({
       auth,
       effects: humanInputEffects,
@@ -1378,12 +1379,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
 
     const limit = await enforceSessionUsageLimit({ config, emit, emissionState, session });
     if (limit.kind === "failed") return limit.result;
-    const preStep = new TurnHost({
-      effects: humanInputEffects,
-      emit,
-      emissionState,
-      phase: "pre-step",
-    });
+    const preStep = new PreStepHost({ effects: humanInputEffects, emit, emissionState });
     if (limit.kind === "ask") {
       const committed = await commitTurn(preStep, session, {
         at: requestAt(emissionState),
@@ -1641,6 +1637,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
         runStep,
         session,
         auth,
+        effects: humanInputEffects,
         coordinationTools: modelCallCoordinationTools,
         endsTurnTools: modelCallEndsTurnTools,
       });
@@ -2213,6 +2210,8 @@ async function handleStepResult(input: {
   /** Who the turn runs as: the requester of what its calls ask of a person. */
   readonly auth: SessionAuthContext | null;
   readonly coordinationTools: HarnessToolMap;
+  /** What carrying out human input needs from the tool loop. */
+  readonly effects: StepEffects;
   /** Tools that can end the turn in this step, with their `endsTurn` option. */
   readonly endsTurnTools: EndsTurnTools;
   readonly session: HarnessSession;
@@ -2301,7 +2300,7 @@ async function handleStepResult(input: {
       });
       return false;
     });
-  const postStep = new TurnHost({ emit, emissionState, phase: "post-step" });
+  const postStep = new PostStepHost({ effects: input.effects, emit, emissionState });
   // History holds a call only with its result: a step with calls that wait,
   // on a person or on runtime work, is suspended in human input until each
   // has one, with the history it was prompted with.

@@ -22,10 +22,10 @@ import {
   type Carried,
   type Ending,
   type EventOrigin,
-  type HostEvent,
+  type HostEventOf,
   type HumanInputHost,
+  type InputOf,
   type Intake,
-  type Interrupt,
   type RelayRoute,
 } from "#harness/human-input/index.js";
 import { getSessionUsage } from "#harness/turn-tag-state.js";
@@ -42,12 +42,13 @@ import { deliverChannelInputResponses } from "./channel-answer-ids.js";
  * what to publish and add to history, which the step does once it holds the
  * session that `commit` left.
  */
-export class SessionHost implements HumanInputHost<DurableSession> {
+export class SessionHost implements HumanInputHost<DurableSession, "parked"> {
+  readonly phase = "parked";
   readonly own: UnstampedMessageStreamEvent[] = [];
   readonly relayed: UnstampedMessageStreamEvent[] = [];
   readonly history: ModelMessage[] = [];
   /** The answers to forward to whoever asked, since the last `take`. */
-  forwarded: Extract<HostEvent, { readonly type: "answer.forwarded" }>[] = [];
+  forwarded: Extract<HostEventOf<"parked">, { readonly type: "answer.forwarded" }>[] = [];
   /** A message answered relayed requests, since the last `take`. */
   messageAnswered = false;
 
@@ -61,7 +62,10 @@ export class SessionHost implements HumanInputHost<DurableSession> {
     return { sequence: turn.sequence, turnId: turn.turnId, usage: getSessionUsage(session) };
   }
 
-  async carry(event: HostEvent, session: DurableSession): Promise<Carried<DurableSession>> {
+  async carry(
+    event: HostEventOf<"parked">,
+    session: DurableSession,
+  ): Promise<Carried<DurableSession, "parked">> {
     switch (event.type) {
       case "history.appended":
         this.history.push(event.message);
@@ -75,20 +79,15 @@ export class SessionHost implements HumanInputHost<DurableSession> {
       case "message.answered":
         this.messageAnswered = true;
         return { session };
-      // These need the turn's step: its tools, its model input, or its budget.
-      case "note":
-      case "calls.approved":
-      case "input.resumed":
-      case "sign-in.completed":
-      case "responder.check":
-      case "budget.granted":
-        throw new Error(`Human input event "${event.type}" is carried in the turn's step.`);
     }
   }
 
   /** What one commit forwarded and whether its message answered, resetting both for the next. */
   take(): {
-    readonly forwarded: readonly Extract<HostEvent, { readonly type: "answer.forwarded" }>[];
+    readonly forwarded: readonly Extract<
+      HostEventOf<"parked">,
+      { readonly type: "answer.forwarded" }
+    >[];
     readonly messageAnswered: boolean;
   } {
     const taken = { forwarded: this.forwarded, messageAnswered: this.messageAnswered };
@@ -105,7 +104,7 @@ export class SessionHost implements HumanInputHost<DurableSession> {
  */
 export async function commitSessionStep(
   target: SessionStepState,
-  inputs: readonly (Interrupt | Intake)[],
+  inputs: readonly InputOf<"parked">[],
   options: { readonly inputSource?: string } = {},
 ): Promise<PublishedSessionEvents & { readonly ending?: Ending }> {
   const host = new SessionHost();

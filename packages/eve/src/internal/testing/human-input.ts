@@ -159,7 +159,7 @@ export function stepResponse(requests: readonly InputRequest[]): ModelMessage[] 
 export function approvalsRequested(
   requests: readonly InputRequest[],
   options: Partial<Extract<Interrupt, { type: "approvals.requested" }>> = {},
-): Interrupt {
+): Extract<Interrupt, { type: "approvals.requested" }> {
   return {
     approvalKeys: {},
     at: AT,
@@ -181,7 +181,7 @@ export function heldOnApprovals(...toolNames: string[]): Turn {
 export function answered(
   responses: readonly InputResponse[],
   responder: SessionAuthContext | null = ALICE,
-): Intake {
+): Extract<Intake, { type: "answered" }> {
   return { now: NOW, responder, responses, type: "answered" };
 }
 
@@ -190,23 +190,28 @@ export function answer(
   optionId: string,
   requestId: string,
   responder: SessionAuthContext | null = ALICE,
-): Intake {
+): Extract<Intake, { type: "answered" }> {
   return answered([{ optionId, requestId }], responder);
 }
 
 /** Alice answers several requests at once, in this order. */
-export function answers(byRequest: Readonly<Record<string, string>>): Intake {
+export function answers(
+  byRequest: Readonly<Record<string, string>>,
+): Extract<Intake, { type: "answered" }> {
   return answered(
     Object.entries(byRequest).map(([requestId, optionId]) => ({ optionId, requestId })),
   );
 }
 
 /** `sender` types a message into the conversation. */
-export function message(text: string, sender: SessionAuthContext | null = ALICE): Intake {
+export function message(
+  text: string,
+  sender: SessionAuthContext | null = ALICE,
+): Extract<Intake, { type: "message" }> {
   return { sender, text, type: "message" };
 }
 
-export const cancel: Intake = { type: "cancelled" };
+export const cancel: Extract<Intake, { type: "cancelled" }> = { type: "cancelled" };
 
 /** The question a turn asks once its session runs over its input token budget. */
 export const BUDGET_QUESTION: InputRequest = {
@@ -221,7 +226,7 @@ export const BUDGET_QUESTION: InputRequest = {
 };
 
 /** The turn's next model call would run over the session's budget. */
-export function overBudget(at: RequestAt = AT): Interrupt {
+export function overBudget(at: RequestAt = AT): Extract<Interrupt, { type: "budget.exceeded" }> {
   return { at, request: BUDGET_QUESTION, type: "budget.exceeded" };
 }
 
@@ -256,7 +261,7 @@ export function signInRequired(
   challenges: readonly AuthorizationChallenge[],
   callIds: readonly string[] = ["call-weather"],
   messages: readonly ModelMessage[] = [],
-): Interrupt {
+): Extract<Interrupt, { type: "authorization.required" }> {
   return {
     at: AT,
     callIds,
@@ -273,7 +278,10 @@ export function heldOnSignIns(...challenges: AuthorizationChallenge[]): Turn {
 }
 
 /** The identity provider calls back for sign-in attempt `attemptId`. */
-export function callback(attemptId: string, connectionName = "weather"): Intake {
+export function callback(
+  attemptId: string,
+  connectionName = "weather",
+): Extract<Intake, { type: "authorization.completed" }> {
   return {
     attemptId,
     callback: { method: "GET", params: { code: "ok" } },

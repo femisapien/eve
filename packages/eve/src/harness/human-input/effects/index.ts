@@ -8,8 +8,10 @@ export {
   commitTurn,
   holdForInput,
   settledByEnding,
-  TurnHost,
+  PostStepHost,
+  PreStepHost,
   type StepEffects,
+  type TurnHost,
   type TurnPhase,
 } from "./turn.js";
 export { commitSessionStep, SessionHost, type ForwardedRelayedAnswers } from "./session.js";
