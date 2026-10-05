@@ -149,7 +149,7 @@ Constraints use a reference-free subset of JSON Schema 2020-12: types, `const`, 
 
 For example, `responses: ["pending", "completed"]` returns `"pending"` on the first matching call and `"completed"` on the second and later calls. Two calls within one agent turn consume two entries. The sequence also continues across turns in the same session.
 
-The sequence position is part of the session's durable Workflow execution. When a workflow resumes or replays a previously recorded call, that call keeps its original response without consuming another entry.
+eve's internal workflow recovery preserves previously recorded tool results without consuming additional responses. This replay is transparent to the eval runner: an already recorded tool call keeps its original response without advancing the sequence.
 
 Choose the rules when creating the session; they stay fixed for that session. Local child agents share the parent's sequence position, and deployment handoffs preserve it. A new independent session starts at the first response. Calls awaiting or denied approval do not consume entries. A session supports up to 10,000 recorded tool calls.
 
