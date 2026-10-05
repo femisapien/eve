@@ -1,4 +1,14 @@
 import { select } from "#setup/ask.js";
+import type { VercelTeamRequirement } from "#setup/vercel-project-api.js";
+
+export const WEB_CHAT_TEAM_REQUIREMENT: VercelTeamRequirement = {
+  permissions: {
+    oauth2Application: ["create", "update"],
+    projectEnvVars: ["create"],
+    projectEnvVarsProduction: ["create"],
+  },
+  disabledReason: "Web Chat sign-in requires app and environment permissions; ask a team owner.",
+};
 
 export type WebAuthenticationChoice = "vercel" | "custom";
 

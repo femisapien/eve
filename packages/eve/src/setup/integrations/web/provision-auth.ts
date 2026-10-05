@@ -4,6 +4,8 @@ import { z } from "#compiled/zod/index.js";
 import { readVercelCliToken } from "#internal/model-auth/vercel-cli.js";
 import type { VercelProjectReference } from "#setup/project-resolution.js";
 
+const APP_CONFLICT_RECOVERY =
+  "Rename the Vercel project in its settings, then retry `eve add channel/web --skip-install`.";
 const CALLBACK_PATH = "/api/auth/callback/vercel";
 const TARGETS = ["production", "preview"] as const;
 const KEYS = ["VERCEL_APP_CLIENT_ID", "VERCEL_APP_CLIENT_SECRET", "BETTER_AUTH_SECRET"] as const;
@@ -37,14 +39,16 @@ class AppApiError extends Error {
         ? "Vercel denied Web Chat auth setup. Run `vercel login` and check that you can manage apps and environment variables in this team, or ask a team owner to run setup."
         : code === "app_limit_reached"
           ? "This team has reached its Vercel App limit. Remove an unused app in team settings and retry."
-          : "Vercel could not configure Web Chat authentication. Retry `eve add channel/web --skip-install`.",
+          : code === "app_name_taken" || code === "app_slug_taken"
+            ? `A Vercel App with this name or slug already exists. ${APP_CONFLICT_RECOVERY}`
+            : "Vercel could not configure Web Chat authentication. Retry `eve add channel/web --skip-install`.",
     );
     this.status = status;
     this.code = code;
   }
 }
 
-function assertMatchingApp(app: App, project: VercelProjectReference): void {
+function assertMatchingApp(app: App, project: VercelProjectReference, configured: boolean): void {
   if (
     app.teamId !== project.orgId ||
     app.signInFrom !== "owning-team" ||
@@ -56,7 +60,7 @@ function assertMatchingApp(app: App, project: VercelProjectReference): void {
     )
   ) {
     throw new Error(
-      "The existing Vercel App does not match this project's team-only Web Chat settings. Check the app in team settings before retrying.",
+      `The existing Vercel App does not match this project's team-only Web Chat settings. ${configured ? "Check VERCEL_APP_CLIENT_ID and the app in team settings before retrying." : APP_CONFLICT_RECOVERY}`,
     );
   }
 }
@@ -161,16 +165,17 @@ export async function provisionWebChatAuth(
         }),
       );
     } catch (error) {
-      if (
-        !(error instanceof AppApiError) ||
-        !["app_slug_taken", "app_name_taken"].includes(error.code ?? "")
-      )
+      if (!(error instanceof AppApiError)) throw error;
+      signal?.throwIfAborted();
+      // Another attempt may have created the app before this failure.
+      app = await getApp(slug).catch(() => {
+        signal?.throwIfAborted();
         throw error;
-      app = await getApp(slug);
+      });
       if (!app) throw error;
     }
   }
-  assertMatchingApp(app, project);
+  assertMatchingApp(app, project, configuredId !== undefined);
   const missingTargets = (key: string) => TARGETS.filter((target) => !forTarget(key, target));
   if (KEYS.every((key) => missingTargets(key).length === 0)) return;
   const secretTargets = missingTargets(KEYS[1]);

@@ -1,6 +1,9 @@
 import { interactiveAsker } from "#setup/ask.js";
 import { ensureVercelProject } from "#setup/flows/ensure-vercel-project.js";
-import { WEB_AUTHENTICATION_QUESTION } from "#setup/integrations/web/auth-options.js";
+import {
+  WEB_AUTHENTICATION_QUESTION,
+  WEB_CHAT_TEAM_REQUIREMENT,
+} from "#setup/integrations/web/auth-options.js";
 import { prepareWebAuthScaffold } from "#setup/integrations/web/auth-scaffold.js";
 import { provisionWebChatAuth } from "#setup/integrations/web/provision-auth.js";
 import { installScaffoldDependencies } from "#setup/integrations/shared/scaffold.js";
@@ -65,11 +68,17 @@ export async function runInitWebAuth(input: {
         logger: input.logger,
         appRoot: input.appRoot,
         options: { project: input.options.project, team: input.options.team, nonInteractive: true },
+        teamRequirement: WEB_CHAT_TEAM_REQUIREMENT,
       });
       if (!linked) throw new Error("Vercel project linking did not complete.");
     }
     const project = input.interactive
-      ? await deps.ensureVercelProject({ appRoot: input.appRoot, prompter, allowLogin: true })
+      ? await deps.ensureVercelProject({
+          appRoot: input.appRoot,
+          prompter,
+          allowLogin: true,
+          teamRequirement: WEB_CHAT_TEAM_REQUIREMENT,
+        })
       : await deps.readProjectLink(input.appRoot);
     if (project === undefined) {
       throw new Error(

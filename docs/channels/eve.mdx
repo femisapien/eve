@@ -67,11 +67,21 @@ eve add channel/web --non-interactive \
 
 Use a linked project with permission to manage Vercel Apps and project
 environment variables. A team owner can complete setup if your role cannot
-create apps. If setup reports a missing prerequisite, complete it
-and resume with `eve add channel/web --skip-install`. Compatible existing apps
+create apps. The team picker keeps teams without these permissions visible but
+disabled, with a reason. If permissions cannot be verified, that team stays
+disabled until you sign in or retry. Linked projects and explicit `--team`
+selections are checked before interactive auth setup or project creation.
+If setup reports a missing prerequisite, complete it and resume with
+`eve add channel/web --skip-install`. Compatible existing apps
 and credentials are reused; conflicting app settings or credentials stop setup
 with an error. Authored channel or UI files are preserved unless you explicitly
 pass `--overwrite`.
+
+If the team has reached its Vercel App limit, remove an unused app in team
+settings and retry. If a generated app name or slug is taken by an incompatible
+app, rename the Vercel project in its settings and retry. Compatible apps from a
+concurrent setup are reused. A client-secret limit requires removing an unused
+secret from the app's settings; setup never removes an existing secret for you.
 
 If sign-in setup fails or is cancelled during initialization, the generated
 app is preserved. Enter its directory, run `eve link` if needed, then resume

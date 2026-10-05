@@ -4,6 +4,8 @@ import { runVercel } from "#setup/primitives/index.js";
 import { readProjectLink, type VercelProjectReference } from "#setup/project-resolution.js";
 import { resolveProjectByNameOrId, resolveTeam } from "#setup/vercel-project.js";
 
+import { checkTeamRequirement, type VercelTeamRequirement } from "#setup/vercel-project-api.js";
+
 import { NOT_AN_AGENT_MESSAGE } from "./preconditions.js";
 
 interface VercelNonInteractiveLogger {
@@ -45,6 +47,7 @@ export async function runNonInteractiveLink(input: {
   appRoot: string;
   options: VercelProjectCliOptions;
   dependencies?: NonInteractiveLinkDependencies;
+  teamRequirement?: VercelTeamRequirement;
   onCreatedProject?: (link: VercelProjectReference) => Promise<void>;
   onProjectCreationUnknown?: () => void;
 }): Promise<boolean> {
@@ -59,6 +62,13 @@ export async function runNonInteractiveLink(input: {
     logger.error("`eve link --non-interactive` requires `--project <name-or-id>`.");
     process.exitCode = 1;
     return false;
+  }
+
+  let team = options.team;
+  if (input.teamRequirement) {
+    team = await dependencies.resolveTeam(appRoot, team);
+    const issue = await checkTeamRequirement(appRoot, team, input.teamRequirement);
+    if (issue) throw new Error(`Cannot use Vercel team "${team}". ${issue}`);
   }
 
   let existing: boolean | undefined;
@@ -78,7 +88,7 @@ export async function runNonInteractiveLink(input: {
     "link",
     "--project",
     options.project,
-    ...(options.team === undefined ? [] : ["--team", options.team]),
+    ...(team === undefined ? [] : ["--team", team]),
     "--yes",
   ];
   if (!(await dependencies.runVercel(args, { cwd: appRoot, nonInteractive: true }))) {

@@ -66,7 +66,9 @@ With `--channel-web-nextjs`, interactive initialization asks how people should
 sign in. Choosing **Sign in with Vercel** creates or selects a Vercel project,
 provisions a team-only Vercel App, and installs browser session authentication.
 If your Vercel CLI login is missing or rejected, interactive setup opens browser
-login before selecting a project.
+login before selecting a project. The team picker shows all listed teams and
+disables those without Vercel App and environment-variable permissions. Team
+owners have these permissions; custom roles are checked by capability.
 Production and preview credentials are configured remotely; local development
 continues without browser sign-in. Deploy after setup to enable production
 sign-in. See [Web Chat with Sign in with Vercel](../channels/eve#web-chat-with-sign-in-with-vercel).

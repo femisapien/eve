@@ -1161,6 +1161,10 @@ describe("runInitCommand", () => {
         createPrompter: () => fake.prompter,
         ensureVercelProject: async (input) => {
           expect(input.allowLogin).toBe(true);
+          expect(input.teamRequirement?.permissions.oauth2Application).toEqual([
+            "create",
+            "update",
+          ]);
           return project;
         },
         runNonInteractiveLink: link,

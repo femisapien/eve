@@ -138,6 +138,15 @@ describe("Web Chat auth provisioning", () => {
     expect(writes()).toEqual([]);
   });
 
+  it.each([false, true])("gives recovery specific to a configured app (%s)", async (configured) => {
+    initial(configured ? completeEnvs : []);
+    response({ app: { ...app, teamId: "team_other" } });
+    await expect(provisionWebChatAuth(project)).rejects.toThrow(
+      configured ? "Check VERCEL_APP_CLIENT_ID" : "Rename the Vercel project",
+    );
+    expect(writes()).toEqual([]);
+  });
+
   it("rejects credentials for different apps across environments", async () => {
     initial([
       { ...completeEnvs[0], target: ["production"] },
@@ -159,15 +168,21 @@ describe("Web Chat auth provisioning", () => {
     expect(writes()).toEqual([]);
   });
 
-  it("reuses a matching app after a concurrent creation", async () => {
-    initial();
-    missingApp();
-    response({ error: { code: "app_slug_taken" } }, 409);
-    response({ app });
-    response({ clientSecret: "new-secret-5678" });
-    response({ created: completeEnvs, failed: [] });
-    await expect(provisionWebChatAuth(project)).resolves.toBeUndefined();
-  });
+  it.each([
+    ["app_slug_taken", 409],
+    ["app_limit_reached", 400],
+  ] as const)(
+    "reuses a matching app after concurrent creation returns %s",
+    async (code, status) => {
+      initial();
+      missingApp();
+      response({ error: { code } }, status);
+      response({ app });
+      response({ clientSecret: "new-secret-5678" });
+      response({ created: completeEnvs, failed: [] });
+      await expect(provisionWebChatAuth(project)).resolves.toBeUndefined();
+    },
+  );
 
   it("rolls back only acknowledged env writes and identifies the new secret by its last four characters", async () => {
     initial();
@@ -259,6 +274,36 @@ describe("Web Chat auth provisioning", () => {
     response({ error: { code: "forbidden", message: "secret-response-data" } }, 403);
     await expect(provisionWebChatAuth(project)).rejects.toThrow("Run `vercel login`");
     expect(writes()).toEqual([]);
+  });
+
+  it.each(["app_name_taken", "app_slug_taken"])(
+    "explains recovery from %s without writing credentials",
+    async (code) => {
+      initial();
+      missingApp();
+      response({ error: { code, message: "private-server-detail" } }, 409);
+      missingApp();
+      await expect(provisionWebChatAuth(project)).rejects.toThrow("Rename the Vercel project");
+      expect(writes()).toHaveLength(1);
+    },
+  );
+
+  it("reports the team app limit without creating credentials", async () => {
+    initial();
+    missingApp();
+    response({ error: { code: "app_limit_reached" } }, 400);
+    missingApp();
+    await expect(provisionWebChatAuth(project)).rejects.toThrow("Remove an unused app");
+    expect(writes()).toHaveLength(1);
+  });
+
+  it("preserves the collision diagnosis when rereading the app is denied", async () => {
+    initial();
+    missingApp();
+    response({ error: { code: "app_slug_taken" } }, 409);
+    response({ error: { code: "forbidden" } }, 403);
+    await expect(provisionWebChatAuth(project)).rejects.toThrow("Rename the Vercel project");
+    expect(writes()).toHaveLength(1);
   });
 
   it("reports the app secret limit before generating another secret", async () => {
