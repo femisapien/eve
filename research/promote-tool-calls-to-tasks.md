@@ -96,9 +96,9 @@ Still running after 30 seconds. Output so far:
 …
 ```
 
-`task.started` follows with the call's own `callId` and `turnId`, and from then on the call is a
-`task()` task: one result, `task_wait`, `task_cancel`, the 32-task limit, and a turn that can't
-end while it works. The task id is `<tool>-<6 characters>`.
+From then on the call is a `task()` task: one result, `task_wait`, `task_cancel`, the 32-task
+limit, and a turn that can't end while it works. The task id is `<tool>-<6 characters>`. See
+[Events](#events) for what the stream shows.
 
 **Steering doesn't change.** A plain tool's `abortSignal` aborts only for cancellation: once a
 tool starts, steering can't interrupt the model step, and the message reaches the model at the
@@ -112,14 +112,42 @@ abort the `continueTask` body's `abortSignal`.
 
 **Cancellation.**
 
-| When the turn is cancelled                          | What happens to the work                                   |
-| --------------------------------------------------- | ---------------------------------------------------------- |
-| `execute` is still running                          | `execute` hands off; the task starts aborted and cleans up |
-| After promotion, in the same uncommitted model step | The task started already; eve cancels it as orphaned       |
-| After the promoting step committed                  | An ordinary working task; `session.cancel()` cancels it    |
+| When the turn is cancelled                          | What happens to the work                                  |
+| --------------------------------------------------- | --------------------------------------------------------- |
+| `execute` is still running                          | `execute` hands off; the run starts aborted and cleans up |
+| After promotion, in the same uncommitted model step | The run started already; eve cancels it as orphaned       |
+| After the promoting step committed                  | An ordinary working task; `session.cancel()` cancels it   |
 
-Each path ends in `task.settled` with `status: "cancelled"` and `cancel.reason:
-"turn_cancelled"`.
+In the first two cases the session never adopts the run, so the call never becomes a task and
+gets no task events. It ends with the cancelled turn, as any call does. Only the third case ends
+in `task.settled`.
+
+## Events
+
+A promoted call emits exactly the events a `task()` tool's call emits today, in the same order.
+The only addition is that `execute` can report progress before the handoff:
+
+1. `actions.requested`, from the model step.
+2. Any `action.partial` that `execute` yields before the handoff.
+3. `task.started`, with `kind: "tool"` and the call's own `callId` and `turnId`.
+4. The receipt, as the call's `action.result`.
+5. The run's own events, such as `input.requested` from `ctx.ask`, each with the `taskId`.
+6. `task.settled`, once.
+
+| Case                                          | How the call's events end                                                    |
+| --------------------------------------------- | ---------------------------------------------------------------------------- |
+| Not promoted                                  | Unchanged: `action.result` with the output, and no task events               |
+| Promoted, then finishes                       | `task.settled` with `status: "completed"` and the `output`                   |
+| Promoted, then `task_cancel`                  | `task.settled` with `status: "cancelled"`, `cancel.reason: "task_cancel"`    |
+| Promoted, step committed, then turn cancelled | `task.settled` with `cancel.reason: "turn_cancelled"`, then `turn.cancelled` |
+| Turn cancelled before the step commits        | No steps 3 to 6: `turn.cancelled`, then `session.waiting`                    |
+
+- The result reaches the model as a `task.result` message in history, not as a stream event.
+  Clients read the outcome from `task.settled`.
+- When the model ends its text while the task works, the stream emits `turn.waiting` with
+  `on: "tasks"`, and the turn resumes with the next `step.started` for the same `turnId`.
+- A run's events, such as `input.requested` from `ctx.ask` or `agent.started` from `ctx.agent`,
+  carry the `taskId` and never come before the call's `task.started`.
 
 ## Runtime boundary
 
@@ -131,18 +159,25 @@ starts the task's run itself, and the session adopts or cancels it.
 model step (tool call)            session                         task run
 execute returns continueAsTask(h)
   start run keyed (session, callId) ─────────────────────────────▶ continueTask(h, ctx)
-  tool result = receipt
-                     inbox: task.started(callId) ─▶ held on record
-step commits ──────▶ call committed? ─ yes ─▶ working
+                     inbox: run started(callId) ─▶ held on record
+step commits ──────▶ call committed? ─ yes ─▶ task.started, receipt action.result
                                       └ no ──▶ cancel ───────────▶ abortSignal aborts
 ```
 
 - **Start once.** The run is keyed on the session and `callId`, so a retried step can't start a
-  second run. It reports `task.started` through the session inbox, as runs report `agent.started`
-  today, and the inbox outlives a discarded step.
-- **Adopt or cancel.** At the step boundary the session adopts a reported task whose call the
-  step committed. It cancels one whose call was discarded and emits no `task.started` for it.
-  A run that reports after the boundary is matched the same way.
+  second run. It tells the session it started through the session inbox, as runs report
+  `agent.started` today, and the inbox outlives a discarded step.
+- **Adopt or cancel.** At the step boundary the session adopts a started run whose call the step
+  committed: it records the task, publishes `task.started`, and then publishes the receipt as the
+  call's `action.result`. It cancels a run whose call was discarded and publishes nothing for it,
+  as `execution/tasks/table.ts` already settles nothing for a task that never reported
+  `task.started`. A run that reports after the boundary is matched the same way.
+- **Event order.** A plain tool's `action.result` is emitted inside the model step today
+  (`harness/tool-loop.ts`), which would put the receipt before `task.started`. So the tool loop
+  doesn't emit `action.result` for a call that returns `continueAsTask`. The call joins the
+  step's coordination batch like a `task()` call, and its receipt is emitted after
+  `task.started`, as `harness/coordination.ts` does for task calls. The session holds the run's
+  events until it publishes `task.started`.
 - **Handoffs after abort.** A cancelled turn step gives the `execute` calls it aborted a bounded
   window to return. A handoff returned in that window starts the run with `cancelled: true` in
   its start input, and the body sees an aborted `abortSignal`. A call that returns nothing in
@@ -186,9 +221,11 @@ export default defineTool({
 
 ## Tests
 
-- **Integration:** a plain tool that returns `ctx.continueAsTask()` gets a receipt and later a
-  `task.result`, and inline calls emit nothing new. A cancel while the promoted call's parallel
-  sibling still runs cancels the orphaned run. A cancel during `execute` starts the task aborted.
+- **Integration:** a plain tool that returns `ctx.continueAsTask()` emits `task.started` before
+  its receipt `action.result`, then `task.settled`, and the model gets a `task.result`. Inline
+  calls emit nothing new. A cancel while the promoted call's parallel sibling still runs cancels
+  the orphaned run, and a cancel during `execute` starts the run aborted; neither emits task
+  events.
 - **Scenario:** `bash` with a real shell promotes, reports the exit code as a task result, and
   `task_cancel` and `session.cancel()` each stop the whole process group.
 - **E2E:** the sandbox fixture's `bash-background-job` eval asserts `task.started`, the task
