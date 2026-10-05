@@ -288,11 +288,12 @@ async function scanRepo(state) {
     if (!posix.startsWith("packages/eve/src/tracing/lib/")) {
       lines.forEach((line, index) => {
         const privateImport =
-          /['"]#tracing\/lib\/(?:core|adapters)\//.test(line) ||
+          /['"]#tracing\/lib\/(?!(?:index|runtime|delegation)\.js['"])/.test(line) ||
+          /['"]@vercel\/agent-tracing\/(?!(?:runtime|delegation)['"])/.test(line) ||
           [...line.matchAll(/(?:from\s+|import\s*\()(["'])([^"']+)\1/g)].some(
             (match) =>
               match[2].startsWith(".") &&
-              /^packages\/eve\/src\/tracing\/lib\/(?:core|adapters)\//.test(
+              /^packages\/eve\/src\/tracing\/lib\/(?!(?:index|runtime|delegation)\.js$)/.test(
                 toPosix(relative(REPO_ROOT, resolve(dirname(absPath), match[2]))),
               ),
           );

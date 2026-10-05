@@ -267,6 +267,8 @@ export interface OperationFacts {
   attempt?: { index: number; attempt: number };
 }
 export interface Operation {
+  child(data: ScopeData, key?: string): Promise<Operation>;
+  waitUntil(completion: Promise<void>): void;
   readonly type: ScopeData["type"];
   readonly reference: TraceReference;
   readonly parent?: TraceReference;

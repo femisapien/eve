@@ -217,6 +217,7 @@ export function createTraceRecorder(input: {
     let finished = binding.finished ?? false;
     let terminalResult = binding.terminal;
     const children = new Set<LiveOperation>();
+    const pending = new Set<Promise<void>>();
     let childSequence = binding.childSequence ?? 0;
     let totalUsage = binding.usage;
     const usageKeys = new Set(binding.usageKeys ?? []);
@@ -253,13 +254,23 @@ export function createTraceRecorder(input: {
         actualCapture,
         childData,
         runtime,
-        attempt,
+        childData.type === "step"
+          ? { index: childData.options.index, attempt: childData.options.attempt ?? 0 }
+          : attempt,
         childBinding,
       );
       children.add(next);
       return next;
     }
     const runtime: LiveOperation = {
+      waitUntil(completion) {
+        pending.add(completion);
+        parent?.waitUntil(completion);
+        void completion.then(
+          () => pending.delete(completion),
+          () => pending.delete(completion),
+        );
+      },
       snapshot: () => traceSnapshot(runtime.record()),
       attributes: (attributes) => runtime.update({ attributes }),
       modelCall: (options, key) => runtime.child({ type: "model", options }, key),
@@ -391,6 +402,8 @@ export function createTraceRecorder(input: {
         return runTraceContext(backend, retainedReference, actualCapture, callback, host, runtime);
       },
       async complete(result = terminalResult ?? {}) {
+        if (finished) return;
+        if (pending.size > 0) await Promise.allSettled(pending);
         if (finished) return;
         if (terminalResult?.failed)
           result = {
@@ -597,6 +610,9 @@ export function createTraceRecorder(input: {
     },
     turn(facts: OperationFacts & { metadata: import("./types.js").TurnMetadata }) {
       return start(facts, { type: "activation", options: facts.metadata });
+    },
+    activation(facts: OperationFacts & { metadata: import("./types.js").TurnMetadata }) {
+      return start(facts, { type: "activation", options: facts.metadata }, { deferred: false });
     },
     attempt(facts: OperationFacts & { step: import("./types.js").StepOptions }) {
       return start(

@@ -1,64 +1,128 @@
-# Durable agent tracing
+# Agent tracing
 
-This internal module owns agent span identity, capture, completion, and durable
-snapshots. eve is its only production consumer. It is not a published package or
-a general agent-authoring API.
+`@vercel/agent-tracing` records agent execution with OpenTelemetry. It owns
+span topology, capture, completion, and durable snapshots. The source package
+is private; it is not yet published to npm. Its only runtime package dependency
+is `@opentelemetry/api`.
 
-## Ownership
+## Setup
 
-The recorder returns one operation handle for each span. Its kind determines
-parent rules, attributes, redaction, and completion. A pending tool uses the same
-handle with a parent that attaches later.
-
-eve owns OpenTelemetry registration, exporters, AI SDK conversion, requests,
-MCP transport, remote trust, and workflow storage. Those adapters stay outside
-this module. The module accepts a backend and serializer, not an OTel provider.
-
-## Start and finish operations
+Supply your application's tracer provider. The library does not register global
+telemetry or install another model SDK tracing pipeline.
 
 ```ts
-const tracing = createTraceRecorder({ output: backend, serializer });
-const turn = await tracing.turn({
-  identity: { conversationId, runId, turnId, framework: { name: "eve", version } },
-  operationId: turnId,
-  capture: { emit: true, recordInputs: false, recordOutputs: false },
-  metadata: { sequence: 0 },
-});
+import { createAgentTracing } from "@vercel/agent-tracing";
 
-const snapshot = turn.snapshot();
-// Store snapshot directly in the host's existing transaction.
-const resumed = await tracing.resume(snapshot);
-await resumed?.complete();
+const tracing = createAgentTracing({ agentName: "support", provider });
 ```
 
-`snapshot()` returns an opaque, branded JSON value. The host does not construct
-or edit a scope record. `checkpoint(snapshot, { usage, terminal })` adds durable
-usage or an outcome without emitting the span. `resume()` validates stored
-state and can narrow capture. Invalid state affects only that operation.
+Your provider owns exporters, sampling, and context propagation. Install its
+context manager before concurrent work. `forceFlush()` and `shutdown()` call the
+provider's lifecycle methods. A shared registration object can instead supply
+`provider`, `idGenerator`, `samplesTrace`, `forceFlush`, and `shutdown`.
 
-`run(execute)` installs context and preserves the application's result or error.
-`complete(result)` emits once. `fail(error)` records a failed outcome. Attempt
-handles create physical model-call handles with `modelCall(data, key)`.
+## Wrapped execution
 
-Turns, actions, and approvals defer emission until completion. Attempts and
-model calls are live. Parent completion abandons unfinished children. Replay
-keeps durable boundary IDs but creates fresh physical model-call IDs.
+Wrapped methods preserve the callback's value or error and complete their span.
 
-## Pending tools
+```ts
+await tracing.turn({ identity, sequence: 0 }, (turn) =>
+  turn.attempt({ stepIndex: 0, attempt: 0 }, (attempt) =>
+    attempt.tool({ callId: "lookup", name: "lookup" }, lookup),
+  ),
+);
+```
 
-`pendingTool(data)` reserves a tool handle before the action exists. Store its
-snapshot like any operation. `resumeTool(snapshot)` restores it;
-`attach(parentReference)` supplies the action parent. Completion can arrive
-before attachment. `drain()` closes unresolved work against its fallback parent.
-MCP enrichment remains on the same tool span.
+`identity` contains `conversationId`, `runId`, and `turnId`. A turn can supply
+framework metadata, attributes, and a capture decision. Capture defaults to
+metadata only. Child operations cannot increase capture.
 
-## Capture and bounds
+Attempts provide `action`, `callSubAgent`, and `callRemoteAgent`. Actions provide
+`approval` and `toolExecution`. Turns, attempts, and actions provide `memory`.
+Use `describe(value)` to map a callback result to an outcome or captured output.
 
-Capture can decrease but cannot increase. Declined inputs and outputs do not
-enter snapshots. Failure classes survive redaction; exception content does not.
-Serialized content is bounded to 32 KiB, snapshots to 64 KiB, and unfinished
-children to 10,000. Snapshot validation bounds recursion and checks identities.
-`onError(error, context)` observes tracing failures without interrupting work.
+## Handles
 
-Trace output retains schema version 4. Local exporter tests protect topology
-and recovery, but do not prove live Agent Runs ingestion.
+Omit the callback when execution starts and ends in different hooks.
+
+```ts
+const turn = await tracing.turn({ identity, sequence: 0 });
+const attempt = await turn.attempt({ stepIndex: 0, attempt: 0 });
+const action = await attempt.action({ callId: "lookup", name: "lookup" });
+const tool = await action.toolExecution();
+try {
+  const value = await tool.run(lookup);
+  await tool.complete({ outcome: "completed", output: value });
+} catch (error) {
+  await tool.fail(error);
+}
+await action.complete();
+await attempt.complete();
+await turn.complete();
+```
+
+Handles expose execution, attributes, completion, and identity—not snapshots or
+replay. Parent completion closes unfinished children. `complete()` is idempotent.
+
+## Model calls and streams
+
+`modelCall(data, execute)` accepts an envelope with `result`, `finishReason`,
+`usage`, and optional response/content metadata. It returns only `result`.
+Without a callback, `modelCall(data)` returns a model handle.
+
+```ts
+const stream = await attempt.modelStream({ provider: "test", modelId: "model" }, () => ({
+  result: response.stream,
+  completion: response.completion,
+}));
+```
+
+The completion promise supplies finish reason, usage, and optional content. It
+must settle on success, failure, or cancellation. The library returns the stream
+unchanged and never consumes it. Parent completion waits for that promise.
+`modelUsage` and `modelContent` translate AI SDK telemetry payloads; they do not
+wire SDK hooks automatically.
+
+## Delegation
+
+Local delegation carries lineage across asynchronous calls. Remote calls need
+an explicit sender transport and authenticated receiver trust check.
+
+```ts
+import { createAgentDelegationTransport } from "@vercel/agent-tracing/delegation";
+const transport = createAgentDelegationTransport();
+const fetchAgent = transport.transport(approvedAgentFetch);
+await attempt.callRemoteAgent({ callId: "remote", agentName: "research" }, () =>
+  fetchAgent(approvedAgentUrl),
+);
+
+transport.receive(request.headers, verifyAuthenticatedCaller, () =>
+  tracing.turn({ identity, sequence: 0 }, runAgent),
+);
+```
+
+Bind the sender only to approved destinations. It rejects redirects. The receiver
+validates the bounded `x-agent-tracing` header before calling your trust callback.
+Metadata is not authorization: verify authenticated provenance and the expected
+caller, parent run, and call. Rejected metadata does not change application work.
+
+## Durable runtimes
+
+`@vercel/agent-tracing/runtime` exposes the recorder for framework adapters such
+as eve. The host stores opaque `TraceSnapshot` JSON in its existing transaction.
+`snapshot()`, `resume()`, and `checkpoint()` retain identity, outcomes, usage,
+links, and unfinished children. `pendingTool()` and `resumeTool()` use the same
+handle lifecycle when a tool's action parent arrives later.
+
+These APIs are not present on `createAgentTracing()` or its handles. Durable
+hosts select live attempts and deferred turns/actions without a public mode flag.
+Request/MCP transport and authentication remain host responsibilities.
+
+## Privacy and failures
+
+Declined content does not enter snapshots. Failure classes survive redaction;
+exception content does not. Serialized content is capped at 32 KiB, snapshots at
+64 KiB, and unfinished children at 10,000. `onError(error, context)` is the only
+tracing error channel. Trace output retains schema version 4.
+
+Local tests cover output and recovery. They do not prove live Agent Runs ingestion.
