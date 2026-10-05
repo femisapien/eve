@@ -138,7 +138,9 @@
  *   rule 51 — Only human input (`harness/human-input/`) changes human input.
  *             Outside it, nothing calls `HumanInput.commit`, its `interrupt`
  *             or `intake`, or builds the events a request, approval, or
- *             sign-in reports. Every change is a commit through the effects
+ *             sign-in reports, or a `turn.waiting` on input, whether with a
+ *             builder or by hand. Runtime waits (`on: "tasks"`) and events
+ *             forwarded with their own data are fine. Every change is a commit through the effects
  *             entry points, which return its events, so nothing changes
  *             without readers hearing it.
  *
@@ -152,6 +154,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { load as loadYaml } from "js-yaml";
 import { checkExtensionCapabilityContracts } from "./extension-capability-contracts.mjs";
+import { checkHumanInputBoundary } from "./guard-human-input.mjs";
 
 const require = createRequire(import.meta.url);
 const extractorRequire = createRequire(require.resolve("@microsoft/api-extractor/package.json"));
@@ -664,42 +667,11 @@ function checkRule50(posix, lines, violations) {
 
 // ---------- Rule 51: only human input changes human input ----------
 
-const HUMAN_INPUT_EVENT_BUILDER_RE =
-  /\bcreate(?:Input(?:Requested|Resolved)|Authorization(?:Required|Completed)|Approval(?:Candidate|Settled))Event\b/;
-// A turn's interrupt and intake, and the session commit they feed.
-const HUMAN_INPUT_COMMIT_RE = /\bHumanInput\.commit\b|\bTurn\b[^;]*?\.(?:interrupt|intake)\(/;
-
 /** @param {string} posix @param {string[]} lines @param {Violation[]} violations */
 function checkRule51(posix, lines, violations) {
-  if (
-    !posix.startsWith("packages/eve/src/") ||
-    posix.startsWith(HUMAN_INPUT_DIR) ||
-    posix.startsWith("packages/eve/src/protocol/") ||
-    posix.startsWith("packages/eve/src/internal/testing/") ||
-    TEST_FILE_RE.test(posix) ||
-    posix.includes("/test/")
-  )
-    return;
-  lines.forEach((line, idx) => {
-    const builder = HUMAN_INPUT_EVENT_BUILDER_RE.exec(line)?.[0];
-    if (builder !== undefined) {
-      violations.push({
-        rule: 51,
-        file: posix,
-        line: idx + 1,
-        message: `uses ${builder} outside harness/human-input/. Only human input builds the events a request, approval, or sign-in reports: commit the change through harness/human-input/effects/ and publish what it returns.`,
-      });
-    }
-    const commit = HUMAN_INPUT_COMMIT_RE.exec(line)?.[0];
-    if (commit !== undefined) {
-      violations.push({
-        rule: 51,
-        file: posix,
-        line: idx + 1,
-        message: `calls ${commit} outside harness/human-input/. Change human input only through the effects entry points (commitTurn, commitSessionStep), so one place commits it and reports its events.`,
-      });
-    }
-  });
+  for (const { line, message } of checkHumanInputBoundary(posix, lines.join("\n"))) {
+    violations.push({ rule: 51, file: posix, line, message });
+  }
 }
 
 // ---------- Rule 13: spread-ternary object composition ----------
