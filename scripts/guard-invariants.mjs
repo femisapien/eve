@@ -135,6 +135,12 @@
  *             imported only by the two appliers (`turn.ts`, `session.ts`),
  *             and outside the directory nothing names the events that need
  *             I/O.
+ *   rule 51 — Only human input (`harness/human-input/`) changes human input.
+ *             Outside it, nothing calls `HumanInput.commit`, its `interrupt`
+ *             or `intake`, or builds the events a request, approval, or
+ *             sign-in reports. Every change is a commit through the effects
+ *             entry points, which return its events, so nothing changes
+ *             without readers hearing it.
  *
  * Baselines for rules with pre-existing violations live in
  * `guard-invariants-baseline.json`. Counts and allowlists in that file
@@ -256,6 +262,7 @@ function isTsLike(relPath) {
  *   rule48: Violation[];
  *   rule49: Violation[];
  *   rule50: Violation[];
+ *   rule51: Violation[];
  *   symlinks: string[];
  * }} state
  */
@@ -291,6 +298,7 @@ async function scanRepo(state) {
     checkRule48(posix, lines, state.rule48);
     checkRule49(posix, lines, state.rule49);
     checkRule50(posix, lines, state.rule50);
+    checkRule51(posix, lines, state.rule51);
   }
 }
 
@@ -651,6 +659,46 @@ function checkRule50(posix, lines, violations) {
       idx,
       "names a human input event that needs I/O outside harness/human-input/. Carry it out in harness/human-input/effects/, the only place that does that I/O.",
     );
+  });
+}
+
+// ---------- Rule 51: only human input changes human input ----------
+
+const HUMAN_INPUT_EVENT_BUILDER_RE =
+  /\bcreate(?:Input(?:Requested|Resolved)|Authorization(?:Required|Completed)|Approval(?:Candidate|Settled))Event\b/;
+// A turn's interrupt and intake, and the session commit they feed.
+const HUMAN_INPUT_COMMIT_RE = /\bHumanInput\.commit\b|\bTurn\b[^;]*?\.(?:interrupt|intake)\(/;
+
+/** @param {string} posix @param {string[]} lines @param {Violation[]} violations */
+function checkRule51(posix, lines, violations) {
+  if (
+    !posix.startsWith("packages/eve/src/") ||
+    posix.startsWith(HUMAN_INPUT_DIR) ||
+    posix.startsWith("packages/eve/src/protocol/") ||
+    posix.startsWith("packages/eve/src/internal/testing/") ||
+    TEST_FILE_RE.test(posix) ||
+    posix.includes("/test/")
+  )
+    return;
+  lines.forEach((line, idx) => {
+    const builder = HUMAN_INPUT_EVENT_BUILDER_RE.exec(line)?.[0];
+    if (builder !== undefined) {
+      violations.push({
+        rule: 51,
+        file: posix,
+        line: idx + 1,
+        message: `uses ${builder} outside harness/human-input/. Only human input builds the events a request, approval, or sign-in reports: commit the change through harness/human-input/effects/ and publish what it returns.`,
+      });
+    }
+    const commit = HUMAN_INPUT_COMMIT_RE.exec(line)?.[0];
+    if (commit !== undefined) {
+      violations.push({
+        rule: 51,
+        file: posix,
+        line: idx + 1,
+        message: `calls ${commit} outside harness/human-input/. Change human input only through the effects entry points (commitTurn, commitSessionStep), so one place commits it and reports its events.`,
+      });
+    }
   });
 }
 
@@ -1685,6 +1733,7 @@ async function main() {
     rule48: /** @type {Violation[]} */ ([]),
     rule49: /** @type {Violation[]} */ ([]),
     rule50: /** @type {Violation[]} */ ([]),
+    rule51: /** @type {Violation[]} */ ([]),
     symlinks: /** @type {string[]} */ ([]),
   };
 
@@ -1801,6 +1850,7 @@ async function main() {
   violations.push(...state.rule48);
   violations.push(...state.rule49);
   violations.push(...state.rule50);
+  violations.push(...state.rule51);
 
   if (violations.length === 0) {
     process.stdout.write("[eve:guard:invariants] ok — all mechanical lints passed.\n");
