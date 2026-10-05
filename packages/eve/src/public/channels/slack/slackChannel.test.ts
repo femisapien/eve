@@ -3614,6 +3614,40 @@ describe("slackChannel() onMessage", () => {
     expect(onEvent).toHaveBeenCalledTimes(1);
   });
 
+  // Repro: the user deletes the message that started a turn. Slack turns a
+  // later `chat.postMessage` with that deleted root as `thread_ts` into a
+  // top-level channel message, so the final reply leaks into the channel.
+  // eve drops `message_deleted`, so nothing cancels the in-flight turn.
+  // Remove `.fails` once eve cancels the turn bound to a deleted thread root.
+  it.fails("cancels the turn bound to a thread root that the user deleted", async () => {
+    const channel = slackChannel({ credentials: { botToken: "xoxb-test" } });
+    const rootTs = "1700000000.000100";
+    const body = buildEventBody(
+      {
+        channel: "C_DELETED",
+        channel_type: "channel",
+        deleted_ts: rootTs,
+        hidden: true,
+        previous_message: {
+          text: "<@U_BOT> a question",
+          ts: rootTs,
+          type: "message",
+          user: "U01",
+        },
+        subtype: "message_deleted",
+        ts: "1700000000.000200",
+        type: "message",
+      },
+      { authorizations: [{ is_bot: true, user_id: "U_BOT" }] },
+    );
+
+    const { cancel } = await firePost(channel, buildSignedRequest({ body }));
+
+    expect(cancel).toHaveBeenCalledWith(
+      expect.objectContaining({ continuationToken: `C_DELETED:${rootTs}` }),
+    );
+  });
+
   it("gives specialized message hooks precedence", async () => {
     const onAppMention = vi.fn(() => null);
     const onMessage = vi.fn(() => ({ auth: null }));
