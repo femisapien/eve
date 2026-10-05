@@ -46,11 +46,12 @@ export default defineEval({
     });
     steered.notEvent("turn.started");
     steered.event("message.received", { count: 1, data: { message: SAY.hello } });
-    // The answers given resolve first; the model then reads Alice's message in the same turn.
+    // The answers given resolve first. The step that runs A receives Alice's
+    // message, and the model reads it in the next step of the same turn.
     steered.eventOrder([
       { type: "input.resolved" },
-      { type: "action.result", data: { status: "completed", result: { toolName: "change-a" } } },
       { type: "message.received", data: { message: SAY.hello } },
+      { type: "action.result", data: { status: "completed", result: { toolName: "change-a" } } },
       { type: "step.started" },
       { type: "message.completed", data: { message: REPLY.hello } },
       { type: "turn.completed" },

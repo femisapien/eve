@@ -1,13 +1,12 @@
 import { defineEval } from "eve/evals";
 
 import {
-  RELEASE_MANAGER,
   SAY,
   aliceSession,
   answers,
   approvalFor,
+  as,
   asAlice,
-  asReleaseManager,
   completeSignIn,
   expectHeld,
   expectNoModelCallDuringSignIn,
@@ -16,11 +15,15 @@ import {
   signInFrom,
 } from "../helpers.ts";
 
+// A responder of its own: the fixture's sign-ins outlive an eval, and other
+// evals sign the default release manager in.
+const RESPONDER = "human-input-sign-in-responder";
+
 /**
- * The release manager approves the OAuth-checked change. Its policy needs
- * the approver signed in first, so the turn holds on the release manager's
- * sign-in; the callback runs the policy again, which settles the approval as
- * the release manager and runs the change.
+ * A responder approves the OAuth-checked change. Its policy needs the
+ * approver signed in first, so the turn holds on the responder's sign-in;
+ * the callback runs the policy again, which settles the approval as the
+ * responder and runs the change.
  */
 export default defineEval({
   description: "A response policy that needs the responder to sign in settles after the sign-in.",
@@ -33,10 +36,10 @@ export default defineEval({
       "oauth-authorized-gate",
     );
 
-    const held = await session.respond(answers("approve", request), asReleaseManager);
+    const held = await session.respond(answers("approve", request), as(RESPONDER));
     expectHeld(held);
     held.event("approval.candidate", { count: 1, data: { outcome: "pending" } });
-    held.event("authorization.required", { count: 1, data: { principalId: RELEASE_MANAGER } });
+    held.event("authorization.required", { count: 1, data: { principalId: RESPONDER } });
     held.notEvent("approval.settled");
     const signIn = signInFrom(held);
 
@@ -51,7 +54,7 @@ export default defineEval({
       },
       {
         type: "approval.settled",
-        data: { outcome: "approved", responderPrincipalId: RELEASE_MANAGER },
+        data: { outcome: "approved", responderPrincipalId: RESPONDER },
       },
       {
         type: "action.result",
