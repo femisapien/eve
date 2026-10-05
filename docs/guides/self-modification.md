@@ -5,7 +5,7 @@ description: "Ask your agent to update its own authored files during local devel
 
 When `eve dev` starts a local server, it mounts the bundled self-modification extension by default. Ask your agent to change its instructions, tools, skills, or other files under `agent/`; eve delegates the source work to the `self-modification__agent` subagent. Connecting to an existing server with `eve remote connect --url <url>` does not add the bundled extension to that server.
 
-The bundled extension is `eve/self-modification/local`. It is for local development and is not included in production builds. To let a deployed agent propose source changes, mount the separate [`eve/self-modification/deployed`](#propose-changes-from-a-deployed-agent) extension.
+The bundled extension is `eve/self-modification/local`. It is for local development and is not included in production builds. To let a deployed agent propose source changes, mount the separate [`eve/self-modification/deployed`](#propose-changes-from-a-deployed-agent-experimental) extension.
 
 ```bash
 eve dev
@@ -74,7 +74,7 @@ The deployed subagent is never offered during `eve dev`, where the local extensi
 
 `authorize` receives the current authenticated `principal`, or `null` for anonymous callers, and the request's `channel` kind and metadata. Return `true` to offer the coding subagent. Returning `false` or throwing hides it, and eve logs the thrown error. The callback runs on session start and on each turn, including follow-ups.
 
-The principal ID in the example is illustrative. Check the identities your channel produces before you write a policy.
+Check the identities your channel produces before you write a policy.
 
 ### Connect GitHub
 
