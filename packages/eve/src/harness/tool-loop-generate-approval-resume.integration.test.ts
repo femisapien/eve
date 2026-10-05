@@ -10,8 +10,9 @@ import { dispatchDynamicInstructionEvent } from "#context/dynamic-instruction-li
 import { dispatchMemoryLifecycleEvent } from "#context/memory-event-lifecycle.js";
 import { defineInstructions } from "#public/definitions/instructions.js";
 import { defineMemory } from "#public/memory/index.js";
-import { jsonSchema, type LanguageModel, type ModelMessage } from "ai";
+import { jsonSchema, type LanguageModel, type ModelMessage, type Telemetry } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
+import type { InstrumentationAttemptScope } from "#instrumentation/lifecycle.js";
 import { describe, expect, it, vi } from "vitest";
 import { ContextContainer, contextStorage } from "#context/container.js";
 import {
@@ -40,6 +41,8 @@ import { setTurnUsageState } from "#harness/turn-tag-state.js";
 import type { HarnessSession, ToolLoopHarnessConfig } from "#harness/types.js";
 import { once } from "#tools/approval/policies.js";
 import { defineTool } from "#tools/definition.js";
+import { defineJsonSchema } from "#tools/schema.js";
+import { z } from "#compiled/zod/index.js";
 import {
   registerDurableDynamicCallback,
   stampDurableDynamicCallback,
@@ -571,7 +574,7 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
-  it("executes two approvals delivered together exactly once each", async () => {
+  it("executes approvals from separate batches exactly once each", async () => {
     const execute = vi.fn(async (input: unknown) =>
       (input as { command: string }).command === "pwd" ? "/workspace" : "eve",
     );
@@ -610,6 +613,125 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
         : [],
     );
     expect(toolResultCallIds).toEqual([toolCall.toolCallId, secondToolCall.toolCallId]);
+  });
+
+  it("executes approved siblings in the same batch concurrently", async () => {
+    const bothStarted = Promise.withResolvers<void>();
+    let started = 0;
+    const execute = vi.fn(async () => {
+      if (++started === 2) bothStarted.resolve();
+      await bothStarted.promise;
+      return "done";
+    });
+    const batches = getPendingInputBatches(createTwoPendingApprovalSession().state);
+    const session = appendPendingInputBatch({
+      session: createBaseSession(),
+      requests: batches.flatMap((batch) => batch.requests),
+      responseMessages: batches.flatMap((batch) => batch.responseMessages),
+    });
+    const result = await createToolLoopHarness(createConfig(createModel(), execute))(session, {
+      inputResponses: [
+        { optionId: "approve", requestId: approvalRequest.approvalId },
+        { optionId: "approve", requestId: secondApprovalRequest.approvalId },
+      ],
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(result.session.history)).toContain("done");
+  });
+
+  it("keeps completed sibling results when another output mapper fails", async () => {
+    const execute = vi.fn(async (input: unknown) => (input as { command: string }).command);
+    const config = createConfig(createModel(), execute);
+    const tools = new Map(config.tools);
+    tools.set("bash", {
+      ...tools.get("bash")!,
+      toModelOutput: (output: unknown) => {
+        if (output === "whoami") throw new Error("Bob's output could not be formatted.");
+        return { type: "text", value: String(output) };
+      },
+    });
+    const batches = getPendingInputBatches(createTwoPendingApprovalSession().state);
+    const session = appendPendingInputBatch({
+      session: createBaseSession(),
+      requests: batches.flatMap((batch) => batch.requests),
+      responseMessages: batches.flatMap((batch) => batch.responseMessages),
+    });
+    const result = await createToolLoopHarness({ ...config, tools })(session, {
+      inputResponses: [
+        { optionId: "approve", requestId: approvalRequest.approvalId },
+        { optionId: "approve", requestId: secondApprovalRequest.approvalId },
+      ],
+    });
+    expect(execute).toHaveBeenCalledTimes(2);
+    const parts = result.session.history.flatMap((message) =>
+      message.role === "tool" ? message.content : [],
+    );
+    expect(parts).toContainEqual(
+      expect.objectContaining({ toolCallId: "call-1", output: { type: "text", value: "pwd" } }),
+    );
+    expect(parts).toContainEqual(
+      expect.objectContaining({
+        toolCallId: "call-2",
+        output: { type: "error-text", value: "Bob's output could not be formatted." },
+      }),
+    );
+  });
+
+  it("does not execute approved input that fails a refinement of the restored tool schema", async () => {
+    const execute = vi.fn(async () => "unexpected");
+    const config = createConfig(createModel(), execute);
+    const tools = new Map(config.tools);
+    tools.set("bash", {
+      ...tools.get("bash")!,
+      inputSchema: z.strictObject({
+        command: z.string().refine((command) => !command.includes(".."), "Stay in the workspace."),
+      }),
+    });
+    const input = { command: "cat ../notes.txt" };
+    const session = appendPendingInputBatch({
+      session: createBaseSession(),
+      requests: [
+        {
+          ...pendingApprovalInputRequest,
+          action: { ...pendingApprovalInputRequest.action, input },
+        },
+      ],
+      responseMessages: [{ role: "assistant", content: [{ ...toolCall, input }, approvalRequest] }],
+    });
+    const result = await createToolLoopHarness({ ...config, tools })(session, {
+      inputResponses: [{ optionId: "approve", requestId: approvalRequest.approvalId }],
+    });
+    expect(execute).not.toHaveBeenCalled();
+    expect(findPart(result.session.history, "tool-result")).toMatchObject({
+      toolCallId: toolCall.toolCallId,
+      output: { type: "error-text", value: expect.stringContaining("no longer valid") },
+    });
+  });
+
+  it("does not execute approved input rejected by the restored tool schema", async () => {
+    const execute = vi.fn(async () => "unexpected");
+    const model = createModel();
+    const config = createConfig(model, execute);
+    const definition = config.tools.get("bash")!;
+    const tools = new Map(config.tools);
+    tools.set("bash", {
+      ...definition,
+      inputSchema: defineJsonSchema({
+        type: "object",
+        required: ["command"],
+        properties: { command: { type: "number" } },
+      }),
+    });
+    const result = await createToolLoopHarness({ ...config, tools })(
+      createPendingApprovalSession(),
+      { inputResponses: [{ optionId: "approve", requestId: approvalRequest.approvalId }] },
+    );
+    expect(execute).not.toHaveBeenCalled();
+    const output = findPart(result.session.history, "tool-result");
+    expect(output).toMatchObject({
+      toolCallId: toolCall.toolCallId,
+      output: { type: "error-text", value: expect.stringContaining("no longer valid") },
+    });
   });
 
   // Regression: approving one once()-gated call recorded the grant immediately,
@@ -778,6 +900,81 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
     });
   });
 
+  it("reports an approved call's execution within the step's first attempt, as the AI SDK did", async () => {
+    const execute = vi.fn(async () => "/workspace");
+    const model = new MockLanguageModelV4({
+      doStream: async () => textStreamResult("The command returned /workspace."),
+      modelId: "generate-approval-resume-model",
+      provider: "eve-integration-mock",
+    });
+    const reported: string[] = [];
+    const integration: Telemetry = {
+      onStart: () => {
+        reported.push("model operation");
+      },
+      onToolExecutionStart: (event) => {
+        reported.push(`start ${event.toolCall.toolCallId}`);
+      },
+      executeTool: async ({ execute: run, toolCallId }) => {
+        reported.push(`execute ${toolCallId}`);
+        return await run();
+      },
+      onToolExecutionEnd: (event) => {
+        reported.push(`end ${event.toolCall.toolCallId} ${event.toolOutput.type}`);
+      },
+    };
+    const resultAttempts: Array<number | undefined> = [];
+    const instrumentation: NonNullable<ToolLoopHarnessConfig["instrumentation"]> = {
+      installAiSdkWarningLogger: () => {},
+      runStep: async (input, run) =>
+        await run({
+          createHandleEvent:
+            ({ getAttemptScope }) =>
+            async (event) => {
+              if (event.type === "action.result")
+                resultAttempts.push(getAttemptScope?.()?.attemptIndex);
+            },
+          prepareAttempt: ({ attemptIndex, stepIndex, turnId }) => ({
+            complete: async () => {},
+            fail: async () => {},
+            scope: {
+              attemptId: `${turnId}:${stepIndex}:${attemptIndex}`,
+              attemptIndex,
+              sessionId: input.session.sessionId,
+              stepIndex,
+              turnId,
+            } as InstrumentationAttemptScope,
+            telemetry: { integrations: [integration], isEnabled: true },
+          }),
+          preparePreamble: async () => undefined,
+          publishInputResolutions: async () => {},
+          recordError: () => {},
+          resolveRuntimeContext: () => undefined,
+          session: input.session,
+          setTurnId: () => {},
+          telemetry: () => undefined,
+        }),
+    };
+
+    await contextStorage.run(createApprovalContext(), () =>
+      createToolLoopHarness({ ...createConfig(model, execute), instrumentation })(
+        createPendingApprovalSession(),
+        { inputResponses: [{ optionId: "approve", requestId: approvalRequest.approvalId }] },
+      ),
+    );
+
+    expect(execute).toHaveBeenCalledOnce();
+    // The AI SDK ran the call inside its model operation; it now runs just before, in the same
+    // attempt.
+    expect(reported).toEqual([
+      `start ${toolCall.toolCallId}`,
+      `execute ${toolCall.toolCallId}`,
+      `end ${toolCall.toolCallId} tool-result`,
+      "model operation",
+    ]);
+    expect(resultAttempts).toEqual([0]);
+  });
+
   it("persists the approved pre-model tool result without an event handler", async () => {
     const execute = vi.fn(async () => "/workspace");
     const model = createModel();
@@ -807,14 +1004,10 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       "user",
       "assistant",
       "tool",
-      "tool",
       "assistant",
     ]);
     expect(findPart(result.session.history, "tool-call")).toEqual(toolCall);
-    expect(findPart(result.session.history, "tool-approval-response")).toMatchObject({
-      approvalId: approvalRequest.approvalId,
-      approved: true,
-    });
+    expect(findPart(result.session.history, "tool-approval-response")).toBeUndefined();
     expect(findPart(result.session.history, "tool-result")).toMatchObject({
       output: { type: "text", value: "canonical:/workspace" },
       toolCallId: toolCall.toolCallId,
@@ -899,8 +1092,8 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       }
       expect(called).toEqual([toolCall.toolCallId, siblingCall.toolCallId]);
       expect(called.filter((id) => !answered.has(id))).toEqual([]);
-      expect(providerPrompt.at(-1)?.role).toBe("tool");
-      expect(ctx.get(HistoryStateKey)).toEqual({});
+      expect(providerPrompt.at(-1)?.role).toBe("user");
+      expect(ctx.get(HistoryStateKey)?.availableSkills).toBeDefined();
       expect(result.session.history.at(-1)).toMatchObject({
         content: [{ text: "The command returned /workspace.", type: "text" }],
         role: "assistant",
@@ -976,14 +1169,10 @@ describe("tool loop generate approval resume (real AI SDK)", () => {
       "assistant",
       "assistant",
       "tool",
-      "tool",
       "assistant",
     ]);
     expect(findPart(result.session.history, "tool-call")).toEqual(toolCall);
-    expect(findPart(result.session.history, "tool-approval-response")).toMatchObject({
-      approvalId: approvalRequest.approvalId,
-      approved: true,
-    });
+    expect(findPart(result.session.history, "tool-approval-response")).toBeUndefined();
     expect(result.session.history.at(-1)).toMatchObject({
       content: [{ text: "The command returned /workspace.", type: "text" }],
       role: "assistant",

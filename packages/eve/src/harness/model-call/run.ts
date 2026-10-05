@@ -8,6 +8,7 @@ import {
   type ApprovedWork,
   dispatchApprovedWorkflows,
   enforceBudget,
+  executeApprovedLocalCalls,
   humanInputContext,
 } from "#harness/hitl/index.js";
 import { type HarnessModelMessage, validateHarnessModelMessages } from "#harness/messages.js";
@@ -78,13 +79,22 @@ export async function runModelStep(
     const modelId = requireSessionModelReference(step.session).id;
     await emitStepStarted(step.emit, step.position(), modelId, messages);
   };
-  const projectedMessages = projectPrompt(step, prompt);
+  let projectedMessages = projectPrompt(step, prompt);
   try {
     await start(projectedMessages);
   } catch (error) {
     return failBoundaryEvent(step, error);
   }
+  // Approved calls run as their approvers, so who approved each is known before any runs.
   const { approvedTools, pendingApprovalsNote } = humanInputContext(step, input.approved);
+  const dispatched = dispatchApprovedWorkflows(step, input.approved, prompt.messages);
+  if (dispatched !== undefined) return dispatched;
+  const overBudget = await enforceBudget(step, projectedMessages);
+  if (overBudget !== undefined) return overBudget;
+  const approved = await executeApprovedLocalCalls(step, prompt.messages, input.setAttemptScope);
+  if (approved.held !== undefined) return approved.held;
+  prompt.messages = approved.messages;
+  projectedMessages = projectPrompt(step, prompt);
   const caller = new ModelCaller(step, prompt, {
     approvedTools,
     generation,
@@ -96,12 +106,6 @@ export async function runModelStep(
     startStep: start,
     turnMessages: input.turn.messages,
   });
-  const dispatched = dispatchApprovedWorkflows(step, input.approved, prompt.messages);
-  if (dispatched !== undefined) return dispatched;
-  // Over budget, no model call happens.
-  const overBudget = await enforceBudget(step, projectedMessages);
-  if (overBudget !== undefined) return overBudget;
-
   let result: HarnessStepResult;
   try {
     result = await caller.call({ suppressStepStartedEmission: true });

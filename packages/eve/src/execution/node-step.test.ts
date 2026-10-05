@@ -41,9 +41,9 @@ import {
 // be written; the attribute contract is covered by emit.test.ts.
 vi.mock("#runtime/attributes/emit.js", () => ({ setEveAttributes: vi.fn(async () => {}) }));
 
-vi.mock("ai", () => ({
+vi.mock("ai", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("ai")>()),
   ToolLoopAgent: vi.fn(),
-  jsonSchema: vi.fn((schema: unknown) => schema),
   isStepCount: vi.fn((count: number) => count),
   tool: vi.fn((definition: unknown) => definition),
 }));

@@ -1,14 +1,8 @@
-import type { ModelMessage, TypedToolResult, ToolSet } from "ai";
+import type { ModelMessage } from "ai";
 
 import { buildResponseAuthorizationTools } from "#context/build-dynamic-tools.js";
-import { authorizationEventFields } from "#harness/authorization-event-fields.js";
-import {
-  getSupersededAuthorizationChallenges,
-  setPendingAuthorization,
-} from "#harness/authorization.js";
 import { setPendingCoordinationBatch } from "#harness/coordination.js";
 import { advanceStep, type HarnessEmissionState } from "#harness/emission.js";
-import { resolveInlineAuthorizationInterrupt } from "#harness/inline-tool-authorization.js";
 import {
   appendPendingInputBatch,
   getApprovedTools,
@@ -23,11 +17,7 @@ import { getPendingInputBatches } from "#harness/pending-input-batches.js";
 import type { Step } from "#harness/step/context.js";
 import type { HarnessToolMap, StepResult } from "#harness/types.js";
 import { dispatchApprovedWorkflowCalls } from "#harness/workflow-dispatch.js";
-import {
-  createAuthorizationCompletedEvent,
-  createAuthorizationRequiredEvent,
-  createInputRequestedEvent,
-} from "#protocol/message.js";
+import { createInputRequestedEvent } from "#protocol/message.js";
 import type { RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
 import type { InputRequest } from "#shared/input.js";
 import {
@@ -46,6 +36,8 @@ import { setApprovedCallCallers } from "./approved-call-callers.js";
 
 export { acceptHumanInput, type ApprovedWork, type HumanInputIntake } from "./intake.js";
 export { enforceBudget } from "./budget.js";
+export { stopForToolSignIn } from "./sign-in.js";
+export { executeApprovedLocalCalls } from "./execute-approved.js";
 export { declinedSignInEvents, withdrawHeldSignIns } from "./held-requests.js";
 export { extractToolApprovalInputRequests } from "#harness/input-extraction.js";
 export {
@@ -176,61 +168,6 @@ export async function parkOnApprovals(
   await step.emit?.(createInputRequestedEvent({ requests: [...requests], ...event }));
   if (runsQueuedInput) return { next: step.runStep, session: step.session };
   await holdForInput(step, position);
-  return { held: { kind: "request" }, next: null, session: step.session };
-}
-
-/**
- * A call the model step ran needs a sign-in: the turn holds until it completes, and supersedes the
- * attempts it replaces.
- */
-export async function stopForToolSignIn(
-  step: Step,
-  input: {
-    readonly messages: readonly ModelMessage[];
-    readonly position: HarnessEmissionState;
-    readonly toolResults: readonly TypedToolResult<ToolSet>[] | undefined;
-  },
-): Promise<StepResult | undefined> {
-  const interrupt = resolveInlineAuthorizationInterrupt({
-    messages: [...input.messages],
-    toolResults: input.toolResults,
-  });
-  if (!interrupt) return undefined;
-  const { challenges } = interrupt;
-  const { sequence, stepIndex, turnId } = input.position;
-  if (step.emit !== undefined) {
-    for (const superseded of getSupersededAuthorizationChallenges(step.session.state, challenges)) {
-      await step.emit(
-        createAuthorizationCompletedEvent({
-          ...authorizationEventFields(superseded),
-          outcome: "failed",
-          reason: "Superseded by a newer authorization attempt.",
-          sequence,
-          stepIndex,
-          turnId,
-        }),
-      );
-    }
-    for (const challenge of challenges) {
-      await step.emit(
-        createAuthorizationRequiredEvent({
-          ...authorizationEventFields(challenge),
-          description:
-            challenge.challenge.instructions ?? `Authorization required for ${challenge.name}`,
-          sequence,
-          stepIndex,
-          turnId,
-          webhookUrl: challenge.hookUrl,
-        }),
-      );
-    }
-  }
-  step.session = {
-    ...step.session,
-    history: validateHarnessModelMessages(interrupt.history),
-    state: setPendingAuthorization(step.session.state, { challenges }),
-  };
-  await holdForInput(step, input.position);
   return { held: { kind: "request" }, next: null, session: step.session };
 }
 
