@@ -8,6 +8,7 @@ import {
   answerBudget,
   answerBudgetByText,
   askBudget,
+  stopBudget,
   withdrawBudget,
   withoutClosedBudgetAnswers,
 } from "#harness/human-input/budget.js";
@@ -104,15 +105,17 @@ export class HumanInput {
         case "publish":
           await host.publish(event.event, event.relayed === true ? "relayed" : "own");
           continue;
-        // The call that asked keeps running; the turn waits on it.
         case "turn.held":
-          await HumanInput.hold(host, current, "relayed");
+          await publishWaiting(host, current, event.relayed === true ? "relayed" : "own");
           continue;
         case "turn.cancelled":
           return { ending: { kind: "cancelled" }, session: current };
         // Stop resolved the budget question: the turn ends as cancelled.
         case "budget.declined":
-          return { ending: { declined: "budget", kind: "cancelled" }, session: current };
+          return {
+            ending: { declined: "budget", kind: "cancelled", requestId: event.requestId },
+            session: current,
+          };
         default: {
           const carried = await host.carry(event, current);
           current = carried.session;
@@ -125,35 +128,6 @@ export class HumanInput {
       }
     }
     return { session: current };
-  }
-
-  /**
-   * The turn waits on a person: publishes `turn.waiting` at the step `host`
-   * holds at. The only place a turn reports it waits on input.
-   */
-  static async hold<S extends Stateful>(
-    host: HumanInputHost<S>,
-    session: S,
-    origin: EventOrigin = "own",
-  ): Promise<void> {
-    const at = host.waitingAt(session);
-    await host.publish(
-      createTurnWaitingEvent({
-        on: "input",
-        sequence: at.sequence,
-        turnId: at.turnId,
-        usage: at.usage,
-      }),
-      origin,
-    );
-  }
-
-  /**
-   * `onto` with the human input `from` holds, for a step that keeps none of
-   * its own state but what human input decided, as a cancelled step.
-   */
-  static keep<S extends Stateful>(from: SessionStateMap | undefined, onto: S): S {
-    return { ...onto, state: store(onto.state, parseState(from?.[STATE_KEY])) };
   }
 
   /**
@@ -203,6 +177,16 @@ export class HumanInput {
   /** The sign-in attempts whose callbacks the turn waits for. */
   awaitedSignIns(): readonly string[] {
     return awaitedSignIns(this.#state);
+  }
+
+  /**
+   * Whether the session carries anything for a child or run: a relayed
+   * request, or a sign-in it started. Ending the run ends what it relayed.
+   */
+  relaysAnything(): boolean {
+    return (
+      this.relayedRequestIds().size > 0 || Object.keys(this.#state.relayedSignIns ?? {}).length > 0
+    );
   }
 
   /**
@@ -270,8 +254,10 @@ export interface Carried<S> {
   readonly report?: readonly (Interrupt | Intake)[];
 }
 
-/** How human input ended the turn. */
-export type Ending = { readonly kind: "cancelled"; readonly declined?: "budget" };
+/** How human input ended the turn: cancelled, or by a Stop at the budget question. */
+export type Ending =
+  | { readonly kind: "cancelled"; readonly declined?: undefined }
+  | { readonly kind: "cancelled"; readonly declined: "budget"; readonly requestId: string };
 
 export interface Committed<S> {
   readonly session: S;
@@ -287,6 +273,12 @@ export interface RequestAt {
 
 /** What may be asked of the turn. */
 export type Interrupt =
+  /**
+   * The turn stops to wait on a person: before its model call, or after a
+   * step whose calls asked one. It resumes in the same turn once the person
+   * answers, steers, or cancels.
+   */
+  | { readonly type: "turn.holding" }
   /** A model step made calls whose approval policy asks a person. */
   | {
       readonly type: "approvals.requested";
@@ -393,6 +385,12 @@ export type Intake =
       readonly stopped?: readonly string[];
     }
   | { readonly type: "time"; readonly now: number }
+  /**
+   * The turn a budget Stop ended settles as cancelled, from before the step
+   * that read the Stop: its budget question is closed, and its resolution
+   * was already published.
+   */
+  | { readonly type: "budget.stopped"; readonly requestId: string }
   /** A workflow run or child session ended; nobody can answer what it relayed. */
   | { readonly type: "run.ended"; readonly runId: string }
   /**
@@ -477,8 +475,11 @@ export type HumanInputEvent =
     }
   /** Tell a run, on its control hook, that its `ctx.ask()` question is withdrawn. */
   | { readonly type: "question.withdrawn"; readonly control: string; readonly requestId: string }
-  /** The turn waits on a person while the call that asked keeps running: publish `turn.waiting`. */
-  | { readonly type: "turn.held" }
+  /**
+   * The turn waits on a person: publish `turn.waiting`. A relayed hold waits
+   * on the call that asked, which keeps running.
+   */
+  | { readonly type: "turn.held"; readonly relayed?: true }
   /** Grant a fresh budget window: the person chose to continue. */
   | { readonly type: "budget.granted" }
   /** The person chose to stop: the budget question is resolved; cancel the turn. */
@@ -551,6 +552,27 @@ function parseState(value: unknown): HumanInputState {
   const grants: unknown = Reflect.get(value, "grants");
   if (typeof requests !== "object" || requests === null || !Array.isArray(grants)) return EMPTY;
   return value as HumanInputState;
+}
+
+/**
+ * Publishes `turn.waiting` at the step `host` holds at: the only place a turn
+ * reports it waits on input.
+ */
+async function publishWaiting<S extends Stateful>(
+  host: HumanInputHost<S>,
+  session: S,
+  origin: EventOrigin,
+): Promise<void> {
+  const at = host.waitingAt(session);
+  await host.publish(
+    createTurnWaitingEvent({
+      on: "input",
+      sequence: at.sequence,
+      turnId: at.turnId,
+      usage: at.usage,
+    }),
+    origin,
+  );
 }
 
 /** Stores `state` in the session's state, removing the key when nothing is open. */
@@ -631,6 +653,10 @@ function reduce(state: HumanInputState, input: Interrupt | Intake): Reduced {
       return relay(state, input);
     case "relayed.authorization":
       return relayAuthorization(state, input);
+    case "turn.holding":
+      return { events: [{ type: "turn.held" }], state };
+    case "budget.stopped":
+      return stopBudget(state, input.requestId);
     case "delivered":
       return deliverToRelayed(state, input);
     case "run.ended":

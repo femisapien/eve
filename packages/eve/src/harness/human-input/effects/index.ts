@@ -7,6 +7,7 @@ export {
   applyStepArrivals,
   commitTurn,
   holdForInput,
+  settledByEnding,
   TurnHost,
   type StepEffects,
   type TurnPhase,

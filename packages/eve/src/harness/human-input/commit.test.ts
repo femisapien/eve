@@ -26,9 +26,11 @@ class RecordingHost implements HumanInputHost<Session> {
   readonly published: [EventOrigin, UnstampedMessageStreamEvent][] = [];
   readonly carried: HostEvent["type"][] = [];
 
-  constructor(
-    readonly report: Partial<Record<HostEvent["type"], Carried<Session>["report"]>> = {},
-  ) {}
+  readonly report: Partial<Record<HostEvent["type"], Carried<Session>["report"]>>;
+
+  constructor(report: Partial<Record<HostEvent["type"], Carried<Session>["report"]>> = {}) {
+    this.report = report;
+  }
 
   async publish(event: UnstampedMessageStreamEvent, origin: EventOrigin): Promise<void> {
     this.published.push([origin, event]);
@@ -75,7 +77,11 @@ describe("HumanInput.commit", () => {
       answer("stop", BUDGET_QUESTION.requestId),
     );
 
-    expect(stopped.ending).toEqual({ declined: "budget", kind: "cancelled" });
+    expect(stopped.ending).toEqual({
+      declined: "budget",
+      kind: "cancelled",
+      requestId: BUDGET_QUESTION.requestId,
+    });
     expect(HumanInput.read(stopped.session.state).openRequestIds().size).toBe(0);
     expect(host.carried).toEqual([]);
   });
@@ -95,13 +101,37 @@ describe("HumanInput.commit", () => {
     expect(HumanInput.read(approved.session.state).next()).toEqual({ run: "model" });
   });
 
-  it("is the one place that reports the turn waits on input, at the step the host holds at", async () => {
+  it("reports the turn waits on input when it holds, at the step the host holds at", async () => {
     const host = new RecordingHost();
 
-    await HumanInput.hold(host, {});
+    const held = await HumanInput.commit(host, { state: { other: 1 } }, { type: "turn.holding" });
 
+    expect(held.session.state).toEqual({ other: 1 });
     expect(host.published).toEqual([
       ["own", { data: { on: "input", sequence: 9, turnId: "turn_1" }, type: "turn.waiting" }],
     ]);
+  });
+
+  it("closes the question a budget Stop answered, publishing nothing, for the session the cancel settles from", async () => {
+    const host = new RecordingHost();
+    const beforeStop = await HumanInput.commit(host, {}, overBudget());
+    const stopped = await HumanInput.commit(
+      host,
+      beforeStop.session,
+      answer("stop", BUDGET_QUESTION.requestId),
+    );
+    if (stopped.ending?.declined !== "budget") throw new Error("expected a budget Stop");
+    host.published.length = 0;
+
+    const settled = await HumanInput.commit(host, beforeStop.session, {
+      requestId: stopped.ending.requestId,
+      type: "budget.stopped",
+    });
+    const cancelled = await HumanInput.commit(host, settled.session, { type: "cancelled" });
+
+    expect(settled.session.state).toBeUndefined();
+    // The cancel finds nothing to withdraw, so the question resolves once.
+    expect(host.published).toEqual([]);
+    expect(cancelled.session.state).toBeUndefined();
   });
 });

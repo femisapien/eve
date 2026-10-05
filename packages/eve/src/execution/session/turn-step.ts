@@ -31,7 +31,7 @@ import * as agentTraceState from "#tracing/agent-trace-context-store.js";
 import { isTurnCancellation, throwIfTurnAborted } from "#harness/turn-cancellation.js";
 import { setChannelContext } from "#execution/channel-context.js";
 import { activeTurnId } from "#harness/active-turn-id.js";
-import { HumanInput } from "#harness/human-input/index.js";
+import { settledByEnding } from "#harness/human-input/effects/index.js";
 import { coalesceTurnInputs, validateHarnessModelMessages } from "#harness/messages.js";
 import type { HandleEventFn, HarnessSession, StepInput, StepResult } from "#harness/types.js";
 import type { DeliverPayload } from "#channel/types.js";
@@ -470,12 +470,23 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
       });
     }
     if (stepResult.cancelled !== undefined) {
+      // Stop already resolved the budget question, so the cancel must not
+      // withdraw it again, whichever session it settles from.
+      const ending = stepResult.cancelled;
       return createCancelledModelCallBatchResult({
         beforeBatchContext: input.serializedContext,
-        checkpoint: completedModelCall,
+        checkpoint:
+          completedModelCall === undefined
+            ? undefined
+            : {
+                ...completedModelCall,
+                result: {
+                  ...completedModelCall.result,
+                  session: await settledByEnding(completedModelCall.result.session, ending),
+                },
+              },
         ctx,
-        // Stop already resolved the budget question, so the cancel must not withdraw it again.
-        initialSession: HumanInput.keep(stepResult.session.state, initialSession),
+        initialSession: await settledByEnding(initialSession, ending),
         stepInput: resolved,
       });
     }

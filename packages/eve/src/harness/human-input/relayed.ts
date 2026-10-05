@@ -70,7 +70,7 @@ export function relay(
           ...(interrupt.taskId !== undefined && { taskId: interrupt.taskId }),
         }),
       ),
-      { type: "turn.held" },
+      { relayed: true, type: "turn.held" },
     ],
     state: { ...state, requests: next },
   };
@@ -177,7 +177,7 @@ export function relayAuthorization(
               [attemptId]: { at: { sequence, stepIndex, turnId }, name, runId },
             },
           };
-    return { events: [published, { type: "turn.held" }], state: next };
+    return { events: [published, { relayed: true, type: "turn.held" }], state: next };
   }
   if (event.type === "authorization.completed" && event.data.attemptId !== undefined) {
     return { events: [published], state: withoutSignIns(state, [event.data.attemptId]) };

@@ -23,7 +23,7 @@ export async function forwardRelayedAnswers(
   | { readonly kind: "cancel-turn" }
   | { readonly kind: "continue"; readonly remainder: DeliverHookPayload | undefined }
 > {
-  if (!relaysAnything(cursor)) return { kind: "continue", remainder: delivery };
+  if (!relaysRequests(cursor)) return { kind: "continue", remainder: delivery };
   const forwarded = await cursor.advance((state) =>
     forwardRelayedAnswersStep({ delivery, ...state }),
   );
@@ -37,7 +37,12 @@ export async function withdrawRelayedRequests(
   cursor: SessionStateCursor,
   intake: Extract<Intake, { readonly type: "run.ended" | "withdraw.requested" }>,
 ): Promise<void> {
-  if (intake.type === "run.ended" && !relaysAnything(cursor)) return;
+  if (
+    intake.type === "run.ended" &&
+    !HumanInput.read(cursor.sessionState.snapshot.session.state).relaysAnything()
+  ) {
+    return;
+  }
   await cursor.advance((state) => withdrawRelayedRequestsStep({ ...state, intake }));
 }
 
@@ -56,6 +61,7 @@ export async function mapHeldInputResponses(
   return mapped.delivery;
 }
 
-function relaysAnything(cursor: SessionStateCursor): boolean {
+/** Only relayed requests take answers; a relayed sign-in completes on the child's callback. */
+function relaysRequests(cursor: SessionStateCursor): boolean {
   return HumanInput.read(cursor.sessionState.snapshot.session.state).relayedRequestIds().size > 0;
 }

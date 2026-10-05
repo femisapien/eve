@@ -1756,7 +1756,11 @@ describe("createToolLoopHarness", () => {
     // A decline is a decision, not an error: the step ends the turn as
     // cancelled, which the execution layer settles as `turn.cancelled` ->
     // `session.waiting`, keeping the resolved question.
-    expect(declined.cancelled).toEqual({ declined: "budget", kind: "cancelled" });
+    expect(declined.cancelled).toEqual({
+      declined: "budget",
+      kind: "cancelled",
+      requestId: LIMIT_REQUEST_ID,
+    });
     expect(declined.next).toBeNull();
     expect(HumanInput.read(declined.session.state).openRequestIds().size).toBe(0);
     expect(vi.mocked(ToolLoopAgent)).not.toHaveBeenCalled();

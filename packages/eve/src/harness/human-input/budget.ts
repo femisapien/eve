@@ -113,6 +113,16 @@ export function answerBudgetByText(state: HumanInputState, text: string): Reduce
   return { events: [{ type: "message.answered" }, ...decided], state: close(state, open) };
 }
 
+/**
+ * A Stop ended the turn: the cancelled turn settles from before the step that
+ * read it, so the question it answered closes again, with nothing published.
+ */
+export function stopBudget(state: HumanInputState, requestId: string): Reduced {
+  const open = openBudget(state);
+  if (open?.request.requestId !== requestId) return { events: [], state };
+  return { events: [], state: close(state, open) };
+}
+
 /** The turn was cancelled: its budget question closes unanswered. */
 export function withdrawBudget(state: HumanInputState): Reduced {
   const open = openBudget(state);

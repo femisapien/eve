@@ -72,7 +72,7 @@ describe("relayed requests", () => {
         relayed: true,
         type: "publish",
       },
-      { type: "turn.held" },
+      { relayed: true, type: "turn.held" },
     ]);
     expect(turn.next()).toEqual({ run: "model" });
     expect(turn.humanInput.openRequestIds()).toEqual(new Set());

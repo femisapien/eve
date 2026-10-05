@@ -8,11 +8,16 @@ import {
   ReceivedAuthorizationCallbacksKey,
 } from "#harness/authorization.js";
 import { setPendingCoordinationBatch } from "#harness/coordination.js";
-import { advanceStep, setHarnessEmissionState } from "#harness/emission.js";
+import {
+  advanceStep,
+  getHarnessEmissionState,
+  setHarnessEmissionState,
+} from "#harness/emission.js";
 import type { HarnessEmissionState } from "#harness/emission-state.js";
 import {
   HumanInput,
   type Carried,
+  type Ending,
   type HostEvent,
   type HumanInputHost,
   type Intake,
@@ -263,12 +268,35 @@ export async function holdForInput(input: {
   readonly host: TurnHost;
   readonly session: HarnessSession;
 }): Promise<StepResult> {
-  await HumanInput.hold(input.host, input.session);
+  const { session } = await HumanInput.commit(input.host, input.session, {
+    type: "turn.holding",
+  });
   return {
     held: { kind: "input" },
     next: null,
-    session: setHarnessEmissionState(input.session, advanceStep(input.emissionState)),
+    session: setHarnessEmissionState(session, advanceStep(input.emissionState)),
   };
+}
+
+/**
+ * The session a turn a budget Stop ended settles from as cancelled: `session`,
+ * from before the step that read the Stop, with that question closed again so
+ * the cancel doesn't withdraw it a second time. Other endings keep `session`.
+ */
+export async function settledByEnding(
+  session: HarnessSession,
+  ending: Ending,
+): Promise<HarnessSession> {
+  if (ending.declined !== "budget") return session;
+  const host = new TurnHost({
+    emissionState: getHarnessEmissionState(session.state),
+    phase: "pre-step",
+  });
+  const settled = await HumanInput.commit(host, session, {
+    requestId: ending.requestId,
+    type: "budget.stopped",
+  });
+  return settled.session;
 }
 
 /** A message that answered requests isn't turn input, nor is the context sent with it. */
