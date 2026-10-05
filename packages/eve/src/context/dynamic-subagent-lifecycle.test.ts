@@ -53,7 +53,7 @@ describe("dynamic subagent lifecycle", () => {
       resolvers: [resolver],
     });
 
-    expect(handler).toHaveBeenCalledWith({ id: "openai/gpt-root" });
+    expect(handler).toHaveBeenCalledWith({ id: "openai/gpt-root", routing: "gateway" });
   });
 
   it("exposes a subagent with the returned agent config", async () => {

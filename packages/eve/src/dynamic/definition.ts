@@ -53,6 +53,13 @@ export interface DynamicResolveContext {
     readonly id: string;
     /** Context window of the effective model, in tokens, when known. */
     readonly contextWindowTokens?: number;
+    /**
+     * How the effective model is reached. `"gateway"` means the `id` alone
+     * resolves the model through AI Gateway. `"provider"` means the model comes
+     * from an authored or live provider instance, so the `id` alone does not
+     * reproduce it. Absent when unknown.
+     */
+    readonly routing?: "gateway" | "provider";
   } | null;
   readonly session: {
     readonly id: string;

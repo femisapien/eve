@@ -1,4 +1,8 @@
+import { ContextContainer } from "#context/container.js";
+import { buildResolveContext } from "#context/dynamic-resolve-context.js";
+import { StaticModelReferenceKey } from "#context/keys.js";
 import type { DynamicResolveContext } from "#dynamic/definition.js";
+import type { RuntimeModelReference } from "#runtime/agent/bootstrap.js";
 import {
   installLocalDevCapabilityEnvironment,
   withLocalDevRequestScope,
@@ -16,6 +20,12 @@ const context: DynamicResolveContext = {
   model: null,
   session: { auth: { current: null, initiator: null }, id: "session" },
 };
+
+function resolveContextFor(reference: RuntimeModelReference): DynamicResolveContext {
+  const ctx = new ContextContainer();
+  ctx.set(StaticModelReferenceKey, reference);
+  return buildResolveContext(ctx, []);
+}
 
 const savedEnvironment = { ...process.env };
 
@@ -96,19 +106,35 @@ describe("self-modification local agent", () => {
     },
   );
 
-  it("inherits the parent context window with the parent model", async () => {
+  it("inherits the context window of a Gateway-routed parent model", async () => {
     await withDevHost(async () => {
       const agent = defineSelfModificationAgent({ config: { local: { enabled: true } } });
-      const parent = { id: "custom/unlisted-model", contextWindowTokens: 1_000_000 };
+      const parent = resolveContextFor({
+        id: "custom/unlisted-model",
+        contextWindowTokens: 1_000_000,
+      });
 
       for (const event of ["session.started", "turn.started"] as const) {
-        await expect(
-          agent.events[event]?.({}, { ...context, model: parent }),
-        ).resolves.toMatchObject({
+        await expect(agent.events[event]?.({}, parent)).resolves.toMatchObject({
           model: "custom/unlisted-model",
           modelContextWindowTokens: 1_000_000,
         });
       }
+    });
+  });
+
+  it("does not inherit the context window of a source-backed parent model", async () => {
+    await withDevHost(async () => {
+      const agent = defineSelfModificationAgent({ config: { local: { enabled: true } } });
+      const parent = resolveContextFor({
+        id: "codex/gpt-5.5",
+        contextWindowTokens: 200_000,
+        source: { sourceKind: "module", logicalPath: "agent.ts", sourceId: "agent" },
+      });
+      const resolved = await agent.events["turn.started"]?.({}, parent);
+
+      expect(resolved).toMatchObject({ model: "codex/gpt-5.5" });
+      expect(resolved).not.toHaveProperty("modelContextWindowTokens");
     });
   });
 
@@ -120,7 +146,7 @@ describe("self-modification local agent", () => {
       });
       const resolved = await agent.events["turn.started"]?.(
         {},
-        { ...context, model: { id: "custom/unlisted-model", contextWindowTokens: 1_000_000 } },
+        resolveContextFor({ id: "custom/unlisted-model", contextWindowTokens: 1_000_000 }),
       );
 
       expect(resolved).toMatchObject({ model: "anthropic/claude-sonnet-5" });

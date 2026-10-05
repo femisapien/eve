@@ -1,7 +1,9 @@
+import type { LanguageModel } from "ai";
 import { describe, expect, it } from "vitest";
 
 import { ContextContainer } from "#context/container.js";
 import {
+  LiveStepDynamicModelSelectionKey,
   StaticModelReferenceKey,
   AuthKey,
   ChannelInstrumentationKey,
@@ -11,6 +13,19 @@ import {
 } from "#context/keys.js";
 import { ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
 import { buildResolveContext } from "#context/dynamic-resolve-context.js";
+
+const mockLanguageModel = {
+  specificationVersion: "v3",
+  provider: "custom",
+  modelId: "model",
+  supportedUrls: {},
+  doGenerate: async () => {
+    throw new Error("unused");
+  },
+  doStream: async () => {
+    throw new Error("unused");
+  },
+} as unknown as LanguageModel;
 
 function createCtx(): ContextContainer {
   const ctx = new ContextContainer();
@@ -26,7 +41,7 @@ describe("buildResolveContext", () => {
   it("includes the active agent model", () => {
     const resolveCtx = buildResolveContext(createCtx(), []);
 
-    expect(resolveCtx.model).toEqual({ id: "openai/gpt-5.5" });
+    expect(resolveCtx.model).toEqual({ id: "openai/gpt-5.5", routing: "gateway" });
   });
 
   it("includes the active model context window when configured", () => {
@@ -36,7 +51,25 @@ describe("buildResolveContext", () => {
     expect(buildResolveContext(ctx, []).model).toEqual({
       id: "custom/model",
       contextWindowTokens: 1_000_000,
+      routing: "gateway",
     });
+  });
+
+  it("marks source-backed and live provider models as provider-routed", () => {
+    const ctx = createCtx();
+    ctx.set(StaticModelReferenceKey, {
+      id: "codex/gpt-5.5",
+      contextWindowTokens: 200_000,
+      source: { sourceKind: "module", logicalPath: "agent.ts", sourceId: "agent" },
+    });
+    expect(buildResolveContext(ctx, []).model).toMatchObject({ routing: "provider" });
+
+    ctx.set(StaticModelReferenceKey, { id: "openai/gpt-5.5" });
+    ctx.set(LiveStepDynamicModelSelectionKey, {
+      model: mockLanguageModel,
+      reference: { id: "custom/model", contextWindowTokens: 1_000_000 },
+    });
+    expect(buildResolveContext(ctx, []).model).toMatchObject({ routing: "provider" });
   });
 
   it("includes null before a model is selected", () => {

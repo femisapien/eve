@@ -76,7 +76,9 @@ export function defineSelfModificationAgent(
 ): DynamicSentinel<DynamicSubagentDefinition | null> {
   const resolve = async (_event: unknown, ctx: DynamicResolveContext) => {
     const bound = selfModification.config;
-    const configuredModel = options.model ?? bound.model ?? ctx.model?.id;
+    const explicitModel = options.model ?? bound.model;
+    const inherited = explicitModel === undefined ? ctx.model : null;
+    const configuredModel = explicitModel ?? inherited?.id;
     const reasoning =
       options.reasoning ??
       bound.reasoning ??
@@ -84,12 +86,12 @@ export function defineSelfModificationAgent(
     const config = resolveSelfModificationConfig(options.config ?? bound);
     const mode = resolveSelfModificationMode(config);
     const model = configuredModel ?? FALLBACK_SELF_MODIFICATION_MODEL;
-    // Inheriting the parent model also inherits its context window, so custom or
-    // unlisted parent models resolve without AI Gateway metadata.
+    // An inherited Gateway-routed parent model carries its context window, so
+    // unlisted Gateway models resolve without catalog metadata. Provider-backed
+    // parents keep catalog validation: the child gets only the id, which cannot
+    // reach the parent's provider.
     const inheritedContextWindowTokens =
-      options.model === undefined && bound.model === undefined
-        ? ctx.model?.contextWindowTokens
-        : undefined;
+      inherited?.routing === "gateway" ? inherited.contextWindowTokens : undefined;
     const modelDefinition = {
       model,
       ...(inheritedContextWindowTokens === undefined

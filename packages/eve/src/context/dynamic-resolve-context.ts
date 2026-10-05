@@ -43,6 +43,12 @@ export function buildResolveContext(
             ...(effectiveModel.reference.contextWindowTokens === undefined
               ? undefined
               : { contextWindowTokens: effectiveModel.reference.contextWindowTokens }),
+            // Source-backed references and live step selections resolve through a
+            // provider instance; only a bare reference resolves its id via AI Gateway.
+            routing:
+              effectiveModel.model === undefined && effectiveModel.reference.source === undefined
+                ? "gateway"
+                : "provider",
           },
     session: {
       id: sessionId,
