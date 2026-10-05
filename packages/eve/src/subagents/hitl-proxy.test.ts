@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { upsertProxyInputRequests } from "#harness/proxy-input-requests.js";
+import {
+  toProxyInputRequestEntries,
+  upsertProxyInputRequests,
+} from "#harness/proxy-input-requests.js";
 import type { HarnessSession } from "#harness/types.js";
+import type { InputRequest } from "#shared/input.js";
 import { routeDeliverPayload } from "#subagents/hitl-proxy.js";
 
 const REQUEST_EVENT = { sequence: 0, stepIndex: 0, turnId: "turn_0" };
@@ -266,15 +270,13 @@ describe("routeDeliverPayload message resolution", () => {
           [
             requestId,
             {
-              workflowAsk: {
-                question: {
-                  ...question,
-                  options: [
-                    { id: "1", label: "Staging" },
-                    { id: "2", label: "Production" },
-                  ],
-                },
-                control: `control-${requestId}`,
+              workflowAsk: { control: `control-${requestId}` },
+              reply: {
+                ...question,
+                options: [
+                  { id: "1", label: "Staging" },
+                  { id: "2", label: "Production" },
+                ],
               },
               runId: `run-${requestId}`,
               childContinuationToken: `hook-${requestId}`,
@@ -369,6 +371,105 @@ describe("routeDeliverPayload message resolution", () => {
     });
 
     expect(routed.forSelf).toEqual({ message: "Use the canary pool" });
+    expect(routed.forChildren).toEqual([]);
+  });
+
+  function childPromptSession(requests: readonly InputRequest[]): HarnessSession {
+    return upsertProxyInputRequests({
+      entries: toProxyInputRequestEntries({
+        callId: "call-1",
+        childContinuationToken: "child-token",
+        childSessionId: "child-session",
+        event: { requests, ...REQUEST_EVENT },
+        kind: "subagent-input-request",
+        subagentName: "reviewer",
+      }),
+      forChildContinuationToken: "child-token",
+      session: createSession(),
+    });
+  }
+
+  function childPrompt(requestId: string, kind: InputRequest["kind"]): InputRequest {
+    const options =
+      kind === "session-limit"
+        ? [
+            { id: "continue", label: "Approve" },
+            { id: "stop", label: "Stop" },
+          ]
+        : [
+            { id: "approve", label: "Approve" },
+            { id: "cancel", label: "Cancel" },
+          ];
+    return {
+      action: { callId: requestId, input: {}, kind: "tool-call", toolName: "deploy" },
+      kind,
+      options,
+      prompt: "Continue?",
+      requestId,
+    };
+  }
+
+  it("answers every approval in a subagent's batch with a typed reply", () => {
+    const routed = routeDeliverPayload({
+      payload: { message: "approve" },
+      resolveMessage: true,
+      state: childPromptSession([
+        childPrompt("approve-1", "tool-approval"),
+        childPrompt("approve-2", "tool-approval"),
+      ]).state,
+    });
+
+    expect(routed.forSelf).toBeUndefined();
+    expect(routed.forChildren).toMatchObject([
+      {
+        childContinuationToken: "child-token",
+        message: "approve",
+        payload: {
+          inputResponses: [
+            { optionId: "approve", requestId: "approve-1" },
+            { optionId: "approve", requestId: "approve-2" },
+          ],
+        },
+      },
+    ]);
+  });
+
+  it.each([
+    ["continue", undefined],
+    ["stop", { kind: "cancel-turn" }],
+  ] as const)("routes a typed %s to a subagent's session-limit prompt", (reply, parentAction) => {
+    const routed = routeDeliverPayload({
+      payload: { message: reply },
+      resolveMessage: true,
+      state: childPromptSession([childPrompt("limit-1", "session-limit")]).state,
+    });
+
+    expect(routed.parentAction).toEqual(parentAction);
+    expect(routed.forChildren[0]?.payload.inputResponses).toEqual([
+      { optionId: reply, requestId: "limit-1" },
+    ]);
+  });
+
+  it("keeps a typed reply for the turn when prompts from two children are pending", () => {
+    const session = upsertProxyInputRequests({
+      entries: toProxyInputRequestEntries({
+        callId: "call-2",
+        childContinuationToken: "other-child-token",
+        childSessionId: "other-child-session",
+        event: { requests: [childPrompt("approve-other", "tool-approval")], ...REQUEST_EVENT },
+        kind: "subagent-input-request",
+        subagentName: "deployer",
+      }),
+      forChildContinuationToken: "other-child-token",
+      session: childPromptSession([childPrompt("approve-1", "tool-approval")]),
+    });
+    const routed = routeDeliverPayload({
+      payload: { message: "approve" },
+      resolveMessage: true,
+      state: session.state,
+    });
+
+    expect(routed.forSelf).toEqual({ message: "approve" });
     expect(routed.forChildren).toEqual([]);
   });
 

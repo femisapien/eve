@@ -259,6 +259,7 @@ describe("subagent HITL proxy → Slack-style text-approve regression (Finding #
           childContinuationToken: "subagent:parent:call-1",
           event: { sequence: 0, stepIndex: 0, turnId: "turn_0" },
           kind: "tool-approval",
+          reply: { options: approvalRequest.options },
         },
       ],
     ]);

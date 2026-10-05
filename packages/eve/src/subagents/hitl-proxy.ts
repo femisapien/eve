@@ -12,7 +12,11 @@ import {
   getProxyInputRequests,
   toProxyInputRequestEntries,
 } from "#harness/proxy-input-requests.js";
-import type { WorkflowAskRoute, ProxyInputRequest } from "#harness/proxy-input-requests.js";
+import type {
+  ProxyInputReply,
+  ProxyInputRequest,
+  WorkflowAskRoute,
+} from "#harness/proxy-input-requests.js";
 import type { HarnessEmitFn, HarnessSessionBase, SessionStateMap } from "#harness/types.js";
 import {
   createInputRequestedEvent,
@@ -20,7 +24,7 @@ import {
   type InputResolution,
 } from "#protocol/message.js";
 import type { InputResponse } from "#shared/input.js";
-import { resolveTextToResponse } from "#channel/resolve-text.js";
+import { resolveTextToResponses } from "#channel/resolve-text.js";
 import { inputTextKey, readAnswerText } from "#internal/input-text.js";
 import { SESSION_LIMIT_STOP_OPTION_ID } from "#harness/session-limit-continuation.js";
 
@@ -140,10 +144,12 @@ const CONSUMED_MESSAGE_KEYS: ReadonlySet<string> = new Set(["context", "message"
 /**
  * Splits a deliver payload into parent-local and proxied-child buckets.
  *
- * With `resolveMessage`, a plain-text message is also resolved against pending
- * `ctx.ask()` questions: when exactly one question is pending, a matching option or
- * permitted free text answers it and consumes the message along with its
- * `context`. Otherwise the message stays with the parent.
+ * With `resolveMessage`, a plain-text message is also resolved against the
+ * pending prompt, whether a `ctx.ask()` question, a tool approval, or a
+ * session-limit prompt, the way a session resolves text against its own: when
+ * every routable request belongs to one batch, each request the text matches by
+ * option or permitted free text is answered, and the message is consumed along
+ * with its `context`. Otherwise the message stays with the parent.
  */
 export function routeDeliverPayload(input: {
   readonly allowRoute?: (requestId: string, route: ProxyInputRequest) => boolean;
@@ -154,13 +160,13 @@ export function routeDeliverPayload(input: {
   const entries = getProxyInputRequests(input.state);
   const routable = (requestId: string, route: ProxyInputRequest | undefined) =>
     route !== undefined && input.allowRoute?.(requestId, route) !== false;
-  const message = resolveMessageAgainstQuestions({
+  const message = resolveMessageAgainstPendingBatch({
     enabled: input.resolveMessage === true,
     entries,
     payload: input.payload,
     routable,
   });
-  const [textAnswer] = message.responses;
+  const textAnswers = new Set(message.responses);
   const inputResponses = [...(input.payload.inputResponses ?? []), ...message.responses];
 
   const responsesByChild = new Map<string, ChildResponseBucket>();
@@ -251,8 +257,9 @@ export function routeDeliverPayload(input: {
           resolutions: resolveRetiredRequests({ entries, responses, retireRequestIds }),
         },
         ...(childSessionInbox !== undefined && { childSessionInbox }),
-        ...(textAnswer !== undefined &&
-          responses.includes(textAnswer) && { message: input.payload.message }),
+        ...(responses.some((response) => textAnswers.has(response)) && {
+          message: input.payload.message,
+        }),
         ...(workflowAsk !== undefined && { workflowAsk }),
         ...(remote !== undefined && { remote }),
         ...(routes[0]?.inputSource !== undefined && { inputSource: routes[0].inputSource }),
@@ -310,7 +317,7 @@ function toInputResolution(
   return response === undefined ? resolution : { ...resolution, response };
 }
 
-function resolveMessageAgainstQuestions(input: {
+function resolveMessageAgainstPendingBatch(input: {
   readonly enabled: boolean;
   readonly entries: ReadonlyMap<string, ProxyInputRequest>;
   readonly payload: DeliverPayload;
@@ -322,27 +329,32 @@ function resolveMessageAgainstQuestions(input: {
   const none = { consumed: false, responses: [] };
   // An explicit structured answer means the client already chose what to answer.
   if (!input.enabled || (input.payload.inputResponses?.length ?? 0) > 0) return none;
-  if (input.payload.message === undefined) return none;
-
-  // Task and subagent questions carry no `ctx.ask()` metadata, so plain text
-  // cannot resolve them, but they still make the message ambiguous.
-  const pending = [...input.entries].filter(
-    ([requestId, route]) => route.kind === "question" && input.routable(requestId, route),
-  );
-  const questions = pending.flatMap(([requestId, route]) => {
-    const question = route.workflowAsk?.question ?? route.question;
-    return question !== undefined ? [{ requestId, ...question }] : [];
-  });
-  if (questions.length === 0) return none;
-
-  const [only] = questions;
   const text = readAnswerText(input.payload);
-  const answer =
-    pending.length === 1 && only !== undefined && text !== undefined
-      ? resolveTextToResponse(text, only)
-      : undefined;
-  if (answer !== undefined) return { consumed: true, responses: [answer] };
-  return none;
+  if (input.payload.message === undefined || text === undefined) return none;
+
+  const pending = [...input.entries].filter(([requestId, route]) =>
+    input.routable(requestId, route),
+  );
+  const [first] = pending;
+  // Text cannot tell which of several prompts it answers, and a request recorded
+  // without reply metadata cannot be matched at all.
+  if (first === undefined || pending.some(([, route]) => !samePrompt(route, first[1]))) {
+    return none;
+  }
+  const requests: (ProxyInputReply & { readonly requestId: string })[] = [];
+  for (const [requestId, route] of pending) {
+    if (route.reply === undefined) return none;
+    requests.push({ requestId, ...route.reply });
+  }
+
+  const responses = resolveTextToResponses(text, requests);
+  return responses.length > 0 ? { consumed: true, responses } : none;
+}
+
+/** True when both requests were raised together in one child batch. */
+function samePrompt(a: ProxyInputRequest, b: ProxyInputRequest): boolean {
+  if (a === b) return true;
+  return a.batch !== undefined && sameBatch(b, { ...a, batch: a.batch });
 }
 
 function batchResolves(input: {
