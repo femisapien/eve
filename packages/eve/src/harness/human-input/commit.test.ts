@@ -11,10 +11,12 @@ import {
 } from "#harness/human-input/index.js";
 import type { SessionStateMap } from "#harness/types.js";
 import {
+  AT,
   BUDGET_QUESTION,
   answer,
   approval,
   approvalsRequested,
+  cancel,
   overBudget,
 } from "#internal/testing/human-input.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
@@ -147,4 +149,47 @@ describe("HumanInput.commit", () => {
     expect(host.published).toEqual([]);
     expect(cancelled.session.state).toBeUndefined();
   });
+
+  it.each(["pre-step", "post-step"] as const)(
+    "ends the turn when cancelled %s, leaving relayed requests for the parked settle to withdraw",
+    async (phase) => {
+      const relaying = new RecordingHost("parked");
+      const relayed = await HumanInput.commit(
+        relaying,
+        {},
+        {
+          at: AT,
+          requests: [approval("child-deploy")],
+          route: { childContinuationToken: "child_1", runId: "run_1" },
+          type: "relayed.requested",
+        },
+      );
+      const held = await HumanInput.commit(
+        new RecordingHost("post-step"),
+        relayed.session,
+        approvalsRequested([approval("deploy")]),
+      );
+      const host = new RecordingHost(phase);
+
+      const cancelled = await HumanInput.commit(host, held.session, cancel);
+
+      expect(cancelled.ending).toEqual({ kind: "cancelled" });
+      // A turn's host publishes to the turn's own stream; relayed events aren't its to carry.
+      expect(host.published.filter(([origin]) => origin === "relayed")).toEqual([]);
+      const left = HumanInput.read(cancelled.session.state);
+      expect(left.next()).toEqual({ run: "model" });
+      expect(left.relayedRequestIds()).toEqual(new Set(["child-deploy"]));
+
+      // The cancelled turn settles parked, which withdraws what the child asked.
+      const parked = new RecordingHost("parked");
+      const settled = await HumanInput.commit(parked, cancelled.session, cancel);
+      expect(
+        settled.ending === undefined &&
+          parked.published.some(
+            ([origin, event]) => origin === "relayed" && event.type === "input.resolved",
+          ),
+      ).toBe(true);
+      expect(HumanInput.read(settled.session.state).relayedRequestIds().size).toBe(0);
+    },
+  );
 });

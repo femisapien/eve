@@ -118,7 +118,7 @@ export class HumanInput {
     input: NoInfer<InputOf<P>>,
   ): Promise<Committed<S>> {
     assertPhase(INPUT_PHASES, input.type, host.phase);
-    const reduced = reduce(readState(session.state), input);
+    const reduced = reduce(readState(session.state), input, host.phase);
     let current: S = { ...session, state: store(session.state, reduced.state) };
     for (const event of reduced.events) {
       switch (event.type) {
@@ -313,8 +313,9 @@ function assertPhase<Table extends Readonly<Record<string, readonly Phase[]>>>(
 export function reduceHumanInput(
   sessionState: SessionStateMap | undefined,
   input: Interrupt | Intake,
+  phase: Phase = "parked",
 ): { readonly events: readonly HumanInputEvent[]; readonly state: SessionStateMap | undefined } {
-  const reduced = reduce(readState(sessionState), input);
+  const reduced = reduce(readState(sessionState), input, phase);
   return { events: reduced.events, state: store(sessionState, reduced.state) };
 }
 
@@ -340,8 +341,8 @@ export type Phase = "pre-step" | "post-step" | "parked";
  * phase and resolves in one: approvals, response policies and sign-ins open
  * post-step and resolve pre-step; the budget question opens and resolves
  * pre-step; relayed requests open and resolve parked. The calls a step made
- * settle post-step. A cancel stops the turn in whatever phase it is in; what
- * it closes settles once the turn has stopped, parked.
+ * settle post-step. A cancel stops the turn in whatever phase it is in; the
+ * relayed requests it withdraws are withdrawn once the turn has stopped, parked.
  */
 const INPUT_PHASES = {
   "turn.holding": ["pre-step", "post-step"],
@@ -354,7 +355,7 @@ const INPUT_PHASES = {
   "relayed.authorization": ["parked"],
   answered: ["pre-step"],
   message: ["pre-step"],
-  cancelled: ["parked"],
+  cancelled: ["pre-step", "post-step", "parked"],
   "authorization.completed": ["pre-step"],
   "responder.checked": ["pre-step"],
   "calls.settled": ["post-step"],
@@ -843,7 +844,7 @@ interface Reduced {
 const STEERED_REASON = "Cancelled because a new message arrived.";
 const CANCELLED_REASON = "Cancelled.";
 
-function reduce(state: HumanInputState, input: Interrupt | Intake): Reduced {
+function reduce(state: HumanInputState, input: Interrupt | Intake, phase: Phase): Reduced {
   switch (input.type) {
     case "budget.exceeded":
       return askBudget(state, input);
@@ -873,17 +874,7 @@ function reduce(state: HumanInputState, input: Interrupt | Intake): Reduced {
         steer(state)
       );
     case "cancelled":
-      // Candidates go first: their events report at their approval's coordinates.
-      // The cancel stops every child and run, so nobody can answer what they relayed.
-      return then(
-        staleCandidates(state, CANCELLED_REASON),
-        (next) => withdrawRelayed(next),
-        (next) => endRelayedSignIns(next),
-        withdrawBudget,
-        cancelApprovals,
-        cancelStep,
-        (next) => closeSignIns(next, { outcome: "declined", reason: CANCELLED_REASON }),
-      );
+      return cancel(state, phase);
     case "relayed.requested":
       return relay(state, input);
     case "relayed.authorization":
@@ -938,6 +929,28 @@ function reduce(state: HumanInputState, input: Interrupt | Intake): Reduced {
       throw new TypeError(`Unhandled human input: ${JSON.stringify(unhandled)}`);
     }
   }
+}
+
+/**
+ * The turn is cancelled. Candidates go first: their events report at their
+ * approval's coordinates. The cancel stops every child and run, so nobody can
+ * answer what they relayed: their requests are withdrawn where the parked host
+ * can carry that out. A cancel in the turn's step closes the rest and ends the
+ * turn; its relayed requests stay open until the cancelled turn settles, parked.
+ */
+function cancel(state: HumanInputState, phase: Phase): Reduced {
+  const closed = then(
+    staleCandidates(state, CANCELLED_REASON),
+    (next) => (phase === "parked" ? withdrawRelayed(next) : { events: [], state: next }),
+    (next) => endRelayedSignIns(next),
+    withdrawBudget,
+    cancelApprovals,
+    cancelStep,
+    (next) => closeSignIns(next, { outcome: "declined", reason: CANCELLED_REASON }),
+  );
+  return phase === "parked"
+    ? closed
+    : { events: [...closed.events, { type: "turn.cancelled" }], state: closed.state };
 }
 
 /**

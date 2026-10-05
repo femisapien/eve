@@ -97,14 +97,20 @@ function wrongPhases(): void {
   // A clear runs as the turn's own step.
   // @ts-expect-error a clear commits pre-step
   void HumanInput.commit(parked, s, { type: "cleared" });
-  // A cancel settles once the turn stops, while it is parked.
-  // @ts-expect-error a cancel settles parked
+}
+
+/** A cancel is the one input every phase commits: it stops the turn wherever it is. */
+function everyPhaseCancels(): void {
+  const s: Session = {};
   void HumanInput.commit(preStep, s, cancel);
+  void HumanInput.commit(postStep, s, cancel);
+  void HumanInput.commit(parked, s, cancel);
 }
 
 describe("human input phases", () => {
   it("each kind compiles only in its own host", () => {
     expect(wrongPhases).toBeTypeOf("function");
+    expect(everyPhaseCancels).toBeTypeOf("function");
   });
 
   it("refuses an input cast past its phase", async () => {
