@@ -217,18 +217,56 @@ function canonicalizeInputResponses(responses: readonly InputResponse[]): readon
   return [...byRequestId.values()];
 }
 
+/**
+ * Turns a typed reply into responses to the only pending batch's
+ * response-policy approvals. The approval coordinator then authorizes them
+ * like a press by the person who typed. Other requests resolve later, in
+ * {@link resolvePendingInput}, which never answers a policy approval from text.
+ */
+export function resolveTypedPolicyApprovals(
+  session: HarnessSession,
+  stepInput: StepInput | undefined,
+): StepInput | undefined {
+  const batches = getPendingInputBatches(session.state);
+  if (batches.length !== 1 || isSessionLimitInputBatch(batches[0]!)) return stepInput;
+  const batch = batches[0]!;
+  const policyRequestIds = new Set(batch.responseAuthRequiredRequestIds ?? []);
+  const text = readAnswerText(stepInput);
+  if (stepInput === undefined || text === undefined || policyRequestIds.size === 0) {
+    return stepInput;
+  }
+  if (hasResponseForBatch(batch, stepInput)) return stepInput;
+
+  const responses = resolveTextToResponses(
+    text,
+    batch.requests.filter((request) => policyRequestIds.has(request.requestId)),
+  );
+  if (responses.length === 0) return stepInput;
+  return {
+    ...stepInput,
+    inputResponses: [...(stepInput.inputResponses ?? []), ...responses],
+    message: undefined,
+  };
+}
+
+function hasResponseForBatch(batch: PendingInputBatch, stepInput: StepInput): boolean {
+  const batchRequestIds = new Set(batch.requests.map((request) => request.requestId));
+  return [
+    ...(stepInput.inputResponses ?? []),
+    ...(stepInput.attributedInputResponses ?? []).map(({ response }) => response),
+  ].some((response) => batchRequestIds.has(response.requestId));
+}
+
 function resolveTextMessageInput(
   pendingBatch: PendingInputBatch,
   stepInput: StepInput | undefined,
 ): ResolvedStepInput | undefined {
   const text = readAnswerText(stepInput);
   if (stepInput === undefined || text === undefined) return stepInput;
+  if (hasResponseForBatch(pendingBatch, stepInput)) return stepInput;
 
-  const batchRequestIds = new Set(pendingBatch.requests.map((request) => request.requestId));
-  if (stepInput.inputResponses?.some((response) => batchRequestIds.has(response.requestId))) {
-    return stepInput;
-  }
-
+  // Text alone can't satisfy a response policy; resolveTypedPolicyApprovals
+  // hands those to the coordinator with the sender's auth instead.
   const responseAuthRequired = new Set(pendingBatch.responseAuthRequiredRequestIds ?? []);
   const textRequests = pendingBatch.requests.filter(
     (request) => !responseAuthRequired.has(request.requestId),
