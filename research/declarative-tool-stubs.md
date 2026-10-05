@@ -49,6 +49,8 @@ Bind sessions and local descendants to the verified principal independently of `
 
 ## Verification
 
+Keep the shared JSON Schema dependency unpatched. Its [known conformance defects](https://github.com/cfworker/cfworker/issues/338) and [negative decimal bug](https://github.com/cfworker/cfworker/issues/337) are documented in the tool-stub guide and retained as expected-failure regressions. A wrong match can select the wrong response or fall through to the real tool, so affected constraints are a documented limitation, not a conformance guarantee.
+
 Behavior tests cover matching, ambiguous selection, sequence exhaustion, concurrent admission, replay, handoff, descendants, whole-agent replacement, approvals, selected failures, and authorization. An HTTP fixture eval exercises ten concurrent calls, another turn, and an independent session across CI workflow worlds. Measure the extra workflow dispatch/stream latency in those worlds before claiming production performance.
 
 Full stateful mocks, arbitrary functions, callback connections, per-turn reconfiguration, and mixing live and mocked calls within a persistent tool are excluded.

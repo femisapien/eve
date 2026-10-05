@@ -152,6 +152,18 @@ Constraints use a reference-free subset of JSON Schema 2020-12: types, `const`, 
 - Multiple matching rules: report an ambiguity error. Rule order does not select a winner.
 - Selected stub failure: fail the eval, even if the agent recovers. Never fall back to real execution.
 
+### Known matcher limitations
+
+eve uses the existing `@cfworker/json-schema` validator without local patches. Version 4.1.1 has these [upstream defects](https://github.com/cfworker/cfworker/issues/338):
+
+- Fractional `multipleOf` can reject valid negative values or accept invalid small values. The negative-value bug is also tracked in [#337](https://github.com/cfworker/cfworker/issues/337).
+- `contains` with `maxContains` can accept zero matches unless you explicitly set `minContains: 1`.
+- `const`, `enum`, and `uniqueItems` can confuse arrays with objects that have the same enumerable keys. Use explicit type constraints where possible; avoid mixed array/object uniqueness checks.
+- Nested `required` and dependency checks can treat inherited names such as `constructor` as present. Avoid those property names in these constraints.
+- Some `dependentRequired` maps with keys named `id` or `$id` throw during setup, including `{ id: [] }` and `{ $id: ["#"] }`.
+
+Avoid these affected cases until the dependency is fixed. A false match can select the wrong stub; a missed match can execute the real tool. Setup errors reject the session. Ordinary string ID and status matching are unaffected. The regression suite retains the known failures explicitly and will flag fixes when the validator is upgraded.
+
 ## Sequences and session scope
 
 - `response` returns the same value on every matching call.
