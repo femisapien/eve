@@ -237,7 +237,11 @@ describe("tool approvals in the tool loop (real AI SDK)", () => {
     const text = JSON.stringify(prompt);
     expect(text.indexOf("deployed")).toBeGreaterThan(-1);
     expect(text.indexOf("Then send the release notes.")).toBeGreaterThan(text.indexOf("deployed"));
-    expect(fixture.events.slice(start)).toContainEqual(
+    // Its receipt went out with the step that read it.
+    expect(fixture.events.slice(start).map((event) => event.type)).not.toContain(
+      "message.received",
+    );
+    expect(fixture.events.slice(0, start)).toContainEqual(
       expect.objectContaining({
         data: expect.objectContaining({ message: "Then send the release notes." }),
         type: "message.received",
@@ -249,6 +253,38 @@ describe("tool approvals in the tool loop (real AI SDK)", () => {
       "tool:tool-result",
       "assistant:text",
       "user:text",
+      "assistant:text",
+    ]);
+  });
+
+  it("reports Alice's typed approval received once, in the step that runs the call, and keeps it from the model", async () => {
+    const fixture = setup({
+      responses: [toolCallStreamResult(deployCall()), textStreamResult("Deployed api.")],
+      tool: { approval: always() },
+    });
+    const held = await fixture.step(fixture.session, { message: "Deploy the api service." });
+    const received = () => fixture.events.filter((event) => event.type === "message.received");
+    const before = received().length;
+
+    const ran = await fixture.stepOnce(held.session, { message: "approve" });
+
+    expect(fixture.execute).toHaveBeenCalledOnce();
+    expect(fixture.model.doStreamCalls).toHaveLength(1);
+    expect(received().slice(before)).toEqual([
+      expect.objectContaining({ data: expect.objectContaining({ message: "approve" }) }),
+    ]);
+
+    const answered = await contextStorage.run(createApprovalContext(), () =>
+      (ran.next as StepFn)(ran.session),
+    );
+
+    expect(fixture.model.doStreamCalls).toHaveLength(2);
+    expect(received().slice(before)).toHaveLength(1);
+    expect(JSON.stringify(fixture.model.doStreamCalls[1]!.prompt)).not.toContain('"approve"');
+    expect(partTypes(answered.session.history)).toEqual([
+      "user:text",
+      "assistant:tool-call",
+      "tool:tool-result",
       "assistant:text",
     ]);
   });

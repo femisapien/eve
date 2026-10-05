@@ -629,12 +629,18 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     }
 
     const accepted = HumanInput.read(session.state).acceptInput(input);
+    // The message as the person sent it, even when it answered a request.
+    const sent =
+      accepted.displayMessage === undefined
+        ? accepted.input
+        : { ...accepted.input, message: accepted.displayMessage };
     const auth = store?.get(AuthKey) ?? null;
     const arrived = await applyStepArrivals({
       auth,
       effects: humanInputEffects,
       emit,
       emissionState,
+      received: sent?.message,
       runStep,
       session,
       stepInput: accepted.input,
@@ -642,12 +648,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     if ("result" in arrived) return arrived.result;
     session = arrived.session;
     const { resumed, turnInput } = arrived;
-    // The input as the person sent it, even when a message answered a
-    // request, after what waited behind the last step's calls.
-    const sent =
-      accepted.displayMessage === undefined
-        ? accepted.input
-        : { ...accepted.input, message: accepted.displayMessage };
+    // What waited behind the last step's calls was received in that step.
     const preambleInput =
       resumed === undefined
         ? sent
@@ -702,7 +703,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
         const traceContext = await preparePreambleTrace();
         emissionState = await emitTurnPreamble(
           emit,
-          preambleInput ?? {},
+          { ...preambleInput, message: sent?.message },
           emissionState,
           projectHistory(
             [...turnMessages, ...ephemeralContextMessages, ...preparedTurnInput],

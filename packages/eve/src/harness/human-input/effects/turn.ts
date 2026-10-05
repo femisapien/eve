@@ -34,7 +34,7 @@ import type {
   StepResult,
   ToolLoopHarnessConfig,
 } from "#harness/types.js";
-import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
+import { createMessageReceivedEvent, type UnstampedMessageStreamEvent } from "#protocol/message.js";
 
 import { runApprovedWork } from "./approved-calls.js";
 import { checkResponder } from "./response-policy.js";
@@ -235,6 +235,8 @@ export async function applyStepArrivals(input: {
   readonly effects: StepEffects;
   readonly emit?: Emit;
   readonly emissionState: HarnessEmissionState;
+  /** The message as the person sent it, which a step of approved calls reports received. */
+  readonly received?: StepInput["message"];
   /** The step that follows a step of approved calls, which runs without a model call. */
   readonly runStep: StepFn;
   readonly session: HarnessSession;
@@ -264,6 +266,16 @@ export async function applyStepArrivals(input: {
   }
   let turnInput = host.messageAnswered ? withoutMessage(stepInput) : stepInput;
   if (isApprovedStep(HumanInput.read(session.state).next())) {
+    // The step reports the message it read, though the model never does.
+    if (input.received !== undefined) {
+      await emit?.(
+        createMessageReceivedEvent({
+          message: input.received,
+          sequence: emissionState.sequence,
+          turnId: emissionState.turnId,
+        }),
+      );
+    }
     const ran = await runApprovedStep({
       effects,
       emit,
