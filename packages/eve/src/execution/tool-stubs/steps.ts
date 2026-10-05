@@ -11,24 +11,24 @@ import {
 
 export async function publishStubResultStep(input: {
   readonly callId: string;
-  readonly firstFailure: boolean;
   readonly result: StubResult;
 }): Promise<void> {
   "use step";
-  // Record failure before exposing the result, so an eval cannot finish first.
-  if (input.firstFailure && input.result.kind === "error") {
-    const failure = getWritable<string>({ namespace: STUB_FAILURE_NAMESPACE }).getWriter();
-    try {
-      await failure.write(input.result.error);
-    } finally {
-      failure.releaseLock();
-    }
-  }
   const writer = getWritable<StubResult>({
     namespace: stubResponseNamespace(input.callId),
   }).getWriter();
   try {
     await writer.write(input.result);
+  } finally {
+    writer.releaseLock();
+  }
+}
+
+export async function publishStubFailureStep(error: string): Promise<void> {
+  "use step";
+  const writer = getWritable<string>({ namespace: STUB_FAILURE_NAMESPACE }).getWriter();
+  try {
+    await writer.write(error);
   } finally {
     writer.releaseLock();
   }

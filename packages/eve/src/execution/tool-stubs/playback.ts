@@ -1,7 +1,7 @@
 import { createHook } from "#compiled/@workflow/core/index.js";
 import { claimHookOwnership, disposeHook } from "#execution/hook-ownership.js";
 import { StubPlayback } from "#tool-stubs/rules.js";
-import { publishStubResultStep } from "#execution/tool-stubs/steps.js";
+import { publishStubFailureStep, publishStubResultStep } from "#execution/tool-stubs/steps.js";
 import { STUB_CONTEXT_KEY, type StubCall, type StubScope } from "#tool-stubs/types.js";
 
 export type StubRequest =
@@ -27,11 +27,13 @@ export async function withStubPlayback<T>(
         request.kind === "failure"
           ? playback.fail(request.callId, request.error)
           : playback.call(request.call);
-      const firstFailure = result.kind === "error" && !failed;
-      failed ||= firstFailure;
+      if (result.kind === "error" && !failed) {
+        // Step completion makes the failure durable before the separate response stream.
+        await publishStubFailureStep(result.error);
+        failed = true;
+      }
       await publishStubResultStep({
         callId: request.kind === "call" ? request.call.callId : `${request.callId}:failure`,
-        firstFailure,
         result,
       });
     }
