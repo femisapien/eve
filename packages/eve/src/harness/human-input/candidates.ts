@@ -5,8 +5,9 @@
  * The first candidate the policy allows settles the approval with its
  * decision, and every competing candidate goes stale. A rejected, failed, or
  * expired candidate leaves the approval open for another answer. A policy
- * that needs the responder to sign in holds the turn on that sign-in, and
- * runs again once it completes.
+ * that needs the responder to sign in holds the candidate on that sign-in,
+ * which belongs to it rather than opening a request of its own, and runs
+ * again once it completes.
  *
  * Every candidate and settlement is kept in the session's audit, so a retry
  * gets a fresh candidate and a settled approval can't be settled again.
@@ -21,7 +22,7 @@ import type {
   PolicyRun,
   RequestAt,
 } from "#harness/human-input/index.js";
-import { closeSignIns, requireSignIns, waitsOnSignIn } from "#harness/human-input/sign-ins.js";
+import { completed, signInRequested } from "#harness/human-input/sign-ins.js";
 import {
   createApprovalCandidateEvent,
   createApprovalSettledEvent,
@@ -48,6 +49,8 @@ interface ActiveCandidate {
   readonly requestId: string;
   readonly responder: SessionAuthContext;
   readonly status: "pending" | "authorization-required";
+  /** The sign-ins its policy waits on, while `authorization-required`. */
+  readonly signIns?: readonly AuthorizationChallenge[];
 }
 
 /** Who answered, narrowed to identity for the audit's finished records. */
@@ -166,24 +169,17 @@ export function checkedCandidate(
     case "failed":
       return finish(state, [candidate], "failed", verdict.reason ?? FAILED_REASON);
     case "authorization-required": {
-      const audit = auditOf(state);
-      const waiting: ActiveCandidate = { ...candidate, status: "authorization-required" };
-      return requireSignIns(
-        withAudit(state, {
-          ...audit,
-          activeCandidates: { ...audit.activeCandidates, [candidate.candidateId]: waiting },
-        }),
-        {
-          at: approval.at,
-          callIds: [],
-          challenges: verdict.challenges.map((challenge) => ({
-            ...challenge,
-            candidateId: candidate.candidateId,
-          })),
-          messages: [],
-          requester: candidate.responder,
-        },
-      );
+      // Each sign-in is the responder's and settles only this candidate.
+      const signIns = verdict.challenges.map((challenge) => ({
+        ...challenge,
+        candidateId: candidate.candidateId,
+        requester: challenge.requester ?? candidate.responder,
+      }));
+      const waiting: ActiveCandidate = { ...candidate, signIns, status: "authorization-required" };
+      return {
+        events: signIns.map((challenge) => signInRequested(challenge, approval.at)),
+        state: withCandidate(state, waiting),
+      };
     }
   }
 }
@@ -217,27 +213,108 @@ function verdictOf(ran: PolicyRun): Verdict {
 }
 
 /**
- * A responder's sign-in closed. Once the candidate waits on no other
- * sign-in, its policy runs again; a failed sign-in fails the candidate.
+ * A callback arrived for a responder's sign-in. Once authorized, its callback
+ * goes to the policy, which runs again as soon as the candidate waits on no
+ * other sign-in; a failed sign-in fails the candidate. A callback for no
+ * candidate's sign-in returns `undefined`.
  */
-export function signedInCandidate(
+export function completeCandidateSignIn(
   state: HumanInputState,
-  input: { readonly candidateId: string; readonly outcome: "authorized" | "failed" },
-): Reduced {
-  const candidate = auditOf(state).activeCandidates[input.candidateId];
+  input: Extract<Intake, { readonly type: "authorization.completed" }>,
+): Reduced | undefined {
+  const candidate = Object.values(auditOf(state).activeCandidates).find((active) =>
+    active.signIns?.some((challenge) => opens(challenge, input)),
+  );
   const approval = candidate === undefined ? undefined : state.requests[candidate.requestId];
-  if (candidate === undefined || approval?.kind !== "tool-approval") return { events: [], state };
-  if (input.outcome === "failed") return finish(state, [candidate], "failed", FAILED_REASON);
-  if (waitsOnSignIn(state, candidate.candidateId)) return { events: [], state };
+  if (candidate === undefined || approval?.kind !== "tool-approval") return undefined;
+  const challenge = candidate.signIns!.find((signIn) => opens(signIn, input))!;
+  const events: HumanInputEvent[] = [completed(challenge, approval.at, input.outcome)];
+  if (input.outcome === "failed") {
+    const failed = finish(
+      withCandidate(state, without(candidate, challenge)),
+      [candidate],
+      "failed",
+      FAILED_REASON,
+    );
+    return { events: [...events, ...failed.events], state: failed.state };
+  }
+  if (input.callback !== undefined) {
+    events.push({
+      // The policy binds its responder itself; the turn's person stays who it runs as.
+      requester: null,
+      result: {
+        attemptId: input.attemptId,
+        callback: input.callback,
+        hookUrl: challenge.hookUrl,
+        instanceId: challenge.instanceId,
+        name: challenge.name,
+        principal: challenge.principal,
+        resume: challenge.resume,
+      },
+      type: "sign-in.completed",
+    });
+  }
+  const rest = without(candidate, challenge);
+  if ((rest.signIns?.length ?? 0) > 0) return { events, state: withCandidate(state, rest) };
+  const { signIns: _done, ...ready } = rest;
+  const pending: ActiveCandidate = { ...ready, status: "pending" };
+  return { events: [...events, check(approval, pending)], state: withCandidate(state, pending) };
+}
+
+/** The attempt ids of the sign-ins responders' candidates wait on. */
+export function candidateSignInAttempts(state: HumanInputState): readonly string[] {
+  return Object.values(auditOf(state).activeCandidates).flatMap((candidate) =>
+    (candidate.signIns ?? []).flatMap((challenge) =>
+      challenge.attemptId === undefined ? [] : [challenge.attemptId],
+    ),
+  );
+}
+
+/**
+ * A session stored while a responder's sign-in was an open request of its own:
+ * each such sign-in moves to its candidate, and one whose candidate is gone closes.
+ */
+export function adoptCandidateSignIns(state: HumanInputState): HumanInputState {
+  const legacy = Object.entries(state.requests).filter(
+    ([, open]) => open.kind === "authorization" && open.challenge.candidateId !== undefined,
+  );
+  if (legacy.length === 0) return state;
+  const requests = { ...state.requests };
+  let next: HumanInputState = state;
+  for (const [key, open] of legacy) {
+    delete requests[key];
+    if (open.kind !== "authorization") continue;
+    const candidate = auditOf(next).activeCandidates[open.challenge.candidateId!];
+    if (candidate === undefined) continue;
+    next = withCandidate(next, {
+      ...candidate,
+      signIns: [...(candidate.signIns ?? []), open.challenge],
+      status: "authorization-required",
+    });
+  }
+  return { ...next, requests };
+}
+
+function opens(
+  challenge: AuthorizationChallenge,
+  input: { readonly attemptId: string; readonly connectionName: string },
+): boolean {
+  return (
+    (challenge.attemptId ?? challenge.candidateId ?? challenge.name) === input.attemptId &&
+    challenge.name === input.connectionName
+  );
+}
+
+function without(candidate: ActiveCandidate, challenge: AuthorizationChallenge): ActiveCandidate {
+  return { ...candidate, signIns: candidate.signIns?.filter((signIn) => signIn !== challenge) };
+}
+
+function withCandidate(state: HumanInputState, candidate: ActiveCandidate): HumanInputState {
   const audit = auditOf(state);
-  const pending: ActiveCandidate = { ...candidate, status: "pending" };
-  return {
-    events: [check(approval, pending)],
-    state: withAudit(state, {
-      ...audit,
-      activeCandidates: { ...audit.activeCandidates, [candidate.candidateId]: pending },
-    }),
-  };
+  return withAudit(state, {
+    ...audit,
+    activeCandidates: { ...audit.activeCandidates, [candidate.candidateId]: candidate },
+  });
 }
 
 /** Candidates past their deadline time out, and their sign-ins fail. */
@@ -304,24 +381,31 @@ function settle(
 
 /**
  * Moves candidates to the audit's history with `status`, reporting each but
- * an allowed one (its settlement reports it). `signIns` closes the sign-ins
- * they still wait on.
+ * an allowed one (its settlement reports it). The sign-ins they still wait on
+ * close with them: `signIns` says how, declined with `reason` by default.
  */
 function finish(
   state: HumanInputState,
   candidates: readonly ActiveCandidate[],
   status: FinishedCandidate["status"],
   reason?: string,
-  signIns?: { readonly outcome: "declined" | "failed"; readonly reason: string },
+  signIns: { readonly outcome: "declined" | "failed"; readonly reason?: string } = {
+    outcome: "declined",
+    reason,
+  },
 ): Reduced {
   if (candidates.length === 0) return { events: [], state };
   const audit = auditOf(state);
   const activeCandidates = { ...audit.activeCandidates };
   const events: HumanInputEvent[] = [];
+  const closed: HumanInputEvent[] = [];
   const finished: FinishedCandidate[] = [];
-  for (const candidate of candidates) {
-    delete activeCandidates[candidate.candidateId];
-    const { responder, status: _status, ...rest } = candidate;
+  for (const { candidateId } of candidates) {
+    // The candidate as stored: what it still waits on.
+    const candidate =
+      activeCandidates[candidateId] ?? candidates.find((c) => c.candidateId === candidateId)!;
+    delete activeCandidates[candidateId];
+    const { responder, signIns: waiting, status: _status, ...rest } = candidate;
     finished.push({
       ...rest,
       ...(reason !== undefined && { reason }),
@@ -329,26 +413,20 @@ function finish(
       status,
     });
     const approval = state.requests[candidate.requestId];
-    if (status !== "allowed" && approval?.kind === "tool-approval") {
-      events.push(candidateEvent(approval.at, candidate, status, reason));
+    if (approval?.kind !== "tool-approval") continue;
+    if (status !== "allowed") events.push(candidateEvent(approval.at, candidate, status, reason));
+    for (const challenge of waiting ?? []) {
+      closed.push(completed(challenge, approval.at, signIns.outcome, signIns.reason));
     }
   }
-  let next = withAudit(state, {
-    ...audit,
-    activeCandidates,
-    candidateHistory: [...audit.candidateHistory, ...finished],
-  });
-  if (signIns !== undefined) {
-    const ids = new Set(candidates.map((candidate) => candidate.candidateId));
-    const closed = closeSignIns(next, {
-      ...signIns,
-      which: (challenge: AuthorizationChallenge) =>
-        challenge.candidateId !== undefined && ids.has(challenge.candidateId),
-    });
-    events.push(...closed.events);
-    next = closed.state;
-  }
-  return { events, state: next };
+  return {
+    events: [...events, ...closed],
+    state: withAudit(state, {
+      ...audit,
+      activeCandidates,
+      candidateHistory: [...audit.candidateHistory, ...finished],
+    }),
+  };
 }
 
 function check(approval: OpenApproval, candidate: ActiveCandidate): HumanInputEvent {

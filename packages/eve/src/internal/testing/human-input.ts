@@ -52,6 +52,11 @@ export class Turn {
     return new Turn(undefined, []);
   }
 
+  /** A turn as a session stored it. */
+  static from(state: SessionStateMap): Turn {
+    return new Turn(state, []);
+  }
+
   get humanInput(): HumanInput {
     return HumanInput.read(this.state);
   }

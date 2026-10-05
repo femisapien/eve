@@ -32,10 +32,12 @@ import {
   type OpenApproval,
 } from "./approvals.js";
 import {
+  adoptCandidateSignIns,
+  candidateSignInAttempts,
   checkedCandidate,
+  completeCandidateSignIn,
   expireCandidates,
   proposeCandidates,
-  signedInCandidate,
   staleCandidates,
   type ApprovalAudit,
   type CandidateDecision,
@@ -216,9 +218,9 @@ export class HumanInput {
     return grantedApprovalKeys(this.#state);
   }
 
-  /** The sign-in attempts whose callbacks the turn waits for. */
+  /** The sign-in attempts whose callbacks the turn waits for, its responders' included. */
   awaitedSignIns(): readonly string[] {
-    return awaitedSignIns(this.#state);
+    return [...awaitedSignIns(this.#state), ...candidateSignInAttempts(this.#state)];
   }
 
   /**
@@ -650,7 +652,8 @@ function parseState(value: unknown): HumanInputState {
   const requests: unknown = Reflect.get(value, "requests");
   const grants: unknown = Reflect.get(value, "grants");
   if (typeof requests !== "object" || requests === null || !Array.isArray(grants)) return EMPTY;
-  return value as HumanInputState;
+  // Responders' sign-ins were once requests of their own.
+  return adoptCandidateSignIns(value as HumanInputState);
 }
 
 /**
@@ -783,15 +786,12 @@ function reduce(state: HumanInputState, input: Interrupt | Intake): Reduced {
         openSignIns(next, { at, challenges: signIns.challenges, requester: null }),
       );
     }
-    case "authorization.completed": {
-      const completed = completeSignIn(state, input);
-      if (completed === undefined) return { events: [], state };
-      const { candidateId } = completed.challenge;
-      if (candidateId === undefined) return completed;
-      return then(completed, (next) =>
-        signedInCandidate(next, { candidateId, outcome: input.outcome }),
+    // A callback for an attempt no longer open completes nothing.
+    case "authorization.completed":
+      return (
+        completeSignIn(state, input) ??
+        completeCandidateSignIn(state, input) ?? { events: [], state }
       );
-    }
     case "responder.checked": {
       const checked = checkedCandidate(state, input);
       const { settled } = checked;

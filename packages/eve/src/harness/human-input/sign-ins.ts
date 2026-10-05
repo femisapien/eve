@@ -1,7 +1,8 @@
 /**
- * The sign-in rules. A tool call, or a responder's approval policy, that needs
- * a sign-in opens one request per attempt, keyed by the attempt's id, and the
- * turn holds until a callback closes it. The call that asked never joins
+ * The sign-in rules. A tool call that needs a sign-in opens one request per
+ * attempt, keyed by the attempt's id, and the turn holds until a callback
+ * closes it. (A responder's approval policy that needs one holds its
+ * candidate instead; see candidates.) The call that asked never joins
  * history: it leaves its step, so the model calls it again once the person has
  * signed in. A step whose other calls all have results joins history without
  * it; a step suspended on an approval or on runtime calls stays suspended, out
@@ -121,9 +122,8 @@ export function signInRequested(challenge: AuthorizationChallenge, at: RequestAt
  * A callback arrived for a sign-in. A callback for an attempt that is no
  * longer open (superseded, declined, or already completed) returns
  * `undefined`: it completes nothing. Otherwise the sign-in closes, and once
- * authorized its callback goes to the call or policy that asked. A plain
- * sign-in's turn resumes as the person who started it, since the callback
- * carries no identity; a responder's sign-in binds its responder itself.
+ * authorized its callback goes to the call that asked. The turn resumes as
+ * the person who started it, since the callback carries no identity.
  */
 export function completeSignIn(
   state: HumanInputState,
@@ -133,7 +133,7 @@ export function completeSignIn(
     readonly connectionName: string;
     readonly outcome: "authorized" | "failed";
   },
-): (Reduced & { readonly challenge: AuthorizationChallenge }) | undefined {
+): Reduced | undefined {
   const open = state.requests[input.attemptId];
   if (open?.kind !== "authorization" || open.challenge.name !== input.connectionName) {
     return undefined;
@@ -142,7 +142,7 @@ export function completeSignIn(
   const events: HumanInputEvent[] = [completed(challenge, open.at, input.outcome)];
   if (input.outcome === "authorized" && input.callback !== undefined) {
     events.push({
-      requester: challenge.candidateId === undefined ? (challenge.requester ?? null) : null,
+      requester: challenge.requester ?? null,
       result: {
         attemptId: input.attemptId,
         callback: input.callback,
@@ -156,7 +156,7 @@ export function completeSignIn(
     });
   }
   const { [input.attemptId]: _closed, ...requests } = state.requests;
-  return { challenge, events, state: { ...state, requests } };
+  return { events, state: { ...state, requests } };
 }
 
 /**
@@ -178,9 +178,7 @@ export function closeSignIns(
   if (closing.length === 0) return { events: [], names: [], state };
   const requests = { ...state.requests };
   for (const open of closing) delete requests[attemptKey(open.challenge)];
-  const names = closing
-    .filter((open) => open.challenge.candidateId === undefined)
-    .map((open) => open.challenge.name);
+  const names = closing.map((open) => open.challenge.name);
   return {
     events: closing.map((open) => completed(open.challenge, open.at, input.outcome, input.reason)),
     names: [...new Set(names)],
@@ -193,11 +191,6 @@ export function awaitedSignIns(state: HumanInputState): readonly string[] {
   return openSignInsOf(state).flatMap((open) =>
     open.challenge.attemptId === undefined ? [] : [open.challenge.attemptId],
   );
-}
-
-/** Whether a responder's candidate still waits on a sign-in. */
-export function waitsOnSignIn(state: HumanInputState, candidateId: string): boolean {
-  return openSignInsOf(state).some((open) => open.challenge.candidateId === candidateId);
 }
 
 function openSignInsOf(state: HumanInputState): OpenSignIn[] {

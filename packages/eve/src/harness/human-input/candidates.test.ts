@@ -186,6 +186,51 @@ describe("approval response policies", () => {
     ]);
   });
 
+  it("a responder's sign-in belongs to its candidate, not to the turn's requests", () => {
+    const signIn = bobMustSignIn().stored();
+    const stored = signIn.state!["eve.harness.humanInput"] as {
+      readonly audit: {
+        readonly activeCandidates: Record<string, { readonly signIns?: unknown[] }>;
+      };
+      readonly requests: Record<string, unknown>;
+    };
+
+    expect(Object.keys(stored.requests)).toEqual(["deploy"]);
+    expect(Object.values(stored.audit.activeCandidates).map((c) => c.signIns?.length)).toEqual([1]);
+    // A callback for it settles only the candidate; the approval stays open for its policy.
+    const turn = signIn.intake(callback("r1", "reviewer")).stored();
+    expect(turn.humanInput.awaitedSignIns()).toEqual([]);
+    expect(turn.humanInput.openRequestIds()).toEqual(new Set(["deploy"]));
+  });
+
+  it("a session stored while a responder's sign-in was a request of its own reads it as the candidate's", () => {
+    const signIn = bobMustSignIn().stored();
+    const answered = signIn.state!["eve.harness.humanInput"] as {
+      readonly audit: { readonly activeCandidates: Record<string, Record<string, unknown>> };
+      readonly requests: Record<string, unknown>;
+    };
+    const [[candidateId, candidate]] = Object.entries(answered.audit.activeCandidates) as [
+      [string, { readonly signIns: unknown[] }],
+    ];
+    const { signIns, ...waiting } = candidate;
+    const legacy = Turn.from({
+      "eve.harness.humanInput": {
+        ...answered,
+        audit: { ...answered.audit, activeCandidates: { [candidateId]: waiting } },
+        requests: {
+          ...answered.requests,
+          r1: { at: AT, challenge: signIns[0], kind: "authorization" },
+        },
+      },
+    });
+
+    expect(legacy.humanInput.awaitedSignIns()).toEqual(["r1"]);
+    expect(legacy.humanInput.openRequestIds()).toEqual(new Set(["deploy"]));
+    expect(legacy.intake(callback("r1", "reviewer")).reported("responder.check")).toEqual([
+      expect.objectContaining({ candidateId, responder: BOB }),
+    ]);
+  });
+
   it("a candidate times out after ten minutes, failing its sign-in and ignoring its callback", () => {
     const signIn = bobMustSignIn();
 
