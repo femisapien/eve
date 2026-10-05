@@ -5,116 +5,148 @@ import { hasDelegatedSessionContext } from "#execution/delegated-session-context
 import {
   readDurableSession,
   replaceDurableSessionSnapshot,
+  type DurableSession,
   type DurableSessionState,
 } from "#execution/durable-session-store.js";
 import {
+  publishFromSessionStep,
+  publishSessionEvents,
   relaySessionEvents,
+  restoreSessionStep,
   type PublishedSessionEvents,
   type SessionStepState,
 } from "#execution/publish-session-events.js";
 import { getHarnessEmissionState } from "#harness/emission.js";
 import {
   HumanInput,
-  type HumanInputEvent,
+  type Carried,
+  type Ending,
+  type EventOrigin,
+  type HostEvent,
+  type HumanInputHost,
   type Intake,
+  type Interrupt,
   type RelayRoute,
 } from "#harness/human-input/index.js";
 import { getSessionUsage } from "#harness/turn-tag-state.js";
-import type { HandleEventFn, HarnessSessionBase } from "#harness/types.js";
 import { inputTextKey, readAnswerText } from "#internal/input-text.js";
-import { createTurnWaitingEvent, type UnstampedMessageStreamEvent } from "#protocol/message.js";
+import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import type { InputResponse } from "#shared/input.js";
 
 import { forwardAnswers, withdrawQuestion, type Forward } from "./asker.js";
 import { deliverChannelInputResponses } from "./channel-answer-ids.js";
 
-/** How human input ended the turn, for the session workflow to carry out. */
-export type HumanInputEnding = { readonly kind: "cancelled" };
-
 /**
- * Applies what human input reported to a session step outside the harness:
- * a cancel, or a request a workflow run relays or withdraws. Each event has
- * one meaning here. Returns how the turn ended, when an event ended it, which
- * the session workflow carries out once the step commits, and the messages
- * history gains. `session` is the session the step publishes for, which a
- * held turn's `turn.waiting` reports on.
+ * Carries out, in a session step around the turn, what human input reports:
+ * a cancel, a request a child or run relays, or an answer to one. It collects
+ * what to publish and add to history, which the step does once it holds the
+ * session that `commit` left.
  */
-export async function applyHumanInputEvents(
-  emit: HandleEventFn,
-  events: readonly HumanInputEvent[],
-  session?: HarnessSessionBase,
-): Promise<{ readonly ending?: HumanInputEnding; readonly history: readonly ModelMessage[] }> {
-  let ending: HumanInputEnding | undefined;
-  const history: ModelMessage[] = [];
-  for (const event of events) {
+export class SessionHost implements HumanInputHost<DurableSession> {
+  readonly own: UnstampedMessageStreamEvent[] = [];
+  readonly relayed: UnstampedMessageStreamEvent[] = [];
+  readonly history: ModelMessage[] = [];
+  /** The answers to forward to whoever asked, since the last `take`. */
+  forwarded: Extract<HostEvent, { readonly type: "answer.forwarded" }>[] = [];
+  /** A message answered relayed requests, since the last `take`. */
+  messageAnswered = false;
+
+  async publish(event: UnstampedMessageStreamEvent, origin: EventOrigin): Promise<void> {
+    (origin === "relayed" ? this.relayed : this.own).push(event);
+  }
+
+  /** A turn held on a child's request reports `turn.waiting` at the step it parked at. */
+  waitingAt(session: DurableSession) {
+    const turn = getHarnessEmissionState(session.state);
+    return { sequence: turn.sequence, turnId: turn.turnId, usage: getSessionUsage(session) };
+  }
+
+  async carry(event: HostEvent, session: DurableSession): Promise<Carried<DurableSession>> {
     switch (event.type) {
-      case "publish":
-        await emit(event.event);
-        continue;
       case "history.appended":
-        history.push(event.message);
-        continue;
-      case "turn.cancelled":
-        ending ??= { kind: "cancelled" };
-        continue;
-      case "turn.held": {
-        if (session === undefined) throw new Error("A held turn needs the session it holds.");
-        const turn = getHarnessEmissionState(session.state);
-        await emit(
-          createTurnWaitingEvent({
-            on: "input",
-            sequence: turn.sequence,
-            turnId: turn.turnId,
-            usage: getSessionUsage(session),
-          }),
-        );
-        continue;
-      }
+        this.history.push(event.message);
+        return { session };
       case "question.withdrawn":
         await withdrawQuestion(event.control, event.requestId);
-        continue;
-      case "note":
+        return { session };
+      case "answer.forwarded":
+        this.forwarded.push(event);
+        return { session };
       case "message.answered":
+        this.messageAnswered = true;
+        return { session };
+      // These need the turn's step: its tools, its model input, or its budget.
+      case "note":
       case "calls.approved":
       case "calls.dispatched":
       case "sign-in.completed":
       case "responder.check":
-      case "answer.forwarded":
       case "budget.granted":
-      case "budget.declined":
-        throw new Error(`Human input event "${event.type}" is not implemented.`);
+        throw new Error(`Human input event "${event.type}" is carried in the turn's step.`);
     }
   }
-  return { ending, history };
+
+  /** What one commit forwarded and whether its message answered, resetting both for the next. */
+  take(): {
+    readonly forwarded: readonly Extract<HostEvent, { readonly type: "answer.forwarded" }>[];
+    readonly messageAnswered: boolean;
+  } {
+    const taken = { forwarded: this.forwarded, messageAnswered: this.messageAnswered };
+    this.forwarded = [];
+    this.messageAnswered = false;
+    return taken;
+  }
 }
 
 /**
- * Publishes, as relayed, what human input reported for requests this session
- * relays: withdrawals once nobody can answer them, and a run's withdrawn
- * question. The step writes the state that goes with them.
+ * Commits what happened to a session step's human input, then publishes what
+ * it reported: relayed events as relayed, its own as its own. `inputSource`
+ * names where a relayed input batch came from.
  */
-export async function relayHumanInputEvents(
+export async function commitSessionStep(
   target: SessionStepState,
-  events: readonly HumanInputEvent[],
-): Promise<PublishedSessionEvents> {
-  const published: UnstampedMessageStreamEvent[] = [];
-  for (const event of events) {
-    if (event.type === "publish") published.push(event.event);
-    else if (event.type === "question.withdrawn") await applyHumanInputEvents(emitNothing, [event]);
-    else throw new Error(`Human input event "${event.type}" is not a relayed withdrawal.`);
+  inputs: readonly (Interrupt | Intake)[],
+  options: { readonly inputSource?: string } = {},
+): Promise<PublishedSessionEvents & { readonly ending?: Ending }> {
+  const host = new SessionHost();
+  let session = readDurableSession(target.sessionState);
+  let ending: Ending | undefined;
+  for (const input of inputs) {
+    const committed = await HumanInput.commit(host, session, input);
+    session = committed.session;
+    ending ??= committed.ending;
   }
-  return await relaySessionEvents(target, published);
+  const committed = {
+    ...target,
+    sessionState: replaceDurableSessionSnapshot({ session, state: target.sessionState }),
+  };
+  const relayed = await publishCollected(committed, "relayed", host.relayed, options.inputSource);
+  const own = await publishCollected({ ...committed, ...relayed }, "own", host.own);
+  return ending === undefined ? own : { ...own, ending };
 }
 
-async function emitNothing(): Promise<void> {}
-
-/** Splits a transition's events into those of exchanges the session relays and its own. */
-export function partitionRelayed(events: readonly HumanInputEvent[]): {
-  readonly own: readonly HumanInputEvent[];
-  readonly relayed: readonly HumanInputEvent[];
-} {
-  const relayed = events.filter((event) => event.type === "publish" && event.relayed === true);
-  return { own: events.filter((event) => !relayed.includes(event)), relayed };
+async function publishCollected(
+  target: SessionStepState,
+  origin: EventOrigin,
+  events: readonly UnstampedMessageStreamEvent[],
+  inputSource?: string,
+): Promise<PublishedSessionEvents> {
+  if (events.length === 0) {
+    return { serializedContext: target.serializedContext, sessionState: target.sessionState };
+  }
+  if (inputSource === undefined) {
+    return origin === "relayed"
+      ? await relaySessionEvents(target, events)
+      : await publishSessionEvents(target, events);
+  }
+  const { published } = await publishFromSessionStep(await restoreSessionStep(target), {
+    inputSource,
+    origin,
+    async publish(emit) {
+      for (const event of events) await emit(event);
+    },
+  });
+  return published;
 }
 
 /**
@@ -126,18 +158,8 @@ export async function withdrawRelayedRequests(
     readonly intake: Extract<Intake, { readonly type: "run.ended" | "withdraw.requested" }>;
   },
 ): Promise<PublishedSessionEvents> {
-  const session = readDurableSession(target.sessionState);
-  const transition = HumanInput.read(session.state).intake(target.intake);
-  return await relayHumanInputEvents(
-    {
-      ...target,
-      sessionState: replaceDurableSessionSnapshot({
-        session: { ...session, state: transition.humanInput.write(session.state) },
-        state: target.sessionState,
-      }),
-    },
-    transition.events,
-  );
+  const { ending: _none, ...published } = await commitSessionStep(target, [target.intake]);
+  return published;
 }
 
 export type ForwardedRelayedAnswers =
@@ -166,53 +188,37 @@ const MESSAGE_KEYS: ReadonlySet<string> = new Set(["context", "message", inputTe
 export async function forwardRelayedAnswers(
   input: SessionStepState & { readonly delivery: DeliverHookPayload },
 ): Promise<ForwardedRelayedAnswers> {
-  const session = readDurableSession(input.sessionState);
-  let humanInput = HumanInput.read(session.state);
-  const relayed = humanInput.relayedRequestIds();
+  let session = readDurableSession(input.sessionState);
+  const relayed = HumanInput.read(session.state).relayedRequestIds();
   const { delivery, serializedContext } = await deliverChannelInputResponses({
     ...input,
     routable: (response) => relayed.has(response.requestId),
   });
   const delegated = hasDelegatedSessionContext(serializedContext) || delivery.caller !== undefined;
 
+  const host = new SessionHost();
   const forwards = new Map<string, Forward>();
-  const published: UnstampedMessageStreamEvent[] = [];
   const kept: [index: number, payload: DeliverPayload][] = [];
   let cancelled = false;
   for (const [index, payload] of delivery.payloads.entries()) {
     const text = readAnswerText(payload);
-    const transition = humanInput.intake({
+    const committed = await HumanInput.commit(host, session, {
       responses: payload.inputResponses ?? [],
       ...(text !== undefined && { message: { delegated, text } }),
       type: "delivered",
     });
-    humanInput = transition.humanInput;
+    session = committed.session;
+    cancelled ||= committed.ending !== undefined;
+    const { forwarded: answered, messageAnswered } = host.take();
     const forwarded = new Set<string>();
-    let messageAnswered = false;
     let first: Forward | undefined;
-    for (const event of transition.events) {
-      switch (event.type) {
-        case "answer.forwarded": {
-          const key = routeKey(event.route);
-          const forward = forwards.get(key) ?? { metadata: [], payloads: [], route: event.route };
-          forwards.set(key, forward);
-          forward.payloads.push({ inputResponses: event.responses });
-          for (const response of event.responses) forwarded.add(response.requestId);
-          first ??= forward;
-          continue;
-        }
-        case "publish":
-          published.push(event.event);
-          continue;
-        case "message.answered":
-          messageAnswered = true;
-          continue;
-        case "turn.cancelled":
-          cancelled = true;
-          continue;
-        default:
-          throw new Error(`Human input event "${event.type}" does not follow a delivery.`);
-      }
+    for (const event of answered) {
+      const key = routeKey(event.route);
+      const forward = forwards.get(key) ?? { metadata: [], payloads: [], route: event.route };
+      forwards.set(key, forward);
+      forward.payloads.push({ inputResponses: event.responses });
+      for (const response of event.responses) forwarded.add(response.requestId);
+      first ??= forward;
     }
     const remainder = remainderOf(payload, forwarded, messageAnswered);
     if (remainder !== undefined) {
@@ -234,13 +240,10 @@ export async function forwardRelayedAnswers(
   const context = await relaySessionEvents(
     {
       serializedContext,
-      sessionState: replaceDurableSessionSnapshot({
-        session: { ...session, state: humanInput.write(session.state) },
-        state: input.sessionState,
-      }),
+      sessionState: replaceDurableSessionSnapshot({ session, state: input.sessionState }),
       sessionWritable: input.sessionWritable,
     },
-    published,
+    host.relayed,
   );
   if (cancelled) return { ...context, kind: "cancel-turn" };
   const metadata = kept.flatMap(([index], payloadIndex) =>

@@ -1,3 +1,4 @@
+import type { Ending } from "#harness/human-input/index.js";
 import type { LanguageModel, ModelMessage, UserContent } from "ai";
 
 import type { SessionAuthContext, SessionCapabilities } from "#channel/types.js";
@@ -224,6 +225,12 @@ export interface SettledTurn {
  */
 export interface StepResult {
   readonly steered?: true;
+  /**
+   * Present when human input ended the turn: the person stopped at the budget
+   * question. The runtime settles it as a cancelled turn that keeps only what
+   * human input decided.
+   */
+  readonly cancelled?: Ending;
   readonly next: StepNext;
   readonly session: HarnessSession;
   /**

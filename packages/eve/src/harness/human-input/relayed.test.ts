@@ -8,6 +8,10 @@ import {
   approvalsRequested,
   cancel,
 } from "#internal/testing/human-input.js";
+import {
+  createAuthorizationCompletedEvent,
+  createAuthorizationRequiredEvent,
+} from "#protocol/message.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
 
 /** Where Bob's child session asked, in its own turn. */
@@ -249,5 +253,56 @@ describe("relayed requests", () => {
 
     const answered = asked.intake(delivered([{ optionId: "staging", requestId: "q" }]));
     expect(answered.intake(withdraw).events).toEqual([told]);
+  });
+});
+
+describe("a child's sign-in, relayed", () => {
+  const required = createAuthorizationRequiredEvent({
+    attemptId: "attempt-bob",
+    description: "Sign in to github to continue.",
+    name: "github",
+    ...CHILD_AT,
+  });
+  const completed = createAuthorizationCompletedEvent({
+    attemptId: "attempt-bob",
+    name: "github",
+    outcome: "authorized",
+    ...CHILD_AT,
+  });
+
+  function signsIn(from = Turn.idle(), event: typeof required | typeof completed = required): Turn {
+    return from.interrupt({ event, runId: "run-bob", type: "relayed.authorization" });
+  }
+
+  it("publishes the child's sign-in as relayed and records it, while the turn waits on the call that asked", () => {
+    const turn = signsIn();
+
+    expect(turn.reported("publish")).toEqual([{ event: required, relayed: true, type: "publish" }]);
+    expect(turn.reported("turn.held")).toHaveLength(1);
+    expect(turn.next()).toEqual({ run: "model" });
+    expect(turn.humanInput.openRequestIds().size).toBe(0);
+    expect(turn.humanInput.awaitedSignIns()).toEqual([]);
+    expect(turn.storesNothing()).toBe(false);
+  });
+
+  it("closes the sign-in when the child reports it completed", () => {
+    const turn = signsIn(signsIn().stored(), completed);
+
+    expect(turn.reported("publish")).toEqual([
+      { event: completed, relayed: true, type: "publish" },
+    ]);
+    expect(turn.reported("turn.held")).toEqual([]);
+    expect(turn.storesNothing()).toBe(true);
+  });
+
+  it("drops the sign-in, reporting nothing, once the run that asked ends or the turn is cancelled", () => {
+    const ended = signsIn().intake({ runId: "run-bob", type: "run.ended" });
+    const otherRunEnded = signsIn().intake({ runId: "run-carol", type: "run.ended" });
+    const cancelled = signsIn().intake(cancel);
+
+    expect(ended.storesNothing()).toBe(true);
+    expect(ended.reported("publish")).toEqual([]);
+    expect(otherRunEnded.storesNothing()).toBe(false);
+    expect(cancelled.storesNothing()).toBe(true);
   });
 });

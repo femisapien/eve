@@ -12,7 +12,7 @@ import { dispatchCoordinationStep } from "#execution/coordination-dispatch-step.
 import type { ForwardedRelayedAnswers } from "#harness/human-input/effects/index.js";
 import { forwardRelayedAnswersStep } from "#harness/human-input/effects/steps.js";
 import { interruptWorkflowToolRun } from "#execution/tools/workflow/interrupt.js";
-import { HumanInput } from "#harness/human-input/index.js";
+import { reduceHumanInput } from "#harness/human-input/index.js";
 import { publishTurnWaitingStep } from "#execution/session/turn-waiting-step.js";
 import {
   withSessionStateDelta,
@@ -94,7 +94,7 @@ const forwardWork = stepWork<
 /** A session relaying a question a child asked. */
 function relaying(base: DurableSessionState, requestId: string): DurableSessionState {
   const session = base.snapshot.session;
-  const asked = HumanInput.read(session.state).interrupt({
+  const asked = reduceHumanInput(session.state, {
     at: { sequence: 0, stepIndex: 0, turnId: "child_turn_0" },
     requests: [
       {
@@ -109,7 +109,7 @@ function relaying(base: DurableSessionState, requestId: string): DurableSessionS
   });
   return {
     ...base,
-    snapshot: { session: { ...session, state: asked.humanInput.write(session.state) } },
+    snapshot: { session: { ...session, state: asked.state } },
   };
 }
 

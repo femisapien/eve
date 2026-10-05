@@ -2,8 +2,10 @@ import type { ModelMessage } from "ai";
 
 import type { SessionAuthContext } from "#channel/types.js";
 import type { AuthorizationChallenge } from "#harness/authorization.js";
+import type { SessionStateMap } from "#harness/types.js";
 import {
   HumanInput,
+  reduceHumanInput,
   type HumanInputEvent,
   type Intake,
   type Interrupt,
@@ -36,32 +38,36 @@ type Published<T extends UnstampedMessageStreamEvent["type"]> = Extract<
 
 /** A turn's human input, and the events the last thing that happened to it reported. */
 export class Turn {
-  readonly humanInput: HumanInput;
+  readonly state: SessionStateMap | undefined;
   readonly events: readonly HumanInputEvent[];
 
-  private constructor(humanInput: HumanInput, events: readonly HumanInputEvent[]) {
-    this.humanInput = humanInput;
+  private constructor(state: SessionStateMap | undefined, events: readonly HumanInputEvent[]) {
+    this.state = state;
     this.events = events;
   }
 
   /** A turn that waits on nobody. */
   static idle(): Turn {
-    return new Turn(HumanInput.read(undefined), []);
+    return new Turn(undefined, []);
+  }
+
+  get humanInput(): HumanInput {
+    return HumanInput.read(this.state);
   }
 
   interrupt(interrupt: Interrupt): Turn {
-    const { events, humanInput } = this.humanInput.interrupt(interrupt);
-    return new Turn(humanInput, events);
+    const { events, state } = reduceHumanInput(this.state, interrupt);
+    return new Turn(state, events);
   }
 
   intake(intake: Intake): Turn {
-    const { events, humanInput } = this.humanInput.intake(intake);
-    return new Turn(humanInput, events);
+    const { events, state } = reduceHumanInput(this.state, intake);
+    return new Turn(state, events);
   }
 
   /** The same turn after the session stores it and reads it back, as between steps. */
   stored(): Turn {
-    return new Turn(HumanInput.read(this.humanInput.write(undefined)), this.events);
+    return new Turn(JSON.parse(JSON.stringify(this.state ?? null)) ?? undefined, this.events);
   }
 
   next(): Next {
@@ -94,7 +100,7 @@ export class Turn {
 
   /** Nothing is stored for the session once nothing is open. */
   storesNothing(): boolean {
-    return this.humanInput.write(undefined) === undefined;
+    return this.state === undefined;
   }
 }
 

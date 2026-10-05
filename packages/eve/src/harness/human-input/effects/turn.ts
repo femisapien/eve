@@ -10,9 +10,15 @@ import {
 import { setPendingCoordinationBatch } from "#harness/coordination.js";
 import { advanceStep, setHarnessEmissionState } from "#harness/emission.js";
 import type { HarnessEmissionState } from "#harness/emission-state.js";
-import { HumanInput, type Transition } from "#harness/human-input/index.js";
+import {
+  HumanInput,
+  type Carried,
+  type HostEvent,
+  type HumanInputHost,
+  type Intake,
+  type Interrupt,
+} from "#harness/human-input/index.js";
 import { createFrameworkUserMessage, validateHarnessModelMessages } from "#harness/messages.js";
-import { SessionLimitDeclinedError, TurnCancelledError } from "#harness/turn-cancellation.js";
 import { bumpSessionRuntimeUsageLimits, getSessionUsage } from "#harness/turn-tag-state.js";
 import type {
   HarnessSession,
@@ -20,7 +26,7 @@ import type {
   StepResult,
   ToolLoopHarnessConfig,
 } from "#harness/types.js";
-import { createTurnWaitingEvent } from "#protocol/message.js";
+import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 
 import { runApprovedWork, type ApprovedRuntimeCalls } from "./approved-calls.js";
 import { checkResponder } from "./response-policy.js";
@@ -30,98 +36,98 @@ export type { StepEffects } from "./step-tools.js";
 
 type Emit = ToolLoopHarnessConfig["handleEvent"];
 
-interface Applied {
-  readonly ended?: StepResult;
-  readonly messageAnswered: boolean;
-  /** The suspended step's response, which goes with approved calls that run as runtime work. */
-  readonly dispatched?: readonly ModelMessage[];
-  readonly runtimeCalls?: ApprovedRuntimeCalls;
-  readonly session: HarnessSession;
-}
+/** Where in the turn human input is committed: before the step's model call, or after it. */
+export type TurnPhase = "pre-step" | "post-step";
 
 /**
- * Applies what human input reported to the tool loop's session. Each event
+ * Carries out, in the tool loop's step, what human input reports. Each event
  * has one meaning here, so the tool loop decides nothing about a person's
  * input. Running approved calls and response policies needs `effects`, which
- * only steps where an answer can arrive pass. Returns the step's result when
- * an event ended the turn.
+ * only the step before a model call passes, where answers arrive.
  */
-export async function applyHumanInput(input: {
-  readonly effects?: StepEffects;
-  readonly emit?: Emit;
-  readonly session: HarnessSession;
-  readonly transition: Transition;
-}): Promise<Applied> {
-  const { effects, emit, transition } = input;
-  let session: HarnessSession = {
-    ...input.session,
-    state: transition.humanInput.write(input.session.state),
-  };
-  let messageAnswered = false;
-  let runtimeCalls: ApprovedRuntimeCalls | undefined;
-  let dispatched: readonly ModelMessage[] | undefined;
-  const applyNested = async (nested: Transition) => {
-    const applied = await applyHumanInput({ effects, emit, session, transition: nested });
-    session = applied.session;
-    runtimeCalls ??= applied.runtimeCalls;
-    dispatched ??= applied.dispatched;
-    return applied.ended;
-  };
-  for (const event of transition.events) {
+export class TurnHost implements HumanInputHost<HarnessSession> {
+  readonly phase: TurnPhase;
+  /** A message answered open requests, so the turn doesn't read it as input. */
+  messageAnswered = false;
+  /** Approved calls that run as runtime work, and the suspended step's response that goes with them. */
+  runtimeCalls: ApprovedRuntimeCalls | undefined;
+  dispatched: readonly ModelMessage[] | undefined;
+  readonly #effects: StepEffects | undefined;
+  readonly #emit: Emit | undefined;
+  readonly #emissionState: HarnessEmissionState;
+
+  constructor(input: {
+    readonly effects?: StepEffects;
+    readonly emit?: Emit;
+    readonly emissionState: HarnessEmissionState;
+    readonly phase: TurnPhase;
+  }) {
+    this.phase = input.phase;
+    this.#effects = input.effects;
+    this.#emit = input.emit;
+    this.#emissionState = input.emissionState;
+  }
+
+  async publish(event: UnstampedMessageStreamEvent): Promise<void> {
+    await this.#emit?.(event);
+  }
+
+  /** A held turn reports `turn.waiting` at the step after this one, which it resumes at. */
+  waitingAt(session: HarnessSession) {
+    const next = advanceStep(this.#emissionState);
+    return { sequence: next.sequence, turnId: next.turnId, usage: getSessionUsage(session) };
+  }
+
+  async carry(event: HostEvent, session: HarnessSession): Promise<Carried<HarnessSession>> {
     switch (event.type) {
-      case "publish":
-        await emit?.(event.event);
-        continue;
       case "history.appended":
-        session = {
-          ...session,
-          history: validateHarnessModelMessages([...session.history, event.message]),
+        return {
+          session: {
+            ...session,
+            history: validateHarnessModelMessages([...session.history, event.message]),
+          },
         };
-        continue;
       case "note":
-        session = {
-          ...session,
-          history: validateHarnessModelMessages([
-            ...session.history,
-            createFrameworkUserMessage("context.instruction", event.text),
-          ]),
+        return {
+          session: {
+            ...session,
+            history: validateHarnessModelMessages([
+              ...session.history,
+              createFrameworkUserMessage("context.instruction", event.text),
+            ]),
+          },
         };
-        continue;
       case "message.answered":
-        messageAnswered = true;
-        continue;
+        this.messageAnswered = true;
+        return { session };
       case "calls.dispatched":
-        dispatched = event.messages;
-        continue;
+        this.dispatched ??= event.messages;
+        return { session };
       case "sign-in.completed": {
         const ctx = contextStorage.getStore();
-        if (ctx === undefined) continue;
-        ctx.set(PendingAuthorizationResultKey, [
-          ...(ctx.get(PendingAuthorizationResultKey) ?? []),
-          event.result,
-        ]);
-        if (event.requester !== null) ctx.set(AuthKey, event.requester);
-        continue;
-      }
-      case "responder.check": {
-        if (effects === undefined) {
-          throw new Error("Response policies can run only where answers arrive.");
+        if (ctx !== undefined) {
+          ctx.set(PendingAuthorizationResultKey, [
+            ...(ctx.get(PendingAuthorizationResultKey) ?? []),
+            event.result,
+          ]);
+          if (event.requester !== null) ctx.set(AuthKey, event.requester);
         }
+        return { session };
+      }
+      case "budget.granted":
+        return { session: bumpSessionRuntimeUsageLimits(session) };
+      case "responder.check": {
+        const effects = this.#needEffects(event.type);
         const tools = await prepareStepTools(effects, event.at, session);
-        const checked = await checkResponder(event, tools);
-        const ended = await applyNested(HumanInput.read(session.state).intake(checked));
-        if (ended !== undefined) return { ended, messageAnswered, session };
-        continue;
+        return { report: [await checkResponder(event, tools)], session };
       }
       case "calls.approved": {
-        if (effects === undefined) {
-          throw new Error("Approved calls can run only where answers arrive.");
-        }
+        const effects = this.#needEffects(event.type);
         const tools = await prepareStepTools(effects, event.at, session);
         const work = await runApprovedWork({
           ...event,
           abortSignal: effects.config.abortSignal,
-          emit,
+          emit: this.#emit,
           messages: [
             ...effects.projectHistory(session.history, session.state),
             ...HumanInput.read(session.state).suspendedMessages(),
@@ -129,53 +135,62 @@ export async function applyHumanInput(input: {
           session,
           tools,
         });
-        session = work.session;
-        runtimeCalls ??= work.runtimeCalls;
-        const settled = await applyNested(
-          HumanInput.read(session.state).intake({
-            results:
-              work.results.length === 0 ? [] : [{ content: [...work.results], role: "tool" }],
-            running: work.runtimeCalls?.tasks.map((task) => task.callId) ?? [],
-            stopped: work.signIns?.callIds ?? [],
-            type: "calls.settled",
-          }),
-        );
-        if (settled !== undefined) {
-          return { ended: settled, messageAnswered, dispatched, runtimeCalls, session };
-        }
-        if (work.signIns !== undefined) {
-          const ended = await applyNested(
-            HumanInput.read(session.state).interrupt({
-              at: event.at,
-              callIds: work.signIns.callIds,
-              challenges: work.signIns.challenges,
-              // The calls left the suspended step as it settled.
-              messages: [],
-              requester: null,
-              type: "authorization.required",
-            }),
-          );
-          if (ended !== undefined) {
-            return { ended, messageAnswered, dispatched, runtimeCalls, session };
-          }
-        }
-        continue;
+        this.runtimeCalls ??= work.runtimeCalls;
+        const settled: Intake = {
+          results: work.results.length === 0 ? [] : [{ content: [...work.results], role: "tool" }],
+          running: work.runtimeCalls?.tasks.map((task) => task.callId) ?? [],
+          stopped: work.signIns?.callIds ?? [],
+          type: "calls.settled",
+        };
+        const signIns: Interrupt[] =
+          work.signIns === undefined
+            ? []
+            : [
+                {
+                  at: event.at,
+                  callIds: work.signIns.callIds,
+                  challenges: work.signIns.challenges,
+                  // The calls left the suspended step as it settled.
+                  messages: [],
+                  requester: null,
+                  type: "authorization.required",
+                },
+              ];
+        return { report: [settled, ...signIns], session: work.session };
       }
-      case "turn.cancelled":
-        throw new TurnCancelledError();
-      case "budget.granted":
-        session = bumpSessionRuntimeUsageLimits(session);
-        continue;
-      case "budget.declined":
-        throw new SessionLimitDeclinedError(event.requestId, transition.humanInput);
-      // Relayed requests never reach the turn: steps around it apply these.
+      // Relayed requests never reach the turn: the session steps around it carry these.
       case "answer.forwarded":
       case "question.withdrawn":
-      case "turn.held":
-        throw new Error(`Human input event "${event.type}" is not implemented.`);
+        throw new Error(`Human input event "${event.type}" is carried while the turn is parked.`);
     }
   }
-  return { messageAnswered, dispatched, runtimeCalls, session };
+
+  #needEffects(type: HostEvent["type"]): StepEffects {
+    if (this.#effects === undefined) {
+      throw new Error(
+        `Human input event "${type}" is carried before a model call, where answers arrive.`,
+      );
+    }
+    return this.#effects;
+  }
+}
+
+/**
+ * Commits what happened to the turn's human input. Returns the step's result
+ * when that ended the turn: the person stopped at the budget question, which
+ * ends it as cancelled.
+ */
+export async function commitTurn(
+  host: TurnHost,
+  session: HarnessSession,
+  input: Interrupt | Intake,
+): Promise<{ readonly ended?: StepResult; readonly session: HarnessSession }> {
+  const committed = await HumanInput.commit(host, session, input);
+  if (committed.ending === undefined) return { session: committed.session };
+  return {
+    ended: { cancelled: committed.ending, next: null, session: committed.session },
+    session: committed.session,
+  };
 }
 
 /**
@@ -196,9 +211,7 @@ export async function applyStepArrivals(input: {
 > {
   const { effects, emit, emissionState, stepInput } = input;
   let { session } = input;
-  let messageAnswered = false;
-  let runtimeCalls: ApprovedRuntimeCalls | undefined;
-  let dispatched: readonly ModelMessage[] | undefined;
+  const host = new TurnHost({ effects, emit, emissionState, phase: "pre-step" });
   const arrivals = HumanInput.read(session.state).arrivals({
     callbacks: contextStorage.getStore()?.get(ReceivedAuthorizationCallbacksKey) ?? [],
     now: Date.now(),
@@ -206,18 +219,11 @@ export async function applyStepArrivals(input: {
     stepInput,
   });
   for (const intake of arrivals) {
-    const applied = await applyHumanInput({
-      effects,
-      emit,
-      session,
-      transition: HumanInput.read(session.state).intake(intake),
-    });
-    session = applied.session;
-    messageAnswered ||= applied.messageAnswered;
-    runtimeCalls ??= applied.runtimeCalls;
-    dispatched ??= applied.dispatched;
-    if (applied.ended !== undefined) return { result: applied.ended };
+    const committed = await commitTurn(host, session, intake);
+    session = committed.session;
+    if (committed.ended !== undefined) return { result: committed.ended };
   }
+  const { dispatched, messageAnswered, runtimeCalls } = host;
   const turnInput = messageAnswered ? withoutMessage(stepInput) : stepInput;
   if (runtimeCalls !== undefined) {
     // The turn's message is read after the approved calls' results; its
@@ -243,7 +249,7 @@ export async function applyStepArrivals(input: {
   // A message that answers nothing still joins history, so it is read once
   // the turn runs again; the hold before the model call keeps it.
   if ("held" in HumanInput.read(session.state).next() && turnInput?.message === undefined) {
-    return { result: await holdForInput({ emit, emissionState, session }) };
+    return { result: await holdForInput({ emissionState, host, session }) };
   }
   return { session, turnInput };
 }
@@ -253,23 +259,15 @@ export async function applyStepArrivals(input: {
  * and resumes in the same turn once the person answers, steers, or cancels.
  */
 export async function holdForInput(input: {
-  readonly emit?: Emit;
   readonly emissionState: HarnessEmissionState;
+  readonly host: TurnHost;
   readonly session: HarnessSession;
 }): Promise<StepResult> {
-  const next = advanceStep(input.emissionState);
-  await input.emit?.(
-    createTurnWaitingEvent({
-      on: "input",
-      sequence: next.sequence,
-      turnId: next.turnId,
-      usage: getSessionUsage(input.session),
-    }),
-  );
+  await HumanInput.hold(input.host, input.session);
   return {
     held: { kind: "input" },
     next: null,
-    session: setHarnessEmissionState(input.session, next),
+    session: setHarnessEmissionState(input.session, advanceStep(input.emissionState)),
   };
 }
 

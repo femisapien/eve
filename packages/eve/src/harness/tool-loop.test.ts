@@ -63,7 +63,8 @@ import { deserializeContext, serializeContext } from "#context/serialize.js";
 import { appendMissingToolResultMessages, createToolLoopHarness } from "#harness/tool-loop.js";
 import { countRunUsage } from "#execution/agent-sessions/usage.js";
 import { createTask, writeTaskTable } from "#execution/tasks/table.js";
-import { SessionLimitDeclinedError, TurnCancelledError } from "#harness/turn-cancellation.js";
+import { HumanInput } from "#harness/human-input/index.js";
+import { TurnCancelledError } from "#harness/turn-cancellation.js";
 import {
   getSessionTokenUsage,
   getSessionUsageLimitViolation,
@@ -1748,13 +1749,16 @@ describe("createToolLoopHarness", () => {
     const runStep = createToolLoopHarness(createTestConfig(emit));
 
     const held = await runStep(createLimitReachedSession(), { message: "Hi again" });
-    const declined = runStep(held.session, {
+    const declined = await runStep(held.session, {
       inputResponses: [{ optionId: "stop", requestId: LIMIT_REQUEST_ID }],
     });
 
-    // A decline is a decision, not an error: the execution layer settles the
-    // thrown cancellation as `turn.cancelled` -> `session.waiting`.
-    await expect(declined).rejects.toBeInstanceOf(SessionLimitDeclinedError);
+    // A decline is a decision, not an error: the step ends the turn as
+    // cancelled, which the execution layer settles as `turn.cancelled` ->
+    // `session.waiting`, keeping the resolved question.
+    expect(declined.cancelled).toEqual({ declined: "budget", kind: "cancelled" });
+    expect(declined.next).toBeNull();
+    expect(HumanInput.read(declined.session.state).openRequestIds().size).toBe(0);
     expect(vi.mocked(ToolLoopAgent)).not.toHaveBeenCalled();
     expect(events.filter((event) => event.type === "input.resolved")).toHaveLength(1);
     expect(events.some((event) => event.type.endsWith(".failed"))).toBe(false);

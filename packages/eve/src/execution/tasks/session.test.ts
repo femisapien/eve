@@ -13,7 +13,7 @@ import {
   writeTaskTable,
   type TaskTable,
 } from "#execution/tasks/table.js";
-import { HumanInput } from "#harness/human-input/index.js";
+import { HumanInput, reduceHumanInput } from "#harness/human-input/index.js";
 import { createTestSessionState } from "#internal/testing/session-state.js";
 
 // No workflow runtime runs here: the run's cancel hook is a stub, and the
@@ -203,7 +203,7 @@ function startedTask(
 
 function withQuestion(session: DurableSession, runId: string): DurableSession {
   const requestId = `${runId}-ask-1`;
-  const asked = HumanInput.read(session.state).interrupt({
+  const asked = reduceHumanInput(session.state, {
     at: REQUEST_EVENT,
     requests: [
       {
@@ -216,5 +216,5 @@ function withQuestion(session: DurableSession, runId: string): DurableSession {
     route: { childContinuationToken: requestId, control: `${runId}-control`, runId },
     type: "relayed.requested",
   });
-  return { ...session, state: asked.humanInput.write(session.state) };
+  return { ...session, state: asked.state };
 }

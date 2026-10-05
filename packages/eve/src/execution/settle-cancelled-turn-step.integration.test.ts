@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { HumanInput, type RelayRoute } from "#harness/human-input/index.js";
+import { HumanInput, type RelayRoute, reduceHumanInput } from "#harness/human-input/index.js";
 import type { SessionStateMap } from "#harness/types.js";
 import { readDurableSession } from "#execution/durable-session-store.js";
 import { settleCancelledTurnStep } from "#execution/settle-cancelled-turn-step.js";
@@ -150,12 +150,10 @@ function relay(
   asked: InputRequest,
   route: RelayRoute,
 ): SessionStateMap | undefined {
-  return HumanInput.read(state)
-    .interrupt({
-      at: { sequence: 2, stepIndex: 0, turnId: "turn_1" },
-      requests: [asked],
-      route,
-      type: "relayed.requested",
-    })
-    .humanInput.write(state);
+  return reduceHumanInput(state, {
+    at: { sequence: 2, stepIndex: 0, turnId: "turn_1" },
+    requests: [asked],
+    route,
+    type: "relayed.requested",
+  }).state;
 }

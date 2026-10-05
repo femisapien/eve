@@ -3,11 +3,12 @@
 // turn apply them there (`session.ts`). Workflow bodies use `workflow.ts`
 // instead, since they cannot load these step-side modules.
 
-export { applyHumanInput, applyStepArrivals, holdForInput, type StepEffects } from "./turn.js";
 export {
-  applyHumanInputEvents,
-  partitionRelayed,
-  relayHumanInputEvents,
-  type ForwardedRelayedAnswers,
-  type HumanInputEnding,
-} from "./session.js";
+  applyStepArrivals,
+  commitTurn,
+  holdForInput,
+  TurnHost,
+  type StepEffects,
+  type TurnPhase,
+} from "./turn.js";
+export { commitSessionStep, SessionHost, type ForwardedRelayedAnswers } from "./session.js";

@@ -1,3 +1,4 @@
+import { reduceHumanInput } from "#harness/human-input/index.js";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -75,7 +76,7 @@ describe("HumanInput", () => {
     const { humanInput } = Turn.idle();
 
     expect(humanInput.next()).toEqual({ run: "model" });
-    expect(humanInput.write({ other: 1 })).toEqual({ other: 1 });
+    expect(reduceHumanInput({ other: 1 }, { now: 0, type: "time" }).state).toEqual({ other: 1 });
   });
 
   it("the model never runs while a request of the turn's own is open", () => {

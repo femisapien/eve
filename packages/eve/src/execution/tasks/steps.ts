@@ -23,7 +23,7 @@ import {
 } from "#execution/tasks/table.js";
 import { ignoreGoneTarget } from "#execution/tasks/workflow-target.js";
 import { countRunUsage } from "#execution/agent-sessions/usage.js";
-import { relayHumanInputEvents } from "#harness/human-input/effects/index.js";
+import { commitSessionStep } from "#harness/human-input/effects/index.js";
 import {
   publishSessionEvents,
   type PublishedSessionEvents,
@@ -39,7 +39,7 @@ import type {
   WorkflowToolRunOutcomeMessage,
 } from "#execution/tools/workflow/messages.js";
 import { workflowToolRunFailureOutput } from "#execution/tools/workflow/owner-inbox.js";
-import { HumanInput, type HumanInputEvent } from "#harness/human-input/index.js";
+import type { Intake } from "#harness/human-input/index.js";
 import { resumeHook } from "#internal/workflow/runtime.js";
 import {
   createTaskSettledEvent,
@@ -74,7 +74,7 @@ async function applyTaskRunMessage(
   }
   let table = readTaskTable(session.state);
   const events: TaskSettledStreamEvent[] = [];
-  let withdrawn: readonly HumanInputEvent[] = [];
+  const endedRunIds: string[] = [];
   switch (message.kind) {
     case "started": {
       const started = markTaskRunStarted(table, taskId, message.from.runId);
@@ -101,13 +101,13 @@ async function applyTaskRunMessage(
       const settled = settleRemainingTaskCalls(table, taskId, outcome);
       events.push(...taskSettledEvents(record, settled.settled, outcome));
       table = finishTaskRun(settled.table, taskId, message.from.runId);
-      ({ events: withdrawn, session } = endRuns(session, [message.from.runId]));
+      endedRunIds.push(message.from.runId);
       break;
     }
   }
-  const relayed = await relayHumanInputEvents(
+  const { ending: _none, ...relayed } = await commitSessionStep(
     { ...input, sessionState: saveTable(input.sessionState, session, table) },
-    withdrawn,
+    runsEnded(endedRunIds),
   );
   return await publishSessionEvents({ ...input, ...relayed }, events);
 }
@@ -148,27 +148,16 @@ async function cancelTasks(
     if (record?.resumable === false) stoppedRunIds.push(cancelled.send.run.runId);
     await sendTaskRunCommands(cancelled.send);
   }
-  const withdrawn = endRuns(session, stoppedRunIds);
-  const relayed = await relayHumanInputEvents(
-    { ...input, sessionState: saveTable(input.sessionState, withdrawn.session, table) },
-    withdrawn.events,
+  const { ending: _none, ...relayed } = await commitSessionStep(
+    { ...input, sessionState: saveTable(input.sessionState, session, table) },
+    runsEnded(stoppedRunIds),
   );
   return await publishSessionEvents({ ...input, ...relayed }, events);
 }
 
 /** Nobody can answer what an ended run relayed, so channels must stop offering it. */
-function endRuns(
-  session: DurableSession,
-  runIds: readonly string[],
-): { readonly events: readonly HumanInputEvent[]; readonly session: DurableSession } {
-  let humanInput = HumanInput.read(session.state);
-  const events: HumanInputEvent[] = [];
-  for (const runId of runIds) {
-    const transition = humanInput.intake({ runId, type: "run.ended" });
-    humanInput = transition.humanInput;
-    events.push(...transition.events);
-  }
-  return { events, session: { ...session, state: humanInput.write(session.state) } };
+function runsEnded(runIds: readonly string[]): readonly Intake[] {
+  return runIds.map((runId) => ({ runId, type: "run.ended" }));
 }
 
 /** The `task.settled` events for a task's settled calls; calls only settle on a known task. */

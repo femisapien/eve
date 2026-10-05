@@ -121,9 +121,10 @@ import {
   withoutApprovalParts,
 } from "#harness/human-input/index.js";
 import {
-  applyHumanInput,
   applyStepArrivals,
+  commitTurn,
   holdForInput,
+  TurnHost,
   type StepEffects,
 } from "#harness/human-input/effects/index.js";
 import {
@@ -619,13 +620,14 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       resolvedCoordination.outcome === "resolved" &&
       "held" in HumanInput.read(session.state).next();
     if (settlesBesideApprovals) {
-      const settled = await applyHumanInput({
+      const settled = await commitTurn(
+        new TurnHost({ emissionState, phase: "pre-step" }),
         session,
-        transition: HumanInput.read(session.state).intake({
+        {
           results: resolvedCoordination.messages.slice(session.history.length),
           type: "calls.settled",
-        }),
-      });
+        },
+      );
       if (settled.ended !== undefined) return settled.ended;
       session = settled.session;
     }
@@ -1386,27 +1388,28 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
 
     const limit = await enforceSessionUsageLimit({ config, emit, emissionState, session });
     if (limit.kind === "failed") return limit.result;
+    const preStep = new TurnHost({
+      effects: humanInputEffects,
+      emit,
+      emissionState,
+      phase: "pre-step",
+    });
     if (limit.kind === "ask") {
-      const applied = await applyHumanInput({
-        effects: humanInputEffects,
-        emit,
-        session,
-        transition: HumanInput.read(session.state).interrupt({
-          at: requestAt(emissionState),
-          request: limit.request,
-          type: "budget.exceeded",
-        }),
+      const committed = await commitTurn(preStep, session, {
+        at: requestAt(emissionState),
+        request: limit.request,
+        type: "budget.exceeded",
       });
-      session = applied.session;
-      if (applied.ended !== undefined) return applied.ended;
+      session = committed.session;
+      if (committed.ended !== undefined) return committed.ended;
     }
     if ("held" in HumanInput.read(session.state).next()) {
       // The held history keeps this step's messages, so a message sent
       // meanwhile is read when it runs.
       ctx?.set(HistoryStateKey, currentMessages.historyState);
       return await holdForInput({
-        emit,
         emissionState,
+        host: preStep,
         session: { ...session, history: [...currentMessages.history] },
       });
     }
@@ -2308,47 +2311,46 @@ async function handleStepResult(input: {
       });
       return false;
     });
+  const postStep = new TurnHost({ emit, emissionState, phase: "post-step" });
   if (approvalRequests.length > 0) {
-    const applied = await applyHumanInput({
-      emit,
-      session: baseSession,
-      transition: HumanInput.read(baseSession.state).interrupt(
-        approvalsRequested({
-          at: requestAt(emissionState),
-          // The step waits out of history until every call it made has a
-          // result. With runtime calls, the coordination batch holds it.
-          messages: deferredToolCalls.length > 0 ? [] : responseMessages,
-          requester: input.auth,
-          requests: approvalRequests,
-          tools: buildResponseAuthorizationTools({
-            authoredTools: config.tools,
-            context: contextStorage.getStore(),
-          }),
+    const committed = await commitTurn(
+      postStep,
+      baseSession,
+      approvalsRequested({
+        at: requestAt(emissionState),
+        // The step waits out of history until every call it made has a
+        // result. With runtime calls, the coordination batch holds it.
+        messages: deferredToolCalls.length > 0 ? [] : responseMessages,
+        requester: input.auth,
+        requests: approvalRequests,
+        tools: buildResponseAuthorizationTools({
+          authoredTools: config.tools,
+          context: contextStorage.getStore(),
         }),
-      ),
-    });
-    if (applied.ended !== undefined) return applied.ended;
-    baseSession = applied.session;
+      }),
+    );
+    if (committed.ended !== undefined) return committed.ended;
+    baseSession = committed.session;
   }
   const signIns = findInlineAuthorizationSignals(result.toolResults);
   if (signIns !== undefined) {
     // The calls that asked for a sign-in leave the step. With approvals open,
     // the step is already suspended and stays out of history; otherwise it
     // joins history without them.
-    const applied = await applyHumanInput({
-      emit,
-      session: { ...baseSession, history: validateHarnessModelMessages(promptMessages) },
-      transition: HumanInput.read(baseSession.state).interrupt({
+    const committed = await commitTurn(
+      postStep,
+      { ...baseSession, history: validateHarnessModelMessages(promptMessages) },
+      {
         at: requestAt(emissionState),
         callIds: signIns.callIds,
         challenges: signIns.challenges,
         messages: approvalRequests.length > 0 ? [] : responseMessages,
         requester: input.auth,
         type: "authorization.required",
-      }),
-    });
-    if (applied.ended !== undefined) return applied.ended;
-    return await holdForInput({ emit, emissionState, session: applied.session });
+      },
+    );
+    if (committed.ended !== undefined) return committed.ended;
+    return await holdForInput({ emissionState, host: postStep, session: committed.session });
   }
 
   const deferred = collectDeferredCalls({
@@ -2383,8 +2385,8 @@ async function handleStepResult(input: {
   // The step waits in human input, out of history, until its approvals resolve.
   if (approvalRequests.length > 0) {
     return await holdForInput({
-      emit,
       emissionState,
+      host: postStep,
       session: { ...baseSession, history: validateHarnessModelMessages(promptMessages) },
     });
   }

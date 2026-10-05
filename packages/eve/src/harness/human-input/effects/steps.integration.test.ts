@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import { readDurableSession } from "#execution/durable-session-store.js";
 import { forwardRelayedAnswersStep } from "#harness/human-input/effects/steps.js";
 import { resumeSessionInbox } from "#execution/session-inbox/resume.js";
-import { HumanInput } from "#harness/human-input/index.js";
+import { HumanInput, reduceHumanInput } from "#harness/human-input/index.js";
 import { createTestRuntime } from "#internal/testing/app-harness.js";
 import { createTestSessionState } from "#internal/testing/session-state.js";
 import { runSessionStateStep } from "#internal/testing/session-state-step.js";
@@ -38,22 +38,19 @@ function question(requestId: string, prompt: string): InputRequest {
 /** Alice's session relays a question from each of Bob's and Carol's reviewer sessions. */
 function relaying() {
   const base = createTestSessionState({ sessionId: "support-session" });
-  let humanInput = HumanInput.read(base.snapshot.session.state);
+  let state = base.snapshot.session.state;
   for (const [name, sequence] of [
     ["bob", 3],
     ["carol", 5],
   ] as const) {
-    humanInput = humanInput.interrupt({
+    state = reduceHumanInput(state, {
       at: { sequence, stepIndex: 1, turnId: `${name}_turn_0` },
       requests: [question(`${name}-ask`, `Where should ${name} deploy?`)],
       route: { childContinuationToken: `${name}-token` },
       type: "relayed.requested",
-    }).humanInput;
+    }).state;
   }
-  const session = {
-    ...base.snapshot.session,
-    state: humanInput.write(base.snapshot.session.state),
-  };
+  const session = { ...base.snapshot.session, state };
   return { ...base, snapshot: { session } };
 }
 
@@ -120,14 +117,14 @@ describe("forwardRelayedAnswersStep", () => {
   it("drops a typed reply that answered the only relayed question with its context, keeping its channel state", async () => {
     vi.mocked(resumeSessionInbox).mockReset();
     const base = relaying();
-    const carolOnly = HumanInput.read(base.snapshot.session.state).intake({
+    const carolOnly = reduceHumanInput(base.snapshot.session.state, {
       responses: [{ optionId: "staging", requestId: "bob-ask" }],
       type: "delivered",
-    }).humanInput;
+    }).state;
     const sessionState = {
       ...base,
       snapshot: {
-        session: { ...base.snapshot.session, state: carolOnly.write(base.snapshot.session.state) },
+        session: { ...base.snapshot.session, state: carolOnly },
       },
     };
     const runtime = await createTestRuntime({ agent: { name: "support" } });

@@ -1,6 +1,6 @@
 import type { ModelMessage, UserContent } from "ai";
 
-import type { SessionAuthContext } from "#channel/types.js";
+import type { SessionAuthContext, SubagentAuthorizationEvent } from "#channel/types.js";
 import type { RemoteAgentBinding } from "#eve-channel/support.js";
 import type { SessionInboxAddress } from "#execution/session-inbox/address.js";
 import type { AuthorizationChallenge, AuthorizationResult } from "#harness/authorization.js";
@@ -12,9 +12,10 @@ import {
   withoutClosedBudgetAnswers,
 } from "#harness/human-input/budget.js";
 import type { SessionStateMap, StepInput } from "#harness/types.js";
-import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
+import { createTurnWaitingEvent, type UnstampedMessageStreamEvent } from "#protocol/message.js";
 import type { AuthorizationCallback } from "#shared/connection-types.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
+import type { TokenUsage } from "#shared/token-usage.js";
 
 import {
   answerApprovals,
@@ -45,12 +46,15 @@ import {
 } from "./sign-ins.js";
 import {
   deliverToRelayed,
+  endRelayedSignIns,
   isOpenRelayed,
   relay,
+  relayAuthorization,
   relayedRequestIds,
   withdrawAsk,
   withdrawRelayed,
   type OpenRelayed,
+  type RelayedSignIn,
 } from "./relayed.js";
 import { staleAnswersAsText } from "./stale-answers.js";
 import type { SuspendedStep } from "./suspended-step.js";
@@ -64,9 +68,9 @@ export { createSessionLimitContinuationRequest } from "./budget-question.js";
  * budget question, and requests relayed from child sessions and workflow runs.
  *
  * This is the only module that knows how human input works. The rest of eve
- * reports what happened (`interrupt`, `intake`), applies the events that come
- * back, and asks what to do next (`next`). It never reads or changes the state
- * itself, which lives under one session key that only this module touches.
+ * commits what happened (`commit`), through a host that carries out what only
+ * its phase can, and asks what to do next (`next`). It never reads or changes
+ * the state itself, which lives under one session key that only `commit` writes.
  */
 export class HumanInput {
   readonly #state: HumanInputState;
@@ -80,22 +84,76 @@ export class HumanInput {
     return new HumanInput(parseState(sessionState?.[STATE_KEY]));
   }
 
-  /** Writes it back, removing the key when nothing is open. */
-  write(sessionState: SessionStateMap | undefined): SessionStateMap | undefined {
-    const next: Record<string, unknown> = { ...sessionState };
-    if (isEmpty(this.#state)) delete next[STATE_KEY];
-    else next[STATE_KEY] = this.#state;
-    return Object.keys(next).length > 0 ? next : undefined;
+  /**
+   * The one way human input changes: runs the rules on what happened, stores
+   * the state they leave in `session`, and carries out the events they report,
+   * through `host` for the events only its phase can carry out. What a host
+   * reports back, such as an approved call's result, is committed the same way.
+   * Returns the session with its human input, and how the turn ended when an
+   * event ended it.
+   */
+  static async commit<S extends Stateful>(
+    host: HumanInputHost<S>,
+    session: S,
+    input: Interrupt | Intake,
+  ): Promise<Committed<S>> {
+    const reduced = reduce(parseState(session.state?.[STATE_KEY]), input);
+    let current: S = { ...session, state: store(session.state, reduced.state) };
+    for (const event of reduced.events) {
+      switch (event.type) {
+        case "publish":
+          await host.publish(event.event, event.relayed === true ? "relayed" : "own");
+          continue;
+        // The call that asked keeps running; the turn waits on it.
+        case "turn.held":
+          await HumanInput.hold(host, current, "relayed");
+          continue;
+        case "turn.cancelled":
+          return { ending: { kind: "cancelled" }, session: current };
+        // Stop resolved the budget question: the turn ends as cancelled.
+        case "budget.declined":
+          return { ending: { declined: "budget", kind: "cancelled" }, session: current };
+        default: {
+          const carried = await host.carry(event, current);
+          current = carried.session;
+          for (const reported of carried.report ?? []) {
+            const nested = await HumanInput.commit(host, current, reported);
+            current = nested.session;
+            if (nested.ending !== undefined) return nested;
+          }
+        }
+      }
+    }
+    return { session: current };
   }
 
-  /** The turn needs a person: a model step's calls, the budget, or a child asked. */
-  interrupt(interrupt: Interrupt): Transition {
-    return this.#apply(reduce(this.#state, interrupt));
+  /**
+   * The turn waits on a person: publishes `turn.waiting` at the step `host`
+   * holds at. The only place a turn reports it waits on input.
+   */
+  static async hold<S extends Stateful>(
+    host: HumanInputHost<S>,
+    session: S,
+    origin: EventOrigin = "own",
+  ): Promise<void> {
+    const at = host.waitingAt(session);
+    await host.publish(
+      createTurnWaitingEvent({
+        on: "input",
+        sequence: at.sequence,
+        turnId: at.turnId,
+        usage: at.usage,
+      }),
+      origin,
+    );
   }
 
-  /** Something arrived for the turn: an answer, a message, a cancel, a callback. */
-  intake(intake: Intake): Transition {
-    return this.#apply(reduce(this.#state, intake));
+  /**
+   * `onto` with the human input `from` holds, for a step that keeps none of
+   * its own state but what human input decided, as a cancelled step.
+   */
+  static keep<S extends Stateful>(from: SessionStateMap | undefined, onto: S): S {
+    return { ...onto, state: store(onto.state, parseState(from?.[STATE_KEY])) };
   }
 
   /**
@@ -147,10 +205,6 @@ export class HumanInput {
     return awaitedSignIns(this.#state);
   }
 
-  #apply(reduced: Reduced): Transition {
-    return { events: reduced.events, humanInput: new HumanInput(reduced.state) };
-  }
-
   /**
    * The ids of the open requests of this session's own that an answer can
    * resolve, for routing an answer to its turn. Sign-ins are closed by their
@@ -168,6 +222,60 @@ export class HumanInput {
   relayedRequestIds(): ReadonlySet<string> {
     return relayedRequestIds(this.#state);
   }
+}
+
+/**
+ * The rules alone: the session state `input` leaves and the events it
+ * reports, with nothing carried out. Only rule tests call this; the runtime
+ * commits.
+ */
+export function reduceHumanInput(
+  sessionState: SessionStateMap | undefined,
+  input: Interrupt | Intake,
+): { readonly events: readonly HumanInputEvent[]; readonly state: SessionStateMap | undefined } {
+  const reduced = reduce(parseState(sessionState?.[STATE_KEY]), input);
+  return { events: reduced.events, state: store(sessionState, reduced.state) };
+}
+
+type Stateful = { readonly state?: SessionStateMap };
+
+/** Whose exchange an event belongs to: the session's own, or one it relays for a child or run. */
+export type EventOrigin = "own" | "relayed";
+
+/** The events `commit` carries out itself, for every host. */
+type CommittedEvent = "publish" | "turn.held" | "turn.cancelled" | "budget.declined";
+
+/** The events a host carries out: those that need what only its phase has. */
+export type HostEvent = Exclude<HumanInputEvent, { readonly type: CommittedEvent }>;
+
+/**
+ * Where human input is committed: the turn's steps before and after a model
+ * call, and the session steps around a parked turn. A host carries out what
+ * only its phase can, such as running an approved call, and reports back.
+ */
+export interface HumanInputHost<S extends Stateful> {
+  publish(event: UnstampedMessageStreamEvent, origin: EventOrigin): Promise<void>;
+  /** The step a `turn.waiting` reports at, and the session's usage. */
+  waitingAt(session: S): {
+    readonly sequence: number;
+    readonly turnId: string;
+    readonly usage?: TokenUsage;
+  };
+  carry(event: HostEvent, session: S): Promise<Carried<S>>;
+}
+
+/** What carrying out an event left: the session, and what to commit next, in order. */
+export interface Carried<S> {
+  readonly session: S;
+  readonly report?: readonly (Interrupt | Intake)[];
+}
+
+/** How human input ended the turn. */
+export type Ending = { readonly kind: "cancelled"; readonly declined?: "budget" };
+
+export interface Committed<S> {
+  readonly session: S;
+  readonly ending?: Ending;
 }
 
 /** The coordinates of the stream position a request was asked at. */
@@ -228,6 +336,18 @@ export type Interrupt =
       readonly route: RelayRoute;
       /** The task whose run asked, so readers attach the batch to it. */
       readonly taskId?: string;
+    }
+  /**
+   * A child session or workflow run signs in, or reports its responders'
+   * approval candidates, through this session. The child completes its own
+   * sign-in on its callback; the session carries the exchange and records each
+   * sign-in until it completes.
+   */
+  | {
+      readonly type: "relayed.authorization";
+      readonly event: SubagentAuthorizationEvent;
+      /** The child session or run that asked; nobody completes its sign-in once it ends. */
+      readonly runId: string;
     };
 
 /** What may arrive for the turn. */
@@ -367,11 +487,6 @@ export type HumanInputEvent =
   | { readonly type: "note"; readonly text: string }
   | { readonly type: "turn.cancelled" };
 
-export interface Transition {
-  readonly humanInput: HumanInput;
-  readonly events: readonly HumanInputEvent[];
-}
-
 export type Next = { readonly run: "model" } | { readonly held: "input" };
 
 /** What running a response policy did, before human input reads it as a verdict. */
@@ -418,6 +533,8 @@ export interface HumanInputState {
   readonly suspended?: SuspendedStep;
   /** Every response-policy candidate and settlement of the session. */
   readonly audit?: ApprovalAudit;
+  /** Sign-ins children and runs started through this session, by attempt id, until they complete. */
+  readonly relayedSignIns?: Readonly<Record<string, RelayedSignIn>>;
 }
 
 type OpenRequest =
@@ -436,13 +553,25 @@ function parseState(value: unknown): HumanInputState {
   return value as HumanInputState;
 }
 
+/** Stores `state` in the session's state, removing the key when nothing is open. */
+function store(
+  sessionState: SessionStateMap | undefined,
+  state: HumanInputState,
+): SessionStateMap | undefined {
+  const next: Record<string, unknown> = { ...sessionState };
+  if (isEmpty(state)) delete next[STATE_KEY];
+  else next[STATE_KEY] = state;
+  return Object.keys(next).length > 0 ? next : undefined;
+}
+
 function isEmpty(state: HumanInputState): boolean {
   return (
     Object.keys(state.requests).length === 0 &&
     state.queued === undefined &&
     state.suspended === undefined &&
     state.grants.length === 0 &&
-    state.audit === undefined
+    state.audit === undefined &&
+    Object.keys(state.relayedSignIns ?? {}).length === 0
   );
 }
 
@@ -493,16 +622,22 @@ function reduce(state: HumanInputState, input: Interrupt | Intake): Reduced {
       return then(
         staleCandidates(state, CANCELLED_REASON),
         (next) => withdrawRelayed(next),
+        (next) => endRelayedSignIns(next),
         withdrawBudget,
         cancelApprovals,
         (next) => closeSignIns(next, { outcome: "declined", reason: CANCELLED_REASON }),
       );
     case "relayed.requested":
       return relay(state, input);
+    case "relayed.authorization":
+      return relayAuthorization(state, input);
     case "delivered":
       return deliverToRelayed(state, input);
     case "run.ended":
-      return withdrawRelayed(state, (open) => open.route.runId === input.runId);
+      return then(
+        withdrawRelayed(state, (open) => open.route.runId === input.runId),
+        (next) => endRelayedSignIns(next, input.runId),
+      );
     case "withdraw.requested":
       return withdrawAsk(state, input);
     case "calls.settled":

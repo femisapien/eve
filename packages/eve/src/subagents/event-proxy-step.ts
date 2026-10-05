@@ -2,7 +2,6 @@ import type {
   SubagentAuthorizationEventHookPayload,
   SubagentInputRequestHookPayload,
 } from "#channel/types.js";
-import { applyHumanInputEvents } from "#harness/human-input/effects/index.js";
 import {
   publishFromSessionStep,
   restoreSessionStep,
@@ -14,10 +13,8 @@ import {
   withSessionStateDelta,
   type SessionStateTransition,
 } from "#execution/session/state-delta.js";
-import { getHarnessEmissionState } from "#harness/emission.js";
-import { HumanInput, type Transition } from "#harness/human-input/index.js";
-import { getSessionUsage } from "#harness/turn-tag-state.js";
-import { createTurnWaitingEvent } from "#protocol/message.js";
+import { SessionHost } from "#harness/human-input/effects/index.js";
+import { HumanInput, type Interrupt } from "#harness/human-input/index.js";
 
 type SubagentEventHookPayload =
   | SubagentAuthorizationEventHookPayload
@@ -46,61 +43,59 @@ interface RelayedBy {
 }
 
 /**
- * Relays one child event through the parent session. A child's sign-in
- * completes on its own callback, so its events only reach the channel; a
- * child's question is human input.
+ * Relays one child event through the parent session, as human input: a
+ * child's question waits for the answer this session routes back, and a
+ * child's sign-in waits for the callback the child completes it on.
  */
 export async function emitProxiedSubagentEvent(
   input: RestoredSessionStep & RelayedBy & { readonly hookPayload: SubagentEventHookPayload },
 ): Promise<PublishedSessionEvents> {
-  const { control, hookPayload, runId } = input;
-  let transition: Transition | undefined;
-  const { published } = await publishFromSessionStep(input, {
-    origin: "relayed",
-    inputSource:
-      hookPayload.kind === "subagent-input-request"
-        ? JSON.stringify([hookPayload.childContinuationToken, hookPayload.inputSource ?? null])
-        : undefined,
-    async publish(emit, session) {
-      if (hookPayload.kind === "subagent-authorization-event") {
-        await emit(hookPayload.event);
-        if (hookPayload.event.type === "authorization.required") {
-          const turn = getHarnessEmissionState(session.state);
-          await emit(
-            createTurnWaitingEvent({
-              on: "input",
-              sequence: turn.sequence,
-              turnId: turn.turnId,
-              usage: getSessionUsage(session),
-            }),
-          );
-        }
-        return;
-      }
-      const { event } = hookPayload;
-      transition = HumanInput.read(session.state).interrupt({
-        at: { sequence: event.sequence, stepIndex: event.stepIndex, turnId: event.turnId },
-        requests: event.requests,
-        route: {
-          childContinuationToken: hookPayload.childContinuationToken,
-          // The address names the child only when it is the child's own inbox.
-          ...(hookPayload.childSessionInbox?.sessionId === hookPayload.childSessionId && {
-            childSessionInbox: hookPayload.childSessionInbox,
-          }),
-          ...(hookPayload.remote !== undefined && { remote: hookPayload.remote }),
-          ...(hookPayload.inputSource !== undefined && { inputSource: hookPayload.inputSource }),
-          ...(runId !== undefined && { runId }),
-          ...(control !== undefined && { control }),
-        },
-        ...(event.taskId !== undefined && { taskId: event.taskId }),
-        type: "relayed.requested",
-      });
-      await applyHumanInputEvents(emit, transition.events, session);
+  const { hookPayload } = input;
+  const host = new SessionHost();
+  const committed = await HumanInput.commit(host, input.durableSession, relayedInterrupt(input));
+  const { published } = await publishFromSessionStep(
+    { ...input, durableSession: committed.session },
+    {
+      origin: "relayed",
+      inputSource:
+        hookPayload.kind === "subagent-input-request"
+          ? JSON.stringify([hookPayload.childContinuationToken, hookPayload.inputSource ?? null])
+          : undefined,
+      async publish(emit) {
+        for (const event of host.relayed) await emit(event);
+      },
     },
-    updateSession(session) {
-      if (transition === undefined) return { session };
-      return { session: { ...session, state: transition.humanInput.write(session.state) } };
-    },
-  });
+  );
   return published;
+}
+
+function relayedInterrupt(
+  input: RelayedBy & { readonly hookPayload: SubagentEventHookPayload },
+): Interrupt {
+  const { control, hookPayload, runId } = input;
+  if (hookPayload.kind === "subagent-authorization-event") {
+    return {
+      event: hookPayload.event,
+      runId: runId ?? hookPayload.childSessionId,
+      type: "relayed.authorization",
+    };
+  }
+  const { event } = hookPayload;
+  return {
+    at: { sequence: event.sequence, stepIndex: event.stepIndex, turnId: event.turnId },
+    requests: event.requests,
+    route: {
+      childContinuationToken: hookPayload.childContinuationToken,
+      // The address names the child only when it is the child's own inbox.
+      ...(hookPayload.childSessionInbox?.sessionId === hookPayload.childSessionId && {
+        childSessionInbox: hookPayload.childSessionInbox,
+      }),
+      ...(hookPayload.remote !== undefined && { remote: hookPayload.remote }),
+      ...(hookPayload.inputSource !== undefined && { inputSource: hookPayload.inputSource }),
+      ...(runId !== undefined && { runId }),
+      ...(control !== undefined && { control }),
+    },
+    ...(event.taskId !== undefined && { taskId: event.taskId }),
+    type: "relayed.requested",
+  };
 }

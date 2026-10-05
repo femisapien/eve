@@ -17,6 +17,7 @@ import {
   createSessionLimitContinuationRequest,
   HumanInput,
   type HumanInputEvent,
+  reduceHumanInput,
 } from "#harness/human-input/index.js";
 import type { SessionStateMap } from "#harness/types.js";
 import { createAuthorizationRequiredEvent, type MessageStreamEvent } from "#protocol/message.js";
@@ -35,7 +36,7 @@ function answered(
   state: SessionStateMap | undefined,
   responses: readonly InputResponse[],
 ): readonly HumanInputEvent[] {
-  return HumanInput.read(state).intake({ responses, type: "delivered" }).events;
+  return reduceHumanInput(state, { responses, type: "delivered" }).events;
 }
 
 function fixture() {

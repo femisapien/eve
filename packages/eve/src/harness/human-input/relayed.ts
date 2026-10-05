@@ -147,6 +147,44 @@ export function deliverToRelayed(
   return { events, state: next };
 }
 
+/** A sign-in a child or run started through this session, recorded until it completes. */
+export interface RelayedSignIn {
+  readonly at: RequestAt;
+  readonly name: string;
+  readonly runId: string;
+}
+
+/**
+ * A child or run signs in, or reports its responders' approval candidates.
+ * The session publishes the event as relayed and records the sign-in until
+ * its completion arrives the same way; the turn waits on the call that asked.
+ */
+export function relayAuthorization(
+  state: HumanInputState,
+  interrupt: Extract<Interrupt, { readonly type: "relayed.authorization" }>,
+): Reduced {
+  const { event, runId } = interrupt;
+  const published = relayed(event);
+  if (event.type === "authorization.required") {
+    const { attemptId, name, sequence, stepIndex, turnId } = event.data;
+    const next =
+      attemptId === undefined
+        ? state
+        : {
+            ...state,
+            relayedSignIns: {
+              ...state.relayedSignIns,
+              [attemptId]: { at: { sequence, stepIndex, turnId }, name, runId },
+            },
+          };
+    return { events: [published, { type: "turn.held" }], state: next };
+  }
+  if (event.type === "authorization.completed" && event.data.attemptId !== undefined) {
+    return { events: [published], state: withoutSignIns(state, [event.data.attemptId]) };
+  }
+  return { events: [published], state };
+}
+
 /** A run ended, or the turn was cancelled: nobody can answer what it relayed. */
 export function withdrawRelayed(
   state: HumanInputState,
@@ -154,6 +192,27 @@ export function withdrawRelayed(
 ): Reduced {
   const selected = openRelayed(state).filter(select);
   return { events: withdrawn(selected), state: without(state, selected) };
+}
+
+/**
+ * The sign-ins a run started end with it, or all of them with the turn. Its
+ * child reports its own completion, so ending them reports nothing.
+ */
+export function endRelayedSignIns(state: HumanInputState, runId?: string): Reduced {
+  const ended = Object.entries(state.relayedSignIns ?? {})
+    .filter(([, signIn]) => runId === undefined || signIn.runId === runId)
+    .map(([attemptId]) => attemptId);
+  return { events: [], state: withoutSignIns(state, ended) };
+}
+
+function withoutSignIns(state: HumanInputState, attemptIds: readonly string[]): HumanInputState {
+  if (attemptIds.length === 0 || state.relayedSignIns === undefined) return state;
+  const ids = new Set(attemptIds);
+  const remaining = Object.fromEntries(
+    Object.entries(state.relayedSignIns).filter(([attemptId]) => !ids.has(attemptId)),
+  );
+  const { relayedSignIns: _dropped, ...rest } = state;
+  return Object.keys(remaining).length === 0 ? rest : { ...rest, relayedSignIns: remaining };
 }
 
 /**

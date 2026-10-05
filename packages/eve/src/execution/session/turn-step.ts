@@ -28,13 +28,10 @@ import { getHarnessEmissionState, isHarnessBetweenTurns } from "#harness/emissio
 import { bindSessionInstrumentation } from "#instrumentation/runtime.js";
 import { RuntimeActionSettlementTimesKey } from "#harness/runtime-action-settlement-state.js";
 import * as agentTraceState from "#tracing/agent-trace-context-store.js";
-import {
-  isTurnCancellation,
-  SessionLimitDeclinedError,
-  throwIfTurnAborted,
-} from "#harness/turn-cancellation.js";
+import { isTurnCancellation, throwIfTurnAborted } from "#harness/turn-cancellation.js";
 import { setChannelContext } from "#execution/channel-context.js";
 import { activeTurnId } from "#harness/active-turn-id.js";
+import { HumanInput } from "#harness/human-input/index.js";
 import { coalesceTurnInputs, validateHarnessModelMessages } from "#harness/messages.js";
 import type { HandleEventFn, HarnessSession, StepInput, StepResult } from "#harness/types.js";
 import type { DeliverPayload } from "#channel/types.js";
@@ -450,6 +447,8 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
             );
             return runHarnessStep(schemaSession, stepInput);
           });
+          // Human input ended the turn: the cancel keeps none of this call's work.
+          if (result.cancelled !== undefined) return result;
           // The waiting boundary may reach the client before this step returns.
           // Its settled result wins over a cancellation of that completed turn.
           if (result.settledTurn === undefined) throwIfTurnAborted(abortSignal);
@@ -466,11 +465,17 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
         beforeBatchContext: input.serializedContext,
         checkpoint: completedModelCall,
         ctx,
+        initialSession,
+        stepInput: resolved,
+      });
+    }
+    if (stepResult.cancelled !== undefined) {
+      return createCancelledModelCallBatchResult({
+        beforeBatchContext: input.serializedContext,
+        checkpoint: completedModelCall,
+        ctx,
         // Stop already resolved the budget question, so the cancel must not withdraw it again.
-        initialSession:
-          error instanceof SessionLimitDeclinedError
-            ? { ...initialSession, state: error.humanInput.write(initialSession.state) }
-            : initialSession,
+        initialSession: HumanInput.keep(stepResult.session.state, initialSession),
         stepInput: resolved,
       });
     }
