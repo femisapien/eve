@@ -52,10 +52,35 @@ Setup registers `/api/auth/callback/vercel` as a project redirect URI, so Vercel
 validates callbacks against the project's deployment domains. The app uses the
 `authorization_code` grant, `client_secret_post` authentication, and the
 `openid`, `email`, and `profile` scopes. Setup writes `VERCEL_APP_CLIENT_ID`,
-`VERCEL_APP_CLIENT_SECRET`, and `BETTER_AUTH_SECRET` to production and preview;
-secret values are marked sensitive and are never printed or written to source.
-Deploy the project after setup. Local development continues without browser
-sign-in.
+`VERCEL_APP_CLIENT_SECRET`, and `BETTER_AUTH_SECRET` to production, preview, and
+development. Cloud secrets are sensitive; development secrets are encrypted and
+saved to ignored `.env.local` files for the agent and Web Chat. Secrets are never
+printed or written to source. Initialization does not deploy; run `eve deploy`
+to publish the app.
+
+### Test sign-in locally
+
+Vercel authentication also requires sign-in during local development. Setup adds
+the exact callback `http://localhost:3000/api/auth/callback/vercel` to the App.
+Start the generated Next.js app with `pnpm dev --port 3000`, or use `pnpm dev:web
+--port 3000` for the nested Next.js layout. The Vercel services layout uses
+`pnpm dev:all` and its local proxy on port 3000.
+
+To use another local origin, set `EVE_WEB_CHAT_LOCAL_URL` during setup:
+
+```bash
+EVE_WEB_CHAT_LOCAL_URL=http://localhost:3001 eve init my-agent --channel-web-nextjs
+```
+
+For an existing app, set the same variable when running
+`eve add channel/web --skip-install`. Then start the web server or services proxy
+on that port. The browser hostname and port must match the registered origin;
+setup accepts exact loopback origins, without wildcard hosts or paths.
+
+For development without signing in, start with `EVE_WEB_CHAT_SKIP_AUTH=1`, for
+example `EVE_WEB_CHAT_SKIP_AUTH=1 pnpm dev --port 3000`. This explicitly enables
+the local browser and channel bypass. It has no effect in production. Restart
+without that setting to verify real login and session authentication.
 
 For automation, supply the setup answers explicitly:
 

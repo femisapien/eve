@@ -246,9 +246,9 @@ export default withEve(nextConfig);
     startScript = plan.rootWebChat ? "dev" : "dev:web";
   }
   if (plan.authProject !== undefined && writeAuth !== undefined) {
-    await deps.provisionWebChatAuth(plan.authProject, context.signal);
+    const environment = await deps.provisionWebChatAuth(plan.authProject, context.signal);
     context.signal?.throwIfAborted();
-    await writeAuth();
+    await writeAuth(environment);
     await deps.installScaffoldDependencies({
       changed: true,
       log: context.presenter.log,
@@ -257,8 +257,8 @@ export default withEve(nextConfig);
     });
     context.presenter.log.success("Configured Sign in with Vercel for this project's team");
     context.presenter.nextSteps([
-      "Deploy the project to use Sign in with Vercel. Production and preview credentials are configured.",
-      "Local development continues to use localDev() without signing in.",
+      `Sign in locally at ${environment.EVE_WEB_CHAT_LOCAL_URL}. Development, preview, and production credentials are configured.`,
+      "Local setup is complete. Run `eve deploy` to publish these changes.",
     ]);
   }
   context.presenter.log.success("Configured channel: web");

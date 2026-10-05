@@ -85,10 +85,10 @@ export async function runInitWebAuth(input: {
         "Sign in with Vercel requires a linked project. Pass --project <name-or-id> (and --team <slug-or-id>) for non-interactive initialization.",
       );
     }
-    await withSpinner(prompter, "Configuring Sign in with Vercel…", () =>
+    const environment = await withSpinner(prompter, "Configuring Sign in with Vercel…", () =>
       deps.provisionWebChatAuth(project),
     );
-    await writeAuth();
+    await writeAuth(environment);
     await deps.installScaffoldDependencies({
       changed: true,
       log: prompter.log,
@@ -96,9 +96,11 @@ export async function runInitWebAuth(input: {
     });
     input.logger.log("Configured Sign in with Vercel for this project's team");
     input.logger.log(
-      "Deploy the project to use Sign in with Vercel. Production and preview credentials are configured.",
+      `Sign in locally at ${environment.EVE_WEB_CHAT_LOCAL_URL}. Development, preview, and production credentials are configured.`,
     );
-    input.logger.log("Local development continues to use localDev() without signing in.");
+    input.logger.log(
+      "Created locally; not deployed yet. Run `eve deploy` to publish your Web Chat.",
+    );
   } catch (error) {
     if (error instanceof WizardCancelledError) {
       input.logger.log(resume);

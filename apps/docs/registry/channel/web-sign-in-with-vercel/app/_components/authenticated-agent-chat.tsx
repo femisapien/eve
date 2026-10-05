@@ -1,5 +1,5 @@
 import { headers } from "next/headers";
-import { auth } from "@/lib/auth";
+import { auth, skipLocalAuth } from "@/lib/auth";
 import { AgentChat } from "./agent-chat";
 import { AccountControl, SignIn } from "./web-chat-auth";
 
@@ -10,7 +10,7 @@ export async function AuthenticatedAgentChat({
   readonly sessionId?: string;
   readonly sessionless?: boolean;
 }) {
-  if (process.env.NODE_ENV === "development") {
+  if (skipLocalAuth) {
     return <AgentChat sessionId={sessionId} sessionless={sessionless} />;
   }
 

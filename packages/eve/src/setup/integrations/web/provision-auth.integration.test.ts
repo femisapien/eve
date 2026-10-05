@@ -12,6 +12,7 @@ const app = {
   grantTypes: { authorization_code: true },
   clientAuthenticationMethods: { client_secret_post: true },
   projectRedirectUris: [{ projectId: "prj_123", path: "/api/auth/callback/vercel" }],
+  redirectUris: ["http://localhost:3000/api/auth/callback/vercel"],
   clientSecrets: [],
 };
 const keys = ["VERCEL_APP_CLIENT_ID", "VERCEL_APP_CLIENT_SECRET", "BETTER_AUTH_SECRET"];
@@ -21,6 +22,16 @@ const completeEnvs = keys.map((key, i) => ({
   target: ["production", "preview"],
   value: i === 0 ? "cl_test" : undefined,
 }));
+const developmentEnvs = keys.map((key, i) => ({
+  id: `dev_${i}`,
+  key,
+  target: ["development"],
+  value: i === 0 ? "cl_test" : "encrypted-value",
+}));
+function developmentValues() {
+  response({ ...developmentEnvs[1], value: "development-client-secret", decrypted: true });
+  response({ ...developmentEnvs[2], value: "development-session-secret", decrypted: true });
+}
 const fetchMock = vi.fn<typeof fetch>();
 function json(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), { status });
@@ -43,17 +54,25 @@ beforeEach(() => {
   fetchMock.mockReset();
   vi.stubGlobal("fetch", fetchMock);
 });
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  vi.unstubAllEnvs();
+});
 
 describe("Web Chat auth provisioning", () => {
-  it("creates a team-only app with project callbacks and sensitive credentials for both deployments", async () => {
+  it("creates project and localhost callbacks with sensitive cloud credentials and pullable development credentials", async () => {
     initial();
     missingApp();
     response(app);
     response({ clientId: "cl_test", clientSecret: "secret-value-1234" });
     response({ created: completeEnvs, failed: [] });
 
-    await provisionWebChatAuth(project);
+    const environment = await provisionWebChatAuth(project);
+    expect(environment).toMatchObject({
+      EVE_WEB_CHAT_LOCAL_URL: "http://localhost:3000",
+      VERCEL_APP_CLIENT_ID: "cl_test",
+      VERCEL_APP_CLIENT_SECRET: "secret-value-1234",
+    });
 
     const requests = writes();
     expect(JSON.parse(requests[0]![1]!.body as string)).toEqual({
@@ -64,9 +83,12 @@ describe("Web Chat auth provisioning", () => {
       grantTypes: { authorization_code: true },
       clientAuthenticationMethods: { client_secret_post: true },
       projectRedirectUris: [{ projectId: "prj_123", path: "/api/auth/callback/vercel" }],
+      redirectUris: ["http://localhost:3000/api/auth/callback/vercel"],
     });
     const variables = JSON.parse(requests[2]![1]!.body as string);
-    expect(variables).toEqual([
+    expect(
+      variables.filter((env: { target: string[] }) => !env.target.includes("development")),
+    ).toEqual([
       {
         key: keys[0],
         value: "cl_test",
@@ -89,7 +111,36 @@ describe("Web Chat auth provisioning", () => {
         visibility: "secret",
       },
     ]);
-    expect(Buffer.from(variables[2].value, "base64url")).toHaveLength(32);
+    expect(
+      variables.filter((env: { target: string[] }) => env.target.includes("development")),
+    ).toEqual([
+      {
+        key: keys[0],
+        value: "cl_test",
+        target: ["development"],
+        type: "plain",
+        visibility: "config",
+      },
+      {
+        key: keys[1],
+        value: "secret-value-1234",
+        target: ["development"],
+        type: "encrypted",
+      },
+      {
+        key: keys[2],
+        value: environment.BETTER_AUTH_SECRET,
+        target: ["development"],
+        type: "encrypted",
+      },
+    ]);
+    expect(Buffer.from(environment.BETTER_AUTH_SECRET, "base64url")).toHaveLength(32);
+    expect(
+      variables.find(
+        (env: { key: string; target: string[] }) =>
+          env.key === "BETTER_AUTH_SECRET" && env.target.includes("production"),
+      ).value,
+    ).not.toBe(environment.BETTER_AUTH_SECRET);
     for (const [url, options] of fetchMock.mock.calls) {
       expect(new URL(String(url)).searchParams.get("teamId")).toBe("team_test");
       expect(options?.redirect).toBe("error");
@@ -97,19 +148,91 @@ describe("Web Chat auth provisioning", () => {
     }
   });
 
-  it("reuses builder-created apps by client ID without rotating secrets", async () => {
+  it("adds the local callback to a compatible app while preserving existing callbacks", async () => {
+    initial([...completeEnvs, ...developmentEnvs]);
+    response({ app: { ...app, redirectUris: ["https://example.com/callback"] } });
+    response({
+      ...app,
+      redirectUris: [
+        "https://example.com/callback",
+        "http://localhost:3000/api/auth/callback/vercel",
+      ],
+    });
+    developmentValues();
+    await provisionWebChatAuth(project);
+    expect(
+      writes().some(
+        ([url, options]) =>
+          String(url).includes("/oauth-apps/cl_test?") &&
+          options?.method === "PATCH" &&
+          JSON.parse(options.body as string).redirectUris.includes("https://example.com/callback"),
+      ),
+    ).toBe(true);
+  });
+
+  it("registers an exact alternate loopback port", async () => {
+    vi.stubEnv("EVE_WEB_CHAT_LOCAL_URL", "http://localhost:3001");
+    initial();
+    missingApp();
+    response({ ...app, redirectUris: ["http://localhost:3001/api/auth/callback/vercel"] });
+    response({ clientSecret: "new-secret-5678" });
+    response({ created: [], failed: [] });
+    await expect(provisionWebChatAuth(project)).resolves.toMatchObject({
+      EVE_WEB_CHAT_LOCAL_URL: "http://localhost:3001",
+    });
+    expect(JSON.parse(writes()[0]![1]!.body as string).redirectUris).toEqual([
+      "http://localhost:3001/api/auth/callback/vercel",
+    ]);
+  });
+
+  it.each([
+    "https://example.com",
+    "http://localhost:3000/callback",
+    "http://user@localhost:3000",
+    "http://localhost:3000?x=1",
+  ])("rejects an invalid local origin before provisioning: %s", async (origin) => {
+    vi.stubEnv("EVE_WEB_CHAT_LOCAL_URL", origin);
+    await expect(provisionWebChatAuth(project)).rejects.toThrow("must be a loopback origin");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("adds development credentials to an existing deployed app without rewriting cloud values", async () => {
     initial(completeEnvs);
+    response({ app });
+    response({ clientSecret: "new-secret-5678" });
+    response({ created: developmentEnvs, failed: [] });
+    await provisionWebChatAuth(project);
+    expect(
+      JSON.parse(writes()[1]![1]!.body as string).map((env: { target: string[] }) => env.target),
+    ).toEqual([["development"], ["development"], ["development"]]);
+  });
+
+  it("rejects unavailable development secrets rather than writing redacted values locally", async () => {
+    initial([...completeEnvs, ...developmentEnvs]);
+    response({ app });
+    response({ ...developmentEnvs[1], value: "<redacted>", decrypted: false });
+    await expect(provisionWebChatAuth(project)).rejects.toThrow("Could not read development");
+    expect(writes()).toEqual([]);
+  });
+
+  it("reuses builder-created apps by client ID without rotating secrets", async () => {
+    initial([...completeEnvs, ...developmentEnvs]);
     response({ app: { ...app, slug: "random-builder-slug" } });
+    developmentValues();
     await provisionWebChatAuth(project);
     expect(String(fetchMock.mock.calls[2]![0])).toContain("/oauth-apps/cl_test?");
     expect(writes()).toEqual([]);
   });
 
   it("fills missing preview credentials without changing production", async () => {
-    initial(completeEnvs.map((env) => ({ ...env, target: ["production"] })));
+    initial([
+      ...completeEnvs.map((env) => ({ ...env, target: ["production"] })),
+      ...developmentEnvs,
+    ]);
     response({ app });
     response({ clientSecret: "preview-secret-5678" });
     response({ created: [], failed: [] });
+    developmentValues();
     await provisionWebChatAuth(project);
     expect(
       JSON.parse(writes()[1]![1]!.body as string).map((env: { target: string[] }) => env.target),
@@ -180,7 +303,9 @@ describe("Web Chat auth provisioning", () => {
       response({ app });
       response({ clientSecret: "new-secret-5678" });
       response({ created: completeEnvs, failed: [] });
-      await expect(provisionWebChatAuth(project)).resolves.toBeUndefined();
+      await expect(provisionWebChatAuth(project)).resolves.toMatchObject({
+        VERCEL_APP_CLIENT_ID: "cl_test",
+      });
     },
   );
 
@@ -195,7 +320,7 @@ describe("Web Chat auth provisioning", () => {
     const deletes = fetchMock.mock.calls.filter(([, options]) => options?.method === "DELETE");
     expect(deletes.map(([url]) => new URL(String(url)).pathname)).toEqual([
       "/v9/projects/prj_123/env/env_0",
-      "/v1/apps/cl_test/secrets/5678",
+      "/oauth-apps/cl_test/secret/5678",
     ]);
   });
 
@@ -212,7 +337,7 @@ describe("Web Chat auth provisioning", () => {
       );
       const deletes = fetchMock.mock.calls.filter(([, options]) => options?.method === "DELETE");
       expect(deletes.map(([url]) => new URL(String(url)).pathname)).toEqual([
-        "/v1/apps/cl_test/secrets/5678",
+        "/oauth-apps/cl_test/secret/5678",
       ]);
     },
   );
@@ -230,7 +355,7 @@ describe("Web Chat auth provisioning", () => {
     expect(deletes.map(([url]) => new URL(String(url)).pathname)).toEqual([
       "/v9/projects/prj_123/env/env_0",
       "/v9/projects/prj_123/env/env_2",
-      "/v1/apps/cl_test/secrets/5678",
+      "/oauth-apps/cl_test/secret/5678",
     ]);
   });
 
@@ -244,7 +369,7 @@ describe("Web Chat auth provisioning", () => {
     await expect(provisionWebChatAuth(project)).rejects.toThrow("Cleanup was incomplete");
     expect(
       fetchMock.mock.calls.some(
-        ([url, options]) => options?.method === "DELETE" && String(url).includes("/secrets/"),
+        ([url, options]) => options?.method === "DELETE" && String(url).includes("/secret/"),
       ),
     ).toBe(false);
   });
