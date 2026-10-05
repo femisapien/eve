@@ -1,4 +1,5 @@
 import type { DeliverHookPayload, DeliverPayload } from "#channel/types.js";
+import type { Steering } from "#harness/human-input/index.js";
 import { coalesceDeliveries } from "#harness/messages.js";
 import { ANONYMOUS_PRINCIPAL, principalOf } from "#execution/session/principal.js";
 
@@ -125,13 +126,13 @@ export class SessionInputQueue {
   takeSteering(
     admitted: ReadonlySet<number>,
     turn: SteeringTurn,
-    options?: SteeringOptions,
+    humanInput?: Pick<Steering, "overridesQueue">,
   ): TurnSelection | undefined {
     const steering = this.entries.filter(
       (entry): entry is QueuedDelivery =>
         entry.kind === "delivery" &&
         admitted.has(entry.sequence) &&
-        isSteeringDelivery(entry.delivery, turn, options),
+        isSteeringDelivery(entry.delivery, turn, humanInput),
     );
     if (steering.length === 0) return undefined;
     this.retain((entry) => entry.kind !== "delivery" || !steering.includes(entry));
@@ -212,27 +213,19 @@ export interface SteeringTurn {
   readonly principal: string;
 }
 
-export interface SteeringOptions {
-  /**
-   * The turn waits on its own person. Their message steers even with
-   * `turnPolicy: "queue"`: queued, it would wait for a turn that cannot end
-   * until they act.
-   */
-  readonly heldOnPerson?: boolean;
-}
-
 /**
  * Only the turn's own principal steers it; another principal's message waits
  * for the turn to end. A delivery without auth acts as the session's current
- * identity, which is the turn's.
+ * identity, which is the turn's. Whether it steers past a queue turn policy
+ * is human input's to say (`HumanInput#steering`).
  */
 export function isSteeringDelivery(
   delivery: DeliverHookPayload,
   turn: SteeringTurn,
-  options?: SteeringOptions,
+  steering?: Pick<Steering, "overridesQueue">,
 ): boolean {
   return (
-    (options?.heldOnPerson === true || (delivery.turnPolicy ?? "steer") === "steer") &&
+    (steering?.overridesQueue === true || (delivery.turnPolicy ?? "steer") === "steer") &&
     (delivery.caller === undefined || delivery.caller.callId === turn.callerCallId) &&
     (delivery.auth === undefined || principalOf(delivery.auth) === turn.principal)
   );

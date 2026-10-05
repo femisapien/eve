@@ -252,6 +252,29 @@ export class HumanInput {
   relayedRequestIds(): ReadonlySet<string> {
     return relayedRequestIds(this.#state);
   }
+
+  /** How a message from the turn's own person steers the turn now. */
+  steering(): Steering {
+    return {
+      interruptsGeneration: this.relayedRequestIds().size === 0,
+      overridesQueue: "held" in this.next(),
+    };
+  }
+}
+
+/** How a message from the turn's own person steers the turn. */
+export interface Steering {
+  /**
+   * The turn waits on them, so their message steers it whatever its turn
+   * policy: queued, it would wait for a turn that can't end until they act.
+   */
+  readonly overridesQueue: boolean;
+  /**
+   * Their message may interrupt the model mid-generation. Not while a request
+   * relayed through the session is open: the message may answer it, so it
+   * waits for the step boundary that forwards it.
+   */
+  readonly interruptsGeneration: boolean;
 }
 
 /** What a cleared session keeps: what children and runs relayed through it. */

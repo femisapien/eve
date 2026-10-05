@@ -4,11 +4,7 @@ import {
   mapHeldInputResponses,
 } from "#harness/human-input/effects/workflow.js";
 import { admitSessionInboxPayload } from "#execution/session/admission.js";
-import {
-  isSteeringMessage,
-  type SteeringOptions,
-  type SteeringTurn,
-} from "#execution/session/input-queue.js";
+import { isSteeringMessage, type SteeringTurn } from "#execution/session/input-queue.js";
 import type { SessionExecutionInput } from "#execution/session/turn.js";
 import type { SessionInboxPayload } from "#execution/session-inbox/inbox.js";
 import { decodeSessionInboxPayload } from "#execution/session-inbox/protocol.js";
@@ -87,8 +83,7 @@ export class ActiveTurn {
     if (
       delivery.kind === "deliver" &&
       isSteeringMessage(delivery, this.identity) &&
-      HumanInput.read(this.input.cursor.sessionState.snapshot.session.state).relayedRequestIds()
-        .size === 0
+      this.humanInput().steering().interruptsGeneration
     )
       this.steeringController.abort();
   };
@@ -127,10 +122,14 @@ export class ActiveTurn {
    * interrupt that step; only deliveries still unread re-signal the next
    * generation.
    */
-  async takeSteering(options?: SteeringOptions): Promise<DeliverHookPayload | undefined> {
+  async takeSteering(): Promise<DeliverHookPayload | undefined> {
     const steering: DeliverHookPayload[] = [];
     while (true) {
-      const selection = this.input.queue.takeSteering(this.admitted, this.identity, options);
+      const selection = this.input.queue.takeSteering(
+        this.admitted,
+        this.identity,
+        this.humanInput().steering(),
+      );
       if (selection === undefined) break;
       for (const sequence of selection.sequences) this.admitted.delete(sequence);
       const forwarded = await forwardRelayedAnswers(selection.delivery, this.input.cursor);
@@ -298,6 +297,11 @@ export class ActiveTurn {
       if (isSteeringMessage(remainder, this.identity)) steered = true;
     }
     return steered;
+  }
+
+  /** The turn's human input, as the session last stored it. */
+  private humanInput(): HumanInput {
+    return HumanInput.read(this.input.cursor.sessionState.snapshot.session.state);
   }
 
   private abort(): void {

@@ -333,7 +333,7 @@ export class SessionExecution {
       if (callbacks !== undefined) return callbacks;
       const answer = await turn.takeInputResponses(requestIds);
       if (answer !== undefined) return answer;
-      const steering = await turn.takeSteering({ heldOnPerson: true });
+      const steering = await turn.takeSteering();
       if (steering !== undefined) return steering;
       const next = await turn.nextRuntimeEvent([]);
       if (next === "cancelled") return next;

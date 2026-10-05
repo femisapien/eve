@@ -95,6 +95,29 @@ describe("HumanInput", () => {
     expect(ranWhileOpen).toEqual([]);
   });
 
+  it("says how the turn's own person steers it", () => {
+    // Waiting on them, their message steers past a queue turn policy.
+    expect(heldOnApprovals("deploy").humanInput.steering()).toEqual({
+      interruptsGeneration: true,
+      overridesQueue: true,
+    });
+    expect(Turn.idle().humanInput.steering()).toEqual({
+      interruptsGeneration: true,
+      overridesQueue: false,
+    });
+    // A relayed request is open: the message may answer it, so it waits for the boundary.
+    const relayed = Turn.idle().interrupt({
+      at: { sequence: 1, stepIndex: 0, turnId: "child_turn" },
+      requests: [approval("publish")],
+      route: { childContinuationToken: "child_1" },
+      type: "relayed.requested",
+    });
+    expect(relayed.humanInput.steering()).toEqual({
+      interruptsGeneration: false,
+      overridesQueue: false,
+    });
+  });
+
   it("an answer to a request that is no longer open becomes text that authorizes nothing", () => {
     const { humanInput } = heldOnApprovals("deploy");
 
