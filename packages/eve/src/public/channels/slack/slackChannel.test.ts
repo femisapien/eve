@@ -107,6 +107,25 @@ function parseSlackRequestBody(init: RequestInit | undefined): Record<string, un
   return decodeSlackApiBody(init.body, contentType) as Record<string, unknown>;
 }
 
+// Wraps a recording `fetch` mock so the final-reply root check
+// (`conversations.replies`) finds a live thread root without being recorded.
+// Tests of that check supply their own `lookup` and read the lookups made.
+function withLiveThreadRoot(
+  fetchMock: ReturnType<typeof vi.fn>,
+  lookup: () => Record<string, unknown> = () => ({ ok: true, messages: [{ ts: "1" }] }),
+  lookups: string[] = [],
+): typeof fetch {
+  return (async (input: string | URL | Request, init?: RequestInit) => {
+    if (String(input) === "https://slack.com/api/conversations.replies") {
+      lookups.push(String(parseSlackRequestBody(init).ts));
+      return new Response(JSON.stringify(lookup()), {
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return (fetchMock as unknown as typeof fetch)(input, init);
+  }) as typeof fetch;
+}
+
 // Selects the captured calls to one Slack Web API method. The transport
 // hands `fetch` a `URL`, which never equals a string, so a URL assertion
 // has to stringify before comparing.
@@ -562,7 +581,7 @@ describe("slackChannel() default event handlers", () => {
         }),
       ),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withLiveThreadRoot(fetchMock));
   });
   afterEach(() => {
     vi.useRealTimers();
@@ -1957,10 +1976,17 @@ describe("slackChannel() default event handlers", () => {
 describe("slackChannel() final reply delivery", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   let uploadedBodies: string[];
+  let rootLookup: () => Record<string, unknown>;
+  let rootLookups: string[];
   beforeEach(() => {
     fetchMock = vi.fn();
     uploadedBodies = useSuccessfulSlackFileUpload(fetchMock);
-    vi.stubGlobal("fetch", fetchMock);
+    rootLookup = () => ({ ok: true, messages: [{ ts: "1700000000.000001" }] });
+    rootLookups = [];
+    vi.stubGlobal(
+      "fetch",
+      withLiveThreadRoot(fetchMock, () => rootLookup(), rootLookups),
+    );
   });
 
   // Fails the next calls to each named Slack method with the queued error
@@ -2065,6 +2091,70 @@ describe("slackChannel() final reply delivery", () => {
 
   const shortAnswer = `# Findings\n\n${"r".repeat(6_000)}`;
   const longAnswer = `# Findings\n\n${"r".repeat(SLACK_MARKDOWN_TEXT_MAX_LENGTH)}`;
+
+  describe("deleted thread root", () => {
+    const rootGoneLog = "Slack thread root was deleted; dropping the final reply";
+
+    // Slack posts a reply to a deleted root as a top-level channel message.
+    it("drops the reply when Slack reports the root as thread_not_found", async () => {
+      const logs = captureLogRecords();
+      rootLookup = () => ({ ok: false, error: "thread_not_found" });
+      const { adapter, ctx } = adapterWith();
+
+      await callCompletionHandler(adapter, finalReply("hello"), ctx);
+
+      expect(rootLookups).toEqual(["1700000000.000001"]);
+      expect(urls()).toEqual([]);
+      expect(logs.records.some((entry) => entry.message === rootGoneLog)).toBe(true);
+    });
+
+    it("drops the reply when the root is a tombstone", async () => {
+      rootLookup = () => ({
+        ok: true,
+        messages: [{ subtype: "tombstone", ts: "1700000000.000001" }],
+      });
+      const { adapter, ctx } = adapterWith();
+
+      await callCompletionHandler(adapter, finalReply("hello"), ctx);
+
+      expect(urls()).toEqual([]);
+    });
+
+    it("drops a reply sent through postCompletedSlackReply", async () => {
+      rootLookup = () => ({ ok: false, error: "thread_not_found" });
+      const { adapter, ctx } = adapterWith([helperReplies()]);
+
+      await callCompletionHandler(adapter, finalReply(shortAnswer), ctx);
+
+      expect(urls()).toEqual([]);
+    });
+
+    it("posts the reply when the root is live", async () => {
+      const { adapter, ctx } = adapterWith();
+
+      await callCompletionHandler(adapter, finalReply("hello"), ctx);
+
+      expect(rootLookups).toEqual(["1700000000.000001"]);
+      expect(urls()).toEqual(["https://slack.com/api/chat.postMessage"]);
+    });
+
+    it.each([
+      ["a Slack error", () => ({ ok: false, error: "ratelimited" })],
+      [
+        "a thrown lookup",
+        () => {
+          throw new Error("network down");
+        },
+      ],
+    ])("posts the reply when the root lookup fails with %s", async (_label, lookup) => {
+      rootLookup = lookup;
+      const { adapter, ctx } = adapterWith();
+
+      await callCompletionHandler(adapter, finalReply("hello"), ctx);
+
+      expect(urls()).toEqual(["https://slack.com/api/chat.postMessage"]);
+    });
+  });
 
   describe("postCompletedSlackReply", () => {
     it("posts the caller's Markdown once when Slack refuses the blocks", async () => {
@@ -2432,7 +2522,7 @@ describe("rebuildSlackContext", () => {
         headers: { "content-type": "application/json" },
       }),
     );
-    vi.stubGlobal("fetch", fetchMock);
+    vi.stubGlobal("fetch", withLiveThreadRoot(fetchMock));
 
     const adapter = withState(
       getAdapter(slackChannel({ credentials: { botToken: "xoxb-test" } })),
@@ -3614,10 +3704,10 @@ describe("slackChannel() onMessage", () => {
     expect(onEvent).toHaveBeenCalledTimes(1);
   });
 
-  // Repro: the user deletes the message that started a turn. Slack turns a
-  // later `chat.postMessage` with that deleted root as `thread_ts` into a
-  // top-level channel message, so the final reply leaks into the channel.
-  // eve drops `message_deleted`, so nothing cancels the in-flight turn.
+  // The final reply no longer leaks into the channel when the user deletes the
+  // message that started a turn (see "deleted thread root" under final reply
+  // delivery). eve still drops `message_deleted`, so nothing cancels the
+  // in-flight turn and it runs to completion before its reply is discarded.
   // Remove `.fails` once eve cancels the turn bound to a deleted thread root.
   it.fails("cancels the turn bound to a thread root that the user deleted", async () => {
     const channel = slackChannel({ credentials: { botToken: "xoxb-test" } });
