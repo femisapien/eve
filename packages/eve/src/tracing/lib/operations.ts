@@ -71,9 +71,10 @@ export interface AttemptOperation extends Operation {
 }
 export interface ActionOperation extends Operation {
   approval: WrappedOperation<{ requestId: string; request?: unknown }, ApprovalOperation>;
-  toolExecution(input?: { describe?: never }): Promise<ToolOperation>;
+  /** `arguments` defaults to the action's. */
+  toolExecution(input?: { arguments?: unknown; describe?: never }): Promise<ToolOperation>;
   toolExecution<T>(
-    input: { describe?: (value: T) => Completion },
+    input: { arguments?: unknown; describe?: (value: T) => Completion },
     execute: (operation: ToolOperation) => T | PromiseLike<T>,
   ): Promise<T>;
   memory: WrappedOperation<MemoryInput, MemoryOperation>;
@@ -301,13 +302,13 @@ export function operationHandle(
         onError,
       ),
       toolExecution: wrappedOperation(
-        async () =>
+        async (input: { arguments?: unknown } = {}) =>
           child({
             type: "tool",
             options: {
               callId: data.options.callId,
               name: data.options.name,
-              arguments: data.options.arguments,
+              arguments: "arguments" in input ? input.arguments : data.options.arguments,
             },
           }),
         undefined,
