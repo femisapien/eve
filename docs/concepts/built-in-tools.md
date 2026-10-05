@@ -38,6 +38,23 @@ eve add tool/bash
 export { default } from "eve/tools/bash";
 ```
 
+`bash` waits up to 30 seconds for a command. A command that finishes in time returns `status: "completed"` with `exitCode`, `stdout`, `stderr`, and `truncated`. A command that is still running keeps running in the sandbox as its own process group and returns `status: "running"` with:
+
+- `pid`: the process group id
+- `outputDirectory`: a directory under `/tmp/.eve/jobs/`
+- `stdout`, `stderr`, and `truncated`: the output so far
+- `message`: instructions for the model
+
+The command keeps writing to `stdout` and `stderr` files in `outputDirectory` and writes its exit code to an `exit` file when it finishes. The model checks on or stops it with ordinary shell commands in later `bash` calls, so the tool's approval policy applies to them:
+
+```sh
+tail /tmp/.eve/jobs/3f9a1c2e/stdout   # latest output
+cat /tmp/.eve/jobs/3f9a1c2e/exit      # exit code, once the command has finished
+kill -- -4312                         # stop the command's whole process group
+```
+
+The command keeps running across turns until it exits, the model stops it, or the sandbox stops. Its output files stay in the sandbox until the sandbox stops. Cancelling a turn stops a command that has not yet returned `running`. The `just-bash` provider has no background processes, so it runs every command to completion.
+
 Override its description, approval policy, or executor by wrapping the exported definition:
 
 ```ts title="agent/tools/bash.ts"
@@ -64,7 +81,7 @@ export default disableTool();
 
 ### `read_file`
 
-`read_file` reads text files from the sandbox with line-numbered output. It accepts absolute paths and paths beginning with `$HOME/`.
+`read_file` reads text files from the sandbox with line-numbered output, and shows PNG, JPEG, GIF, and WebP images up to 3 MiB to the model as images. Images are detected from their bytes, so a missing or mismatched filename extension does not matter, and text files are always read as text. It accepts absolute paths and paths beginning with `$HOME/`.
 
 ```sh
 eve add tool/read_file

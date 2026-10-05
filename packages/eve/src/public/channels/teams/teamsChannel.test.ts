@@ -12,6 +12,7 @@ import {
 } from "#internal/testing/mocks/mock-channel-operations.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import { teamsChannel, type TeamsChannelState } from "#public/channels/teams/index.js";
+import { mockAgentRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
 
 function adapter(channel: unknown) {
   return asCompiled<TeamsChannelState>(channel).adapter;
@@ -88,6 +89,7 @@ async function firePost(
       method: "POST",
     }),
     {
+      ...mockAgentRouteArgs(),
       from(continuationToken) {
         return baseFrom(continuationToken);
       },
@@ -349,7 +351,7 @@ describe("teamsChannel", () => {
       ctx,
     );
 
-    expect(ctx.state.pendingApprovalCards).toEqual({});
+    expect(ctx.state.pendingPromptCards).toEqual({});
 
     const { send } = await firePost(channel, {
       ...baseActivity({ conversationType: "channel" }),
@@ -383,7 +385,7 @@ describe("teamsChannel", () => {
       { inputResponses: delivery.inputResponses, state: delivery.state },
       ctx,
     );
-    expect(ctx.state.pendingApprovalCards).toEqual({
+    expect(ctx.state.pendingPromptCards).toEqual({
       approval_1: { activityId: "approval-card", prompt: "Approve deployment?" },
     });
 
@@ -543,12 +545,12 @@ describe("teamsChannel", () => {
     const ctx = buildAdapterContext(teamsAdapter, stubAccessor());
     const card = { activityId: "approval-card", prompt: "Approve deployment?" };
     const responder = { id: "USER", name: "Ada" };
-    ctx.state.pendingApprovalCards = { approval_1: card };
+    ctx.state.pendingPromptCards = { approval_1: card };
     ctx.state.approvalResponderAccounts = { "teams:TENANT:USER": responder };
 
     await teamsAdapter.deliver!({ message: "Begin", state: delivery.state }, ctx);
 
-    expect(ctx.state.pendingApprovalCards).toEqual({ approval_1: card });
+    expect(ctx.state.pendingPromptCards).toEqual({ approval_1: card });
     expect(ctx.state.approvalResponderAccounts).toEqual({ "teams:TENANT:USER": responder });
   });
 

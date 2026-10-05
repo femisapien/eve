@@ -529,8 +529,8 @@ export async function runInitCommand(
   }
   const agentLaunched = await dependencies.isCodingAgentLaunch();
   const interactive = dependencies.hasInteractiveTerminal();
+  const startDevelopment = interactive && !agentLaunched && !options.nonInteractive;
   if (interactive && !agentLaunched) logger.log("");
-  logger.log(eveCliBanner());
 
   trackStep?.("resolve_target");
   let result: InitResult;
@@ -549,6 +549,7 @@ export async function runInitCommand(
       return;
     }
 
+    if (!startDevelopment) logger.log(eveCliBanner());
     result = await runInitSteps({
       agentLaunched,
       interactive,
@@ -617,7 +618,7 @@ export async function runInitCommand(
     return;
   }
 
-  if (options.nonInteractive || !interactive) {
+  if (!startDevelopment) {
     logger.log(agentHandoff);
     return;
   }

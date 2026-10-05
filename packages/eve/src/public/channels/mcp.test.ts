@@ -10,6 +10,7 @@ import {
 import { MCP_PROTOCOL_VERSION } from "#internal/mcp/streamable-http-server.js";
 import { ForbiddenError, none, oauthResource, withAuthChallenges } from "#public/channels/auth.js";
 import { mcpChannel } from "#public/channels/mcp.js";
+import { mockAgentRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
 
 const MCP_LEGACY_PROTOCOL_VERSION = "2025-11-25";
 
@@ -233,8 +234,11 @@ describe("mcpChannel", () => {
     );
     await expect(jsonRpcResponse(oversizedStart)).resolves.toMatchObject({
       result: {
-        content: [{ text: expect.stringContaining("Input validation error"), type: "text" }],
+        content: [
+          { text: expect.stringContaining("Invalid arguments for tool agent_start"), type: "text" },
+        ],
         isError: true,
+        structuredContent: { error: { code: "invalid_input", retryable: false } },
       },
     });
 
@@ -254,7 +258,7 @@ describe("mcpChannel", () => {
       routeArgs(createSession),
     );
     await expect(jsonRpcResponse(oversizedUpdate)).resolves.toMatchObject({
-      result: { isError: true },
+      result: { isError: true, structuredContent: { error: { code: "invalid_input" } } },
     });
     expect(createSession).not.toHaveBeenCalled();
   });
@@ -487,6 +491,7 @@ function routeArgs(createSession: () => Promise<never> = vi.fn()): RouteHandlerA
     throw new Error("Route operation is unavailable in this test.");
   };
   const args: RouteHandlerArgs = {
+    ...mockAgentRouteArgs(),
     attachSession: unavailable,
     from: unavailable,
     params: {},

@@ -1,5 +1,89 @@
 # eve
 
+## 0.71.2
+
+### Patch Changes
+
+- 76e9079: Return a not-found or transient error before opening an unavailable session stream, and close streams after terminal failures.
+- 52ebf7d: Discord now posts session budget prompts instead of failing on a button ID over 100 characters. Slack sends its private sign-in prompt for sign-ins that only have instructions. Teams sign-in cards show the confirmation code and instructions, Twilio texts sign-ins and their outcome, and the dev TUI labels a sign-in with its display name. Discord buttons posted before this update stop working once it's deployed.
+
+## 0.71.1
+
+### Patch Changes
+
+- 28f4063: Telegram, Discord, Teams, and `chatSdkChannel` now remove a question's or approval's buttons once it's answered and show the outcome, such as `Approved` or `Answered: Saturday`. This covers pressed buttons, typed replies, and requests withdrawn when a turn is cancelled. Adapters that can't edit messages keep the original prompt.
+- cdad50a: A follow-up message cancelled before its first model call now keeps its own sender as `ctx.session.auth.current`. Previously the cancelled turn reverted to the previous caller, even when the follow-up was anonymous, so `turn.cancelled` hooks saw the wrong identity.
+- b842fe0: Discord buttons now answer every pending request when a turn asks more than one at once, such as two questions, two tool approvals, or a question beside an approval. Before, only the first request's buttons reached the session; pressing another request's buttons failed with "the target session was not found via continuation token".
+- 440b2f2: Fix Docker sandbox template pruning so `eve dev` removes stale template images again, and drop the intermediate `eve-sandbox-dockerfile` image once its template is committed.
+- 8c026ee: Sessions saved before eve 0.64 that used a sandbox no longer fail every sandbox call with `Sandbox session state belongs to provider "undefined"` or the `Session checkpoint sandbox provider state is incompatible` handoff error. A sandbox record without a provider is treated as no sandbox, so the next sandbox call starts a fresh one.
+- 58a68dd: Keep MCP connections over HTTP on the `2026-07-28` protocol when the server is slow to answer `server/discover`. Previously eve gave up after 1 s and fell back to the legacy handshake, which servers that only speak the new protocol reject with `Unsupported protocol version: 2025-11-25`.
+- 5919154: MCP `tools/call` requests whose arguments don't match the tool's input schema now return `structuredContent.error` with code `invalid_input`, like every other rejected call, instead of only a text message.
+- 738c8de: Detect PNG, JPEG, GIF, and WebP files from their bytes in `read_file`, so images with missing or incorrect filename extensions remain viewable. Text files are always read as text, even with an image extension, and unreadable binary files now get a clear error.
+- 6c2e941: Channel route handlers now receive `describe()`, which returns the agent's name, description, and the compiled tools a caller can run outside a turn, with their JSON schemas, without the inspection detail of `GET /eve/v1/info`.
+- 073281c: Fix a spurious `toolResultFrom` identity warning when one tool definition is mounted under more than one name, such as the code extension's `grep` tool in its worker subagent. `toolResultFrom` now matches results from every name that definition is mounted under.
+- b842fe0: Pressing a Telegram question button again after the question is answered now sends that option to the agent as a new message, as it does on other channels. Before, the press was acknowledged and dropped. Button presses also act as the person who pressed them instead of an anonymous caller.
+- 12ced99: A plain-text message that answers a pending `ctx.ask()` question is now recorded as `message.received`, stamped with its delivery id, before the `input.resolved` it produces. Clients rendering from the session stream now show what the person typed, and an optimistic copy of the message reconciles instead of lingering. The answer joins the open turn like a steering message, so the turn's later events carry its delivery id too. Model history is unchanged.
+
+## 0.71.0
+
+### Minor Changes
+
+- 8582a36: The `bash` tool no longer blocks on slow commands: a command still running after 30 seconds keeps running in the sandbox and returns `status: "running"` with its process group `pid`, its output so far, and an `outputDirectory` whose `stdout`, `stderr`, and `exit` files the model reads with later commands. Cancelling a turn now stops a command that has not yet returned. `BashToolOutput` now carries `status`, and `exitCode` is present only on `completed` results, so authored wrappers that read the output should check `status` first.
+
+### Patch Changes
+
+- de6b7e1: Memory provider tools now survive a mid-turn restart when the turn's history holds non-JSON tool results, such as dates. eve no longer snapshots history into each tool's replay state; a replayed `tools()` call receives the same `messages` the current process resolved the turn's tools with.
+
+## 0.70.3
+
+### Patch Changes
+
+- 8136e50: Retry session stream opens and reconnects when Safari, iOS browsers, or Firefox reject `fetch()` with `TypeError: Load failed` or `TypeError: NetworkError when attempting to fetch resource.`, matching the existing Chrome and Node behavior.
+- 69888f1: Compaction now estimates tokens from UTF-8 bytes instead of string length, so Chinese, Japanese, Korean, and other non-Latin text no longer counts at a fraction of its real cost. A large tool result in those scripts now triggers compaction before the request overflows the context window.
+- 4b880a5: The packaged docs now include a Code Extension page for `eve/extensions/code`, with its latest eve-code benchmark results inlined as Markdown tables so agents reading `node_modules/eve/docs` see the numbers.
+- 983c375: Answering some of several pending `ctx.ask()` or subagent questions now parks the open turn again with `turn.waiting`, as a partial answer to tool approvals already does, so clients waiting for the next rest point stop reading instead of hanging until the last answer.
+- f234b51: Staged attachments are now checked against their content address before each model call. If code in the sandbox overwrote a staged file, the model gets a `FileNotFound` note instead of the replaced bytes posing as the original upload.
+- 0c0c1e5: A step interrupted by a steering message now ends with `step.completed` (`finishReason: "other"`, with any usage the provider reported) before the next step starts, instead of leaving its `step.started` open.
+- 3b1fe5c: Record `gen_ai.execute_tool.duration` on `execute_tool` spans, as `@ai-sdk/otel` does. Instrumentation providers also receive the tool's run time as `durationMs` on `tool.call.completed`.
+- 2c3b781: `useEveAgent` no longer aborts an in-flight turn when React replays its effects during Fast Refresh or Strict Mode. Unmounting still stops the local stream.
+
+## 0.70.2
+
+### Patch Changes
+
+- 43f585c: A model step that ends early, for example at the output token limit, no longer leaves its tool calls unanswered. The AI SDK does not run tools from such a step, so the next model call failed with "Tool results are missing". eve now answers each skipped call with an error, and the model can call the tool again.
+- 1360a1f: Chat SDK adapters without card support, such as Photon iMessage and Linq, now show `ask_question` prompts and tool approvals with numbered options, so a person can answer by replying with an option's number or label (for example `approve` or `cancel`). Freeform questions now ask for a typed reply on every adapter instead of pointing to the eve session UI.
+- 1062c92: After compaction, eve now moves an idle session to a fresh workflow run on the same deployment, so long-running sessions no longer accumulate an ever-growing workflow event log. The session keeps its ID, event stream, continuation addresses, and deadline.
+- 285cbe6: A plain-text reply that answers a pending `ask_question` or `ctx.ask()` question no longer leaves its channel context behind. Before, channels that attach per-message context, such as Telegram, Discord, Teams, and Twilio, added that block to history as a separate message after the answer, and the model replied to it instead of continuing from the answer.
+- f9d2071: Fix discovery of packaged extension mounts whose default exports are rewritten during compilation, and of built-in extensions mounted from inside the eve package itself.
+- 1062c92: Eval sessions now have `session.compact()`, which compacts the session between turns and resolves to the compaction events through `session.waiting`, so evals no longer need raw `fetch` calls to cover compaction.
+- 11e7cad: An installed extension mounted in both the root agent and a subagent now builds when its distribution has shared chunks in `dist/_chunks`. Each mount owns those chunks, so they read that mount's configuration and state instead of failing with `refers to multiple extension mounts`.
+- f8ef817: Sessions from eve 0.68 and earlier now hand off to a newer deployment even when the agent or one of its extensions has since removed a `defineState` key. The removed state is dropped with a warning instead of keeping the session on its old deployment.
+- bdba125: Avoid repeating the eve header when interactive `eve init` opens onboarding. Standalone init runs still print their header, and all CLI banners now use a single space between the eve wordmark and version.
+- 0bf95b0: The default Slack thread status now keeps naming the latest work across model steps, including tool progress, reasoning, and long replies, instead of resetting to `Thinking...`. eve clears it while a turn waits on an approval, answer, or sign-in.
+- ef1a6b9: Slack thread replies now answer pending tool approvals and `ctx.ask()` questions by what the person typed, such as `approve` or an option label. Before, eve matched the attributed `<slack_message>` envelope instead, so typed answers never resolved a choice and free-text answers included the envelope.
+- 1f81fcd: Update eve's bundled Workflow SDK packages from prerelease builds to the stable 5.0.1 release family.
+- 79c4379: Telegram's Approve and Cancel buttons answer a tool approval again. Since approvals started holding the turn, a button press never resumed it and the turn waited until the person typed a reply.
+- 0df9bbf: Files that tools return to the model now live in the session sandbox, with only a reference in session history, so workflow state no longer re-stores image bytes on every step; each model call sends the same file, keeping it visible on later turns and the provider's prompt cache valid. Compaction now counts images at roughly what providers bill for them instead of their base64 length, and `read_file` shows PNG, JPEG, GIF, and WebP files to the model as images. Message attachments and tool files now stage under `/workspace/.eve/attachments` instead of `/workspace/attachments`, so they no longer collide with an agent's own files.
+- f7b07c1: The `eve dev` TUI's approval drawer now asks the approval's own prompt, such as `Approve Deploy release?`, instead of `Approve deploy_release?` built from the raw tool name. It now matches what channels and the web client show.
+- d18970c: Fix blank lines accumulating after model selection in the dev TUI under tmux. The speed marker now uses a single-column glyph so rebuild status lines do not wrap or leave a stray character below the status bar.
+- 0bf95b0: The dev TUI now shows readable names for subagents and unlabeled tools, such as `subagent(worker)` for `code__worker` and `List issues` for `linear__list_issues`, using the same naming as the Slack status and task cards.
+- 46f8a6e: The Twilio channel now sends `ask_question` prompts and tool approvals by SMS with numbered options, so a person can answer by replying with an option's number or label (for example `approve` or `cancel`). Previously the request was never sent and the session stayed parked.
+- beb0dd1: Agents on the Vercel workflow world now write workflow events over WebSocket by default (`WORKFLOW_EVENTS_TRANSPORT=ws`). Set `WORKFLOW_EVENTS_TRANSPORT=http` to keep the HTTP transport.
+
+## 0.70.1
+
+### Patch Changes
+
+- dc50f62: Hosted builds bundle faster: eve no longer re-parses its largest output chunk while adding the Node ESM compatibility banner, and Nitro no longer gzips every output file just to annotate the build log. The repeated `MISSING_CODE_SPLITTING_GROUP_DEBUG_NAME` warning also no longer appears in build logs.
+  
+  eve no longer depends on `gray-matter`. Frontmatter and YAML files (skills, schedules, instructions, OpenAPI specs, and `loadYaml`) now parse with js-yaml 4, whose schema cannot evaluate code, and each deployed function is about 180 kB smaller. Frontmatter fences must be `---` or `---yaml`; other languages such as `---json` or `---js` now fail with an error instead of being parsed.
+- 528483f: Session turns, cancellations, and session endings run fewer durable workflow steps, so replies arrive sooner, especially for subagent sessions and sessions that do not start background work.
+- a53f280: Long-lived sessions now move to newer deployments after an eve upgrade: a deployment upgrades handoff checkpoints written by eve 0.66.0 and later instead of leaving the session on its old deployment, and stops idle subagent sessions those releases kept for reuse. Refused handoffs now log why on both deployments. Callbacks from remote agents to sessions created by eve 0.66–0.68 no longer fail with `Unsupported callback kind`.
+- 73242f0: In the dev TUI, `/new` now starts a fresh session, and `/reset` is an alias of `/new`. `/clear` still clears the session's model-message history in place, and now confirms with "Session context cleared" instead of disappearing without feedback.
+- 6ed6253: The dev TUI no longer shows a follow-up message to a working subagent as a second subagent: it reads `Message subagent` in the transcript, the task panel keeps one entry, and the task ends with a single line. Parallel `agent` tasks are now named `subagent:2` instead of `subagent(subagent:2)`, and sibling tasks in the panel get a blank row between them when there is room.
+- dd50d12: Fix three scaffolded web chat issues: links in user messages no longer blend into the chat bubble, approve/deny buttons for tool calls now show below the tool row instead of hiding inside its collapsed details, and typing in the composer or a question answer no longer zooms the page on iOS.
+
 ## 0.70.0
 
 ### Minor Changes

@@ -22,6 +22,9 @@ export function respond(request: MockModelRequest): MockModelResponse | string {
           })),
         };
   }
+  if (message.includes("EVE_SANDBOX_BASH_JOB")) {
+    return respondToBashJob(message, request);
+  }
   if (message.includes("DYNAMIC-TURN-REPLAY-START")) {
     const gate = request.toolResults.find((result) => result.name === "dynamic-turn-replay-gate");
     if (gate === undefined) {
@@ -75,6 +78,33 @@ export function respond(request: MockModelRequest): MockModelResponse | string {
   }
 
   return `Mock reply: ${message}`;
+}
+
+/** Starts the slow command, reads its output once, stops it, then replies. */
+function respondToBashJob(message: string, request: MockModelRequest): MockModelResponse | string {
+  const outputs = request.toolResults
+    .filter((result) => result.name === "bash")
+    .map(
+      (result) => result.output as { readonly outputDirectory?: unknown; readonly pid?: unknown },
+    );
+  if (outputs.length === 0) {
+    const command = /by running: `([^`]+)`/u.exec(message)?.[1] ?? "";
+    return { toolCalls: [{ input: { command }, name: "bash" }] };
+  }
+  const { outputDirectory, pid } = outputs[0] ?? {};
+  if (typeof outputDirectory !== "string" || typeof pid !== "number") {
+    return formatOutput(outputs[0]);
+  }
+  if (outputs.length === 1) {
+    const command = `sleep 2; tail -n 1 ${outputDirectory}/stdout`;
+    return { toolCalls: [{ input: { command }, name: "bash" }] };
+  }
+  if (outputs.length === 2) {
+    const exitFile = `${outputDirectory}/exit`;
+    const command = `kill -- -${pid}; for i in 1 2 3 4 5; do [ -f ${exitFile} ] && break; sleep 1; done; cat ${exitFile}`;
+    return { toolCalls: [{ input: { command }, name: "bash" }] };
+  }
+  return "index job stopped";
 }
 
 /** The `[Tasks]` note and `<task_result>` messages are eve's, not the user's. */

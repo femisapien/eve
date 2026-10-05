@@ -12,6 +12,7 @@ import type { TwilioTextMessage } from "#public/channels/twilio/inbound.js";
 import { twilioChannel, type TwilioContext } from "#public/channels/twilio/twilioChannel.js";
 import { signTwilioRequest } from "#public/channels/twilio/verify.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
+import { mockAgentRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
 
 const AUTH_TOKEN = "test-auth-token";
 
@@ -111,6 +112,7 @@ async function firePost(
   const waitUntil = vi.fn();
 
   const response = await post.handler(signedFormRequest(path, params), {
+    ...mockAgentRouteArgs(),
     attachSession: vi.fn() as any,
     ...mockChannelContext(send),
     to: vi.fn() as any,
@@ -147,6 +149,7 @@ async function fireGet(
   const waitUntil = vi.fn();
 
   const response = await get.handler(signedGetRequest(path, params), {
+    ...mockAgentRouteArgs(),
     attachSession: vi.fn() as any,
     ...mockChannelContext(send),
     to: vi.fn() as any,
@@ -380,6 +383,7 @@ describe("twilioChannel() inbound text pipeline", () => {
         method: "POST",
       }),
       {
+        ...mockAgentRouteArgs(),
         attachSession: vi.fn() as any,
         ...mockChannelContext(send),
         to: vi.fn() as any,
@@ -661,6 +665,70 @@ describe("twilioChannel() default event handlers", () => {
       From: "+15557654321",
       To: "+15551234567",
     });
+  });
+
+  it("input.requested sends a batch of approvals as one SMS, since one reply answers them all", async () => {
+    const bodies: string[] = [];
+    const fetchMock: typeof fetch = async (_input, init) => {
+      bodies.push(new URLSearchParams(String(init?.body)).get("Body") ?? "");
+      return new Response(JSON.stringify({ sid: "SM999" }), {
+        headers: { "content-type": "application/json" },
+      });
+    };
+    const adapter = withState(
+      getAdapter(
+        twilioChannel({
+          allowFrom: "*",
+          api: { apiBaseUrl: "https://twilio.test", fetch: fetchMock },
+          messaging: { from: "+15557654321" },
+        }),
+      ),
+      { from: "+15551234567", lastCallSid: null, lastMessageSid: "SM123", to: "+15557654321" },
+    );
+
+    await callEvent(
+      adapter,
+      makeEvent("input.requested", {
+        requests: [
+          {
+            action: { callId: "call_1", input: {}, kind: "tool-call", toolName: "deploy_release" },
+            allowFreeform: false,
+            display: "confirmation",
+            kind: "tool-approval",
+            options: [
+              { id: "approve", label: "Approve" },
+              { id: "cancel", label: "Cancel" },
+            ],
+            prompt: "Approve Deploy release?",
+            requestId: "approval_1",
+          },
+          {
+            action: { callId: "call_2", input: {}, kind: "tool-call", toolName: "rotate_keys" },
+            allowFreeform: false,
+            display: "confirmation",
+            kind: "tool-approval",
+            options: [
+              { id: "approve", label: "Approve" },
+              { id: "cancel", label: "Cancel" },
+            ],
+            prompt: "Approve Rotate keys?",
+            requestId: "approval_2",
+          },
+        ],
+        sequence: 0,
+        stepIndex: 0,
+        turnId: "t1",
+      }),
+      buildAdapterContext(adapter, stubAccessor()),
+    );
+
+    expect(bodies).toEqual([
+      [
+        "Approve Deploy release?\n\n1. Approve\n2. Cancel",
+        "Approve Rotate keys?\n\n1. Approve\n2. Cancel",
+        "Reply with a number to choose. Your reply answers each of these.",
+      ].join("\n\n"),
+    ]);
   });
 
   it("receive starts a phone-pair session with an explicit continuation token", async () => {

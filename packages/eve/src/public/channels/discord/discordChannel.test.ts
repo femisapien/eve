@@ -16,6 +16,7 @@ import {
 } from "#public/channels/discord/hitl.js";
 import { defaultDiscordAuth, discordChannel } from "#public/channels/discord/index.js";
 import { captureLogRecords } from "#internal/testing/log-records.js";
+import { mockAgentRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
 
 function asCompiled<T = unknown>(channel: unknown): CompiledChannel<T> {
   if (!isCompiledChannel(channel)) {
@@ -144,6 +145,7 @@ async function firePost(
   const waitUntil = vi.fn();
 
   const response = await post.handler(request, {
+    ...mockAgentRouteArgs(),
     attachSession: vi.fn() as any,
     ...mockChannelContext(send),
     to: vi.fn() as any,
@@ -289,7 +291,7 @@ describe("discordChannel() inbound route", () => {
     );
   });
 
-  it("delivers HITL button clicks as inputResponses", async () => {
+  it("acknowledges HITL button clicks with a deferred update", async () => {
     const { privateKey, publicKeyHex } = testKeys();
     const components = renderInputRequestComponents({
       action: { callId: "call_1", input: {}, kind: "tool-call", toolName: "ask_question" },
@@ -313,17 +315,10 @@ describe("discordChannel() inbound route", () => {
     });
     const channel = discordChannel({ credentials: { publicKey: publicKeyHex } });
 
-    const { response, send } = await firePost(channel, signedRequest({ body, privateKey }));
+    const { response } = await firePost(channel, signedRequest({ body, privateKey }));
 
     expect(response.status).toBe(200);
     await expect(response.json()).resolves.toEqual({ type: 6 });
-    expect(send).toHaveBeenCalledWith(
-      "C01:M01",
-      expect.objectContaining({
-        auth: null,
-        inputResponses: [{ optionId: "approve", requestId: "call_1" }],
-      }),
-    );
   });
 
   it("opens and resolves freeform HITL modals", async () => {

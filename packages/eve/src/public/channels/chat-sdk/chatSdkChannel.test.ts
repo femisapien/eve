@@ -30,6 +30,7 @@ import type {
   WebhookOptions,
 } from "#compiled/chat/index.js";
 import { Message, parseMarkdown } from "#compiled/chat/index.js";
+import { mockAgentRouteArgs } from "#internal/testing/mocks/mock-route-args.js";
 
 it("shares Chat SDK type identity with external adapters and handlers", () => {
   expectTypeOf<Message>().toEqualTypeOf<ExternalMessage>();
@@ -117,6 +118,7 @@ async function firePost(
       method: "POST",
     }),
     {
+      ...mockAgentRouteArgs(),
       from(continuationToken) {
         return {
           ...channelContext.from(continuationToken),
@@ -218,6 +220,7 @@ describe("chatSdkChannel", () => {
     const response = await get.handler(
       new Request("https://example.com/eve/v1/test?crc_token=abc123", { method: "GET" }),
       {
+        ...mockAgentRouteArgs(),
         ...mockChannelContext(vi.fn()),
         attachSession: vi.fn() as any,
         params: {},
@@ -718,7 +721,7 @@ describe("chatSdkChannel", () => {
     expect(state.pendingToolCallMessage).toBe("Let me check that.");
   });
 
-  it("renders input requests as Chat SDK cards and resumes on button actions", async () => {
+  it("renders input requests as Chat SDK cards with buttons and a text fallback naming each reply", async () => {
     const adapter = testAdapter();
     const bridge = chatSdkChannel({
       adapters: { test: adapter },
@@ -754,42 +757,91 @@ describe("chatSdkChannel", () => {
       ctx,
     );
 
-    const card = adapter.posted[0]?.message as AdapterPostableMessage;
-    expect(card).toMatchObject({
-      children: [
-        { content: "Deploy?", type: "text" },
-        {
-          children: [
-            {
-              id: "eve_input:request-1:approve",
-              label: "Approve",
-              style: "primary",
-              type: "button",
-              value: "approve",
-            },
-            {
-              id: "eve_input:request-1:cancel",
-              label: "Cancel",
-              style: "danger",
-              type: "button",
-              value: "cancel",
-            },
-          ],
-          type: "actions",
-        },
-      ],
-      type: "card",
+    const posted = adapter.posted[0]?.message as AdapterPostableMessage;
+    expect(posted).toMatchObject({
+      card: {
+        children: [
+          { content: "Deploy?", type: "text" },
+          {
+            children: [
+              {
+                id: "eve_input:request-1:approve",
+                label: "Approve",
+                style: "primary",
+                type: "button",
+                value: "approve",
+              },
+              {
+                id: "eve_input:request-1:cancel",
+                label: "Cancel",
+                style: "danger",
+                type: "button",
+                value: "cancel",
+              },
+            ],
+            type: "actions",
+          },
+        ],
+        type: "card",
+      },
+      fallbackText: "Deploy?\n\n1. Approve\n2. Cancel\n\nReply with a number to choose.",
     });
+  });
 
-    const { send } = await firePost(bridge.channel, "/eve/v1/test", {
-      actionId: "eve_input:request-1:approve",
-      kind: "action",
-      value: "approve",
+  it("asks for a typed reply when an input request accepts a freeform answer", async () => {
+    const adapter = testAdapter();
+    const bridge = chatSdkChannel({
+      adapters: { test: adapter },
+      concurrency: "concurrent",
+      state: memoryState(),
+      logger: "warn",
+      userName: "bot",
     });
+    const channelAdapter = withState(getAdapter(bridge.channel), {
+      thread: serializedThread(),
+    });
+    const ctx = buildAdapterContext(channelAdapter, stubAccessor());
 
-    expect(send).toHaveBeenCalledWith(THREAD_ID, {
-      auth: null,
-      inputResponses: [{ optionId: "approve", requestId: "request-1" }],
+    await callEvent(
+      channelAdapter,
+      makeEvent("input.requested", {
+        requests: [
+          {
+            action: { callId: "call-1", name: "ask", type: "tool-call" },
+            display: "text",
+            prompt: "Which region?",
+            requestId: "request-1",
+          },
+          {
+            action: { callId: "call-2", name: "ask", type: "tool-call" },
+            allowFreeform: true,
+            display: "select",
+            options: [{ id: "iad1", label: "Washington" }],
+            prompt: "Which zone?",
+            requestId: "request-2",
+          },
+        ],
+        sequence: 1,
+        stepIndex: 0,
+        turnId: "turn-1",
+      }),
+      ctx,
+    );
+
+    const posted = adapter.posted[0]?.message as AdapterPostableMessage;
+    expect(posted).toMatchObject({
+      card: {
+        children: [
+          { content: "Which region?", type: "text" },
+          { content: "Reply with your answer.", type: "text" },
+          { content: "Which zone?", type: "text" },
+          { type: "actions" },
+          { content: "Or reply with your own answer.", type: "text" },
+        ],
+      },
+      fallbackText:
+        "Which region?\n\nReply with your answer.\n\n" +
+        "Which zone?\n\n1. Washington\n\nReply with a number, or with your own answer.",
     });
   });
 });

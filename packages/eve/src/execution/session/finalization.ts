@@ -3,10 +3,12 @@ import type { DurableSessionState } from "#execution/durable-session-store.js";
 import { emitTerminalSessionCompletionStep } from "#execution/terminal-session-completion-step.js";
 import { emitTerminalSessionFailureStep } from "#execution/terminal-session-failure-step.js";
 import { terminateChildSessionsStep } from "#execution/terminate-child-sessions-step.js";
+import { liveTaskRuns, readTaskTable } from "#execution/tasks/table.js";
 import type { TurnOutcome } from "#execution/session/turn-step-types.js";
 import { normalizeSerializableError } from "#execution/workflow-errors.js";
 import type { WorkflowEntryResult } from "#execution/session/entry-input.js";
 import type { TokenUsage } from "#shared/token-usage.js";
+import { lastHarnessTurn } from "#harness/emission-state.js";
 import { getSessionUsage, takeSessionUsageDelta } from "#harness/turn-tag-state.js";
 import { notifyTurnCallerStep } from "#subagents/parent-notification.js";
 
@@ -34,7 +36,11 @@ export async function finalizeSession(
   context: SessionFinalizationContext,
 ): Promise<WorkflowEntryResult> {
   const { serializedContext, sessionState } = context.cursor;
-  if (sessionState !== undefined) {
+  // Most sessions end with no task run, so the step that would find nothing to stop is skipped.
+  if (
+    sessionState !== undefined &&
+    liveTaskRuns(readTaskTable(sessionState.snapshot?.session?.state)).length > 0
+  ) {
     await terminateChildSessionsStep({ sessionState });
   }
   const session = sessionState?.snapshot.session;
@@ -43,6 +49,7 @@ export async function finalizeSession(
     await emitTerminalSessionCompletionStep({
       sessionWritable: context.sessionWritable,
       serializedContext,
+      turn: lastHarnessTurn(session?.state),
       usage,
     });
   } else if (outcome.kind === "failed") {
