@@ -19,7 +19,6 @@ import {
   relaySessionEvents,
   restoreSessionStep,
   type PublishedSessionEvents,
-  type RestoredSessionStep,
   type SessionStepState,
 } from "#execution/publish-session-events.js";
 import { getHarnessEmissionState } from "#harness/emission.js";
@@ -322,26 +321,23 @@ interface RelayedBy {
  * child's sign-in waits for the callback the child completes it on.
  */
 export async function relaySubagentEvent(
-  input: RestoredSessionStep &
+  target: SessionStepState &
     RelayedBy & {
       readonly hookPayload: SubagentAuthorizationEventHookPayload | SubagentInputRequestHookPayload;
     },
 ): Promise<PublishedSessionEvents> {
-  const { hookPayload } = input;
-  const host = new SessionHost();
-  const committed = await HumanInput.commit(host, input.durableSession, relayedInterrupt(input));
-  const { published } = await publishFromSessionStep(
-    { ...input, durableSession: committed.session },
-    {
-      origin: "relayed",
-      inputSource:
-        hookPayload.kind === "subagent-input-request"
-          ? JSON.stringify([hookPayload.childContinuationToken, hookPayload.inputSource ?? null])
-          : undefined,
-      async publish(emit) {
-        for (const event of host.relayed) await emit(event);
-      },
-    },
+  const { hookPayload } = target;
+  const { ending: _none, ...published } = await commitSessionStep(
+    target,
+    [relayedInterrupt(target)],
+    hookPayload.kind === "subagent-input-request"
+      ? {
+          inputSource: JSON.stringify([
+            hookPayload.childContinuationToken,
+            hookPayload.inputSource ?? null,
+          ]),
+        }
+      : {},
   );
   return published;
 }

@@ -29,7 +29,34 @@ import {
   type CompiledBundle,
 } from "#runtime/sessions/runtime-context-keys.js";
 import type { InputResponse } from "#shared/input.js";
-import { emitProxiedSubagentEvent } from "#subagents/event-proxy-step.js";
+import { deserializeContext } from "#context/serialize.js";
+import { replaceDurableSessionSnapshot } from "#execution/durable-session-store.js";
+import { createTestSessionState } from "#internal/testing/session-state.js";
+import type { RestoredSessionStep, SessionStepState } from "#execution/publish-session-events.js";
+import { relaySubagentEvent } from "#harness/human-input/effects/index.js";
+
+// The relay restores the parent context from the step's serialized context;
+// these tests hand it the context they built instead.
+vi.mock("#context/serialize.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("#context/serialize.js")>()),
+  deserializeContext: vi.fn(),
+}));
+
+async function relay({
+  ctx,
+  durableSession,
+  ...input
+}: RestoredSessionStep & Omit<Parameters<typeof relaySubagentEvent>[0], keyof SessionStepState>) {
+  vi.mocked(deserializeContext).mockResolvedValue(ctx);
+  return await relaySubagentEvent({
+    ...input,
+    serializedContext: {},
+    sessionState: replaceDurableSessionSnapshot({
+      session: durableSession,
+      state: createTestSessionState(),
+    }),
+  });
+}
 
 /** Where the session sends these answers, and the `input.resolved` it relays for them. */
 function answered(
@@ -133,7 +160,7 @@ function fixture() {
 describe("proxied stream hooks", () => {
   it("publishes the request and parks the open turn in parent context", async () => {
     const f = fixture();
-    const result = await emitProxiedSubagentEvent(f);
+    const result = await relay(f);
     expect(f.events.map((event) => event.type)).toEqual(["input.requested", "turn.waiting"]);
     expect(f.events[1]).toMatchObject({ data: { sequence: 1, turnId: "parent-turn" } });
     expect(f.order).toEqual([
@@ -346,7 +373,7 @@ describe("proxied stream hooks", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
     try {
-      const result = await emitProxiedSubagentEvent({ ...f, hookPayload });
+      const result = await relay({ ...f, hookPayload });
       expect(fetchMock).toHaveBeenCalledOnce();
       const forwarded = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
       expect(forwarded).toMatchObject({
@@ -393,7 +420,7 @@ describe("proxied stream hooks", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
     try {
-      await emitProxiedSubagentEvent({
+      await relay({
         ...f,
         hookPayload: {
           callId: "nested-call",
@@ -442,7 +469,7 @@ describe("proxied stream hooks", () => {
           prompt: `Approve ${name}'s issue?`,
           requestId: `approval-${name}`,
         };
-        const result = await emitProxiedSubagentEvent({
+        const result = await relay({
           ...f,
           durableSession: session,
           hookPayload: {
@@ -505,7 +532,7 @@ describe("proxied stream hooks", () => {
       vi.fn(async () => Response.json({ ok: false }, { status: 503 })),
     );
     try {
-      await expect(emitProxiedSubagentEvent(f)).rejects.toThrow("HTTP 503");
+      await expect(relay(f)).rejects.toThrow("HTTP 503");
       expect(f.order).not.toContain("channel:input.requested");
       expect(f.events).toHaveLength(0);
       expect(f.sessionWritable.locked).toBe(false);
@@ -518,7 +545,7 @@ describe("proxied stream hooks", () => {
   it("isolates hook failures after publication and releases the writer", async () => {
     const f = fixture();
     f.typed.mockRejectedValueOnce(new Error("audit unavailable"));
-    await emitProxiedSubagentEvent(f);
+    await relay(f);
     expect(f.events.map((event) => event.type)).toEqual(["input.requested", "turn.waiting"]);
     expect(f.typed).toHaveBeenCalledTimes(2);
     expect(f.wildcard).toHaveBeenCalledTimes(2);
