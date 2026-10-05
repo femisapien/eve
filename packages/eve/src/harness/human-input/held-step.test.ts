@@ -248,6 +248,39 @@ describe("a session parked on runtime calls under the old coordination key", () 
     ).toEqual([]);
   });
 
+  it("cancels an approval parked with its call already in history, answering the call as not run", () => {
+    // Before steps were held out of history, the asking step joined history
+    // and only the approval was stored.
+    const asked = Turn.idle()
+      .interrupt(approvalsRequested([approval("deploy")]))
+      .stored();
+    const { suspended: _held, ...stored } = asked.state!["eve.harness.humanInput"] as Record<
+      string,
+      unknown
+    >;
+    const history = response(call("call-deploy", "deploy"));
+
+    const cancelled = reduceHumanInput({ "eve.harness.humanInput": stored }, cancel);
+    const appended = cancelled.events.flatMap((e) =>
+      e.type === "history.appended" ? [e.message] : [],
+    );
+
+    expect(unpaired([...history, ...appended])).toEqual([]);
+    expect(appended).toEqual([
+      {
+        content: [
+          {
+            output: { reason: "Cancelled before anyone answered.", type: "execution-denied" },
+            toolCallId: "call-deploy",
+            toolName: "deploy",
+            type: "tool-result",
+          },
+        ],
+        role: "tool",
+      },
+    ]);
+  });
+
   it("counts as a held step even when it can't be read, so the session isn't idle", () => {
     const read = HumanInput.read({ [LEGACY_KEY]: { callId: "old" } });
 

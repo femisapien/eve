@@ -221,7 +221,8 @@ export function isPolicyGated(state: ApprovalState, requestId: string): boolean 
 /**
  * The turn was cancelled: every open approval is cancelled, and its call never
  * runs. Its not-run result joins the suspended step as the step is cancelled
- * (see `cancelStep`).
+ * (see `cancelStep`), or history directly for a step parked before steps were
+ * held out of history, whose calls are already there.
  */
 export function cancelApprovals<S extends ApprovalState>(state: S): Reduced<S> {
   const open = openApprovalsOf(state);
@@ -240,6 +241,12 @@ export function cancelApprovals<S extends ApprovalState>(state: S): Reduced<S> {
       }),
     ),
   );
+  if (state.suspended === undefined) {
+    events.push({
+      message: notRunMessage(open.map((approval) => notRunPart(approval, "cancelled"))),
+      type: "history.appended",
+    });
+  }
   return { events, state: { ...state, requests: withoutApprovals(state.requests) } };
 }
 
