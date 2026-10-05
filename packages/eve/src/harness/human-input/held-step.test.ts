@@ -191,11 +191,17 @@ describe("a model step held on runtime calls and a person", () => {
       type: "calls.settled",
     });
 
-    expect(settled.reported("input.resumed")).toEqual([
+    // It waits for the turn's next step, which reads it after the results.
+    expect(settled.reported("input.resumed")).toEqual([]);
+    const taken = settled.stored().intake({ type: "queued.taken" });
+    expect(taken.reported("input.resumed")).toEqual([
       { input: { message: "Then tell me." }, type: "input.resumed" },
     ]);
-    // A cancel drops it with the turn.
+    expect(settled.stored().humanInput.hasQueuedInput()).toBe(true);
+    expect(taken.stored().humanInput.hasQueuedInput()).toBe(false);
+    // A cancel drops it with the turn, before or after the calls join.
     expect(approved.intake(cancel).reported("input.resumed")).toEqual([]);
+    expect(settled.stored().intake(cancel).stored().humanInput.hasQueuedInput()).toBe(false);
   });
 });
 
@@ -222,6 +228,8 @@ describe("a session parked on runtime calls under the old coordination key", () 
     expect(settled.events).toEqual([
       ...legacyBatch.responseMessages.map((m) => ({ message: m, type: "history.appended" })),
       { message: built, type: "history.appended" },
+    ]);
+    expect(reduceHumanInput(settled.state, { type: "queued.taken" }, "pre-step").events).toEqual([
       { input: { message: "Then tell me." }, type: "input.resumed" },
     ]);
   });

@@ -606,7 +606,6 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     // The held step's runtime calls join it once every one has a result; the
     // step joins history once none of its calls waits.
     const humanInputEffects: StepEffects = { config, projectHistory };
-    let following: StepInput | undefined;
     const runtimeCalls = HumanInput.read(session.state).runtimeCalls();
     if (runtimeCalls !== undefined) {
       const results = await readRuntimeResults({
@@ -627,28 +626,34 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       });
       if (settled.ended !== undefined) return settled.ended;
       session = settled.session;
-      following = host.following;
     }
 
-    const accepted = HumanInput.read(session.state).acceptInput(
-      following === undefined
-        ? input
-        : input === undefined
-          ? following
-          : coalesceTurnInputs(following, input),
-    );
+    const accepted = HumanInput.read(session.state).acceptInput(input);
     const auth = store?.get(AuthKey) ?? null;
     const arrived = await applyStepArrivals({
       auth,
       effects: humanInputEffects,
       emit,
       emissionState,
+      runStep,
       session,
       stepInput: accepted.input,
     });
     if ("result" in arrived) return arrived.result;
     session = arrived.session;
-    const { turnInput } = arrived;
+    const { resumed, turnInput } = arrived;
+    // The input as the person sent it, even when a message answered a
+    // request, after what waited behind the last step's calls.
+    const sent =
+      accepted.displayMessage === undefined
+        ? accepted.input
+        : { ...accepted.input, message: accepted.displayMessage };
+    const preambleInput =
+      resumed === undefined
+        ? sent
+        : sent === undefined
+          ? resumed
+          : coalesceTurnInputs(resumed, sent);
     const turnMessages = [...session.history];
 
     // --- Turn preamble ------------------------------------------------------
@@ -683,7 +688,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
 
     let instructionMessages: UserModelMessage[] = [];
     let memoryCommit: ReturnType<typeof drainMemoryCommit> = undefined;
-    if (emit && hasStepInput(accepted.input)) {
+    if (emit && hasStepInput(preambleInput)) {
       if (store !== undefined) {
         prepareDynamicInstructionPreamble(store, projectHistory(session.history, session.state));
         prepareMemoryPreamble(store, {
@@ -697,10 +702,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
         const traceContext = await preparePreambleTrace();
         emissionState = await emitTurnPreamble(
           emit,
-          // The message as the person sent it, even when it answered a request.
-          accepted.displayMessage === undefined
-            ? (accepted.input ?? {})
-            : { ...accepted.input, message: accepted.displayMessage },
+          preambleInput ?? {},
           emissionState,
           projectHistory(
             [...turnMessages, ...ephemeralContextMessages, ...preparedTurnInput],

@@ -9,6 +9,7 @@ import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import { createToolLoopHarness } from "#harness/tool-loop.js";
 import type {
   HarnessSession,
+  StepFn,
   StepInput,
   StepResult,
   ToolLoopHarnessConfig,
@@ -117,7 +118,10 @@ function setup(input: {
   /** Delivers the sign-in callbacks with the next step, as the session does. */
   const signedIn = (attemptId: string) =>
     ctx.set(ReceivedAuthorizationCallbacksKey, [{ attemptId, connectionName: "release-service" }]);
-  return { compact, events, execute, model, responses, session, signedIn, step };
+  /** Runs one step alone, without the steps it schedules. */
+  const stepOnce = async (session: HarnessSession, stepInput?: StepInput): Promise<StepResult> =>
+    await contextStorage.run(ctx, () => runStep(session, stepInput));
+  return { compact, events, execute, model, responses, session, signedIn, step, stepOnce };
 }
 
 type Prompt = MockLanguageModelV4["doStreamCalls"][number]["prompt"];
@@ -192,6 +196,59 @@ describe("tool approvals in the tool loop (real AI SDK)", () => {
       "user:text",
       "assistant:tool-call",
       "tool:tool-result",
+      "assistant:text",
+    ]);
+  });
+
+  it("runs the approved call as a step without a model call, then reads Alice's message after its result", async () => {
+    const fixture = setup({
+      responses: [toolCallStreamResult(deployCall()), textStreamResult("Deployed; notes sent.")],
+      tool: { approval: always() },
+    });
+    const held = await fixture.step(fixture.session, { message: "Deploy the api service." });
+    const [request] = requested(fixture.events);
+
+    const ran = await fixture.stepOnce(held.session, {
+      inputResponses: [{ optionId: "approve", requestId: request!.requestId }],
+      message: "Then send the release notes.",
+    });
+
+    // The call ran, its step joined history, and the model wasn't called.
+    expect(fixture.execute).toHaveBeenCalledOnce();
+    expect(fixture.model.doStreamCalls).toHaveLength(1);
+    expect(typeof ran.next).toBe("function");
+    expect(partTypes(ran.session.history)).toEqual([
+      "user:text",
+      "assistant:tool-call",
+      "tool:tool-result",
+    ]);
+    expect(JSON.stringify(ran.session.history)).not.toContain("release notes");
+
+    const start = fixture.events.length;
+    const next = ran.next as StepFn;
+    const answered = await contextStorage.run(createApprovalContext(), () => next(ran.session));
+
+    // The next step is the model's: it reads the paired call, then the message.
+    expect(answered.next).toBeNull();
+    expect(fixture.execute).toHaveBeenCalledOnce();
+    expect(fixture.model.doStreamCalls).toHaveLength(2);
+    const prompt = fixture.model.doStreamCalls[1]!.prompt;
+    expect(unpairedCalls(prompt)).toEqual([]);
+    const text = JSON.stringify(prompt);
+    expect(text.indexOf("deployed")).toBeGreaterThan(-1);
+    expect(text.indexOf("Then send the release notes.")).toBeGreaterThan(text.indexOf("deployed"));
+    expect(fixture.events.slice(start)).toContainEqual(
+      expect.objectContaining({
+        data: expect.objectContaining({ message: "Then send the release notes." }),
+        type: "message.received",
+      }),
+    );
+    expect(partTypes(answered.session.history)).toEqual([
+      "user:text",
+      "assistant:tool-call",
+      "tool:tool-result",
+      "assistant:text",
+      "user:text",
       "assistant:text",
     ]);
   });

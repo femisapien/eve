@@ -69,6 +69,7 @@ import {
   hasApprovedCalls,
   heldStep,
   runApproved,
+  takeQueued,
   withMessages,
   type HeldStep,
   type SuspendedStep,
@@ -176,6 +177,11 @@ export class HumanInput {
   } {
     const open = this.openRequestIds();
     return staleAnswersAsText(withoutClosedBudgetAnswers(input, open), open);
+  }
+
+  /** Whether turn input waits for the turn's next step, behind calls that have joined history. */
+  hasQueuedInput(): boolean {
+    return this.#state.queued !== undefined;
   }
 
   /** What arrived for the turn's step, as the intakes to hand to `intake`, in order. */
@@ -365,6 +371,7 @@ const INPUT_PHASES = {
   delivered: ["parked"],
   "withdraw.requested": ["parked"],
   cleared: ["pre-step"],
+  "queued.taken": ["pre-step"],
 } as const satisfies { readonly [T in (Interrupt | Intake)["type"]]: readonly Phase[] };
 
 /**
@@ -379,7 +386,7 @@ const EVENT_PHASES = {
   "budget.granted": ["pre-step"],
   "responder.check": ["pre-step"],
   "calls.approved": ["post-step"],
-  "input.resumed": ["post-step"],
+  "input.resumed": ["pre-step"],
   "answer.forwarded": ["parked"],
   "question.withdrawn": ["parked"],
 } as const satisfies { readonly [T in HostEvent["type"]]: readonly Phase[] };
@@ -583,6 +590,11 @@ export type Intake =
    * since they belong to whoever asked.
    */
   | { readonly type: "cleared" }
+  /**
+   * The turn's step, no longer held, reads the input that waited behind the
+   * last step's calls, ahead of what arrived for it.
+   */
+  | { readonly type: "queued.taken" }
   /** A workflow run or child session ended; nobody can answer what it relayed. */
   | { readonly type: "run.ended"; readonly runId: string }
   /**
@@ -717,7 +729,7 @@ const LEGACY_BATCH_KEY = "eve.runtime.pendingCoordinationBatch";
 export interface HumanInputState {
   /** Every open request, by `requestId`. */
   readonly requests: Readonly<Record<string, OpenRequest>>;
-  /** Input that arrived before it could run: a partial answer, or a message behind one. */
+  /** Turn input that waited behind a step's calls, for the turn's next step to read. */
   readonly queued?: StepInput;
   /** Approval keys a `once()` approval granted for the rest of the session. */
   readonly grants: readonly string[];
@@ -924,6 +936,8 @@ function reduce(state: HumanInputState, input: Interrupt | Intake, phase: Phase)
       return expireCandidates(state, input.now);
     case "cleared":
       return { events: [], state: clearedState(state) };
+    case "queued.taken":
+      return takeQueued(state);
     default: {
       const unhandled: never = input;
       throw new TypeError(`Unhandled human input: ${JSON.stringify(unhandled)}`);

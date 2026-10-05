@@ -21,11 +21,16 @@ import {
   type HumanInputHost,
   type InputOf,
 } from "#harness/human-input/index.js";
-import { createFrameworkUserMessage, validateHarnessModelMessages } from "#harness/messages.js";
+import {
+  coalesceTurnInputs,
+  createFrameworkUserMessage,
+  validateHarnessModelMessages,
+} from "#harness/messages.js";
 import { bumpSessionRuntimeUsageLimits, getSessionUsage } from "#harness/turn-tag-state.js";
 import type {
   HarnessSession,
   StepInput,
+  StepFn,
   StepResult,
   ToolLoopHarnessConfig,
 } from "#harness/types.js";
@@ -83,6 +88,8 @@ export class PreStepHost
   readonly phase = "pre-step";
   /** A message answered open requests, so the turn doesn't read it as input. */
   messageAnswered = false;
+  /** The turn input that waited behind the last step's calls, which joined history. */
+  resumed: StepInput | undefined;
   readonly #effects: StepEffects | undefined;
 
   constructor(input: {
@@ -107,6 +114,9 @@ export class PreStepHost
         };
       case "message.answered":
         this.messageAnswered = true;
+        return { session };
+      case "input.resumed":
+        this.resumed = event.input;
         return { session };
       case "sign-in.completed": {
         const ctx = contextStorage.getStore();
@@ -141,8 +151,6 @@ export class PostStepHost
   implements HumanInputHost<HarnessSession, "post-step">
 {
   readonly phase = "post-step";
-  /** The turn input that waited behind the suspended step's calls, which joined history. */
-  following: StepInput | undefined;
   readonly #effects: StepEffects;
 
   constructor(input: {
@@ -161,9 +169,6 @@ export class PostStepHost
     switch (event.type) {
       case "history.appended":
         return { session: appended(session, event.message) };
-      case "input.resumed":
-        this.following = event.input;
-        return { session };
       case "calls.approved": {
         const effects = this.#effects;
         const tools = await prepareStepTools(effects, event.at, session);
@@ -230,11 +235,18 @@ export async function applyStepArrivals(input: {
   readonly effects: StepEffects;
   readonly emit?: Emit;
   readonly emissionState: HarnessEmissionState;
+  /** The step that follows a step of approved calls, which runs without a model call. */
+  readonly runStep: StepFn;
   readonly session: HarnessSession;
   readonly stepInput: StepInput | undefined;
 }): Promise<
   | { readonly result: StepResult }
-  | { readonly session: HarnessSession; readonly turnInput: StepInput | undefined }
+  | {
+      readonly session: HarnessSession;
+      readonly turnInput: StepInput | undefined;
+      /** The turn input that waited behind the last step's calls, now part of `turnInput`. */
+      readonly resumed?: StepInput;
+    }
 > {
   const { effects, emit, emissionState, stepInput } = input;
   let { session } = input;
@@ -252,16 +264,36 @@ export async function applyStepArrivals(input: {
   }
   let turnInput = host.messageAnswered ? withoutMessage(stepInput) : stepInput;
   if (isApprovedStep(HumanInput.read(session.state).next())) {
-    const ran = await runApprovedStep({ effects, emit, emissionState, session, turnInput });
+    const ran = await runApprovedStep({
+      effects,
+      emit,
+      emissionState,
+      runStep: input.runStep,
+      session,
+      turnInput,
+    });
     if ("result" in ran) return ran;
-    ({ session, turnInput } = ran);
+    session = ran.session;
+    turnInput = undefined;
   }
-  // A message that answers nothing still joins history, so it is read once
-  // the turn runs again; the hold before the model call keeps it.
-  if ("held" in HumanInput.read(session.state).next() && turnInput?.message === undefined) {
-    return { result: await holdForInput({ emissionState, host, session }) };
+  const humanInput = HumanInput.read(session.state);
+  if ("held" in humanInput.next()) {
+    // A message that answers nothing still joins history, so it is read once
+    // the turn runs again; the hold before the model call keeps it.
+    if (turnInput?.message === undefined) {
+      return { result: await holdForInput({ emissionState, host, session }) };
+    }
+    return { session, turnInput };
   }
-  return { session, turnInput };
+  if (!humanInput.hasQueuedInput()) return { session, turnInput };
+  const taken = await commitTurn(host, session, { type: "queued.taken" });
+  const resumed = host.resumed;
+  if (resumed === undefined) return { session: taken.session, turnInput };
+  return {
+    resumed,
+    session: taken.session,
+    turnInput: turnInput === undefined ? resumed : coalesceTurnInputs(resumed, turnInput),
+  };
 }
 
 /**
@@ -269,19 +301,18 @@ export async function applyStepArrivals(input: {
  * the post-step settle: their results join the suspended step, the calls
  * that ask for a sign-in leave it as their sign-ins open, and calls that run
  * as runtime work park the turn. The turn input that arrived with the
- * answers waits behind them; it is the turn's input once the step joins
- * history.
+ * answers waits behind them. Once the step joins history, the step ends;
+ * the next step reads that input after the step's results. A step still
+ * held, on a sign-in its calls opened, waits on a person.
  */
 async function runApprovedStep(input: {
   readonly effects: StepEffects;
   readonly emit?: Emit;
   readonly emissionState: HarnessEmissionState;
+  readonly runStep: StepFn;
   readonly session: HarnessSession;
   readonly turnInput: StepInput | undefined;
-}): Promise<
-  | { readonly result: StepResult }
-  | { readonly session: HarnessSession; readonly turnInput: StepInput | undefined }
-> {
+}): Promise<{ readonly result: StepResult } | { readonly session: HarnessSession }> {
   const { effects, emit, emissionState } = input;
   const host = new PostStepHost({ effects, emit, emissionState });
   const following = followingInput(input.turnInput);
@@ -290,16 +321,16 @@ async function runApprovedStep(input: {
     type: "approved.run",
   });
   if (ran.ended !== undefined) return { result: ran.ended };
-  if (HumanInput.read(ran.session.state).runtimeCalls() !== undefined) {
-    // The turn parks on them; it reads its input after their results.
-    return {
-      result: {
-        next: null,
-        session: setHarnessEmissionState(ran.session, advanceStep(emissionState)),
-      },
-    };
-  }
-  return { session: ran.session, turnInput: host.following };
+  const humanInput = HumanInput.read(ran.session.state);
+  if ("held" in humanInput.next()) return { session: ran.session };
+  // The turn parks on runtime calls and reads its input after their results;
+  // otherwise its next step does.
+  return {
+    result: {
+      next: humanInput.runtimeCalls() === undefined ? input.runStep : null,
+      session: setHarnessEmissionState(ran.session, advanceStep(emissionState)),
+    },
+  };
 }
 
 function isApprovedStep(next: ReturnType<HumanInput["next"]>): boolean {

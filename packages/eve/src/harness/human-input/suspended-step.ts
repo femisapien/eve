@@ -34,6 +34,8 @@ export interface SuspendedStep {
 /** The state the suspended-step rules read and change. */
 export interface SuspendedStepState {
   readonly suspended?: SuspendedStep;
+  /** Turn input that waited behind a step's calls, for the turn's next step to read. */
+  readonly queued?: StepInput;
 }
 
 /** What a call of the suspended step waits on: a person's answer, or runtime work. */
@@ -159,8 +161,11 @@ export function hasApprovedCalls(step: SuspendedStep | undefined): boolean {
  * never ran; a runtime call was stopped before it finished.
  */
 export function cancelStep<S extends SuspendedStepState>(
-  state: S,
+  cancelled: S,
 ): { readonly events: readonly HumanInputEvent[]; readonly state: S } {
+  // Input queued behind calls that already joined goes with the turn too.
+  const { queued: _queued, ...unqueued } = cancelled;
+  const state = unqueued as S;
   if (state.suspended === undefined) return { events: [], state };
   const runtime = heldStep(state.suspended, new Set())!.calls;
   const stopped = new Set(runtime.map((call) => call.callId));
@@ -246,10 +251,18 @@ export function releaseStep<S extends SuspendedStepState>(
     message,
     type: "history.appended" as const,
   }));
-  if (following !== undefined && options.following) {
-    events.push({ input: following, type: "input.resumed" });
-  }
-  return { events, state: rest as S };
+  if (following === undefined || !options.following) return { events, state: rest as S };
+  // The turn's next step reads it, after the step's results.
+  return { events, state: { ...rest, queued: following } as S };
+}
+
+/** The turn's step reads the input that waited behind the last step's calls. */
+export function takeQueued<S extends SuspendedStepState>(
+  state: S,
+): { readonly events: readonly HumanInputEvent[]; readonly state: S } {
+  const { queued, ...rest } = state;
+  if (queued === undefined) return { events: [], state };
+  return { events: [{ input: queued, type: "input.resumed" }], state: rest as S };
 }
 
 /** Adds messages to the step; tool messages join its trailing tool response. */
