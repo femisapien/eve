@@ -9,7 +9,6 @@ import {
   askBudget,
   stopBudget,
   withdrawBudget,
-  withoutClosedBudgetAnswers,
 } from "#harness/human-input/budget.js";
 import type { SessionStateMap, StepInput } from "#harness/types.js";
 import { createTurnWaitingEvent, type UnstampedMessageStreamEvent } from "#protocol/message.js";
@@ -179,7 +178,7 @@ export class HumanInput {
     readonly displayMessage?: string | UserContent;
   } {
     const open = this.openRequestIds();
-    return staleAnswersAsText(withoutClosedBudgetAnswers(input, open), open);
+    return staleAnswersAsText(input, open);
   }
 
   /** Whether turn input waits for the turn's next step, behind calls that have joined history. */

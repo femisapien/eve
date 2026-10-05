@@ -12,7 +12,6 @@ import type {
   Reduced,
 } from "#harness/human-input/index.js";
 import {
-  isSessionLimitContinuationRequestId,
   SESSION_LIMIT_CONTINUE_OPTION_ID,
   SESSION_LIMIT_STOP_OPTION_ID,
 } from "#harness/human-input/budget-question.js";
@@ -21,7 +20,6 @@ import {
   createInputResolvedEvent,
   type InputResolutionOutcome,
 } from "#protocol/message.js";
-import type { StepInput } from "#harness/types.js";
 import type { InputResponse } from "#shared/input.js";
 
 type BudgetRequest = Extract<
@@ -42,34 +40,6 @@ export function askBudget(
       ...state,
       requests: { ...state.requests, [request.requestId]: { at, kind: "session-limit", request } },
     },
-  };
-}
-
-/**
- * Drops the answers to budget questions that already closed, before answers
- * to closed requests become text the model reads: read as text, a late Stop
- * would seem to stop something, and a late Continue must not grant budget.
- */
-export function withoutClosedBudgetAnswers(
-  input: StepInput | undefined,
-  openRequestIds: ReadonlySet<string>,
-): StepInput | undefined {
-  if (input === undefined) return undefined;
-  const keep = (response: InputResponse) =>
-    openRequestIds.has(response.requestId) ||
-    !isSessionLimitContinuationRequestId(response.requestId);
-  const responses = input.inputResponses ?? [];
-  const attributed = input.attributedInputResponses ?? [];
-  const kept = responses.filter(keep);
-  const keptAttributed = attributed.filter(({ response }) => keep(response));
-  if (kept.length === responses.length && keptAttributed.length === attributed.length) {
-    return input;
-  }
-  const { attributedInputResponses: _attributed, inputResponses: _responses, ...rest } = input;
-  return {
-    ...rest,
-    ...(kept.length > 0 && { inputResponses: kept }),
-    ...(keptAttributed.length > 0 && { attributedInputResponses: keptAttributed }),
   };
 }
 

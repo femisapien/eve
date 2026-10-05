@@ -2,14 +2,17 @@ import type { UserContent } from "ai";
 
 import { appendUserContent, normalizeUserContent } from "#harness/messages.js";
 import type { StepInput } from "#harness/types.js";
+import { isSessionLimitContinuationRequestId } from "./budget-question.js";
 import type { InputResponse } from "#shared/input.js";
 
 /**
  * An answer to a request that is no longer open (answered, steered past, or
- * cancelled) becomes plain text the model reads as new input. It never reaches
- * the rules, so a stale approval can't authorize a call. Returns the input to
- * run with, and the text to show as the message received, when any answer
- * was stale.
+ * cancelled) never reaches the rules, so a stale approval can't authorize a
+ * call. It becomes plain text the model reads as new input, except an answer
+ * to a closed budget question, which is dropped: read as text, a late Stop
+ * would seem to stop something, and a late Continue must not grant budget.
+ * Returns the input to run with, and the text to show as the message
+ * received, when any answer became text.
  */
 export function staleAnswersAsText(
   input: StepInput | undefined,
@@ -28,14 +31,16 @@ export function staleAnswersAsText(
   const { attributedInputResponses: _attributed, inputResponses: _responses, ...rest } = input;
   const open = responses.filter(isOpen);
   const openAttributed = attributed.filter(({ response }) => isOpen(response));
+  const kept: StepInput = {
+    ...rest,
+    ...(open.length > 0 && { inputResponses: open }),
+    ...(openAttributed.length > 0 && { attributedInputResponses: openAttributed }),
+  };
+  const late = stale.filter((response) => !isSessionLimitContinuationRequestId(response.requestId));
+  if (late.length === 0) return { input: kept };
   return {
-    displayMessage: withMessage(input.message, stale.map(displayText).join("\n")),
-    input: {
-      ...rest,
-      ...(open.length > 0 && { inputResponses: open }),
-      ...(openAttributed.length > 0 && { attributedInputResponses: openAttributed }),
-      message: withMessage(input.message, modelText(stale)),
-    },
+    displayMessage: withMessage(input.message, late.map(displayText).join("\n")),
+    input: { ...kept, message: withMessage(input.message, modelText(late)) },
   };
 }
 
