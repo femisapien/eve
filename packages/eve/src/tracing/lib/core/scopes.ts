@@ -19,7 +19,7 @@ import {
   checkpointSnapshot,
   boundedSerializer,
 } from "./snapshot.js";
-import type { Operation, OperationFacts } from "./types.js";
+import type { Operation, OperationFacts, MemoryFacts } from "./types.js";
 import { withAgentHandoff } from "./delegation.js";
 import { withoutDeclinedContent } from "./content-policy.js";
 import { runTraceContext } from "./context.js";
@@ -50,20 +50,6 @@ export interface ToolCallInput {
   parent: TraceReference;
   capture: CaptureDecision;
   context?: ExecutionContext;
-}
-interface MemoryFacts<T> {
-  identity: ScopeIdentity;
-  storeId: string;
-  slot: string;
-  phase: string;
-  capture?: CaptureDecision;
-  parent?: TraceReference;
-  context?: ExecutionContext;
-  operationId?: string;
-  describe?: (value: T) => {
-    recordCount?: number;
-    records?: readonly { id?: string; content: string }[];
-  };
 }
 
 export function createTraceRecorder(input: {

@@ -5,8 +5,8 @@ import {
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import { context, propagation, trace } from "@opentelemetry/api";
-import { createAgentTracing } from "./index.js";
-import { createAgentDelegationTransport } from "./delegation.js";
+import { createAgentTracing } from "@vercel/agent-tracing";
+import { createAgentDelegationTransport } from "@vercel/agent-tracing/delegation";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 
 describe("agent delegation", () => {

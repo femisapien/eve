@@ -266,6 +266,20 @@ export interface OperationFacts {
   attributes?: Attributes;
   attempt?: { index: number; attempt: number };
 }
+export interface MemoryFacts<T> {
+  identity: ScopeIdentity;
+  storeId: string;
+  slot: string;
+  phase: string;
+  capture?: CaptureDecision;
+  parent?: TraceReference;
+  context?: ExecutionContext;
+  operationId?: string;
+  describe?: (value: T) => {
+    recordCount?: number;
+    records?: readonly { id?: string; content: string }[];
+  };
+}
 export interface Operation {
   child(data: ScopeData, key?: string): Promise<Operation>;
   waitUntil(completion: Promise<void>): void;

@@ -1,7 +1,13 @@
-import type { Telemetry } from "ai";
 import type { ContentPart, Usage } from "../core/types.js";
 
-type Result = Parameters<NonNullable<Telemetry["onLanguageModelCallEnd"]>>[0];
+interface Result {
+  usage: {
+    inputTokens?: number;
+    outputTokens?: number;
+    inputTokenDetails?: { cacheReadTokens?: number; cacheWriteTokens?: number };
+  };
+  content: readonly unknown[];
+}
 
 export function modelUsage(usage: Result["usage"]): Usage {
   return Object.freeze({
@@ -16,36 +22,23 @@ export function modelUsage(usage: Result["usage"]): Usage {
 
 export function modelContent(content: Result["content"]): readonly ContentPart[] {
   return content.flatMap((part): ContentPart[] => {
-    switch (part.type) {
-      case "text":
-      case "reasoning":
-        return [{ type: part.type, text: part.text }];
-      case "tool-call":
-        return [
-          { type: part.type, callId: part.toolCallId, toolName: part.toolName, input: part.input },
-        ];
-      case "tool-result":
-        return [
-          {
-            type: part.type,
-            callId: part.toolCallId,
-            toolName: part.toolName,
-            input: part.input,
-            output: part.output,
-          },
-        ];
-      case "tool-error":
-        return [
-          {
-            type: part.type,
-            callId: part.toolCallId,
-            toolName: part.toolName,
-            input: part.input,
-            error: part.error,
-          },
-        ];
-      default:
-        return [];
-    }
+    if (part === null || typeof part !== "object" || !("type" in part)) return [];
+    const value = part as {
+      type: string;
+      text?: string;
+      toolCallId?: string;
+      toolName?: string;
+      input?: unknown;
+      output?: unknown;
+      error?: unknown;
+    };
+    if ((value.type === "text" || value.type === "reasoning") && typeof value.text === "string")
+      return [{ type: value.type, text: value.text }];
+    if (typeof value.toolCallId !== "string" || typeof value.toolName !== "string") return [];
+    const tool = { callId: value.toolCallId, toolName: value.toolName, input: value.input };
+    if (value.type === "tool-call") return [{ type: value.type, ...tool }];
+    if (value.type === "tool-result") return [{ type: value.type, ...tool, output: value.output }];
+    if (value.type === "tool-error") return [{ type: value.type, ...tool, error: value.error }];
+    return [];
   });
 }

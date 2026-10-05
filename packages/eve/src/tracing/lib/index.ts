@@ -23,5 +23,4 @@ export type {
   TraceErrorContext,
 } from "./core/types.js";
 export { currentCapture } from "./capture.js";
-export { AgentSpanIdGenerator } from "./adapters/otel-ids.js";
 export { modelUsage, modelContent } from "./adapters/ai-sdk-payload.js";

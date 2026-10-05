@@ -1,6 +1,6 @@
 import { trace, type TracerProvider } from "@opentelemetry/api";
 import { randomUUID } from "node:crypto";
-import { AgentSpanIdGenerator } from "./adapters/otel-ids.js";
+import type { AgentSpanIdGenerator } from "./adapters/otel-ids.js";
 import { durableOtelBackend } from "./adapters/otel.js";
 import { aiSdkContentSerializer } from "./adapters/serialization.js";
 import { createTraceRecorder } from "./core/scopes.js";
@@ -36,38 +36,24 @@ export interface AgentTracing {
     },
     TurnOperation
   >;
-  memory: {
-    search<T>(
-      data: {
-        identity: RunIdentity;
-        storeId: string;
-        slot: string;
-        phase: string;
-        capture?: CaptureDecision;
-        describe?: (value: T) => {
-          recordCount?: number;
-          records?: readonly { id?: string; content: string }[];
-        };
-      },
-      execute: () => T | PromiseLike<T>,
-    ): Promise<T>;
-    write<T>(
-      data: {
-        identity: RunIdentity;
-        storeId: string;
-        slot: string;
-        phase: string;
-        capture?: CaptureDecision;
-        describe?: (value: T) => {
-          recordCount?: number;
-          records?: readonly { id?: string; content: string }[];
-        };
-      },
-      execute: () => T | PromiseLike<T>,
-    ): Promise<T>;
-  };
+  memory: AgentMemoryTracing;
   forceFlush(): Promise<void>;
   shutdown(): Promise<void>;
+}
+interface MemoryInput<T> {
+  identity: RunIdentity;
+  storeId: string;
+  slot: string;
+  phase: string;
+  capture?: CaptureDecision;
+  describe?: (value: T) => {
+    recordCount?: number;
+    records?: readonly { id?: string; content: string }[];
+  };
+}
+export interface AgentMemoryTracing {
+  search<T>(data: MemoryInput<T>, execute: () => T | PromiseLike<T>): Promise<T>;
+  write<T>(data: MemoryInput<T>, execute: () => T | PromiseLike<T>): Promise<T>;
 }
 export function createAgentTracing(input: {
   agentName: string;

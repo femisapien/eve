@@ -2,4 +2,4 @@
 "eve": patch
 ---
 
-Extract the durable agent span lifecycle into an internal module with operation handles and opaque snapshots. Keep OpenTelemetry setup and transports in eve while preserving trace schema version 4.
+Extract reusable agent tracing with wrapped execution, model stream completion, remote delegation, and opaque durable snapshots. Preserve trace schema version 4 while sharing one consolidated span lifecycle with eve.

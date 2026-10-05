@@ -6,7 +6,7 @@ import {
 } from "@opentelemetry/sdk-trace-base";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { context } from "@opentelemetry/api";
-import { createAgentTracing } from "../index.js";
+import { createAgentTracing } from "@vercel/agent-tracing";
 
 describe("outside-eve agent", () => {
   it("runs wrapped operations and handle-based tools using only the facade", async () => {
@@ -68,6 +68,82 @@ describe("outside-eve agent", () => {
       await tracing.shutdown();
       context.disable();
       manager.disable();
+    }
+  });
+  it("preserves application errors and closes memory and tool callbacks", async () => {
+    const exporter = new InMemorySpanExporter();
+    const provider = new BasicTracerProvider({
+      spanProcessors: [new SimpleSpanProcessor(exporter)],
+    });
+    const tracing = createAgentTracing({ agentName: "support", provider });
+    const error = new TypeError("private failure");
+    try {
+      await expect(
+        tracing.turn(
+          { identity: { conversationId: "c", runId: "r", turnId: "t" }, sequence: 0 },
+          (turn) =>
+            turn.attempt({ stepIndex: 0, attempt: 0 }, (attempt) =>
+              attempt.tool({ callId: "tool", name: "lookup" }, () => {
+                throw error;
+              }),
+            ),
+        ),
+      ).rejects.toBe(error);
+      const failures = exporter.getFinishedSpans();
+      expect(failures).toHaveLength(4);
+      expect(
+        failures.every(
+          (span) => span.status.code === 2 && span.attributes["error.type"] === "TypeError",
+        ),
+      ).toBe(true);
+      expect(JSON.stringify(failures.map((span) => span.events))).not.toContain("private failure");
+      await tracing.turn(
+        { identity: { conversationId: "c", runId: "memory", turnId: "t" }, sequence: 0 },
+        (turn) =>
+          turn.memory(
+            {
+              operation: "search_memory",
+              phase: "retrieve",
+              slot: "history",
+              storeId: "store",
+              describe: () => ({ recordCount: 2 }),
+            },
+            () => "records",
+          ),
+      );
+      expect(
+        exporter.getFinishedSpans().find((span) => span.name === "search_memory")?.attributes[
+          "gen_ai.memory.record.count"
+        ],
+      ).toBe(2);
+    } finally {
+      await tracing.shutdown();
+    }
+  });
+  it("honors the supplied provider's root sampling decision", async () => {
+    const exporter = new InMemorySpanExporter();
+    const provider = new BasicTracerProvider({
+      sampler: { shouldSample: () => ({ decision: 0 }), toString: () => "drop" },
+      spanProcessors: [new SimpleSpanProcessor(exporter)],
+    });
+    const tracing = createAgentTracing({ agentName: "support", provider });
+    try {
+      await tracing.turn(
+        {
+          identity: { conversationId: "c", runId: "r", turnId: "t" },
+          sequence: 0,
+          capture: { emit: true, recordInputs: true, recordOutputs: true },
+        },
+        async (turn) => {
+          expect(turn.capture).toEqual({ emit: false, recordInputs: false, recordOutputs: false });
+          await turn.attempt({ stepIndex: 0, attempt: 0 }, (attempt) =>
+            attempt.tool({ callId: "tool", name: "lookup" }, () => "private"),
+          );
+        },
+      );
+      expect(exporter.getFinishedSpans()).toHaveLength(0);
+    } finally {
+      await tracing.shutdown();
     }
   });
 });
