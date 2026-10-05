@@ -184,6 +184,56 @@ describe("Web Chat auth provisioning", () => {
     ]);
   });
 
+  it.each([400, 403])(
+    "removes the new secret after a definitive env rejection (%s)",
+    async (status) => {
+      initial();
+      response({ app });
+      response({ clientSecret: "new-secret-5678" });
+      response({ error: { code: "rejected", message: "private-response-data" } }, status);
+      response({});
+      await expect(provisionWebChatAuth(project)).rejects.toThrow(
+        status === 403 ? "Vercel denied" : "Vercel could not configure",
+      );
+      const deletes = fetchMock.mock.calls.filter(([, options]) => options?.method === "DELETE");
+      expect(deletes.map(([url]) => new URL(String(url)).pathname)).toEqual([
+        "/v1/apps/cl_test/secrets/5678",
+      ]);
+    },
+  );
+
+  it("attempts all acknowledged cleanup even if an env deletion fails", async () => {
+    initial();
+    response({ app });
+    response({ clientSecret: "new-secret-5678" });
+    response({ created: [completeEnvs[0], completeEnvs[2]], failed: [{}] });
+    response({ error: { code: "forbidden", message: "private-response-data" } }, 403);
+    response({});
+    response({});
+    await expect(provisionWebChatAuth(project)).rejects.toThrow("Cleanup was incomplete");
+    const deletes = fetchMock.mock.calls.filter(([, options]) => options?.method === "DELETE");
+    expect(deletes.map(([url]) => new URL(String(url)).pathname)).toEqual([
+      "/v9/projects/prj_123/env/env_0",
+      "/v9/projects/prj_123/env/env_2",
+      "/v1/apps/cl_test/secrets/5678",
+    ]);
+  });
+
+  it("keeps a saved secret when its environment variable cannot be rolled back", async () => {
+    initial();
+    response({ app });
+    response({ clientSecret: "new-secret-5678" });
+    response({ created: [completeEnvs[0], completeEnvs[1]], failed: [{}] });
+    response({});
+    response({ error: { code: "forbidden" } }, 403);
+    await expect(provisionWebChatAuth(project)).rejects.toThrow("Cleanup was incomplete");
+    expect(
+      fetchMock.mock.calls.some(
+        ([url, options]) => options?.method === "DELETE" && String(url).includes("/secrets/"),
+      ),
+    ).toBe(false);
+  });
+
   it("keeps the secret when an env write may have committed before the response was lost", async () => {
     initial();
     response({ app });
@@ -192,6 +242,18 @@ describe("Web Chat auth provisioning", () => {
     await expect(provisionWebChatAuth(project)).rejects.toThrow("Retry");
     expect(fetchMock.mock.calls.some(([, options]) => options?.method === "DELETE")).toBe(false);
   });
+
+  it.each([500, 502])(
+    "keeps the secret after an ambiguous env server failure (%s)",
+    async (status) => {
+      initial();
+      response({ app });
+      response({ clientSecret: "new-secret-5678" });
+      response({ error: { code: "server_error" } }, status);
+      await expect(provisionWebChatAuth(project)).rejects.toThrow("Retry");
+      expect(fetchMock.mock.calls.some(([, options]) => options?.method === "DELETE")).toBe(false);
+    },
+  );
 
   it("reports access errors without echoing tokens or server response details", async () => {
     response({ error: { code: "forbidden", message: "secret-response-data" } }, 403);

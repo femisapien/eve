@@ -190,6 +190,30 @@ export async function provisionWebChatAuth(
     VERCEL_APP_CLIENT_SECRET: clientSecret,
     BETTER_AUTH_SECRET: randomBytes(32).toString("base64url"),
   };
+  const rollback = async (created: z.infer<typeof EnvSchema>[]): Promise<void> => {
+    const results = await Promise.allSettled(
+      created.map((env) => request(`${projectPath}/env/${encodeURIComponent(env.id)}`, "DELETE")),
+    );
+    // Do not revoke a credential that may still be saved in the project.
+    const secretStillSaved = results.some(
+      (result, index) => result.status === "rejected" && created[index]?.key === KEYS[1],
+    );
+    if (clientSecret && !secretStillSaved) {
+      results.push(
+        ...(await Promise.allSettled([
+          request(
+            `/v1/apps/${encodeURIComponent(app.clientId)}/secrets/${encodeURIComponent(clientSecret.slice(-4))}`,
+            "DELETE",
+          ),
+        ])),
+      );
+    }
+    if (results.some((result) => result.status === "rejected")) {
+      throw new Error(
+        "Could not save Web Chat auth environment variables. Cleanup was incomplete. Check the project's environment variables and Vercel App client secrets in team settings before retrying.",
+      );
+    }
+  };
   // No upsert: concurrent setup must never replace a working credential.
   const result = z
     .object({
@@ -207,21 +231,26 @@ export async function provisionWebChatAuth(
           type: key === KEYS[0] ? "plain" : "sensitive",
           visibility: key === KEYS[0] ? "config" : "secret",
         })),
-      ),
+      ).catch(async (error: unknown) => {
+        // Validation and permission rejections did not commit env writes.
+        // Timeouts and server failures can happen after a write committed.
+        if (
+          error instanceof AppApiError &&
+          error.status >= 400 &&
+          error.status < 500 &&
+          error.status !== 408 &&
+          error.status !== 499
+        ) {
+          await rollback([]);
+        }
+        throw error;
+      }),
     );
   if (result.failed.length === 0) return;
 
   // Only roll back writes acknowledged by this attempt. An ambiguous network
   // failure may have committed the secret, so it must remain usable on retry.
-  for (const env of result.created) {
-    await request(`${projectPath}/env/${encodeURIComponent(env.id)}`, "DELETE");
-  }
-  if (clientSecret) {
-    await request(
-      `/v1/apps/${encodeURIComponent(app.clientId)}/secrets/${encodeURIComponent(clientSecret.slice(-4))}`,
-      "DELETE",
-    );
-  }
+  await rollback(result.created);
   throw new Error(
     "Could not save Web Chat auth environment variables. Retry `eve add channel/web --skip-install`.",
   );
