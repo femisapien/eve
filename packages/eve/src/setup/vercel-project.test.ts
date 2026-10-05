@@ -1185,16 +1185,19 @@ describe("pickTeam selection", () => {
       single: (opts) => {
         expect(opts.initialValue).toBe("owner");
         expect(opts.options).toMatchObject([
-          { value: "member", disabled: true, disabledReason: expect.stringContaining("owner") },
           { value: "owner", disabled: false },
+          { value: "member", disabled: true, disabledReason: "needs permission" },
           {
             value: "unavailable",
             disabled: true,
-            disabledReason: expect.stringContaining("verify"),
+            disabledReason: "couldn't verify",
           },
           { value: "restricted", disabled: true },
           { value: "sso", disabled: true },
         ]);
+        expect(opts.search).toBe(true);
+        expect(opts.helpText).toContain("ask a team owner");
+        expect(opts.helpText).toContain("vercel login");
         return "owner";
       },
     });

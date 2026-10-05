@@ -340,12 +340,32 @@ export async function pickTeam(
     const issues = await withSpinner(prompter, "Checking team permissions…", () =>
       checkTeamRequirements(projectRoot, teams, requirement, options),
     );
-    const choices = teams.map((team) => ({
-      value: team.slug,
-      label: team.current ? `${team.name} (current)` : team.name,
-      disabled: issues.get(team.slug) !== undefined,
-      disabledReason: issues.get(team.slug),
-    }));
+    const choices = teams
+      .map((team) => {
+        const issue = issues.get(team.slug);
+        return {
+          value: team.slug,
+          label: team.current ? `${team.name} (current)` : team.name,
+          disabled: issue !== undefined,
+          disabledReason:
+            issue === undefined
+              ? undefined
+              : issue === requirement.disabledReason
+                ? "needs permission"
+                : "couldn't verify",
+        };
+      })
+      .sort((a, b) => Number(a.disabled) - Number(b.disabled));
+    const helpText = [
+      ...(choices.some((choice) => choice.disabledReason === "needs permission")
+        ? [
+            "For teams that need permission, ask a team owner to run setup,\nor choose another team.",
+          ]
+        : []),
+      ...(choices.some((choice) => choice.disabledReason === "couldn't verify")
+        ? ["Couldn't verify access? Retry, or run `vercel login` and try again."]
+        : []),
+    ].join("\n");
     const enabled = choices.filter((choice) => !choice.disabled);
     if (enabled.length === 0) {
       if (choices.length)
@@ -362,6 +382,7 @@ export async function pickTeam(
       search: true,
       placeholder: "type to search teams",
       options: choices,
+      helpText: helpText || undefined,
       initialValue:
         enabled.find((choice) => choice.value === current?.slug)?.value ?? enabled[0]!.value,
     });
