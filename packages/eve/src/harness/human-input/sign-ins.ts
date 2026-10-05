@@ -38,12 +38,11 @@ interface Reduced {
 const SUPERSEDED_REASON = "Superseded by a newer authorization attempt.";
 
 /**
- * Opens a sign-in for each challenge and holds the turn. Within one ask and
- * against the sign-ins already open, the latest attempt for a sign-in wins and
- * the older one fails as superseded. `callIds`, the calls that asked, leave
- * their step. While the step is suspended (the suspended step is the step),
- * it stays suspended without them; otherwise the step's `messages` join
- * history without them.
+ * A model step's calls need sign-ins: `callIds`, the calls that asked, leave
+ * their step, and a sign-in opens for each challenge (see `openSignIns`).
+ * While the step is suspended (the suspended step is the step), it stays
+ * suspended without them; otherwise the step's `messages` join history
+ * without them.
  */
 export function requireSignIns(
   state: HumanInputState,
@@ -52,6 +51,33 @@ export function requireSignIns(
     readonly callIds: readonly string[];
     readonly challenges: readonly AuthorizationChallenge[];
     readonly messages: readonly ModelMessage[];
+    readonly requester: SessionAuthContext | null;
+  },
+): Reduced {
+  const stopped = new Set(input.callIds);
+  if (state.suspended !== undefined) {
+    const messages = withoutCalls(state.suspended.messages, stopped);
+    return openSignIns({ ...state, suspended: { ...state.suspended, messages } }, input);
+  }
+  const opened = openSignIns(state, input);
+  const appended: HumanInputEvent[] = withoutCalls(input.messages, stopped).map((message) => ({
+    message,
+    type: "history.appended",
+  }));
+  return { events: [...appended, ...opened.events], state: opened.state };
+}
+
+/**
+ * Opens a sign-in for each challenge and holds the turn. Within one ask and
+ * against the sign-ins already open, the latest attempt for a sign-in wins and
+ * the older one fails as superseded. A challenge without a requester asks for
+ * `requester`.
+ */
+export function openSignIns(
+  state: HumanInputState,
+  input: {
+    readonly at: RequestAt;
+    readonly challenges: readonly AuthorizationChallenge[];
     readonly requester: SessionAuthContext | null;
   },
 ): Reduced {
@@ -69,33 +95,26 @@ export function requireSignIns(
     const signIn: OpenSignIn = { at: input.at, challenge, kind: "authorization" };
     requests[attemptKey(challenge)] = signIn;
   }
-  const stopped = new Set(input.callIds);
   const events: HumanInputEvent[] = [];
-  let next: HumanInputState = { ...state, requests };
-  if (state.suspended !== undefined) {
-    const messages = withoutCalls(state.suspended.messages, stopped);
-    next = { ...next, suspended: { ...state.suspended, messages } };
-  } else {
-    for (const message of withoutCalls(input.messages, stopped)) {
-      events.push({ message, type: "history.appended" });
-    }
-  }
   for (const open of superseded) {
     events.push(completed(open.challenge, input.at, "failed", SUPERSEDED_REASON));
   }
-  for (const challenge of asked) {
-    events.push({
-      event: createAuthorizationRequiredEvent({
-        ...authorizationEventFields(challenge),
-        description:
-          challenge.challenge.instructions ?? `Authorization required for ${challenge.name}`,
-        webhookUrl: challenge.hookUrl,
-        ...input.at,
-      }),
-      type: "publish",
-    });
-  }
-  return { events, state: next };
+  for (const challenge of asked) events.push(signInRequested(challenge, input.at));
+  return { events, state: { ...state, requests } };
+}
+
+/** The `authorization.required` a sign-in publishes as it opens. */
+export function signInRequested(challenge: AuthorizationChallenge, at: RequestAt): HumanInputEvent {
+  return {
+    event: createAuthorizationRequiredEvent({
+      ...authorizationEventFields(challenge),
+      description:
+        challenge.challenge.instructions ?? `Authorization required for ${challenge.name}`,
+      webhookUrl: challenge.hookUrl,
+      ...at,
+    }),
+    type: "publish",
+  };
 }
 
 /**
@@ -223,7 +242,8 @@ function samePrincipal(
   return left.id === right.id && left.issuer === right.issuer;
 }
 
-function completed(
+/** The `authorization.completed` a sign-in publishes as it closes. */
+export function completed(
   challenge: AuthorizationChallenge,
   at: RequestAt,
   outcome: AuthorizationOutcome,

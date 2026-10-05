@@ -3,6 +3,7 @@ import type { ModelMessage, ToolResultPart } from "ai";
 import { pendingTaskToolCalls, type TaskToolCall } from "#execution/tasks/calls.js";
 import type { StepInput } from "#harness/types.js";
 import type { RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
+import type { InputRequest } from "#shared/input.js";
 
 import type { HumanInputEvent, RequestAt } from "./index.js";
 
@@ -21,7 +22,12 @@ export interface SuspendedStep {
    * start. Its task tool calls run there too; the session answers them.
    */
   readonly runtime?: { readonly tasks: readonly RuntimeWorkflowTaskRequest[] };
-  /** Turn input that arrived with its runtime calls, read after their results. */
+  /**
+   * Calls a person approved that haven't run yet. The turn runs them as a
+   * step without a model call (`approved.run`), before it reads anything else.
+   */
+  readonly approved?: readonly InputRequest[];
+  /** Turn input that arrived while its calls waited, read after their results. */
   readonly following?: StepInput;
 }
 
@@ -120,10 +126,31 @@ export function dispatchCalls<S extends SuspendedStepState>(
   return { ...state, suspended: { ...suspended, runtime: { tasks } } };
 }
 
-/** Holds the turn input that arrived with the step's runtime calls until their results join it. */
-export function holdFollowingInput<S extends SuspendedStepState>(state: S, input: StepInput): S {
-  if (state.suspended === undefined) return state;
-  return { ...state, suspended: { ...state.suspended, following: input } };
+/**
+ * The turn runs the calls a person approved, as a step without a model call:
+ * `calls.approved` asks the runtime to run them. The turn input that arrived
+ * with the answers, `following`, waits behind them until the step joins history.
+ */
+export function runApproved<S extends SuspendedStepState>(
+  state: S,
+  following: StepInput | undefined,
+): { readonly events: readonly HumanInputEvent[]; readonly state: S } {
+  const step = state.suspended;
+  if (step?.approved === undefined || step.approved.length === 0) return { events: [], state };
+  const { approved, ...rest } = step;
+  const suspended: SuspendedStep = {
+    ...rest,
+    ...(following !== undefined && { following }),
+  };
+  return {
+    events: [{ at: step.at, requests: approved, type: "calls.approved" }],
+    state: { ...state, suspended },
+  };
+}
+
+/** Whether the suspended step has approved calls the turn has yet to run. */
+export function hasApprovedCalls(step: SuspendedStep | undefined): boolean {
+  return (step?.approved?.length ?? 0) > 0;
 }
 
 /**

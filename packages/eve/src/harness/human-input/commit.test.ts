@@ -88,11 +88,12 @@ describe("HumanInput.commit", () => {
 
   it("commits what a host reports back, in order, through the same rules", async () => {
     const host = new RecordingHost({
-      "calls.approved": [{ results: [], running: [], stopped: [], type: "calls.settled" }],
+      "calls.approved": [{ results: [], running: [], type: "calls.settled" }],
     });
     const held = await HumanInput.commit(host, {}, approvalsRequested([approval("deploy")]));
+    const answered = await HumanInput.commit(host, held.session, answer("approve", "deploy"));
 
-    const approved = await HumanInput.commit(host, held.session, answer("approve", "deploy"));
+    const approved = await HumanInput.commit(host, answered.session, { type: "approved.run" });
 
     expect(host.carried).toContain("calls.approved");
     expect(host.carried.indexOf("calls.approved")).toBeLessThan(

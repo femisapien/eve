@@ -94,10 +94,10 @@ describe("approval response policies", () => {
     expect(turn.published("approval.settled").map(({ data }) => data)).toEqual([
       expect.objectContaining({ outcome: "approved", responderPrincipalId: "carol" }),
     ]);
-    expect(turn.reported("calls.approved")).toEqual([
+    expect(turn.next()).toEqual({ run: "calls" });
+    expect(turn.runApproved().reported("calls.approved")).toEqual([
       { at: AT, requests: [approval("deploy")], type: "calls.approved" },
     ]);
-    expect(turn.next()).toEqual({ run: "model" });
   });
 
   it("a verdict for a candidate that went stale changes nothing", () => {
@@ -118,7 +118,7 @@ describe("approval response policies", () => {
 
     expect(turn.published("approval.settled")[0]?.data.outcome).toBe("cancelled");
     expect(turn.resolutions().map(({ outcome }) => outcome)).toEqual(["denied"]);
-    expect(turn.reported("calls.approved")).toEqual([]);
+    expect(turn.next()).toEqual({ run: "model" });
   });
 
   it("a rejected candidate leaves the approval open, and a retry is a fresh candidate", () => {

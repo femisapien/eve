@@ -2,7 +2,7 @@ import type { ModelMessage } from "ai";
 
 import type { SessionAuthContext } from "#channel/types.js";
 import type { AuthorizationChallenge } from "#harness/authorization.js";
-import type { SessionStateMap } from "#harness/types.js";
+import type { SessionStateMap, StepInput } from "#harness/types.js";
 import {
   HumanInput,
   reduceHumanInput,
@@ -64,6 +64,14 @@ export class Turn {
   intake(intake: Intake): Turn {
     const { events, state } = reduceHumanInput(this.state, intake);
     return new Turn(state, events);
+  }
+
+  /**
+   * The turn runs the calls a person approved, as a step without a model
+   * call; `following` is the turn input that arrived with the answers.
+   */
+  runApproved(following?: StepInput): Turn {
+    return this.interrupt({ ...(following !== undefined && { following }), type: "approved.run" });
   }
 
   /** The same turn after the session stores it and reads it back, as between steps. */

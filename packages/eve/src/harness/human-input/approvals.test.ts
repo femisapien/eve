@@ -72,14 +72,18 @@ describe("tool approvals", () => {
       .stored()
       .intake(answer("approve", "deploy"));
 
-    expect(turn.reported("calls.approved")).toEqual([
-      { at: AT, requests: [approval("send_email"), approval("deploy")], type: "calls.approved" },
-    ]);
+    expect(turn.reported("calls.approved")).toEqual([]);
     expect(turn.resolutions().map(({ outcome, requestId }) => [requestId, outcome])).toEqual([
       ["send_email", "approved"],
       ["deploy", "approved"],
     ]);
-    expect(turn.next()).toEqual({ run: "model" });
+    // They run as a step of their own, without a model call.
+    expect(turn.stored().next()).toEqual({ run: "calls" });
+    const ran = turn.stored().runApproved();
+    expect(ran.reported("calls.approved")).toEqual([
+      { at: AT, requests: [approval("send_email"), approval("deploy")], type: "calls.approved" },
+    ]);
+    expect(ran.next()).toEqual({ run: "model" });
   });
 
   it("a denied or unrecognized answer records the call as not run, and only approved calls run", () => {
@@ -87,7 +91,7 @@ describe("tool approvals", () => {
       answers({ send_email: "approve", deploy: "cancel", delete_repo: "maybe" }),
     );
 
-    expect(turn.reported("calls.approved")).toEqual([
+    expect(turn.runApproved().reported("calls.approved")).toEqual([
       { at: AT, requests: [approval("send_email")], type: "calls.approved" },
     ]);
     expect(turn.resolutions().map(({ outcome, requestId }) => [requestId, outcome])).toEqual([
@@ -101,10 +105,13 @@ describe("tool approvals", () => {
       "rejected",
       "rejected",
     ]);
-    const settled = turn.stored().intake({
-      results: [{ content: [ran("send_email", { sent: true })], role: "tool" }],
-      type: "calls.settled",
-    });
+    const settled = turn
+      .stored()
+      .runApproved()
+      .intake({
+        results: [{ content: [ran("send_email", { sent: true })], role: "tool" }],
+        type: "calls.settled",
+      });
     expect(settled.appended()).toEqual([
       ...stepResponse([approval("send_email"), approval("deploy"), approval("delete_repo")]),
       {
@@ -127,7 +134,7 @@ describe("tool approvals", () => {
       ]),
     );
 
-    expect(turn.reported("calls.approved")).toEqual([]);
+    expect(turn.next()).toEqual({ run: "model" });
     expect(turn.resolutions().map(({ outcome }) => outcome)).toEqual(["denied"]);
   });
 
@@ -135,8 +142,8 @@ describe("tool approvals", () => {
     const turn = heldOnApprovals("deploy").intake(message("Approve"));
 
     expect(turn.events[0]).toEqual({ type: "message.answered" });
-    expect(turn.reported("calls.approved")).toHaveLength(1);
-    expect(turn.next()).toEqual({ run: "model" });
+    expect(turn.next()).toEqual({ run: "calls" });
+    expect(turn.runApproved().reported("calls.approved")).toHaveLength(1);
   });
 
   it("any other message steers past unanswered approvals and keeps the answers already given", () => {
@@ -145,13 +152,14 @@ describe("tool approvals", () => {
       .intake(message("Never mind, check the draft status instead."));
 
     expect(turn.reported("message.answered")).toEqual([]);
-    expect(turn.reported("calls.approved")).toEqual([
+    expect(turn.runApproved().reported("calls.approved")).toEqual([
       { at: AT, requests: [approval("send_email")], type: "calls.approved" },
     ]);
     expect(turn.appended()).toEqual([]);
-    expect(turn.next()).toEqual({ run: "model" });
+    expect(turn.next()).toEqual({ run: "calls" });
     expect(
       turn
+        .runApproved()
         .intake({
           results: [{ content: [ran("send_email", { sent: true })], role: "tool" }],
           type: "calls.settled",

@@ -130,18 +130,17 @@ describe("sign-ins", () => {
     });
 
     it("the approved call's own sign-in leaves the step too, and the turn holds on the newer attempt", () => {
-      const approved = held.intake(answer("approve", publish.requestId));
+      const approved = held.intake(answer("approve", publish.requestId)).runApproved();
       const run = approved.reported("calls.approved");
       expect(run).toHaveLength(1);
 
-      const resumed = approved
-        .intake({
-          results: [],
-          running: [],
-          stopped: [publishCall.toolCallId],
-          type: "calls.settled",
-        })
-        .interrupt(signInRequired([challenge("a2")], [publishCall.toolCallId]));
+      // The settle opens the call's sign-in; no step response comes with it.
+      const resumed = approved.intake({
+        results: [],
+        running: [],
+        signIns: { callIds: [publishCall.toolCallId], challenges: [challenge("a2")] },
+        type: "calls.settled",
+      });
 
       expect(resumed.appended()).toEqual([]);
       expect(resumed.humanInput.suspendedMessages()).toEqual([]);

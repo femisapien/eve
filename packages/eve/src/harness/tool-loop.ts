@@ -613,7 +613,8 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
         turnId: activeTurnId(emissionState),
       });
       if (results === undefined) return { next: null, session };
-      const host = new TurnHost({ emissionState, phase: "pre-step" });
+      // The held step's settle: the post-step of the step that made the calls.
+      const host = new TurnHost({ emissionState, phase: "post-step" });
       const settled = await commitTurn(host, results.session, {
         // Workflow tool results join history here, so their files leave as refs too.
         results: await stageToolResultMedia([results.message]),

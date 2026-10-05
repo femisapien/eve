@@ -132,7 +132,7 @@ describe("a model step held on runtime calls and a person", () => {
         return;
       }
       expect(ran.appended()).toEqual([]);
-      const answered = ran.intake(answer("approve", "deploy")).stored();
+      const answered = ran.intake(answer("approve", "deploy")).stored().runApproved().stored();
       expect(answered.reported("calls.approved")).toHaveLength(1);
       const settled = answered.intake({
         results: [{ content: [result("call-deploy", "deploy", "deployed")], role: "tool" }],
@@ -177,13 +177,13 @@ describe("a model step held on runtime calls and a person", () => {
       .interrupt(approvalsRequested([approval("deploy")]))
       .intake(answer("approve", "deploy"))
       .stored()
+      .runApproved({ message: "Then tell me." })
+      .stored()
       .intake({
         results: [],
         running: [{ ...buildTask, callId: "call-deploy", toolName: "deploy" }],
         type: "calls.settled",
       })
-      .stored()
-      .intake({ input: { message: "Then tell me." }, type: "input.held" })
       .stored();
 
     const settled = approved.intake({

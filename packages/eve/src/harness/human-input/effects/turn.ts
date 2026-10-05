@@ -139,24 +139,10 @@ export class TurnHost implements HumanInputHost<HarnessSession> {
         const settled: Intake = {
           results: work.results.length === 0 ? [] : [{ content: [...work.results], role: "tool" }],
           running: work.runtimeCalls?.tasks ?? [],
-          stopped: work.signIns?.callIds ?? [],
+          ...(work.signIns !== undefined && { signIns: work.signIns }),
           type: "calls.settled",
         };
-        const signIns: Interrupt[] =
-          work.signIns === undefined
-            ? []
-            : [
-                {
-                  at: event.at,
-                  callIds: work.signIns.callIds,
-                  challenges: work.signIns.challenges,
-                  // The calls left the suspended step as it settled.
-                  messages: [],
-                  requester: null,
-                  type: "authorization.required",
-                },
-              ];
-        return { report: [settled, ...signIns], session: work.session };
+        return { report: [settled], session: work.session };
       }
       // Relayed requests never reach the turn: the session steps around it carry these.
       case "answer.forwarded":
@@ -223,18 +209,11 @@ export async function applyStepArrivals(input: {
     session = committed.session;
     if (committed.ended !== undefined) return { result: committed.ended };
   }
-  const turnInput = host.messageAnswered ? withoutMessage(stepInput) : stepInput;
-  if (HumanInput.read(session.state).runtimeCalls() !== undefined) {
-    // Approved calls run as runtime work: the turn parks on them. Its message
-    // is read after their results; its answers were already applied.
-    const following = withoutAnswers(turnInput);
-    if (following?.message !== undefined) {
-      const held = await commitTurn(host, session, { input: following, type: "input.held" });
-      session = held.session;
-    }
-    return {
-      result: { next: null, session: setHarnessEmissionState(session, advanceStep(emissionState)) },
-    };
+  let turnInput = host.messageAnswered ? withoutMessage(stepInput) : stepInput;
+  if (isApprovedStep(HumanInput.read(session.state).next())) {
+    const ran = await runApprovedStep({ effects, emit, emissionState, session, turnInput });
+    if ("result" in ran) return ran;
+    ({ session, turnInput } = ran);
   }
   // A message that answers nothing still joins history, so it is read once
   // the turn runs again; the hold before the model call keeps it.
@@ -242,6 +221,48 @@ export async function applyStepArrivals(input: {
     return { result: await holdForInput({ emissionState, host, session }) };
   }
   return { session, turnInput };
+}
+
+/**
+ * Runs the calls a person approved as a step without a model call, through
+ * the post-step settle: their results join the suspended step, the calls
+ * that ask for a sign-in leave it as their sign-ins open, and calls that run
+ * as runtime work park the turn. The turn input that arrived with the
+ * answers waits behind them; it is the turn's input once the step joins
+ * history.
+ */
+async function runApprovedStep(input: {
+  readonly effects: StepEffects;
+  readonly emit?: Emit;
+  readonly emissionState: HarnessEmissionState;
+  readonly session: HarnessSession;
+  readonly turnInput: StepInput | undefined;
+}): Promise<
+  | { readonly result: StepResult }
+  | { readonly session: HarnessSession; readonly turnInput: StepInput | undefined }
+> {
+  const { effects, emit, emissionState } = input;
+  const host = new TurnHost({ effects, emit, emissionState, phase: "post-step" });
+  const following = followingInput(input.turnInput);
+  const ran = await commitTurn(host, input.session, {
+    ...(following !== undefined && { following }),
+    type: "approved.run",
+  });
+  if (ran.ended !== undefined) return { result: ran.ended };
+  if (HumanInput.read(ran.session.state).runtimeCalls() !== undefined) {
+    // The turn parks on them; it reads its input after their results.
+    return {
+      result: {
+        next: null,
+        session: setHarnessEmissionState(ran.session, advanceStep(emissionState)),
+      },
+    };
+  }
+  return { session: ran.session, turnInput: host.following };
+}
+
+function isApprovedStep(next: ReturnType<HumanInput["next"]>): boolean {
+  return "run" in next && next.run === "calls";
 }
 
 /**
@@ -291,8 +312,18 @@ function withoutMessage(input: StepInput | undefined): StepInput | undefined {
   return rest;
 }
 
-function withoutAnswers(input: StepInput | undefined): StepInput | undefined {
+/**
+ * What of the turn input waits behind approved calls: everything but the
+ * answers, already applied, and runtime results, already read. `undefined`
+ * when nothing is left.
+ */
+function followingInput(input: StepInput | undefined): StepInput | undefined {
   if (input === undefined) return undefined;
-  const { attributedInputResponses: _attributed, inputResponses: _responses, ...rest } = input;
-  return rest;
+  const {
+    attributedInputResponses: _attributed,
+    inputResponses: _responses,
+    runtimeActionResults: _results,
+    ...rest
+  } = input;
+  return Object.values(rest).some((value) => value !== undefined) ? rest : undefined;
 }

@@ -25,8 +25,8 @@ import {
 
 // The tool approval rules. A model step's calls open one request each; the
 // step's approvals resolve together once each has an answer, or when the turn
-// moves past them. Approved calls run in the runtime (`calls.approved`); every
-// other call gets a not-run result. The step itself waits out of history and
+// moves past them. Approved calls run as a step without a model call
+// (`approved.run`); every other call gets a not-run result. The step itself waits out of history and
 // joins it only once every call it made has a result.
 
 /** An open approval, as the session stores it. */
@@ -304,8 +304,8 @@ export function grantedApprovalKeys(state: ApprovalState): ReadonlySet<string> {
 /**
  * Resolves the step's approvals together: one `input.resolved` at the asking
  * step, a not-run result and a rejected `action.result` for each call that
- * won't run, and `calls.approved` for the rest. An approval nobody answered
- * is ignored.
+ * won't run; the rest wait on the suspended step for the turn to run them.
+ * An approval nobody answered is ignored.
  */
 function resolveApprovals<S extends ApprovalState>(state: S): Reduced<S> {
   const open = openApprovalsOf(state);
@@ -360,16 +360,13 @@ function resolveApprovals<S extends ApprovalState>(state: S): Reduced<S> {
     const settled = settleCalls(resolved, notRun.length === 0 ? [] : [notRunMessage(notRun)]);
     return { events: [...events, ...settled.events], state: settled.state };
   }
-  // The step waits for the approved calls' results; see `settleCalls`.
-  const suspended =
-    resolved.suspended === undefined
-      ? undefined
-      : { ...resolved.suspended, messages: withResults(resolved.suspended.messages, notRun) };
-  if (suspended === undefined && notRun.length > 0) {
-    events.push({ message: notRunMessage(notRun), type: "history.appended" });
-  }
-  events.push({ at, requests: approved, type: "calls.approved" });
-  return { events, state: suspended === undefined ? resolved : { ...resolved, suspended } };
+  // The approved calls run as a step of their own, without a model call
+  // (`approved.run`); the step waits for their results. A step parked before
+  // steps were held out of history has its calls there: it holds only the
+  // results, which join history after them.
+  const step = resolved.suspended ?? { at, messages: [] };
+  const suspended = { ...step, approved, messages: withResults(step.messages, notRun) };
+  return { events, state: { ...resolved, suspended } };
 }
 
 /** An approval's outcome from its answer; a relayed approval resolves the same way. */

@@ -44,6 +44,7 @@ import {
   awaitedSignIns,
   closeSignIns,
   completeSignIn,
+  openSignIns,
   requireSignIns,
   type OpenSignIn,
 } from "./sign-ins.js";
@@ -63,8 +64,9 @@ import { staleAnswersAsText } from "./stale-answers.js";
 import {
   cancelStep,
   dispatchCalls,
+  hasApprovedCalls,
   heldStep,
-  holdFollowingInput,
+  runApproved,
   withMessages,
   type HeldStep,
   type SuspendedStep,
@@ -146,11 +148,13 @@ export class HumanInput {
   }
 
   /**
-   * What the turn does now: run its next model step, or wait. The model never
+   * What the turn does now: run the calls a person approved, as a step
+   * without a model call; run its next model step; or wait. The model never
    * runs while a request of its own is open, sign-ins included; a relayed
    * request waits on the call that asked, not on the model.
    */
   next(): Next {
+    if (hasApprovedCalls(this.#state.suspended)) return { run: "calls" };
     return Object.values(this.#state.requests).some((open) => !isOpenRelayed(open))
       ? { held: "input" }
       : { run: "model" };
@@ -339,8 +343,7 @@ export type Interrupt =
       /**
        * The step's response. It joins history without the calls that asked,
        * so history never holds a call that waits on a person, unless the
-       * step is suspended: then the calls leave the suspended step. Empty
-       * for approved calls that asked, whose step is always suspended.
+       * step is suspended: then the calls leave the suspended step.
        */
       readonly messages: readonly ModelMessage[];
       readonly challenges: readonly AuthorizationChallenge[];
@@ -358,6 +361,12 @@ export type Interrupt =
       /** The workflow runs they start. */
       readonly tasks: readonly RuntimeWorkflowTaskRequest[];
     }
+  /**
+   * The turn runs the calls a person approved, as a step without a model
+   * call. `following` is the turn input that arrived with the answers: the
+   * turn reads it once the step joins history.
+   */
+  | { readonly type: "approved.run"; readonly following?: StepInput }
   /** The budget ran out before a model call, and a person can grant more. */
   | {
       readonly type: "budget.exceeded";
@@ -422,20 +431,18 @@ export type Intake =
   /**
    * Calls of the suspended step settled: those `calls.approved` asked for, or
    * its runtime calls. `running` is the approved calls that still run as
-   * runtime work; `stopped` names the calls that asked for a sign-in, which
-   * leave the step with their results.
+   * runtime work; `signIns` the approved calls that asked for a sign-in,
+   * which leave the step as their sign-ins open.
    */
   | {
       readonly type: "calls.settled";
       readonly results: readonly ModelMessage[];
       readonly running?: readonly RuntimeWorkflowTaskRequest[];
-      readonly stopped?: readonly string[];
+      readonly signIns?: {
+        readonly callIds: readonly string[];
+        readonly challenges: readonly AuthorizationChallenge[];
+      };
     }
-  /**
-   * Turn input arrived with approved calls that run as runtime work: the turn
-   * reads it after their results.
-   */
-  | { readonly type: "input.held"; readonly input: StepInput }
   | { readonly type: "time"; readonly now: number }
   /**
    * The turn a budget Stop ended settles as cancelled, from before the step
@@ -533,7 +540,11 @@ export type HumanInputEvent =
   | { readonly type: "note"; readonly text: string }
   | { readonly type: "turn.cancelled" };
 
-export type Next = { readonly run: "model" } | { readonly held: "input" };
+export type Next =
+  | { readonly run: "model" }
+  /** Run the approved calls of the suspended step: `approved.run`, post-step. */
+  | { readonly run: "calls" }
+  | { readonly held: "input" };
 
 /** What running a response policy did, before human input reads it as a verdict. */
 export type PolicyRun =
@@ -759,10 +770,19 @@ function reduce(state: HumanInputState, input: Interrupt | Intake): Reduced {
       return withdrawAsk(state, input);
     case "calls.dispatched":
       return { events: [], state: dispatchCalls(state, input) };
-    case "calls.settled":
-      return settleCalls(state, input.results, input.running, input.stopped);
-    case "input.held":
-      return { events: [], state: holdFollowingInput(state, input.input) };
+    case "approved.run":
+      return runApproved(state, input.following);
+    case "calls.settled": {
+      const { signIns } = input;
+      const at = state.suspended?.at;
+      const settled = settleCalls(state, input.results, input.running, signIns?.callIds);
+      if (signIns === undefined || at === undefined) return settled;
+      // The approved calls that asked for a sign-in left the step; their
+      // sign-ins open at the step that asked, and the turn holds on them.
+      return then(settled, (next) =>
+        openSignIns(next, { at, challenges: signIns.challenges, requester: null }),
+      );
+    }
     case "authorization.completed": {
       const completed = completeSignIn(state, input);
       if (completed === undefined) return { events: [], state };

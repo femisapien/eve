@@ -87,7 +87,8 @@ describe("HumanInput", () => {
         turn = ACTIONS[name]!(turn).stored();
         const open =
           turn.humanInput.openRequestIds().size > 0 || turn.humanInput.awaitedSignIns().length > 0;
-        if (open && "run" in turn.next()) ranWhileOpen.push(sequence.join(" → "));
+        const next = turn.next();
+        if (open && "run" in next && next.run === "model") ranWhileOpen.push(sequence.join(" → "));
       }
     }
 
