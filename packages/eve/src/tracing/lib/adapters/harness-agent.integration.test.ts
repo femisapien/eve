@@ -65,7 +65,6 @@ describe("outside-eve agent", () => {
         sequence: 0,
       });
       expect(handle).not.toHaveProperty("snapshot");
-      expect(tracing).not.toHaveProperty("resume");
       await handle.complete();
     } finally {
       await tracing.shutdown();

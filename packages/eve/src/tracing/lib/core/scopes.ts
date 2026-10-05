@@ -24,6 +24,7 @@ import type {
   ScopeData,
   ScopeIdentity,
   ScopeRecord,
+  ScopeTerminal,
   TraceErrorHandler,
   TraceLink,
   TraceReference,
@@ -37,11 +38,26 @@ interface Construction extends Partial<ScopeRecord> {
   readonly key: string;
   readonly deferred?: boolean;
   readonly executionContext?: ExecutionContext;
+  /** Applies sampling to a host-supplied root reference. */
+  readonly sample?: boolean;
+}
+export interface ChildOptions {
+  readonly links?: readonly TraceLink[];
 }
 export interface LiveOperation extends Operation {
-  child(data: ScopeData, key?: string): Promise<LiveOperation>;
+  child(data: ScopeData, key?: string, options?: ChildOptions): Promise<LiveOperation>;
   usage(usage: Usage, key?: string): Promise<void>;
   error(error?: unknown, type?: string): void;
+  /** Replaces the host context for this operation and its descendants. */
+  useContext(context: ExecutionContext): void;
+  /** Moves a tool that started before its action under that action. */
+  adopt(action: LiveOperation): Promise<void>;
+  /** Completes this operation, or closes the open descendants of a finished one. */
+  release(result: ScopeTerminal): Promise<void>;
+  /** Finished, with no unfinished descendants. */
+  readonly settled: boolean;
+  readonly awaitingParent: boolean;
+  readonly callId?: string;
   readonly mcp: McpLifecycle;
   record(): ScopeRecord;
 }
@@ -52,25 +68,38 @@ const DEFERRED_WHEN_DURABLE: ReadonlySet<ScopeData["type"]> = new Set([
   "action",
   "approval",
 ]);
+/** Durable work that a successful parent leaves open, such as an action awaiting approval. */
+const OUTLIVES_PARENT: ReadonlySet<ScopeData["type"]> = new Set(["action", "approval"]);
 
 function segment(value: string | number): string {
   return encodeURIComponent(String(value));
 }
 
 /** Children with a stable identity hydrate on re-entry; the rest are numbered. */
-function semanticKey(data: ScopeData): string | undefined {
+function semanticKey(data: ScopeData, parent: ScopeData["type"]): string | undefined {
   switch (data.type) {
     case "step":
       return `step:${segment(data.options.index)}:${segment(data.options.attempt ?? 0)}`;
     case "action":
       return `action:${segment(data.options.callId)}`;
     case "tool":
-      return "tool";
+      return parent === "step" ? `tool:${segment(data.options.callId)}` : "tool";
     case "approval":
       return `approval:${segment(data.options.requestId)}`;
     default:
       return undefined;
   }
+}
+
+function terminalOf(result: ScopeTerminal & { errorType?: string; result?: unknown }) {
+  const failed = result.failed || result.outcome === "failed";
+  return {
+    ...result,
+    model: "result" in result ? result.result : result.model,
+    failed,
+    outcome: result.outcome ?? (failed ? "failed" : "completed"),
+    errorCode: "errorType" in result ? result.errorType : result.errorCode,
+  } as ScopeTerminal;
 }
 
 export function createScopes(input: {
@@ -131,6 +160,7 @@ export function createScopes(input: {
         attempt,
         {
           ...binding,
+          sample: false,
           reference: {
             traceId:
               binding.reference?.traceId ??
@@ -168,7 +198,8 @@ export function createScopes(input: {
     }
     const key = binding.key;
     const startTimeMs = binding.startTimeMs ?? Date.now();
-    const parentReference = parent?.reference ?? binding.parent;
+    // A restored record keeps its saved parent; an adopted tool's differs from its owner.
+    let parentReference = binding.parent ?? parent?.reference;
     if (capture.emit) capture = intersectCapture(capture, telemetry.active()?.capture);
     let actualCapture = capture;
     let actualData = capturedData(data, actualCapture);
@@ -201,11 +232,23 @@ export function createScopes(input: {
       },
       serializer,
     ).data;
+    let awaitingParent = binding.pendingParent === true;
     const deferred =
-      binding.deferred ?? (input.durable && DEFERRED_WHEN_DURABLE.has(actualData.type));
-    const host = binding.executionContext;
-    const reference =
+      binding.deferred ??
+      (awaitingParent || (input.durable && DEFERRED_WHEN_DURABLE.has(actualData.type)));
+    let host = binding.executionContext;
+    let reference =
       binding.reference ?? reserve(data, key, parentReference, prepared, actualCapture);
+    if (binding.sample === true && reference !== undefined)
+      reference = {
+        ...reference,
+        traceFlags:
+          (reference.traceFlags & 1) !== 0 &&
+          actualCapture.emit &&
+          (telemetry.samples?.(reference.traceId, prepared) ?? true)
+            ? 1
+            : 0,
+      };
     let operation: TraceOperation | undefined = deferred
       ? undefined
       : engine.start(prepared, actualCapture, host, reference);
@@ -227,16 +270,25 @@ export function createScopes(input: {
     let totalUsage = binding.usage;
     const usageKeys = new Set(binding.usageKeys ?? []);
     const enrichment: Record<string, Attributes[string]> = {};
+    const callId =
+      actualData.type === "action" || actualData.type === "tool"
+        ? actualData.options.callId
+        : undefined;
 
     function changed(): void {
       void onChange();
     }
 
-    async function child(childData: ScopeData, childKey: string): Promise<LiveOperation> {
+    async function child(
+      childData: ScopeData,
+      childKey: string,
+      options: ChildOptions = {},
+    ): Promise<LiveOperation> {
       const existing = children.get(childKey);
-      if (input.durable && existing !== undefined && !existing.finished) return existing;
+      if (input.durable && existing !== undefined && !existing.settled) return existing;
+      if (finished) throw new Error("The operation is not permitted in this trace scope.");
       for (const [previousKey, previous] of children)
-        if (previous.finished) children.delete(previousKey);
+        if (previous.settled) children.delete(previousKey);
       let childCapture = actualCapture;
       if (children.size >= UNFINISHED_CHILDREN) {
         report(new Error("Trace unfinished-child limit reached."), {
@@ -251,6 +303,9 @@ export function createScopes(input: {
           "agent.model.id": childData.options.modelId,
           "agent.model.provider": childData.options.provider,
         });
+      // Without stable IDs a tool cannot be re-parented, so it stays under the step.
+      const awaiting =
+        childData.type === "tool" && actualData.type === "step" && telemetry.ids !== undefined;
       const next = await construct(
         identity,
         childCapture,
@@ -259,12 +314,67 @@ export function createScopes(input: {
         childData.type === "step"
           ? { index: childData.options.index, attempt: childData.options.attempt ?? 0 }
           : attempt,
-        { key: childKey, executionContext: host },
+        {
+          key: childKey,
+          executionContext: host,
+          links: options.links,
+          pendingParent: awaiting || undefined,
+          reference: awaiting
+            ? {
+                ...runtime.reference,
+                spanId: telemetry.ids!.spanId(childKey),
+                isRemote: false,
+              }
+            : undefined,
+        },
         onChange,
       );
       if (childCapture.emit || children.size < UNFINISHED_CHILDREN) children.set(childKey, next);
+      if (next.type === "action")
+        for (const tool of children.values())
+          if (tool.awaitingParent && tool.callId === next.callId) await tool.adopt(next);
       await onChange();
       return next;
+    }
+
+    async function closeChildren(result: ScopeTerminal, all: boolean): Promise<void> {
+      for (const next of children.values())
+        if (all || !OUTLIVES_PARENT.has(next.type))
+          await next.release({ failed: result.failed, error: result.error, outcome: "abandoned" });
+    }
+
+    async function finish(result: ScopeTerminal): Promise<void> {
+      if (pending.size > 0) await Promise.allSettled(pending);
+      if (finished) return;
+      if (terminalResult?.failed)
+        result = {
+          ...result,
+          failed: true,
+          error: terminalResult.error,
+          errorCode: terminalResult.errorCode,
+        };
+      finished = true;
+      terminalResult = result;
+      await closeChildren(result, result.failed === true || !input.durable);
+      operation ??= engine.start(prepared, actualCapture, host, retainedReference);
+      const terminal =
+        actualData.type === "activation" && result.usage === undefined
+          ? { ...result, usage: totalUsage }
+          : result;
+      try {
+        completeScope(operation, actualData, terminal, actualCapture, startTimeMs, serializer);
+      } catch (error) {
+        report(error, {
+          phase: "complete",
+          operation: actualData.type,
+          reference: retainedReference,
+        });
+      }
+      applyAttributes(operation, enrichment);
+      if (actualData.type === "model" && result.model !== undefined)
+        await parent?.usage(result.model.usage, key);
+      operation.end(result.endTimeMs);
+      await onChange();
     }
 
     const runtime: LiveOperation = {
@@ -303,18 +413,39 @@ export function createScopes(input: {
         if (operation !== undefined) applyAttributes(operation, attributes);
         changed();
       },
+      useContext(context) {
+        host = context;
+        for (const next of children.values()) next.useContext(context);
+      },
+      async adopt(action) {
+        if (!awaitingParent) return;
+        awaitingParent = false;
+        parentReference = action.reference;
+        prepared = { ...prepared, parent: action.reference };
+        if (terminalResult?.outcome !== undefined) await finish(terminalResult);
+        else changed();
+      },
+      async release(result) {
+        if (finished) {
+          await closeChildren(result, result.failed === true || !input.durable);
+          return;
+        }
+        awaitingParent = false;
+        await finish(terminalOf(terminalResult?.outcome === undefined ? result : terminalResult));
+      },
       record() {
         return snapshotRecord(
           {
             version: 1,
             finished,
+            pendingParent: awaitingParent || undefined,
             terminal: terminalResult,
             usage: totalUsage,
             usageKeys: [...usageKeys],
             attributes: { ...prepared.attributes, ...enrichment },
             childSequence,
             children: [...children.values()]
-              .filter((child) => !child.finished)
+              .filter((child) => !child.settled)
               .map((child) => child.record()),
             key,
             identity,
@@ -333,17 +464,19 @@ export function createScopes(input: {
         return parentReference;
       },
       startTimeMs,
-      child(data, childKey) {
-        if (finished || !parentKinds(data).includes(actualData.type))
+      child(data, childKey, options) {
+        if (!parentKinds(data).includes(actualData.type))
           throw new Error("The operation is not permitted in this trace scope.");
         const name =
           childKey === undefined
-            ? ((input.durable ? semanticKey(data) : undefined) ?? `${data.type}:${childSequence++}`)
+            ? ((input.durable ? semanticKey(data, actualData.type) : undefined) ??
+              `${data.type}:${childSequence++}`)
             : `${data.type}:${segment(childKey)}`;
-        return child(data, `${key}/${name}`);
+        return child(data, `${key}/${name}`, options);
       },
       type: actualData.type,
       reference: retainedReference,
+      callId,
       get capture() {
         return actualCapture;
       },
@@ -362,6 +495,12 @@ export function createScopes(input: {
       }),
       get finished() {
         return finished;
+      },
+      get settled() {
+        return finished && [...children.values()].every((next) => next.settled);
+      },
+      get awaitingParent() {
+        return awaitingParent;
       },
       run(execute, ceiling) {
         if (finished) throw new Error("The trace scope has already finished.");
@@ -400,49 +539,22 @@ export function createScopes(input: {
       },
       async complete(result = terminalResult ?? {}) {
         if (finished) return;
-        if (pending.size > 0) await Promise.allSettled(pending);
-        if (finished) return;
-        if (terminalResult?.failed)
-          result = {
-            ...result,
-            failed: true,
-            error: terminalResult.error,
-            errorCode: terminalResult.errorCode,
-          };
-        result = {
-          ...result,
-          model: "result" in result ? result.result : result.model,
-          failed: result.failed || result.outcome === "failed",
-          errorCode: "errorType" in result ? result.errorType : result.errorCode,
-        };
-        finished = true;
-        terminalResult = result;
-        for (const next of children.values())
-          if (!next.finished)
-            await next.complete({
-              failed: result.failed,
-              error: result.error,
-              outcome: "abandoned",
-            });
-        operation ??= engine.start(prepared, actualCapture, host, retainedReference);
-        const terminal =
-          actualData.type === "activation" && result.usage === undefined
-            ? { ...result, usage: totalUsage }
-            : result;
-        try {
-          completeScope(operation, actualData, terminal, actualCapture, startTimeMs, serializer);
-        } catch (error) {
-          report(error, {
-            phase: "complete",
-            operation: actualData.type,
-            reference: retainedReference,
-          });
+        if (awaitingParent) {
+          // Held until the action it belongs to starts, or its step closes it.
+          terminalResult = terminalOf(
+            terminalResult?.failed
+              ? {
+                  ...result,
+                  failed: true,
+                  error: terminalResult.error,
+                  errorCode: terminalResult.errorCode,
+                }
+              : result,
+          );
+          changed();
+          return;
         }
-        applyAttributes(operation, enrichment);
-        if (actualData.type === "model" && result.model !== undefined)
-          await parent?.usage(result.model.usage, key);
-        operation.end(result.endTimeMs);
-        await onChange();
+        await finish(terminalOf(result));
       },
       async usage(usage, callKey) {
         if (callKey !== undefined && usageKeys.has(callKey)) return;
@@ -501,6 +613,8 @@ export function createScopes(input: {
       capture: CaptureDecision;
       data: ScopeData;
       parent?: TraceReference;
+      reference?: TraceReference;
+      startTimeMs?: number;
       links?: readonly TraceLink[];
       context?: ExecutionContext;
       onChange?: () => Promise<void>;
@@ -514,6 +628,9 @@ export function createScopes(input: {
         {
           key: facts.key,
           parent: facts.parent,
+          reference: facts.reference,
+          sample: facts.reference !== undefined && facts.data.type === "activation",
+          startTimeMs: facts.startTimeMs,
           links: facts.links,
           executionContext: facts.context,
         },

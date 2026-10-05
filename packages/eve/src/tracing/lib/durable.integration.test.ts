@@ -91,6 +91,95 @@ describe("durable agent tracing", () => {
     expect(entries.size).toBe(0);
   });
 
+  it("keeps an action open after its attempt and the turn complete", async () => {
+    const { checkpointer, entries } = memoryCheckpointer();
+    const exporter = new InMemorySpanExporter();
+    const first = worker(checkpointer, exporter);
+    const turn = await first.turn({ identity, sequence: 0 });
+    const attempt = await turn.attempt({ stepIndex: 0, attempt: 0 });
+    const action = await attempt.action({ callId: "lookup", name: "lookup" });
+    await action.approval({ requestId: "approval" });
+    await attempt.complete();
+    await turn.complete();
+    expect(entries.size).toBe(1);
+
+    // Bob approves the request after the turn has parked.
+    const second = worker(checkpointer, exporter);
+    expect(await second.resume({ identity: { ...identity, turnId: "other" } })).toBeUndefined();
+    const resumed = await second.resume({ identity });
+    const resumedAttempt = await resumed!.attempt({ stepIndex: 0, attempt: 0 });
+    const resumedAction = await resumedAttempt.action({ callId: "lookup", name: "lookup" });
+    await (
+      await resumedAction.approval({ requestId: "approval" })
+    ).complete({
+      outcome: "approved",
+    });
+    await resumedAction.complete();
+    await second.forceFlush();
+
+    const spans = exporter.getFinishedSpans();
+    expect(spans.map((span) => span.name)).toEqual([
+      "agent.step",
+      "invoke_agent support",
+      "agent.approval",
+      "agent.action",
+    ]);
+    expect(spans[3]!.parentSpanContext?.spanId).toBe(attempt.reference.spanId);
+    expect(entries.size).toBe(0);
+  });
+
+  it("moves a tool that starts before its action under that action", async () => {
+    const { checkpointer } = memoryCheckpointer();
+    const exporter = new InMemorySpanExporter();
+    const tracing = worker(checkpointer, exporter);
+    const turn = await tracing.turn({ identity, sequence: 0 });
+    const attempt = await turn.attempt({ stepIndex: 0, attempt: 0 });
+    const early = await attempt.toolCall({ callId: "lookup", name: "lookup" });
+    await early.complete({ outcome: "completed" });
+    const orphan = await attempt.toolCall({ callId: "final", name: "final" });
+    await orphan.complete({ outcome: "completed" });
+    const action = await attempt.action({ callId: "lookup", name: "lookup" });
+    await action.complete();
+    await attempt.complete();
+    await turn.complete();
+    await tracing.forceFlush();
+
+    const byName = new Map(exporter.getFinishedSpans().map((span) => [span.name, span]));
+    expect(byName.get("execute_tool lookup")!.parentSpanContext?.spanId).toBe(
+      action.reference.spanId,
+    );
+    expect(byName.get("execute_tool final")!.parentSpanContext?.spanId).toBe(
+      attempt.reference.spanId,
+    );
+  });
+
+  it("adopts a reserved turn reference and applies sampling", async () => {
+    const { checkpointer } = memoryCheckpointer();
+    const exporter = new InMemorySpanExporter();
+    const idGenerator = new AgentSpanIdGenerator();
+    const tracing = createAgentTracing({
+      agentName: "support",
+      telemetry: otelTelemetry({
+        provider: new BasicTracerProvider({
+          idGenerator,
+          spanProcessors: [new SimpleSpanProcessor(exporter)],
+        }),
+        idGenerator,
+        samplesTrace: (traceId) => traceId !== "b".repeat(32),
+      }),
+      checkpointer,
+    });
+    const reference = { traceId: "a".repeat(32), spanId: "c".repeat(16), traceFlags: 1 };
+    const turn = await tracing.turn({ identity, sequence: 0, reference });
+    expect(turn.reference).toMatchObject(reference);
+    const dropped = await tracing.turn({
+      identity: { ...identity, turnId: "dropped" },
+      sequence: 1,
+      reference: { ...reference, traceId: "b".repeat(32) },
+    });
+    expect(dropped.reference.traceFlags).toBe(0);
+  });
+
   it("starts a fresh turn when the checkpoint is unusable", async () => {
     const { checkpointer, entries } = memoryCheckpointer();
     const exporter = new InMemorySpanExporter();

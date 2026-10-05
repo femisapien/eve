@@ -34,6 +34,11 @@ export function boundedSerializer(
   };
 }
 
+/** Each node is capped on its own; settled children leave the tree. */
+function nodeBytes(record: ScopeRecord): number {
+  return new TextEncoder().encode(JSON.stringify({ ...record, children: undefined })).length;
+}
+
 export function traceSnapshot(value: unknown): TraceSnapshot {
   return JSON.parse(JSON.stringify(value)) as TraceSnapshot;
 }
@@ -124,7 +129,7 @@ export function validSnapshot(
       record.data.options === null
     )
       return false;
-    if (new TextEncoder().encode(JSON.stringify(record)).length > maxBytes) return false;
+    if (nodeBytes(record) > maxBytes) return false;
     return true;
   } catch {
     return false;
@@ -224,9 +229,7 @@ export function snapshotRecord(record: ScopeRecord, serializer: ContentSerialize
     const snapshot = JSON.parse(
       JSON.stringify({ ...record, version: 1, data: JSON.parse(json) }),
     ) as ScopeRecord;
-    return new TextEncoder().encode(JSON.stringify(snapshot)).length <= SNAPSHOT_BYTES
-      ? snapshot
-      : fallback();
+    return nodeBytes(snapshot) <= SNAPSHOT_BYTES ? snapshot : fallback();
   } catch {
     return fallback();
   }

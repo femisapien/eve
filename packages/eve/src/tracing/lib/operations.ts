@@ -1,5 +1,7 @@
+import type { LiveOperation } from "./core/scopes.js";
 import type {
-  Operation as RuntimeOperation,
+  StepOptions,
+  TraceLink,
   ScopeData,
   ScopeTerminal,
   ModelOptions,
@@ -32,8 +34,17 @@ export interface WrappedOperation<I, H extends Operation> {
   ): Promise<T>;
 }
 type MemoryInput = Extract<ScopeData, { type: "memory" }>["options"];
+export interface AttemptInput {
+  readonly stepIndex: number;
+  readonly attempt: number;
+  readonly runtimeContext?: StepOptions["runtimeContext"];
+  readonly channel?: StepOptions["channel"];
+  readonly links?: readonly TraceLink[];
+}
 export interface TurnOperation extends Operation {
-  attempt: WrappedOperation<{ stepIndex: number; attempt: number }, AttemptOperation>;
+  attempt: WrappedOperation<AttemptInput, AttemptOperation>;
+  /** Replaces the turn's links before its deferred span is exported. */
+  links(links: readonly TraceLink[]): void;
   memory: WrappedOperation<MemoryInput, MemoryOperation>;
 }
 export interface AttemptOperation extends Operation {
@@ -41,6 +52,12 @@ export interface AttemptOperation extends Operation {
   callSubAgent: WrappedOperation<{ callId: string; agentName: string }, ActionOperation>;
   callRemoteAgent: WrappedOperation<{ callId: string; agentName: string }, ActionOperation>;
   tool<T>(input: ActionOptions, execute: () => T | PromiseLike<T>): Promise<T>;
+  /**
+   * Starts a tool execution whose action has not started yet. It moves under
+   * the action with the same `callId` when that starts; otherwise it stays
+   * under this attempt.
+   */
+  toolCall(input: Omit<ActionOptions, "kind">): Promise<ToolOperation>;
   modelCall(input: ModelOptions, key?: string): Promise<ModelOperation>;
   modelCall<T>(
     input: ModelOptions,
@@ -127,7 +144,7 @@ export function wrappedOperation<I, H extends Operation>(
 }
 
 export function operationHandle(
-  runtime: RuntimeOperation,
+  runtime: LiveOperation,
   data: ScopeData,
   onError?: TraceErrorHandler,
 ): TurnOperation | AttemptOperation | ActionOperation | Operation {
@@ -155,8 +172,8 @@ export function operationHandle(
     complete: (result) => runtime.complete(result),
     fail: (error) => runtime.fail(error),
   };
-  const child = async (data: ScopeData, key?: string) =>
-    operationHandle(await runtime.child(data, key), data, onError);
+  const child = async (data: ScopeData, key?: string, links?: readonly TraceLink[]) =>
+    operationHandle(await runtime.child(data, key, { links }), data, onError);
   const memory = wrappedOperation(
     async (options: MemoryInput) => child({ type: "memory", options }),
     undefined,
@@ -166,12 +183,22 @@ export function operationHandle(
     return live({
       ...common,
       memory,
+      links: (links: readonly TraceLink[]) => runtime.update({ links }),
       attempt: wrappedOperation(
-        async (input: { stepIndex: number; attempt: number }) =>
-          child({
-            type: "step",
-            options: { index: input.stepIndex, attempt: input.attempt },
-          }) as Promise<AttemptOperation>,
+        async (input: AttemptInput) =>
+          child(
+            {
+              type: "step",
+              options: {
+                index: input.stepIndex,
+                attempt: input.attempt,
+                runtimeContext: input.runtimeContext,
+                channel: input.channel,
+              },
+            },
+            undefined,
+            input.links,
+          ) as Promise<AttemptOperation>,
         undefined,
         onError,
       ),
@@ -231,6 +258,11 @@ export function operationHandle(
       callSubAgent: delegation("subagent-call"),
       callRemoteAgent: delegation("remote-agent-call"),
       tool: (input, execute) => action(input, (handle) => handle.toolExecution({}, execute)),
+      toolCall: (input) =>
+        child({
+          type: "tool",
+          options: { callId: input.callId, name: input.name, arguments: input.arguments },
+        }),
       modelCall,
       async modelStream(input, execute) {
         const handle = await startModel(input);

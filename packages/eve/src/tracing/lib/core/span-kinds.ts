@@ -226,7 +226,7 @@ const kinds: { [K in ScopeData["type"]]: Kind<K> } = {
     },
   },
   tool: {
-    parents: ["action"],
+    parents: ["action", "step"],
     prepare({ options }, context) {
       return {
         name: toolName(options.name),

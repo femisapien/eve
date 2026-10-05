@@ -237,6 +237,10 @@ export interface ScopeTerminal {
 export interface ScopeRecord {
   readonly version?: 1;
   readonly finished?: boolean;
+  /** A tool waiting for the action with its call ID. */
+  readonly pendingParent?: boolean;
+  /** Write token used to detect a checkpoint changed by another process. */
+  readonly revision?: string;
   readonly key: string;
   readonly identity: ScopeIdentity;
   readonly data: ScopeData;

@@ -4,12 +4,14 @@ export {
   type AgentTracingOptions,
   type AgentMemoryTracing,
   type TurnInput,
+  type ResumeInput,
 } from "./agent-tracing.js";
 export { otelTelemetry, type OtelTelemetryOptions } from "./adapters/otel.js";
 export { AgentSpanIdGenerator } from "./adapters/otel-ids.js";
 export type {
   Operation,
   TurnOperation,
+  AttemptInput,
   AttemptOperation,
   ActionOperation,
   ModelOperation,

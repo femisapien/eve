@@ -67,7 +67,13 @@ await turn.complete();
 ```
 
 Handles expose execution, attributes, completion, and identity. Parent
-completion closes unfinished children. `complete()` is idempotent.
+completion closes unfinished children; in durable turns, a successful attempt
+or turn leaves open actions and approvals for their own completion. `complete()`
+is idempotent.
+
+When a tool starts before its action, start it with `attempt.toolCall()`. It
+moves under the action with the same `callId` when that action starts, and
+stays under the attempt otherwise.
 
 ## Model calls and streams
 
@@ -141,9 +147,17 @@ await approval.complete({ outcome: "approved" });
 Turns are keyed by agent name, `runId`, and `turnId`; attempts by step index
 and attempt; actions by `callId`; approvals by `requestId`. Model calls,
 memory, and tool executions finish within one process and are not resumed.
+`tracing.resume({ identity })` returns a saved turn without starting one, for
+example to finish an action after its turn has completed.
+
+A turn can adopt a trace and span ID reserved before it started, such as one
+already returned to a caller, with `reference`. The telemetry's sampler still
+decides whether the turn is recorded. `lineage`, `channel`, `links`, and
+`startTimeMs` describe host-owned delegation and delivery; `turn.links()`
+replaces links learned after the turn started.
 
 The library writes JSON after each change and deletes the entry when the turn
-completes. Back the checkpointer with storage that commits alongside your
+and its open actions complete. Back the checkpointer with storage that commits alongside your
 workflow step. An unreadable checkpoint is reported to `onError` and the turn
 starts fresh. Durable turns, actions, and approvals are exported when they
 complete, so their spans carry the IDs their children already reference.
@@ -151,8 +165,8 @@ complete, so their spans carry the IDs their children already reference.
 ## Privacy and failures
 
 Declined content does not enter checkpoints. Failure classes survive redaction;
-exception content does not. Serialized content is capped at 32 KiB, checkpoints at
-64 KiB, and unfinished children at 10,000. `onError(error, context)` is the only
+exception content does not. Serialized content is capped at 32 KiB, each checkpointed
+operation at 64 KiB, and unfinished children at 10,000. `onError(error, context)` is the only
 tracing error channel. Trace output retains schema version 4.
 
 Local tests cover output and recovery. They do not prove live Agent Runs ingestion.

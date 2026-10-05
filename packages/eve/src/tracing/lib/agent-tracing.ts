@@ -4,16 +4,21 @@ import { aiSdkContentSerializer } from "./adapters/serialization.js";
 import { createScopes, type LiveOperation } from "./core/scopes.js";
 import { currentAgentHandoff } from "./core/delegation.js";
 import { intersectCapture } from "./core/activation.js";
+import { traceSnapshot } from "./core/snapshot.js";
 import { operationHandle, wrappedOperation, type TurnOperation } from "./operations.js";
 import type {
   AgentTelemetry,
   Attributes,
   CaptureDecision,
   ContentSerializer,
+  ExecutionContext,
   FrameworkIdentity,
   RunIdentity,
+  ScopeRecord,
   TraceCheckpointer,
   TraceErrorHandler,
+  TraceLink,
+  TraceReference,
 } from "./core/types.js";
 
 export interface AgentTracingOptions {
@@ -22,8 +27,9 @@ export interface AgentTracingOptions {
   readonly telemetry?: AgentTelemetry;
   /**
    * Makes turns durable. Each in-flight turn is saved under a library-chosen
-   * key and removed when the turn completes. Calling `turn()` again with the
-   * same identity, in this or a later process, continues the saved turn.
+   * key and removed when the turn and its open actions complete. Calling
+   * `turn()` again with the same identity, in this or a later process,
+   * continues the saved turn.
    */
   readonly checkpointer?: TraceCheckpointer;
   /** Defaults to the AI SDK content serializer. */
@@ -37,24 +43,51 @@ export interface TurnInput {
   readonly framework?: FrameworkIdentity;
   readonly capture?: CaptureDecision;
   readonly attributes?: Attributes;
+  /**
+   * Adopts a trace and span ID reserved before the turn started, such as one
+   * already returned to a caller. Requires telemetry with stable `ids`.
+   */
+  readonly reference?: TraceReference;
+  readonly links?: readonly TraceLink[];
+  readonly startTimeMs?: number;
+  /** Delegation lineage recorded by the host, when it is not carried by a handoff. */
+  readonly lineage?: {
+    readonly parentRunId?: string;
+    readonly parentCallId?: string;
+    readonly agentName?: string;
+  };
+  readonly channel?: { readonly kind?: string; readonly origin?: string };
+  /** Host context for spans this process starts, such as OpenTelemetry baggage. */
+  readonly context?: ExecutionContext;
 }
 
-export interface AgentTracing {
-  turn: import("./operations.js").WrappedOperation<TurnInput, TurnOperation>;
-  memory: AgentMemoryTracing;
-  forceFlush(): Promise<void>;
-  shutdown(): Promise<void>;
+export interface ResumeInput {
+  readonly identity: RunIdentity;
+  readonly context?: ExecutionContext;
 }
+
 interface MemoryInput<T> {
   identity: RunIdentity;
   storeId: string;
   slot: string;
   phase: string;
   capture?: CaptureDecision;
+  /** Defaults to the active operation. */
+  parent?: TraceReference;
+  context?: ExecutionContext;
   describe?: (value: T) => {
     recordCount?: number;
     records?: readonly { id?: string; content: string }[];
   };
+}
+
+export interface AgentTracing {
+  turn: import("./operations.js").WrappedOperation<TurnInput, TurnOperation>;
+  /** Returns a saved durable turn, without starting one. */
+  resume(input: ResumeInput): Promise<TurnOperation | undefined>;
+  memory: AgentMemoryTracing;
+  forceFlush(): Promise<void>;
+  shutdown(): Promise<void>;
 }
 export interface AgentMemoryTracing {
   search<T>(data: MemoryInput<T>, execute: () => T | PromiseLike<T>): Promise<T>;
@@ -62,6 +95,14 @@ export interface AgentMemoryTracing {
 }
 
 const METADATA_ONLY: CaptureDecision = { emit: true, recordInputs: false, recordOutputs: false };
+const LIVE_TURNS = 1000;
+
+interface LiveTurn {
+  readonly root: LiveOperation;
+  /** Token of the last checkpoint this process wrote. */
+  revision: string | undefined;
+  writes: number;
+}
 
 export function createAgentTracing(input: AgentTracingOptions): AgentTracing {
   const telemetry = input.telemetry ?? otelTelemetry();
@@ -81,8 +122,9 @@ export function createAgentTracing(input: AgentTracingOptions): AgentTracing {
     durable: checkpointer !== undefined,
     onError: input.onError,
   });
-  // Turns hydrated in this process, so concurrent hooks share one tree.
-  const live = new Map<string, Promise<LiveOperation>>();
+  // Turns hydrated in this process, so concurrent hooks share one tree. The
+  // checkpoint stays authoritative: another process's write replaces the entry.
+  const live = new Map<string, Promise<LiveTurn | undefined>>();
 
   function turnKey(identity: RunIdentity): string {
     if (checkpointer === undefined) return `turn:${randomUUID()}`;
@@ -92,63 +134,30 @@ export function createAgentTracing(input: AgentTracingOptions): AgentTracing {
   }
 
   /** Writes are serialized so a slow store never persists an older tree last. */
-  function persistence(key: string, root: () => LiveOperation | undefined) {
+  function persistence(key: string, entry: () => LiveTurn | undefined) {
     let queue = Promise.resolve();
     return () => {
-      if (checkpointer === undefined) return queue;
+      const turn = entry();
+      if (checkpointer === undefined || turn === undefined) return queue;
+      turn.writes++;
       queue = queue.then(async () => {
-        const operation = root();
-        if (operation === undefined) return;
         try {
-          if (operation.finished) await checkpointer.delete(key);
-          else await checkpointer.set(key, operation.snapshot());
+          if (turn.root.settled) {
+            live.delete(key);
+            await checkpointer.delete(key);
+          } else {
+            const revision = randomUUID();
+            await checkpointer.set(key, traceSnapshot({ ...turn.root.record(), revision }));
+            turn.revision = revision;
+          }
         } catch (error) {
           report(error, { phase: "checkpoint", operation: "activation" });
+        } finally {
+          turn.writes--;
         }
       });
       return queue;
     };
-  }
-
-  async function openTurn(data: TurnInput): Promise<LiveOperation> {
-    const handoff = currentAgentHandoff();
-    const key = turnKey(data.identity);
-    const capture = intersectCapture(data.capture ?? METADATA_ONLY, handoff?.capture);
-    let root: LiveOperation | undefined;
-    const onChange = persistence(key, () => root);
-    const saved = checkpointer === undefined ? undefined : await loadCheckpoint(key);
-    root =
-      saved === undefined
-        ? undefined
-        : await scopes.restore(saved, { capture: data.capture, onChange });
-    if (root === undefined) {
-      const metadata = {
-        sequence: data.sequence,
-        attributes: data.attributes,
-        subagent: handoff !== undefined,
-        subagentName: handoff?.agentName,
-        parentRunId: handoff?.parentRunId,
-        parentCallId: handoff?.parentCallId,
-      };
-      root = await scopes.start({
-        identity: {
-          ...data.identity,
-          conversationId: handoff?.conversationId ?? data.identity.conversationId,
-          agentName: input.agentName,
-          framework: data.framework,
-        },
-        key,
-        capture,
-        data: { type: "activation", options: metadata },
-        links:
-          handoff !== undefined && data.sequence === 0
-            ? [{ relationship: "agent.dispatch", context: handoff.caller }]
-            : undefined,
-        onChange,
-      });
-    }
-    await onChange();
-    return root;
   }
 
   async function loadCheckpoint(key: string): Promise<unknown> {
@@ -160,20 +169,113 @@ export function createAgentTracing(input: AgentTracingOptions): AgentTracing {
     }
   }
 
-  async function turnOperation(data: TurnInput): Promise<TurnOperation> {
-    const key = checkpointer === undefined ? undefined : turnKey(data.identity);
-    for (const [cached, turn] of live) if ((await turn).finished) live.delete(cached);
-    let opened = key === undefined ? undefined : live.get(key);
-    if (opened === undefined) {
-      opened = openTurn(data);
-      if (key !== undefined) live.set(key, opened);
+  async function hydrate(
+    key: string,
+    cached: LiveTurn | undefined,
+    open: ((onChange: () => Promise<void>) => Promise<LiveOperation>) | undefined,
+    context: ExecutionContext | undefined,
+    capture?: CaptureDecision,
+  ): Promise<LiveTurn | undefined> {
+    const saved = checkpointer === undefined ? undefined : await loadCheckpoint(key);
+    if (
+      cached !== undefined &&
+      (cached.writes > 0 || (saved as ScopeRecord | undefined)?.revision === cached.revision)
+    ) {
+      if (context !== undefined) cached.root.useContext(context);
+      return cached;
     }
-    const operation = await opened;
+    let entry: LiveTurn | undefined;
+    const onChange = persistence(key, () => entry);
+    const restored =
+      saved === undefined ? undefined : await scopes.restore(saved, { capture, context, onChange });
+    const root = restored ?? (await open?.(onChange));
+    if (root === undefined) return undefined;
+    entry = { root, revision: (saved as ScopeRecord | undefined)?.revision, writes: 0 };
+    if (restored === undefined) await onChange();
+    return entry;
+  }
+
+  function cache(
+    key: string,
+    load: (cached: LiveTurn | undefined) => Promise<LiveTurn | undefined>,
+  ): Promise<LiveTurn | undefined> {
+    const previous = live.get(key);
+    const loading = (async () =>
+      load(previous === undefined ? undefined : await previous.catch(() => undefined)))();
+    live.set(key, loading);
+    void loading.then(
+      (turn) => {
+        if (turn === undefined || turn.root.settled) live.delete(key);
+      },
+      () => live.delete(key),
+    );
+    if (live.size > LIVE_TURNS) live.delete(live.keys().next().value!);
+    return loading;
+  }
+
+  function startTurn(data: TurnInput, key: string) {
+    return (onChange: () => Promise<void>) => {
+      const handoff = currentAgentHandoff();
+      const capture = intersectCapture(data.capture ?? METADATA_ONLY, handoff?.capture);
+      const caller =
+        handoff !== undefined && data.sequence === 0
+          ? [{ relationship: "agent.dispatch", context: handoff.caller }]
+          : [];
+      const links = [...caller, ...(data.links ?? [])];
+      return scopes.start({
+        identity: {
+          ...data.identity,
+          conversationId: handoff?.conversationId ?? data.identity.conversationId,
+          agentName: input.agentName,
+          framework: data.framework,
+        },
+        key,
+        capture,
+        reference: telemetry.ids === undefined ? undefined : data.reference,
+        startTimeMs: data.startTimeMs,
+        data: {
+          type: "activation",
+          options: {
+            sequence: data.sequence,
+            attributes: data.attributes,
+            channel: data.channel,
+            subagent: handoff !== undefined || data.lineage !== undefined,
+            subagentName: handoff?.agentName ?? data.lineage?.agentName,
+            parentRunId: handoff?.parentRunId ?? data.lineage?.parentRunId,
+            parentCallId: handoff?.parentCallId ?? data.lineage?.parentCallId,
+          },
+        },
+        links: links.length === 0 ? undefined : links,
+        context: data.context,
+        onChange,
+      });
+    };
+  }
+
+  function handle(root: LiveOperation): TurnOperation {
     return operationHandle(
-      operation,
-      { type: "activation", options: { sequence: data.sequence } },
+      root,
+      { type: "activation", options: { sequence: 0 } },
       input.onError,
     ) as TurnOperation;
+  }
+
+  async function turnOperation(data: TurnInput): Promise<TurnOperation> {
+    const key = turnKey(data.identity);
+    const turn =
+      checkpointer === undefined
+        ? await hydrate(key, undefined, startTurn(data, key), data.context)
+        : await cache(key, (cached) =>
+            hydrate(key, cached, startTurn(data, key), data.context, data.capture),
+          );
+    return handle(turn!.root);
+  }
+
+  async function resume(data: ResumeInput): Promise<TurnOperation | undefined> {
+    if (checkpointer === undefined) return undefined;
+    const key = turnKey(data.identity);
+    const turn = await cache(key, (cached) => hydrate(key, cached, undefined, data.context));
+    return turn === undefined ? undefined : handle(turn.root);
   }
 
   async function lifecycle(callback: () => Promise<void>) {
@@ -194,7 +296,8 @@ export function createAgentTracing(input: AgentTracingOptions): AgentTracing {
       identity: data.identity,
       key: `memory:${randomUUID()}`,
       capture: data.capture ?? active?.capture ?? METADATA_ONLY,
-      parent: active?.reference,
+      parent: data.parent ?? active?.reference,
+      context: data.context,
       data: {
         type: "memory",
         options: { operation, phase: data.phase, slot: data.slot, storeId: data.storeId },
@@ -215,6 +318,7 @@ export function createAgentTracing(input: AgentTracingOptions): AgentTracing {
 
   return {
     turn: wrappedOperation(turnOperation, undefined, input.onError),
+    resume,
     memory: {
       search: (data, execute) => memory("search_memory", data, execute),
       write: (data, execute) => memory("upsert_memory", data, execute),
