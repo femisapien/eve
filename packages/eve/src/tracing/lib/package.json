@@ -4,7 +4,8 @@
   "type": "module",
   "exports": {
     ".": "./index.ts",
-    "./delegation": "./delegation.ts"
+    "./delegation": "./delegation.ts",
+    "./otel": "./otel.ts"
   },
   "peerDependencies": {
     "@opentelemetry/api": "^1.9.0"

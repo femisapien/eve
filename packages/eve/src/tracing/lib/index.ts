@@ -6,12 +6,7 @@ export {
   type TurnInput,
   type ResumeInput,
 } from "./agent-tracing.js";
-export {
-  otelTelemetry,
-  activeTraceOperation,
-  withErrorContent,
-  type OtelTelemetryOptions,
-} from "./adapters/otel.js";
+export { otelTelemetry, type OtelTelemetryOptions } from "./adapters/otel.js";
 export { AgentSpanIdGenerator } from "./adapters/otel-ids.js";
 export type {
   Operation,
@@ -46,16 +41,5 @@ export type {
   TraceSnapshot,
   Usage,
 } from "./core/types.js";
-export { currentCapture, withCapture } from "./capture.js";
-export {
-  boundedPrincipalId,
-  contentAttribute,
-  telemetryByteLength,
-  truncateTelemetryText,
-  CONTENT_ATTRIBUTE_LIMIT,
-} from "./adapters/serialization.js";
-export { withoutDeclinedContent, type ResolvedContentOptions } from "./core/content-policy.js";
-export { mcpLifecycle, type McpLifecycle, type McpUpdate } from "./core/mcp.js";
-export { invocationName } from "./core/span-kinds.js";
-export { USAGE_FIELDS } from "./core/attributes.js";
+export { currentCapture } from "./capture.js";
 export { modelUsage, modelContent } from "./adapters/ai-sdk-payload.js";

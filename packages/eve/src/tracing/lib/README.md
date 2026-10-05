@@ -14,10 +14,7 @@ global telemetry or install another model SDK tracing pipeline.
 ```ts
 import { createAgentTracing, otelTelemetry } from "@vercel/agent-tracing";
 
-const tracing = createAgentTracing({
-  agentName: "support",
-  telemetry: otelTelemetry({ provider }),
-});
+const tracing = createAgentTracing({ telemetry: otelTelemetry({ provider }) });
 ```
 
 Omit `telemetry` to use the global provider. Your provider owns exporters,
@@ -31,14 +28,15 @@ methods, which default to the provider's. Other backends implement
 Wrapped methods preserve the callback's value or error and complete their span.
 
 ```ts
-await tracing.turn({ identity, sequence: 0 }, (turn) =>
+await tracing.turn({ agentName: "support", identity, sequence: 0 }, (turn) =>
   turn.attempt({ stepIndex: 0, attempt: 0 }, (attempt) =>
     attempt.tool({ callId: "lookup", name: "lookup" }, lookup),
   ),
 );
 ```
 
-`identity` contains `conversationId`, `runId`, and `turnId`. A turn can supply
+`identity` contains `conversationId`, `runId`, and `turnId`. `agentName` names the
+invocation span, so one instance can trace several agents. A turn can supply
 framework metadata, attributes, and a capture decision. Capture defaults to
 metadata only. Child operations cannot increase capture.
 
@@ -127,7 +125,6 @@ example across workflow steps. Durable spans need stable IDs, so install an
 const idGenerator = new AgentSpanIdGenerator();
 const provider = new BasicTracerProvider({ idGenerator, spanProcessors });
 const tracing = createAgentTracing({
-  agentName: "support",
   telemetry: otelTelemetry({ provider, idGenerator }),
   checkpointer: { get, set, delete: remove },
 });
@@ -144,11 +141,18 @@ const approval = await action.approval({ requestId: "approval" });
 await approval.complete({ outcome: "approved" });
 ```
 
-Turns are keyed by agent name, `runId`, and `turnId`; attempts by step index
+Turns are keyed by `runId` and `turnId`; attempts by step index
 and attempt; actions by `callId`; approvals by `requestId`. Model calls,
 memory, and tool executions finish within one process and are not resumed.
 `tracing.resume({ identity })` returns a saved turn without starting one, for
-example to finish an action after its turn has completed.
+example to finish an action after its turn has completed. `turn.findAction(callId)`,
+`turn.findAttempt()`, and `action.findApproval()` return open operations, or
+`undefined` once they have finished:
+
+```ts
+const action = (await tracing.resume({ identity }))?.findAction("lookup");
+await action?.complete({ outcome: "completed" });
+```
 
 A turn can adopt a trace and span ID reserved before it started, such as one
 already returned to a caller, with `reference`. The telemetry's sampler still
@@ -161,6 +165,12 @@ and its open actions complete. Back the checkpointer with storage that commits a
 workflow step. An unreadable checkpoint is reported to `onError` and the turn
 starts fresh. Durable turns, actions, and approvals are exported when they
 complete, so their spans carry the IDs their children already reference.
+
+## OpenTelemetry plumbing
+
+`@vercel/agent-tracing/otel` exports helpers for hosts that run their own spans
+beside agent tracing: the active operation, capture context, content bounds,
+and MCP enrichment. Agent tracing itself needs only the package root.
 
 ## Privacy and failures
 

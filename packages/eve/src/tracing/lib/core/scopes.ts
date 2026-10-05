@@ -46,6 +46,10 @@ export interface ChildOptions {
 }
 export interface LiveOperation extends Operation {
   child(data: ScopeData, key?: string, options?: ChildOptions): Promise<LiveOperation>;
+  /** Returns an unsettled child with this identity, without starting one. */
+  find(data: ScopeData): LiveOperation | undefined;
+  /** Unsettled children, in start order. */
+  readonly children: readonly LiveOperation[];
   usage(usage: Usage, key?: string): Promise<void>;
   error(error?: unknown, type?: string): void;
   /** Replaces the host context for this operation and its descendants. */
@@ -475,6 +479,14 @@ export function createScopes(input: {
               `${data.type}:${childSequence++}`)
             : `${data.type}:${segment(childKey)}`;
         return child(data, `${key}/${name}`, options);
+      },
+      find(data) {
+        const name = semanticKey(data, actualData.type);
+        const found = name === undefined ? undefined : children.get(`${key}/${name}`);
+        return found === undefined || found.settled ? undefined : found;
+      },
+      get children() {
+        return [...children.values()].filter((next) => !next.settled);
       },
       type: actualData.type,
       reference: retainedReference,

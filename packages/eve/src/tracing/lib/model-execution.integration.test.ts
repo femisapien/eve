@@ -15,11 +15,11 @@ describe("wrapped model streams", () => {
         spanProcessors: [new SimpleSpanProcessor(exporter)],
       });
       const tracing = createAgentTracing({
-        agentName: "stream",
         telemetry: otelTelemetry({ provider }),
       });
       try {
         const turn = await tracing.turn({
+          agentName: "stream",
           identity: { conversationId: "c", runId: "r", turnId: "t" },
           sequence: 0,
         });

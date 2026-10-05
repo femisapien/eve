@@ -22,8 +22,6 @@ import type {
 } from "./core/types.js";
 
 export interface AgentTracingOptions {
-  /** Names invocation spans. Omit for an anonymous agent. */
-  readonly agentName?: string;
   /** Span output and context propagation. Defaults to the global OpenTelemetry provider. */
   readonly telemetry?: AgentTelemetry;
   /**
@@ -40,6 +38,8 @@ export interface AgentTracingOptions {
 
 export interface TurnInput {
   readonly identity: RunIdentity;
+  /** Names the invocation span. Omit for an anonymous agent. */
+  readonly agentName?: string;
   readonly sequence: number;
   readonly framework?: FrameworkIdentity;
   readonly capture?: CaptureDecision;
@@ -129,9 +129,7 @@ export function createAgentTracing(input: AgentTracingOptions): AgentTracing {
 
   function turnKey(identity: RunIdentity): string {
     if (checkpointer === undefined) return `turn:${randomUUID()}`;
-    return ["turn", input.agentName ?? "", identity.runId, identity.turnId]
-      .map(encodeURIComponent)
-      .join(":");
+    return ["turn", identity.runId, identity.turnId].map(encodeURIComponent).join(":");
   }
 
   /** Writes are serialized so a slow store never persists an older tree last. */
@@ -227,7 +225,7 @@ export function createAgentTracing(input: AgentTracingOptions): AgentTracing {
         identity: {
           ...data.identity,
           conversationId: handoff?.conversationId ?? data.identity.conversationId,
-          agentName: input.agentName,
+          agentName: data.agentName,
           framework: data.framework,
         },
         key,

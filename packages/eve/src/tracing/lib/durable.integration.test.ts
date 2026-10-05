@@ -33,7 +33,6 @@ function worker(checkpointer: TraceCheckpointer, exporter: InMemorySpanExporter)
     spanProcessors: [new SimpleSpanProcessor(exporter)],
   });
   return createAgentTracing({
-    agentName: "support",
     telemetry: otelTelemetry({ provider, idGenerator }),
     checkpointer,
   });
@@ -45,7 +44,7 @@ describe("durable agent tracing", () => {
     const exporter = new InMemorySpanExporter();
 
     const first = worker(checkpointer, exporter);
-    const turn = await first.turn({ identity, sequence: 0 });
+    const turn = await first.turn({ agentName: "support", identity, sequence: 0 });
     const attempt = await turn.attempt({ stepIndex: 0, attempt: 0 });
     await attempt.modelCall({ provider: "test", modelId: "model" }, () => ({
       result: "call lookup",
@@ -58,7 +57,7 @@ describe("durable agent tracing", () => {
 
     // The first worker is lost while Alice reviews the approval.
     const second = worker(checkpointer, exporter);
-    const resumedTurn = await second.turn({ identity, sequence: 0 });
+    const resumedTurn = await second.turn({ agentName: "support", identity, sequence: 0 });
     const resumedAttempt = await resumedTurn.attempt({ stepIndex: 0, attempt: 0 });
     const resumedAction = await resumedAttempt.action({ callId: "lookup", name: "lookup" });
     const approval = await resumedAction.approval({ requestId: "approval" });
@@ -95,7 +94,7 @@ describe("durable agent tracing", () => {
     const { checkpointer, entries } = memoryCheckpointer();
     const exporter = new InMemorySpanExporter();
     const first = worker(checkpointer, exporter);
-    const turn = await first.turn({ identity, sequence: 0 });
+    const turn = await first.turn({ agentName: "support", identity, sequence: 0 });
     const attempt = await turn.attempt({ stepIndex: 0, attempt: 0 });
     const action = await attempt.action({ callId: "lookup", name: "lookup" });
     await action.approval({ requestId: "approval" });
@@ -132,7 +131,7 @@ describe("durable agent tracing", () => {
     const { checkpointer } = memoryCheckpointer();
     const exporter = new InMemorySpanExporter();
     const tracing = worker(checkpointer, exporter);
-    const turn = await tracing.turn({ identity, sequence: 0 });
+    const turn = await tracing.turn({ agentName: "support", identity, sequence: 0 });
     const attempt = await turn.attempt({ stepIndex: 0, attempt: 0 });
     const early = await attempt.toolCall({ callId: "lookup", name: "lookup" });
     await early.complete({ outcome: "completed" });
@@ -158,7 +157,6 @@ describe("durable agent tracing", () => {
     const exporter = new InMemorySpanExporter();
     const idGenerator = new AgentSpanIdGenerator();
     const tracing = createAgentTracing({
-      agentName: "support",
       telemetry: otelTelemetry({
         provider: new BasicTracerProvider({
           idGenerator,
@@ -170,9 +168,10 @@ describe("durable agent tracing", () => {
       checkpointer,
     });
     const reference = { traceId: "a".repeat(32), spanId: "c".repeat(16), traceFlags: 1 };
-    const turn = await tracing.turn({ identity, sequence: 0, reference });
+    const turn = await tracing.turn({ agentName: "support", identity, sequence: 0, reference });
     expect(turn.reference).toMatchObject(reference);
     const dropped = await tracing.turn({
+      agentName: "support",
       identity: { ...identity, turnId: "dropped" },
       sequence: 1,
       reference: { ...reference, traceId: "b".repeat(32) },
@@ -186,7 +185,6 @@ describe("durable agent tracing", () => {
     const errors: string[] = [];
     const idGenerator = new AgentSpanIdGenerator();
     const tracing = createAgentTracing({
-      agentName: "support",
       telemetry: otelTelemetry({
         provider: new BasicTracerProvider({
           idGenerator,
@@ -200,7 +198,7 @@ describe("durable agent tracing", () => {
       },
       onError: (_error, context) => errors.push(context.phase),
     });
-    const turn = await tracing.turn({ identity, sequence: 0 });
+    const turn = await tracing.turn({ agentName: "support", identity, sequence: 0 });
     await turn.complete();
     expect(errors).toEqual(["restore"]);
     expect(exporter.getFinishedSpans().map((span) => span.name)).toEqual(["invoke_agent support"]);
@@ -210,7 +208,6 @@ describe("durable agent tracing", () => {
   it("requires stable span IDs", () => {
     expect(() =>
       createAgentTracing({
-        agentName: "support",
         telemetry: otelTelemetry({ provider: new BasicTracerProvider() }),
         checkpointer: memoryCheckpointer().checkpointer,
       }),

@@ -16,16 +16,15 @@ describe("agent delegation", () => {
     const provider = new BasicTracerProvider(otel);
     context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
     const parent = createAgentTracing({
-      agentName: "parent",
       telemetry: otelTelemetry({ provider }),
     });
     const child = createAgentTracing({
-      agentName: "child",
       telemetry: otelTelemetry({ provider }),
     });
     try {
       await parent.turn(
         {
+          agentName: "parent",
           identity: { conversationId: "conversation", runId: "parent-run", turnId: "parent-turn" },
           sequence: 0,
         },
@@ -37,6 +36,7 @@ describe("agent delegation", () => {
                   await Promise.resolve();
                   await child.turn(
                     {
+                      agentName: "child",
                       identity: { conversationId: "ignored", runId: callId, turnId: "first" },
                       sequence: 0,
                     },
@@ -44,6 +44,7 @@ describe("agent delegation", () => {
                   );
                   await child.turn(
                     {
+                      agentName: "child",
                       identity: { conversationId: "ignored", runId: callId, turnId: "second" },
                       sequence: 1,
                     },
@@ -90,11 +91,9 @@ describe("agent delegation", () => {
     const provider = new BasicTracerProvider(otel);
     context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
     const caller = createAgentTracing({
-      agentName: "caller",
       telemetry: otelTelemetry({ provider }),
     });
     const callee = createAgentTracing({
-      agentName: "callee",
       telemetry: otelTelemetry({ provider }),
     });
     const transport = createAgentDelegationTransport();
@@ -107,6 +106,7 @@ describe("agent delegation", () => {
         async () => {
           await callee.turn(
             {
+              agentName: "callee",
               identity: { conversationId: "local", runId: "remote-run", turnId: "remote-turn" },
               sequence: 0,
               capture: { emit: true, recordInputs: true, recordOutputs: true },
@@ -122,6 +122,7 @@ describe("agent delegation", () => {
     try {
       await caller.turn(
         {
+          agentName: "caller",
           identity: { conversationId: "conversation", runId: "caller-run", turnId: "turn" },
           sequence: 0,
         },
@@ -167,6 +168,7 @@ describe("agent delegation", () => {
         () =>
           callee.turn(
             {
+              agentName: "callee",
               identity: { conversationId: "independent", runId: "independent", turnId: "turn" },
               sequence: 0,
             },

@@ -17,12 +17,15 @@ describe("outside-eve agent", () => {
     const manager = new AsyncLocalStorageContextManager().enable();
     context.setGlobalContextManager(manager);
     const tracing = createAgentTracing({
-      agentName: "support",
       telemetry: otelTelemetry({ provider }),
     });
     try {
       const value = await tracing.turn(
-        { identity: { conversationId: "conversation", runId: "run", turnId: "turn" }, sequence: 0 },
+        {
+          agentName: "support",
+          identity: { conversationId: "conversation", runId: "run", turnId: "turn" },
+          sequence: 0,
+        },
         (turn) =>
           turn.attempt({ stepIndex: 0, attempt: 0 }, async (attempt) => {
             const answer = await attempt.modelCall({ provider: "test", modelId: "model" }, () => ({
@@ -61,6 +64,7 @@ describe("outside-eve agent", () => {
       expect(turn.attributes["gen_ai.usage.input_tokens"]).toBe(3);
       expect(JSON.stringify(spans.map((span) => span.attributes))).not.toContain("Alice");
       const handle = await tracing.turn({
+        agentName: "support",
         identity: { conversationId: "conversation", runId: "next", turnId: "turn" },
         sequence: 0,
       });
@@ -78,14 +82,17 @@ describe("outside-eve agent", () => {
       spanProcessors: [new SimpleSpanProcessor(exporter)],
     });
     const tracing = createAgentTracing({
-      agentName: "support",
       telemetry: otelTelemetry({ provider }),
     });
     const error = new TypeError("private failure");
     try {
       await expect(
         tracing.turn(
-          { identity: { conversationId: "c", runId: "r", turnId: "t" }, sequence: 0 },
+          {
+            agentName: "support",
+            identity: { conversationId: "c", runId: "r", turnId: "t" },
+            sequence: 0,
+          },
           (turn) =>
             turn.attempt({ stepIndex: 0, attempt: 0 }, (attempt) =>
               attempt.tool({ callId: "tool", name: "lookup" }, () => {
@@ -103,7 +110,11 @@ describe("outside-eve agent", () => {
       ).toBe(true);
       expect(JSON.stringify(failures.map((span) => span.events))).not.toContain("private failure");
       await tracing.turn(
-        { identity: { conversationId: "c", runId: "memory", turnId: "t" }, sequence: 0 },
+        {
+          agentName: "support",
+          identity: { conversationId: "c", runId: "memory", turnId: "t" },
+          sequence: 0,
+        },
         (turn) =>
           turn.memory(
             {
@@ -132,12 +143,12 @@ describe("outside-eve agent", () => {
       spanProcessors: [new SimpleSpanProcessor(exporter)],
     });
     const tracing = createAgentTracing({
-      agentName: "support",
       telemetry: otelTelemetry({ provider }),
     });
     try {
       await tracing.turn(
         {
+          agentName: "support",
           identity: { conversationId: "c", runId: "r", turnId: "t" },
           sequence: 0,
           capture: { emit: true, recordInputs: true, recordOutputs: true },

@@ -43,6 +43,10 @@ export interface AttemptInput {
 }
 export interface TurnOperation extends Operation {
   attempt: WrappedOperation<AttemptInput, AttemptOperation>;
+  /** Returns an open attempt without starting one. Durable turns only. */
+  findAttempt(input: { stepIndex: number; attempt: number }): AttemptOperation | undefined;
+  /** Returns an open action from any attempt of this turn. Durable turns only. */
+  findAction(callId: string): ActionOperation | undefined;
   /** Replaces the turn's links before its deferred span is exported. */
   links(links: readonly TraceLink[]): void;
   memory: WrappedOperation<MemoryInput, MemoryOperation>;
@@ -71,6 +75,8 @@ export interface AttemptOperation extends Operation {
 }
 export interface ActionOperation extends Operation {
   approval: WrappedOperation<{ requestId: string; request?: unknown }, ApprovalOperation>;
+  /** Returns an open approval without starting one. Durable turns only. */
+  findApproval(requestId: string): ApprovalOperation | undefined;
   /** `arguments` defaults to the action's. */
   toolExecution(input?: { arguments?: unknown; describe?: never }): Promise<ToolOperation>;
   toolExecution<T>(
@@ -175,6 +181,10 @@ export function operationHandle(
   };
   const child = async (data: ScopeData, key?: string, links?: readonly TraceLink[]) =>
     operationHandle(await runtime.child(data, key, { links }), data, onError);
+  const found = <T>(operation: LiveOperation | undefined): T | undefined =>
+    operation === undefined
+      ? undefined
+      : (operationHandle(operation, operation.record().data, onError) as T);
   const memory = wrappedOperation(
     async (options: MemoryInput) => child({ type: "memory", options }),
     undefined,
@@ -185,6 +195,20 @@ export function operationHandle(
       ...common,
       memory,
       links: (links: readonly TraceLink[]) => runtime.update({ links }),
+      findAttempt: (input: { stepIndex: number; attempt: number }) =>
+        found<AttemptOperation>(
+          runtime.find({
+            type: "step",
+            options: { index: input.stepIndex, attempt: input.attempt },
+          }),
+        ),
+      findAction: (callId: string) =>
+        found<ActionOperation>(
+          runtime.children
+            .filter((attempt) => attempt.type === "step")
+            .map((attempt) => attempt.find({ type: "action", options: { callId, name: "" } }))
+            .find((action) => action !== undefined),
+        ),
       attempt: wrappedOperation(
         async (input: AttemptInput) =>
           child(
@@ -292,6 +316,13 @@ export function operationHandle(
     return live({
       ...common,
       memory,
+      findApproval: (requestId: string) =>
+        found<ApprovalOperation>(
+          runtime.find({
+            type: "approval",
+            options: { requestId, callId: data.options.callId, actionName: data.options.name },
+          }),
+        ),
       approval: wrappedOperation(
         async (input: { requestId: string; request?: unknown }) =>
           child({

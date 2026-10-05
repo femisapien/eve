@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 /**
  * Mechanical enforcement of framework code invariants.
- * Rule 49 keeps tracing library imports self-contained and prevents host
- * consumers from importing private tracing core modules.
+ * Rule 49 keeps tracing library imports self-contained and limits host
+ * consumers to the root, delegation, and otel entrypoints.
  *
  * Several framework invariants can be checked mechanically. Each one gets a
  * dedicated guard here. Every guard prints an error message that explains
@@ -288,12 +288,12 @@ async function scanRepo(state) {
     if (!posix.startsWith("packages/eve/src/tracing/lib/")) {
       lines.forEach((line, index) => {
         const privateImport =
-          /['"]#tracing\/lib\/(?!(?:index|delegation)\.js['"])/.test(line) ||
-          /['"]@vercel\/agent-tracing\/(?!delegation['"])/.test(line) ||
+          /['"]#tracing\/lib\/(?!(?:index|delegation|otel)\.js['"])/.test(line) ||
+          /['"]@vercel\/agent-tracing\/(?!(?:delegation|otel)['"])/.test(line) ||
           [...line.matchAll(/(?:from\s+|import\s*\()(["'])([^"']+)\1/g)].some(
             (match) =>
               match[2].startsWith(".") &&
-              /^packages\/eve\/src\/tracing\/lib\/(?!(?:index|delegation)\.js$)/.test(
+              /^packages\/eve\/src\/tracing\/lib\/(?!(?:index|delegation|otel)\.js$)/.test(
                 toPosix(relative(REPO_ROOT, resolve(dirname(absPath), match[2]))),
               ),
           );
