@@ -4,8 +4,8 @@
  * turn holds until a callback closes it. The call that asked never joins
  * history: it leaves its step, so the model calls it again once the person has
  * signed in. A step whose other calls all have results joins history without
- * it; a step suspended on an approval stays suspended, out of history, until
- * the approval resolves. A newer attempt for the same sign-in replaces an
+ * it; a step suspended on an approval or on runtime calls stays suspended, out
+ * of history, until those calls have results. A newer attempt for the same sign-in replaces an
  * older one; steering or cancelling the turn declines every open sign-in.
  */
 import type { ModelMessage } from "ai";
@@ -41,9 +41,9 @@ const SUPERSEDED_REASON = "Superseded by a newer authorization attempt.";
  * Opens a sign-in for each challenge and holds the turn. Within one ask and
  * against the sign-ins already open, the latest attempt for a sign-in wins and
  * the older one fails as superseded. `callIds`, the calls that asked, leave
- * their step. While the step is suspended (its approvals are open, so
- * `messages` is empty: the suspended step is the step), it stays suspended
- * without them; otherwise the step's `messages` join history without them.
+ * their step. While the step is suspended (the suspended step is the step),
+ * it stays suspended without them; otherwise the step's `messages` join
+ * history without them.
  */
 export function requireSignIns(
   state: HumanInputState,

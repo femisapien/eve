@@ -13,6 +13,7 @@ import {
   type RequestAt,
 } from "#harness/human-input/index.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
+import type { RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
 
 /** Scenario builders for the `HumanInput` rule tests, which read as given, when, then. */
@@ -267,4 +268,20 @@ export function callback(attemptId: string, connectionName = "weather"): Intake 
     outcome: "authorized",
     type: "authorization.completed",
   };
+}
+
+/**
+ * `session` parked on a model step's runtime calls, as the tool loop leaves
+ * it: the step's response held out of history until their results arrive.
+ */
+export function parkedOnRuntimeCalls<T extends { readonly state?: SessionStateMap }>(
+  session: T,
+  input: {
+    readonly at: RequestAt;
+    readonly messages: readonly ModelMessage[];
+    readonly tasks: readonly RuntimeWorkflowTaskRequest[];
+  },
+): T {
+  const { state } = reduceHumanInput(session.state, { ...input, type: "calls.dispatched" });
+  return { ...session, state };
 }

@@ -14,6 +14,7 @@ import {
 } from "#harness/human-input/budget.js";
 import type { SessionStateMap, StepInput } from "#harness/types.js";
 import { createTurnWaitingEvent, type UnstampedMessageStreamEvent } from "#protocol/message.js";
+import type { RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
 import type { AuthorizationCallback } from "#shared/connection-types.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
 import type { TokenUsage } from "#shared/token-usage.js";
@@ -21,6 +22,7 @@ import type { TokenUsage } from "#shared/token-usage.js";
 import {
   answerApprovals,
   answerApprovalsByText,
+  askedCallIds,
   cancelApprovals,
   grantedApprovalKeys,
   isPolicyGated,
@@ -58,11 +60,21 @@ import {
   type RelayedSignIn,
 } from "./relayed.js";
 import { staleAnswersAsText } from "./stale-answers.js";
-import type { SuspendedStep } from "./suspended-step.js";
+import {
+  cancelStep,
+  dispatchCalls,
+  heldStep,
+  holdFollowingInput,
+  withMessages,
+  type HeldStep,
+  type SuspendedStep,
+} from "./suspended-step.js";
 import { arrivalsOf } from "./arrivals.js";
 
 export { approvalsRequested, withoutApprovalParts } from "./approvals.js";
 export { createSessionLimitContinuationRequest } from "./budget-question.js";
+export { CANCELLED_CALL_RESULT } from "./suspended-step.js";
+export type { HeldCall, HeldStep } from "./suspended-step.js";
 
 /**
  * Everything a turn waits on from a person: tool approvals, sign-ins, the
@@ -75,14 +87,17 @@ export { createSessionLimitContinuationRequest } from "./budget-question.js";
  */
 export class HumanInput {
   readonly #state: HumanInputState;
+  /** The session still has a step parked under the coordination batch's old key. */
+  readonly #legacy: boolean;
 
-  private constructor(state: HumanInputState) {
+  private constructor(state: HumanInputState, legacy: boolean) {
     this.#state = state;
+    this.#legacy = legacy;
   }
 
   /** Reads the session's human input. */
   static read(sessionState: SessionStateMap | undefined): HumanInput {
-    return new HumanInput(parseState(sessionState?.[STATE_KEY]));
+    return new HumanInput(readState(sessionState), sessionState?.[LEGACY_BATCH_KEY] !== undefined);
   }
 
   /**
@@ -98,7 +113,7 @@ export class HumanInput {
     session: S,
     input: Interrupt | Intake,
   ): Promise<Committed<S>> {
-    const reduced = reduce(parseState(session.state?.[STATE_KEY]), input);
+    const reduced = reduce(readState(session.state), input);
     let current: S = { ...session, state: store(session.state, reduced.state) };
     for (const event of reduced.events) {
       switch (event.type) {
@@ -169,6 +184,29 @@ export class HumanInput {
     return this.#state.suspended?.messages ?? [];
   }
 
+  /**
+   * The model step whose calls wait, out of history: each call without a
+   * result, tagged with whether it waits on a person or on runtime work.
+   */
+  heldStep(): HeldStep | undefined {
+    return heldStep(this.#state.suspended, askedCallIds(this.#state));
+  }
+
+  /** The suspended step's calls that run as runtime work and have no result yet. */
+  runtimeCalls(): HeldStep | undefined {
+    const held = this.heldStep();
+    return held?.calls.some((call) => call.waitsOn === "runtime") === true ? held : undefined;
+  }
+
+  /**
+   * Whether a model step is held out of history. A step parked under the old
+   * coordination key counts even when it can't be read, so nothing treats
+   * its session as idle.
+   */
+  holdsStep(): boolean {
+    return this.#state.suspended !== undefined || this.#legacy;
+  }
+
   /** The approval keys `once()` approvals granted, which approval policies read. */
   grantedApprovalKeys(): ReadonlySet<string> {
     return grantedApprovalKeys(this.#state);
@@ -217,7 +255,7 @@ export function reduceHumanInput(
   sessionState: SessionStateMap | undefined,
   input: Interrupt | Intake,
 ): { readonly events: readonly HumanInputEvent[]; readonly state: SessionStateMap | undefined } {
-  const reduced = reduce(parseState(sessionState?.[STATE_KEY]), input);
+  const reduced = reduce(readState(sessionState), input);
   return { events: reduced.events, state: store(sessionState, reduced.state) };
 }
 
@@ -283,11 +321,7 @@ export type Interrupt =
   | {
       readonly type: "approvals.requested";
       readonly at: RequestAt;
-      /**
-       * The step's response, which waits out of history until every call it
-       * made has a result. Empty when the coordination batch holds it, because
-       * the step also made runtime calls.
-       */
+      /** The step's response, which waits out of history until every call it made has a result. */
       readonly messages: readonly ModelMessage[];
       readonly requests: readonly InputRequest[];
       readonly requester: SessionAuthContext | null;
@@ -304,12 +338,25 @@ export type Interrupt =
       readonly callIds: readonly string[];
       /**
        * The step's response. It joins history without the calls that asked,
-       * so history never holds a call that waits on a person. Empty when the
-       * step is held elsewhere, as for approved calls that asked.
+       * so history never holds a call that waits on a person, unless the
+       * step is suspended: then the calls leave the suspended step. Empty
+       * for approved calls that asked, whose step is always suspended.
        */
       readonly messages: readonly ModelMessage[];
       readonly challenges: readonly AuthorizationChallenge[];
       readonly requester: SessionAuthContext | null;
+    }
+  /**
+   * Some of a model step's calls run as runtime work: workflow runs, agents,
+   * and task tool calls. The step waits out of history for their results.
+   */
+  | {
+      readonly type: "calls.dispatched";
+      readonly at: RequestAt;
+      /** The step's response; see `approvals.requested`. */
+      readonly messages: readonly ModelMessage[];
+      /** The workflow runs they start. */
+      readonly tasks: readonly RuntimeWorkflowTaskRequest[];
     }
   /** The budget ran out before a model call, and a person can grant more. */
   | {
@@ -374,16 +421,21 @@ export type Intake =
     }
   /**
    * Calls of the suspended step settled: those `calls.approved` asked for, or
-   * runtime calls that ran beside open approvals. `running` names the
-   * approved calls that still run as runtime work; `stopped` names the calls
-   * that asked for a sign-in, which leave the step with their results.
+   * its runtime calls. `running` is the approved calls that still run as
+   * runtime work; `stopped` names the calls that asked for a sign-in, which
+   * leave the step with their results.
    */
   | {
       readonly type: "calls.settled";
       readonly results: readonly ModelMessage[];
-      readonly running?: readonly string[];
+      readonly running?: readonly RuntimeWorkflowTaskRequest[];
       readonly stopped?: readonly string[];
     }
+  /**
+   * Turn input arrived with approved calls that run as runtime work: the turn
+   * reads it after their results.
+   */
+  | { readonly type: "input.held"; readonly input: StepInput }
   | { readonly type: "time"; readonly now: number }
   /**
    * The turn a budget Stop ended settles as cancelled, from before the step
@@ -434,15 +486,8 @@ export type HumanInputEvent =
       readonly at: RequestAt;
       readonly requests: readonly InputRequest[];
     }
-  /**
-   * The step's remaining calls run as runtime work: park on them with these
-   * messages, the step's response, which joins history with their results.
-   */
-  | {
-      readonly type: "calls.dispatched";
-      readonly at: RequestAt;
-      readonly messages: readonly ModelMessage[];
-    }
+  /** The suspended step joined history: the turn reads the input that waited behind its calls. */
+  | { readonly type: "input.resumed"; readonly input: StepInput }
   /** The message answered open requests, so the turn doesn't read it as input. */
   | { readonly type: "message.answered" }
   /**
@@ -521,6 +566,8 @@ export interface RelayRoute {
 // ---------------------------------------------------------------------------
 
 const STATE_KEY = "eve.harness.humanInput";
+/** Where sessions parked before the suspended step held runtime calls kept them. */
+const LEGACY_BATCH_KEY = "eve.runtime.pendingCoordinationBatch";
 
 /** Exported only for the rules files beside this one. */
 export interface HumanInputState {
@@ -545,6 +592,47 @@ type OpenRequest =
   | OpenRelayed;
 
 const EMPTY: HumanInputState = { grants: [], requests: {} };
+
+/**
+ * The session's human input. A session parked on runtime calls before the
+ * suspended step held them has them under the old coordination key, with its
+ * response there: they become the suspended step, which its approvals' step
+ * already was when it had any.
+ */
+function readState(sessionState: SessionStateMap | undefined): HumanInputState {
+  const state = parseState(sessionState?.[STATE_KEY]);
+  const legacy = parseLegacyBatch(sessionState?.[LEGACY_BATCH_KEY]);
+  if (legacy === undefined) return state;
+  const { suspended } = state;
+  const step: SuspendedStep = {
+    at: suspended?.at ?? legacy.event,
+    messages: withMessages(legacy.responseMessages, suspended?.messages ?? []),
+    runtime: { tasks: [...(suspended?.runtime?.tasks ?? []), ...legacy.tasks] },
+    ...(legacy.followingInput !== undefined && { following: legacy.followingInput }),
+  };
+  return { ...state, suspended: step };
+}
+
+interface LegacyBatch {
+  readonly tasks: readonly RuntimeWorkflowTaskRequest[];
+  readonly event: RequestAt;
+  readonly responseMessages: readonly ModelMessage[];
+  readonly followingInput?: StepInput;
+}
+
+function parseLegacyBatch(value: unknown): LegacyBatch | undefined {
+  if (typeof value !== "object" || value === null) return undefined;
+  const batch = value as LegacyBatch;
+  if (
+    !Array.isArray(batch.tasks) ||
+    !Array.isArray(batch.responseMessages) ||
+    typeof batch.event !== "object" ||
+    batch.event === null
+  ) {
+    return undefined;
+  }
+  return batch;
+}
 
 function parseState(value: unknown): HumanInputState {
   if (typeof value !== "object" || value === null) return EMPTY;
@@ -581,6 +669,8 @@ function store(
   state: HumanInputState,
 ): SessionStateMap | undefined {
   const next: Record<string, unknown> = { ...sessionState };
+  // `readState` moved a legacy batch into `state`.
+  delete next[LEGACY_BATCH_KEY];
   if (isEmpty(state)) delete next[STATE_KEY];
   else next[STATE_KEY] = state;
   return Object.keys(next).length > 0 ? next : undefined;
@@ -647,6 +737,7 @@ function reduce(state: HumanInputState, input: Interrupt | Intake): Reduced {
         (next) => endRelayedSignIns(next),
         withdrawBudget,
         cancelApprovals,
+        cancelStep,
         (next) => closeSignIns(next, { outcome: "declined", reason: CANCELLED_REASON }),
       );
     case "relayed.requested":
@@ -666,8 +757,12 @@ function reduce(state: HumanInputState, input: Interrupt | Intake): Reduced {
       );
     case "withdraw.requested":
       return withdrawAsk(state, input);
+    case "calls.dispatched":
+      return { events: [], state: dispatchCalls(state, input) };
     case "calls.settled":
       return settleCalls(state, input.results, input.running, input.stopped);
+    case "input.held":
+      return { events: [], state: holdFollowingInput(state, input.input) };
     case "authorization.completed": {
       const completed = completeSignIn(state, input);
       if (completed === undefined) return { events: [], state };

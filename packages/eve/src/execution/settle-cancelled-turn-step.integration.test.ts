@@ -135,6 +135,114 @@ describe("settleCancelledTurnStep", () => {
   });
 });
 
+describe("settleCancelledTurnStep on a held step", () => {
+  const buildTask = {
+    callId: "call-build",
+    entry: { entryPoint: "execute" as const },
+    input: {},
+    kind: "workflow-task" as const,
+    toolName: "build",
+    workflowId: "workflow//./agent/tools/build//execute",
+  };
+  const response = [
+    {
+      content: [
+        { input: {}, toolCallId: "call-build", toolName: "build", type: "tool-call" as const },
+        { input: {}, toolCallId: "deploy-1", toolName: "deploy", type: "tool-call" as const },
+      ],
+      role: "assistant" as const,
+    },
+  ];
+  const at = { sequence: 3, stepIndex: 1, turnId: "turn_1" };
+
+  /** Each way a parked session can hold Alice's build-and-deploy step. */
+  const held: Record<string, (state: SessionStateMap | undefined) => SessionStateMap | undefined> =
+    {
+      "in human input": (state) => {
+        const asked = reduceHumanInput(state, {
+          approvalKeys: {},
+          at,
+          messages: response,
+          requester: null,
+          requests: [request("deploy-1", "tool-approval")],
+          responsePolicyRequestIds: [],
+          type: "approvals.requested",
+        }).state;
+        return reduceHumanInput(asked, {
+          at,
+          messages: response,
+          tasks: [buildTask],
+          type: "calls.dispatched",
+        }).state;
+      },
+      "under the old coordination key": (state) => {
+        const asked = reduceHumanInput(state, {
+          approvalKeys: {},
+          at,
+          messages: [],
+          requester: null,
+          requests: [request("deploy-1", "tool-approval")],
+          responsePolicyRequestIds: [],
+          type: "approvals.requested",
+        }).state;
+        return {
+          ...asked,
+          "eve.runtime.pendingCoordinationBatch": {
+            event: at,
+            responseMessages: response,
+            tasks: [buildTask],
+          },
+        };
+      },
+    };
+
+  it.each(Object.keys(held))(
+    "answers every call of a step held %s as not run, in history, and clears it",
+    async (where) => {
+      const base = createTestSessionState({
+        emissionState: { sequence: 3, sessionStarted: true, stepIndex: 1, turnId: "turn_1" },
+        sessionId: "release-session",
+      });
+      const session = {
+        ...base.snapshot.session,
+        state: held[where]!(base.snapshot.session.state),
+      };
+
+      const result = await settleCancelledTurn({
+        history: [],
+        reportUsage: false,
+        serializedContext,
+        sessionState: { ...base, snapshot: { session } },
+      });
+
+      const cancelled = readDurableSession(result.sessionState);
+      expect(result.history.slice(-2)).toEqual([
+        ...response,
+        {
+          content: [
+            expect.objectContaining({
+              output: { type: "text", value: "The turn was cancelled before this call finished." },
+              toolCallId: "call-build",
+            }),
+            expect.objectContaining({
+              output: expect.objectContaining({ type: "execution-denied" }),
+              toolCallId: "deploy-1",
+            }),
+          ],
+          role: "tool",
+        },
+      ]);
+      expect(HumanInput.read(cancelled.state).holdsStep()).toBe(false);
+      expect(cancelled.state?.["eve.runtime.pendingCoordinationBatch"]).toBeUndefined();
+      expect(result.events.map((event) => event.type)).toEqual([
+        "input.resolved",
+        "turn.cancelled",
+        "session.waiting",
+      ]);
+    },
+  );
+});
+
 function request(requestId: string, kind: "question" | "tool-approval"): InputRequest {
   return {
     action: { callId: requestId, input: {}, kind: "tool-call", toolName: "deploy" },

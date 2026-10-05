@@ -1,8 +1,4 @@
 import {
-  commitCancelledCoordinationBatch,
-  getPendingCoordinationBatch,
-} from "#harness/coordination.js";
-import {
   readDurableSession,
   replaceDurableSessionSnapshot,
   type DurableSessionState,
@@ -49,7 +45,7 @@ interface CancelledTurnSettleInput extends SessionHistoryStepState {
 
 /**
  * Settles one cancelled turn: tells human input the turn was cancelled, emits
- * `turn.cancelled` → `session.waiting`, drops pending coordination state, and
+ * `turn.cancelled` → `session.waiting`, drops the runs the turn waited on, and
  * persists the between-turns session. Runs in the owner, whose wake sources
  * exclude the cancel hook, so a queued cancel wake cannot re-dispatch it.
  */
@@ -65,9 +61,12 @@ export async function settleCancelledTurn(
   input: CancelledTurnSettleInput,
 ): Promise<CancelledTurnSettleResult> {
   const host = new SessionHost();
-  const cancelled = await HumanInput.commit(host, readDurableSession(input.sessionState), {
-    type: "cancelled",
-  });
+  const parked = readDurableSession(input.sessionState);
+  // The turn that made the held step's calls owns the runs they started.
+  const owningTurnId =
+    HumanInput.read(parked.state).heldStep()?.at.turnId ?? input.sessionState.emissionState.turnId;
+  // The held step joins history with each call it waited on answered as not run.
+  const cancelled = await HumanInput.commit(host, parked, { type: "cancelled" });
   // The cancel stopped every child and run, so channels stop offering what they asked.
   const withdrawn = await relaySessionEvents(
     {
@@ -92,12 +91,9 @@ export async function settleCancelledTurn(
       return await emitCancelledTurn(emit, emissionState, getSessionUsage(step.durableSession));
     },
     updateSession(session, emissionState) {
-      const owningTurnId =
-        getPendingCoordinationBatch(session.state)?.event.turnId ??
-        input.sessionState.emissionState.turnId;
-      // After the batch, which may hold the response that made the cancelled calls.
-      const committed = commitCancelledCoordinationBatch(
-        removeBlockingWorkflowToolRuns({ ...session, outputSchema: undefined }, owningTurnId),
+      const committed = removeBlockingWorkflowToolRuns(
+        { ...session, outputSchema: undefined },
+        owningTurnId,
       );
       const cancelledSession = setHarnessEmissionState(
         {

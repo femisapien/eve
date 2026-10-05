@@ -1,5 +1,3 @@
-import type { ModelMessage } from "ai";
-
 import type { SessionAuthContext } from "#channel/types.js";
 import { contextStorage } from "#context/container.js";
 import { AuthKey } from "#context/keys.js";
@@ -7,7 +5,6 @@ import {
   PendingAuthorizationResultKey,
   ReceivedAuthorizationCallbacksKey,
 } from "#harness/authorization.js";
-import { setPendingCoordinationBatch } from "#harness/coordination.js";
 import {
   advanceStep,
   getHarnessEmissionState,
@@ -33,7 +30,7 @@ import type {
 } from "#harness/types.js";
 import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 
-import { runApprovedWork, type ApprovedRuntimeCalls } from "./approved-calls.js";
+import { runApprovedWork } from "./approved-calls.js";
 import { checkResponder } from "./response-policy.js";
 import { prepareStepTools, type StepEffects } from "./step-tools.js";
 
@@ -54,9 +51,8 @@ export class TurnHost implements HumanInputHost<HarnessSession> {
   readonly phase: TurnPhase;
   /** A message answered open requests, so the turn doesn't read it as input. */
   messageAnswered = false;
-  /** Approved calls that run as runtime work, and the suspended step's response that goes with them. */
-  runtimeCalls: ApprovedRuntimeCalls | undefined;
-  dispatched: readonly ModelMessage[] | undefined;
+  /** The turn input that waited behind the suspended step's calls, which joined history. */
+  following: StepInput | undefined;
   readonly #effects: StepEffects | undefined;
   readonly #emit: Emit | undefined;
   readonly #emissionState: HarnessEmissionState;
@@ -105,8 +101,8 @@ export class TurnHost implements HumanInputHost<HarnessSession> {
       case "message.answered":
         this.messageAnswered = true;
         return { session };
-      case "calls.dispatched":
-        this.dispatched ??= event.messages;
+      case "input.resumed":
+        this.following = event.input;
         return { session };
       case "sign-in.completed": {
         const ctx = contextStorage.getStore();
@@ -140,10 +136,9 @@ export class TurnHost implements HumanInputHost<HarnessSession> {
           session,
           tools,
         });
-        this.runtimeCalls ??= work.runtimeCalls;
         const settled: Intake = {
           results: work.results.length === 0 ? [] : [{ content: [...work.results], role: "tool" }],
-          running: work.runtimeCalls?.tasks.map((task) => task.callId) ?? [],
+          running: work.runtimeCalls?.tasks ?? [],
           stopped: work.signIns?.callIds ?? [],
           type: "calls.settled",
         };
@@ -228,27 +223,17 @@ export async function applyStepArrivals(input: {
     session = committed.session;
     if (committed.ended !== undefined) return { result: committed.ended };
   }
-  const { dispatched, messageAnswered, runtimeCalls } = host;
-  const turnInput = messageAnswered ? withoutMessage(stepInput) : stepInput;
-  if (runtimeCalls !== undefined) {
-    // The turn's message is read after the approved calls' results; its
-    // answers were already applied.
+  const turnInput = host.messageAnswered ? withoutMessage(stepInput) : stepInput;
+  if (HumanInput.read(session.state).runtimeCalls() !== undefined) {
+    // Approved calls run as runtime work: the turn parks on them. Its message
+    // is read after their results; its answers were already applied.
     const following = withoutAnswers(turnInput);
+    if (following?.message !== undefined) {
+      const held = await commitTurn(host, session, { input: following, type: "input.held" });
+      session = held.session;
+    }
     return {
-      result: {
-        next: null,
-        session: setHarnessEmissionState(
-          setPendingCoordinationBatch({
-            event: runtimeCalls.at,
-            followingInput: following?.message === undefined ? undefined : following,
-            // The step's response waits with its runtime calls, out of history.
-            responseMessages: dispatched ?? [],
-            session,
-            tasks: runtimeCalls.tasks,
-          }),
-          advanceStep(emissionState),
-        ),
-      },
+      result: { next: null, session: setHarnessEmissionState(session, advanceStep(emissionState)) },
     };
   }
   // A message that answers nothing still joins history, so it is read once

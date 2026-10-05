@@ -27,10 +27,9 @@ export function isSessionStateIdleForHandoff(sessionState: DurableSessionState):
   // Decoding the run registry rejects corrupt state before any busy-work shortcut.
   const workflowToolRuns = getBlockingWorkflowToolRuns(state);
 
-  // The batch is deleted when its calls settle. Its ordinary reader tolerates
-  // a malformed value as absent; that must not authorize a handoff.
-  if (state?.["eve.runtime.pendingCoordinationBatch"] !== undefined) return false;
   const humanInput = HumanInput.read(state);
+  // A held step counts even when its legacy record can't be read.
+  if (humanInput.holdsStep()) return false;
   if ("held" in humanInput.next() || humanInput.relayedRequestIds().size > 0) return false;
   return workflowToolRuns.length === 0;
 }

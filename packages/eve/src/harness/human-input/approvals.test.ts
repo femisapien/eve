@@ -34,6 +34,15 @@ function notRun(toolName: string, reason: string) {
   };
 }
 
+const deployTask = {
+  callId: "call-deploy",
+  entry: { entryPoint: "execute" as const },
+  input: {},
+  kind: "workflow-task" as const,
+  toolName: "deploy",
+  workflowId: "workflow//./agent/tools/deploy//execute",
+};
+
 describe("tool approvals", () => {
   it("asking publishes one request per call at the step's coordinates and holds the turn", () => {
     const turn = Turn.idle().interrupt(
@@ -224,19 +233,31 @@ describe("tool approvals", () => {
     ]);
   });
 
-  it("an approved call that runs as runtime work takes the step with it", () => {
+  it("an approved call that runs as runtime work keeps the step waiting for its result", () => {
     const approved = heldOnApprovals("deploy").intake(answer("approve", "deploy"));
     const dispatched = approved.stored().intake({
       results: [],
-      running: ["call-deploy"],
+      running: [deployTask],
       type: "calls.settled",
     });
 
     expect(dispatched.appended()).toEqual([]);
-    expect(dispatched.reported("calls.dispatched")).toEqual([
-      { at: AT, messages: stepResponse([approval("deploy")]), type: "calls.dispatched" },
+    expect(dispatched.stored().humanInput.suspendedMessages()).toEqual(
+      stepResponse([approval("deploy")]),
+    );
+    expect(dispatched.stored().humanInput.runtimeCalls()?.calls).toEqual([
+      { callId: "call-deploy", toolName: "deploy", waitsOn: "runtime" },
     ]);
-    expect(dispatched.stored().humanInput.suspendedMessages()).toEqual([]);
+
+    const settled = dispatched.stored().intake({
+      results: [{ content: [ran("deploy", { deployed: true })], role: "tool" }],
+      type: "calls.settled",
+    });
+    expect(settled.appended()).toEqual([
+      ...stepResponse([approval("deploy")]),
+      { content: [ran("deploy", { deployed: true })], role: "tool" },
+    ]);
+    expect(settled.stored().humanInput.holdsStep()).toBe(false);
   });
 
   it("a cancel while a step waits answers every call it made", () => {

@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { ModelMessage } from "ai";
 import { derivePendingState } from "#execution/session/pending-turn-state.js";
-import { setPendingCoordinationBatch } from "#harness/coordination.js";
+import { parkedOnRuntimeCalls } from "#internal/testing/human-input.js";
 import type { HarnessSession } from "#harness/types.js";
 import type { RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
 import { TASK_WAIT_TOOL_NAME } from "#protocol/task-tools.js";
@@ -31,10 +31,9 @@ const deployRun: RuntimeWorkflowTaskRequest = {
 };
 
 function parked(tasks: readonly RuntimeWorkflowTaskRequest[]): HarnessSession {
-  return setPendingCoordinationBatch({
-    event: { sequence: 0, stepIndex: 0, turnId: "turn_0" },
-    responseMessages: [waitCall],
-    session,
+  return parkedOnRuntimeCalls(session, {
+    at: { sequence: 0, stepIndex: 0, turnId: "turn_0" },
+    messages: [waitCall],
     tasks,
   });
 }

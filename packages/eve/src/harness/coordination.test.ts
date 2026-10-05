@@ -3,10 +3,11 @@ import { createPresentedRuntimeActionRequestFromToolCall } from "#harness/action
 import {
   createCoordinationRequestFromToolCall,
   createRuntimeActionRequestFromToolCall,
-  resolvePendingCoordination,
+  readRuntimeResults,
   resolveToolCallInputObject,
-  setPendingCoordinationBatch,
 } from "#harness/coordination.js";
+import { HumanInput } from "#harness/human-input/index.js";
+import { parkedOnRuntimeCalls } from "#internal/testing/human-input.js";
 import {
   getBlockingWorkflowToolRuns,
   registerWorkflowToolRun,
@@ -259,21 +260,35 @@ function createParkedSession(): HarnessSession {
     turnId: "turn_0",
   });
 
-  return setPendingCoordinationBatch({
-    tasks: [
-      {
-        callId: "call-1",
-        executeInput: { message: "go", target: "researcher" },
-        input: { description: "Research the topic", message: "go" },
-        entry: { entryPoint: "execute" },
-        kind: "workflow-task",
-        toolName: "researcher",
-        workflowId: "workflow://subagent-tool",
-      },
-    ],
-    event: { sequence: 0, stepIndex: 0, turnId: "turn_0" },
-    responseMessages: [],
-    session: withUsage,
+  return withUsage;
+}
+
+const deployTask = {
+  callId: "call-1",
+  input: { service: "api" },
+  entry: { entryPoint: "execute" as const },
+  kind: "workflow-task" as const,
+  toolName: "deploy",
+  workflowId: "workflow//./agent/tools/deploy//execute",
+};
+
+const deployCall = {
+  content: [
+    {
+      input: { service: "api" },
+      toolCallId: "call-1",
+      toolName: "deploy",
+      type: "tool-call" as const,
+    },
+  ],
+  role: "assistant" as const,
+};
+
+function parkedOnDeploy(): HarnessSession {
+  return parkedOnRuntimeCalls(createParkedSession(), {
+    at: { sequence: 0, stepIndex: 0, turnId: "turn_0" },
+    messages: [deployCall],
+    tasks: [deployTask],
   });
 }
 
@@ -290,69 +305,55 @@ describe("coordination batch identity", () => {
     };
 
     expect(() =>
-      setPendingCoordinationBatch({
+      parkedOnRuntimeCalls(createParkedSession(), {
+        at: { sequence: 0, stepIndex: 0, turnId: "turn_0" },
+        messages: [],
         tasks: [task, { ...task, toolName: "other" }],
-        event: { sequence: 0, stepIndex: 0, turnId: "turn_0" },
-        responseMessages: [],
-        session: createParkedSession(),
       }),
     ).toThrow('duplicate callId "duplicate-call"');
   });
 });
 
-describe("resolvePendingCoordination", () => {
+describe("readRuntimeResults", () => {
+  function held(session: HarnessSession) {
+    return HumanInput.read(session.state).runtimeCalls()!;
+  }
+
+  it("waits until every runtime call has a result", async () => {
+    const parked = parkedOnDeploy();
+    expect(
+      await readRuntimeResults({
+        held: held(parked),
+        results: [],
+        session: parked,
+        turnId: "turn_0",
+      }),
+    ).toBeUndefined();
+  });
+
   it("forgets a finished workflow tool run", async () => {
-    const parked = setPendingCoordinationBatch({
-      event: { sequence: 0, stepIndex: 0, turnId: "turn_0" },
-      responseMessages: [],
-      session: createParkedSession(),
-      tasks: [
-        {
-          callId: "call-1",
-          input: { service: "api" },
-          entry: { entryPoint: "execute" },
-          kind: "workflow-task",
-          toolName: "deploy",
-          workflowId: "workflow//./agent/tools/deploy//execute",
-        },
-      ],
-    });
-    const session = registerWorkflowToolRun(parked, {
+    const session = registerWorkflowToolRun(parkedOnDeploy(), {
       callId: "call-1",
       toolName: "deploy",
       origin: { turnId: "turn_0", stepIndex: 0 },
       address: { runId: "run-1", hookToken: "eve:workflow-tool-run:op-1" },
     });
 
-    const resolved = await resolvePendingCoordination({
+    const read = await readRuntimeResults({
+      held: held(session),
+      results: [
+        { callId: "call-1", kind: "tool-result", output: { deployed: true }, toolName: "deploy" },
+      ],
       session,
-      stepInput: {
-        runtimeActionResults: [
-          { callId: "call-1", kind: "tool-result", output: { deployed: true }, toolName: "deploy" },
-        ],
-      },
+      turnId: "turn_0",
     });
 
-    expect(resolved.outcome).toBe("resolved");
-    expect(getBlockingWorkflowToolRuns(resolved.session.state)).toEqual([]);
+    expect(read).toBeDefined();
+    expect(getBlockingWorkflowToolRuns(read!.session.state)).toEqual([]);
   });
 
   it("projects a workflow tool's result through its toModelOutput", async () => {
-    const parked = setPendingCoordinationBatch({
-      event: { sequence: 0, stepIndex: 0, turnId: "turn_0" },
-      responseMessages: [],
-      session: createParkedSession(),
-      tasks: [
-        {
-          callId: "call-1",
-          input: { service: "api" },
-          entry: { entryPoint: "execute" },
-          kind: "workflow-task",
-          toolName: "deploy",
-          workflowId: "workflow//./agent/tools/deploy//execute",
-        },
-      ],
-    });
+    const parked = parkedOnDeploy();
     const tools = new Map([
       [
         "deploy",
@@ -366,22 +367,22 @@ describe("resolvePendingCoordination", () => {
       ],
     ]);
 
-    const resolved = await resolvePendingCoordination({
+    const read = await readRuntimeResults({
+      held: held(parked),
+      results: [
+        {
+          callId: "call-1",
+          kind: "tool-result",
+          output: { deployed: true, url: "https://api.example" },
+          toolName: "deploy",
+        },
+      ],
       session: parked,
-      stepInput: {
-        runtimeActionResults: [
-          {
-            callId: "call-1",
-            kind: "tool-result",
-            output: { deployed: true, url: "https://api.example" },
-            toolName: "deploy",
-          },
-        ],
-      },
       tools,
+      turnId: "turn_0",
     });
 
-    const toolMessage = resolved.messages.at(-1);
+    const toolMessage = read?.message;
     expect(toolMessage?.role).toBe("tool");
     expect(JSON.stringify(toolMessage?.content)).toContain("deployed to https://api.example");
     expect(JSON.stringify(toolMessage?.content)).not.toContain('"deployed":true');

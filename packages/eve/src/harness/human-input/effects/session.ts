@@ -78,7 +78,7 @@ export class SessionHost implements HumanInputHost<DurableSession> {
       // These need the turn's step: its tools, its model input, or its budget.
       case "note":
       case "calls.approved":
-      case "calls.dispatched":
+      case "input.resumed":
       case "sign-in.completed":
       case "responder.check":
       case "budget.granted":

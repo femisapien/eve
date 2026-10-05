@@ -29,7 +29,7 @@ import {
 import { BundleKey, ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
 import { startWorkflowTask } from "#execution/tools/workflow/start.js";
-import { getPendingCoordinationBatch, setPendingCoordinationBatch } from "#harness/coordination.js";
+import { parkedOnRuntimeCalls } from "#internal/testing/human-input.js";
 import { TurnCancelledError } from "#harness/turn-cancellation.js";
 import { setHarnessEmissionState } from "#harness/emission-state.js";
 import type { HarnessSession, StepFn, StepResult } from "#harness/types.js";
@@ -46,7 +46,6 @@ import { setLogRecordSubscriber, type LogRecord } from "#internal/logging.js";
 import type { HookContext } from "#public/definitions/hook.js";
 import { getCompiledRuntimeAgentBundle } from "#runtime/sessions/compiled-agent-cache.js";
 import {
-  createDurableSessionState,
   createDurableSessionValues,
   type DurableSessionState,
   readDurableSession,
@@ -428,7 +427,7 @@ describe("dispatchCoordinationStep", () => {
   }
 
   function pendingWorkflowTask(turnId: string): HarnessSession {
-    return setPendingCoordinationBatch({
+    return parkedOnRuntimeCalls(createStubSession(), {
       tasks: [
         {
           callId: "call-1",
@@ -440,13 +439,12 @@ describe("dispatchCoordinationStep", () => {
           workflowId: "workflow//eve//research",
         },
       ],
-      event: { sequence: 3, stepIndex: 2, turnId },
-      responseMessages: [],
-      session: createStubSession(),
+      at: { sequence: 3, stepIndex: 2, turnId },
+      messages: [],
     });
   }
 
-  it("repairs an empty pending turn id from the active session turn", async () => {
+  it("runs a step stored without a turn id in the active session turn", async () => {
     mockCoordinationBundle();
     installSessionStoreMocks([pendingWorkflowTask("")]);
     const sessionState = createStubSessionState({
@@ -461,9 +459,8 @@ describe("dispatchCoordinationStep", () => {
       sessionState,
     });
 
-    const persisted = vi.mocked(createDurableSessionState).mock.calls.at(-1)?.[0].session;
-    expect(result.stateDelta.sessionState).toBeDefined();
-    expect(getPendingCoordinationBatch(persisted?.state)?.event.turnId).toBe("turn_3");
+    expect(result.stateDelta).toBeDefined();
+    expect(vi.mocked(startWorkflowTask).mock.calls.at(-1)?.[0].batchEvent.turnId).toBe("turn_3");
   });
 
   it.each([

@@ -173,7 +173,7 @@ import {
   getAnthropicCacheMarker,
 } from "#harness/prompt-cache.js";
 import { resolveFrameworkToolFromUpstreamType } from "#harness/provider-tools.js";
-import { resolvePendingCoordination, setPendingCoordinationBatch } from "#harness/coordination.js";
+import { readRuntimeResults } from "#harness/coordination.js";
 import {
   getInvalidToolCallInputError,
   isInvalidToolCall,
@@ -599,45 +599,37 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       return { next: null, session };
     }
 
-    const coordination = await resolvePendingCoordination({
-      emit,
-      session,
-      stepInput: input,
-      tools: config.tools,
-    });
-    // Workflow tool results join history here, so their files leave as refs too.
-    const resolvedCoordination =
-      coordination.outcome === "resolved"
-        ? { ...coordination, messages: await stageToolResultMedia(coordination.messages) }
-        : coordination;
-    if (resolvedCoordination.outcome === "unresolved") {
-      return { next: null, session: resolvedCoordination.session };
-    }
-    session = resolvedCoordination.session;
-    // Calls that ran while the turn holds join the suspended step, which joins
-    // history once every call it made has a result.
-    const settlesBesideApprovals =
-      resolvedCoordination.outcome === "resolved" &&
-      "held" in HumanInput.read(session.state).next();
-    if (settlesBesideApprovals) {
-      const settled = await commitTurn(
-        new TurnHost({ emissionState, phase: "pre-step" }),
+    // The held step's runtime calls join it once every one has a result; the
+    // step joins history once none of its calls waits.
+    let following: StepInput | undefined;
+    const runtimeCalls = HumanInput.read(session.state).runtimeCalls();
+    if (runtimeCalls !== undefined) {
+      const results = await readRuntimeResults({
+        emit,
+        held: runtimeCalls,
+        results: input?.runtimeActionResults ?? [],
         session,
-        {
-          results: resolvedCoordination.messages.slice(session.history.length),
-          type: "calls.settled",
-        },
-      );
+        tools: config.tools,
+        turnId: activeTurnId(emissionState),
+      });
+      if (results === undefined) return { next: null, session };
+      const host = new TurnHost({ emissionState, phase: "pre-step" });
+      const settled = await commitTurn(host, results.session, {
+        // Workflow tool results join history here, so their files leave as refs too.
+        results: await stageToolResultMedia([results.message]),
+        type: "calls.settled",
+      });
       if (settled.ended !== undefined) return settled.ended;
       session = settled.session;
+      following = host.following;
     }
 
     const accepted = HumanInput.read(session.state).acceptInput(
-      resolvedCoordination.followingInput === undefined
+      following === undefined
         ? input
         : input === undefined
-          ? resolvedCoordination.followingInput
-          : coalesceTurnInputs(resolvedCoordination.followingInput, input),
+          ? following
+          : coalesceTurnInputs(following, input),
     );
     const auth = store?.get(AuthKey) ?? null;
     const humanInputEffects: StepEffects = { config, projectHistory };
@@ -652,10 +644,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     if ("result" in arrived) return arrived.result;
     session = arrived.session;
     const { turnInput } = arrived;
-    const turnMessages =
-      resolvedCoordination.outcome === "resolved" && !settlesBesideApprovals
-        ? resolvedCoordination.messages
-        : [...session.history];
+    const turnMessages = [...session.history];
 
     // --- Turn preamble ------------------------------------------------------
 
@@ -2312,15 +2301,16 @@ async function handleStepResult(input: {
       return false;
     });
   const postStep = new TurnHost({ emit, emissionState, phase: "post-step" });
+  // History holds a call only with its result: a step with calls that wait,
+  // on a person or on runtime work, is suspended in human input until each
+  // has one, with the history it was prompted with.
   if (approvalRequests.length > 0) {
     const committed = await commitTurn(
       postStep,
       baseSession,
       approvalsRequested({
         at: requestAt(emissionState),
-        // The step waits out of history until every call it made has a
-        // result. With runtime calls, the coordination batch holds it.
-        messages: deferredToolCalls.length > 0 ? [] : responseMessages,
+        messages: responseMessages,
         requester: input.auth,
         requests: approvalRequests,
         tools: buildResponseAuthorizationTools({
@@ -2332,11 +2322,26 @@ async function handleStepResult(input: {
     if (committed.ended !== undefined) return committed.ended;
     baseSession = committed.session;
   }
+  if (deferredToolCalls.length > 0) {
+    const deferred = collectDeferredCalls({
+      session: baseSession,
+      toolCalls: deferredToolCalls,
+      tools: advertisedCoordinationTools,
+      turnId: emissionState.turnId,
+    });
+    const committed = await commitTurn(postStep, deferred.session, {
+      at: requestAt(emissionState),
+      messages: responseMessages,
+      tasks: deferred.workflowRequests,
+      type: "calls.dispatched",
+    });
+    if (committed.ended !== undefined) return committed.ended;
+    baseSession = committed.session;
+  }
   const signIns = findInlineAuthorizationSignals(result.toolResults);
   if (signIns !== undefined) {
-    // The calls that asked for a sign-in leave the step. With approvals open,
-    // the step is already suspended and stays out of history; otherwise it
-    // joins history without them.
+    // The calls that asked for a sign-in leave the step. A suspended step
+    // stays out of history; otherwise it joins history without them.
     const committed = await commitTurn(
       postStep,
       { ...baseSession, history: validateHarnessModelMessages(promptMessages) },
@@ -2344,50 +2349,37 @@ async function handleStepResult(input: {
         at: requestAt(emissionState),
         callIds: signIns.callIds,
         challenges: signIns.challenges,
-        messages: approvalRequests.length > 0 ? [] : responseMessages,
+        messages: responseMessages,
         requester: input.auth,
         type: "authorization.required",
       },
     );
     if (committed.ended !== undefined) return committed.ended;
-    return await holdForInput({ emissionState, host: postStep, session: committed.session });
+    baseSession = committed.session;
   }
 
-  const deferred = collectDeferredCalls({
-    session: baseSession,
-    toolCalls: deferredToolCalls,
-    tools: advertisedCoordinationTools,
-    turnId: emissionState.turnId,
-  });
-  const tasks = deferred.workflowRequests;
-
-  if (deferredToolCalls.length > 0) {
-    // Stamp the live emission state onto the parked session so the resume
-    // turn is classified as a continuation (turnId set), not a fresh turn.
+  const heldInput = HumanInput.read(baseSession.state);
+  if (heldInput.runtimeCalls() !== undefined) {
+    // The turn parks on its runtime calls first, and holds on a person once
+    // they settle. Stamp the live emission state onto the parked session so
+    // the resume turn is classified as a continuation (turnId set), not a
+    // fresh turn.
     return {
       next: null,
       session: setHarnessEmissionState(
-        setPendingCoordinationBatch({
-          tasks,
-          event: {
-            sequence: emissionState.sequence,
-            stepIndex: emissionState.stepIndex,
-            turnId: emissionState.turnId,
-          },
-          responseMessages,
-          session: { ...deferred.session, history: validateHarnessModelMessages(promptMessages) },
-        }),
+        { ...baseSession, history: validateHarnessModelMessages(promptMessages) },
         advanceStep(emissionState),
       ),
     };
   }
-
-  // The step waits in human input, out of history, until its approvals resolve.
-  if (approvalRequests.length > 0) {
+  if (signIns !== undefined || approvalRequests.length > 0) {
     return await holdForInput({
       emissionState,
       host: postStep,
-      session: { ...baseSession, history: validateHarnessModelMessages(promptMessages) },
+      session:
+        signIns !== undefined
+          ? baseSession
+          : { ...baseSession, history: validateHarnessModelMessages(promptMessages) },
     });
   }
 

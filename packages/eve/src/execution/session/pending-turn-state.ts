@@ -1,5 +1,5 @@
-import { getPendingCoordinationBatch, pendingCoordinationCallIds } from "#harness/coordination.js";
-import { pendingTaskToolCalls, type TaskToolCall } from "#execution/tasks/calls.js";
+import type { TaskToolCall } from "#execution/tasks/calls.js";
+import { HumanInput } from "#harness/human-input/index.js";
 import type { HarnessSession } from "#harness/types.js";
 
 /** Derives the workflow fields used to select the next action at the park boundary. */
@@ -9,11 +9,13 @@ export function derivePendingState(session: HarnessSession): {
   readonly pendingCoordinationCallIds?: readonly string[];
   readonly pendingTaskToolCalls?: readonly TaskToolCall[];
 } {
-  const batch = getPendingCoordinationBatch(session.state);
-  if (batch === undefined) return {};
+  const held = HumanInput.read(session.state).runtimeCalls();
+  if (held === undefined) return {};
   return {
-    hasRunsToDispatch: batch.tasks.length > 0,
-    pendingCoordinationCallIds: pendingCoordinationCallIds(batch),
-    pendingTaskToolCalls: pendingTaskToolCalls(batch.responseMessages),
+    hasRunsToDispatch: held.tasks.length > 0,
+    pendingCoordinationCallIds: held.calls
+      .filter((call) => call.waitsOn === "runtime")
+      .map((call) => call.callId),
+    pendingTaskToolCalls: held.taskToolCalls,
   };
 }

@@ -1,10 +1,10 @@
 import { jsonSchema, type ModelMessage } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
+import { HumanInput } from "#harness/human-input/index.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { contextStorage } from "#context/container.js";
-import { requestAuthorization } from "#harness/authorization.js";
-import { getPendingCoordinationBatch } from "#harness/coordination.js";
+import { ReceivedAuthorizationCallbacksKey, requestAuthorization } from "#harness/authorization.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import { createToolLoopHarness } from "#harness/tool-loop.js";
 import type {
@@ -114,7 +114,10 @@ function setup(input: {
     history: [],
     sessionId: "generate-approval-resume-session",
   };
-  return { compact, events, execute, model, responses, session, step };
+  /** Delivers the sign-in callbacks with the next step, as the session does. */
+  const signedIn = (attemptId: string) =>
+    ctx.set(ReceivedAuthorizationCallbacksKey, [{ attemptId, connectionName: "release-service" }]);
+  return { compact, events, execute, model, responses, session, signedIn, step };
 }
 
 type Prompt = MockLanguageModelV4["doStreamCalls"][number]["prompt"];
@@ -335,12 +338,9 @@ describe("tool approvals in the tool loop (real AI SDK)", () => {
     expect(dispatched.next).toBeNull();
     // The asking step waits with its runtime call, out of history.
     expect(partTypes(dispatched.session.history)).toEqual(["user:text"]);
-    expect(
-      partTypes(getPendingCoordinationBatch(dispatched.session.state)!.responseMessages),
-    ).toEqual(["assistant:tool-call"]);
-    expect(
-      getPendingCoordinationBatch(dispatched.session.state)?.tasks.map((task) => task.callId),
-    ).toEqual(["call-1"]);
+    const humanInput = HumanInput.read(dispatched.session.state);
+    expect(partTypes([...humanInput.suspendedMessages()])).toEqual(["assistant:tool-call"]);
+    expect(humanInput.runtimeCalls()?.tasks.map((task) => task.callId)).toEqual(["call-1"]);
     expect(fixture.model.doStreamCalls).toHaveLength(1);
 
     const completed = await fixture.step(dispatched.session, {
@@ -587,5 +587,130 @@ describe("a sign-in beside a tool approval in the tool loop (real AI SDK)", () =
 
     expect(unpairedCalls(fixture.model.doStreamCalls[1]!.prompt)).toEqual([]);
     expect(unpairedCalls(steered.session.history)).toEqual([]);
+  });
+});
+
+/**
+ * A step whose calls wait on a person and on runtime work at once: `build` is
+ * a workflow tool, which runs in the session while the person answers. The
+ * step waits out of history until every call it made has a result.
+ */
+describe("runtime calls beside a person in the tool loop (real AI SDK)", () => {
+  const build: HarnessToolDefinition = {
+    description: "Build a service.",
+    inputSchema: jsonSchema({ type: "object" }),
+    name: "build",
+    workflowId: "workflow//./agent/tools/build//execute",
+  };
+  const probe: HarnessToolDefinition = {
+    description: "Check Alice's access.",
+    execute: async () => signIn("attempt-1"),
+    inputSchema: jsonSchema({ type: "object" }),
+    name: "probe",
+  };
+  const buildCall = { input: "{}", toolCallId: "call-build", toolName: "build" };
+  const built = {
+    runtimeActionResults: [
+      { callId: "call-build", kind: "tool-result" as const, output: "built", toolName: "build" },
+    ],
+  };
+
+  const mixes = {
+    "an approval": { calls: [deployCall("call-deploy"), buildCall], person: "approval" },
+    "a sign-in": { calls: [probeCall(), buildCall], person: "sign-in" },
+    "a sign-in and an approval": {
+      calls: [probeCall(), deployCall("call-deploy"), buildCall],
+      person: "both",
+    },
+  } as const;
+
+  function start(mix: keyof typeof mixes, ...replies: string[]) {
+    return setup({
+      responses: [
+        toolCallsStreamResult(mixes[mix].calls),
+        ...replies.map((reply) => textStreamResult(reply)),
+      ],
+      tool: { approval: always() },
+      tools: [build, probe],
+    });
+  }
+
+  describe.each(Object.keys(mixes) as (keyof typeof mixes)[])("with %s", (mix) => {
+    it("parks on the runtime call with the step out of history, then holds on the person", async () => {
+      const fixture = start(mix);
+      const parked = await fixture.step(fixture.session, { message: "Build and ship the api." });
+
+      // The runtime call is dispatched even though a person is asked too.
+      expect(parked.next).toBeNull();
+      expect(parked.held).toBeUndefined();
+      expect(partTypes(parked.session.history)).toEqual(["user:text"]);
+      expect(HumanInput.read(parked.session.state).runtimeCalls()?.tasks).toEqual([
+        expect.objectContaining({ callId: "call-build", kind: "workflow-task" }),
+      ]);
+
+      const holding = await fixture.step(parked.session, built);
+
+      expect(holding.held).toEqual({ kind: "input" });
+      expect(fixture.model.doStreamCalls).toHaveLength(1);
+      expect(unpairedCalls(holding.session.history)).toEqual([]);
+      expect(HumanInput.read(holding.session.state).runtimeCalls()).toBeUndefined();
+    });
+
+    it("resumes once the person answers, with every call answered once", async () => {
+      const fixture = start(mix, "Shipped.");
+      const parked = await fixture.step(fixture.session, { message: "Build and ship the api." });
+      const holding = await fixture.step(parked.session, built);
+      const [request] = requested(fixture.events);
+
+      if (mixes[mix].person !== "approval") fixture.signedIn("attempt-1");
+      const resumed = await fixture.step(
+        holding.session,
+        mixes[mix].person === "sign-in"
+          ? undefined
+          : { inputResponses: [{ optionId: "approve", requestId: request!.requestId }] },
+      );
+
+      expect(fixture.model.doStreamCalls).toHaveLength(2);
+      expect(unpairedCalls(fixture.model.doStreamCalls[1]!.prompt)).toEqual([]);
+      expect(unpairedCalls(resumed.session.history)).toEqual([]);
+      expect(JSON.stringify(resumed.session.history)).toContain("built");
+      // The call that asked for a sign-in left the step; the model calls it again.
+      expect(JSON.stringify(resumed.session.history)).not.toContain("call-probe");
+      expect(fixture.execute).toHaveBeenCalledTimes(mixes[mix].person === "sign-in" ? 0 : 1);
+    });
+
+    it("steers past the person when Alice's message arrives with the runtime result", async () => {
+      const fixture = start(mix, "Skipping that.");
+      const parked = await fixture.step(fixture.session, { message: "Build and ship the api." });
+
+      const steered = await fixture.step(parked.session, {
+        ...built,
+        message: "Skip the rest; is the build done?",
+      });
+
+      expect(fixture.execute).not.toHaveBeenCalled();
+      expect(unpairedCalls(fixture.model.doStreamCalls[1]!.prompt)).toEqual([]);
+      expect(unpairedCalls(steered.session.history)).toEqual([]);
+      expect(JSON.stringify(steered.session.history)).toContain("built");
+      expect(partTypes(steered.session.history).at(-1)).toBe("assistant:text");
+    });
+
+    it("compacts while parked without leaving a waiting call behind, then resumes", async () => {
+      const fixture = start(mix, "Skipping that.");
+      const parked = await fixture.step(fixture.session, { message: "Build and ship the api." });
+
+      const compacted = await fixture.compact(parked.session);
+
+      expect(fixture.events.map((event) => event.type)).toContain("compaction.completed");
+      expect(unpairedCalls(compacted.session.history)).toEqual([]);
+      expect(HumanInput.read(compacted.session.state).runtimeCalls()).toBeDefined();
+
+      const holding = await fixture.step(compacted.session, built);
+      expect(unpairedCalls(holding.session.history)).toEqual([]);
+      const steered = await fixture.step(holding.session, { message: "Skip the rest." });
+
+      expect(unpairedCalls(fixture.model.doStreamCalls[1]!.prompt)).toEqual([]);
+      expect(unpairedCalls(steered.session.history)).toEqual([]);
+    });
   });
 });

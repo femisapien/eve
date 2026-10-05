@@ -57,7 +57,7 @@ import {
   isHarnessBetweenTurns,
   setHarnessEmissionState,
 } from "#harness/emission.js";
-import { getPendingCoordinationBatch } from "#harness/coordination.js";
+import { parkedOnRuntimeCalls } from "#internal/testing/human-input.js";
 import { PendingSkillAnnouncementKey } from "#context/dynamic-skill-lifecycle.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
 import { appendMissingToolResultMessages, createToolLoopHarness } from "#harness/tool-loop.js";
@@ -1327,7 +1327,7 @@ describe("createToolLoopHarness", () => {
         toolName: "delegate",
       }),
     ]);
-    expect(getPendingCoordinationBatch(result.session.state)?.tasks).toEqual([
+    expect(HumanInput.read(result.session.state).runtimeCalls()?.tasks).toEqual([
       expect.objectContaining({
         callId: "call-1",
         input: { message: "delegate from child" },
@@ -3259,7 +3259,7 @@ describe("createToolLoopHarness", () => {
 
     // Parked on the coordination batch.
     expect(result.next).toBeNull();
-    expect(result.session.state?.["eve.runtime.pendingCoordinationBatch"]).toBeDefined();
+    expect(HumanInput.read(result.session.state).runtimeCalls()).toBeDefined();
 
     // The parked session must carry the live turn's emission identity so
     // the resume turn is classified as a continuation, not a fresh turn.
@@ -9316,7 +9316,6 @@ describe("createToolLoopHarness", () => {
     });
 
     it("keeps files a workflow tool projects for the model out of history", async () => {
-      const { setPendingCoordinationBatch } = await import("#harness/coordination.js");
       const { toolOutput, toolOutputPart } = await import("#tools/model-output.js");
       setupMockAgent({
         finishReason: "stop",
@@ -9341,9 +9340,9 @@ describe("createToolLoopHarness", () => {
           },
         ],
       ]);
-      const parked = setPendingCoordinationBatch({
-        event: { sequence: 0, stepIndex: 0, turnId: "turn_0" },
-        responseMessages: [
+      const parked = parkedOnRuntimeCalls(createTestSession(), {
+        at: { sequence: 0, stepIndex: 0, turnId: "turn_0" },
+        messages: [
           {
             content: [
               { input: {}, toolCallId: "shot-1", toolName: "screenshot", type: "tool-call" },
@@ -9351,7 +9350,6 @@ describe("createToolLoopHarness", () => {
             role: "assistant",
           },
         ],
-        session: createTestSession(),
         tasks: [
           {
             callId: "shot-1",

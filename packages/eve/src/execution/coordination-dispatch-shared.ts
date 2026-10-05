@@ -21,21 +21,14 @@ import {
 } from "#runtime/sessions/runtime-context-keys.js";
 import { deserializeContext } from "#context/serialize.js";
 import type { HarnessSessionBase } from "#harness/types.js";
-import {
-  assertUniqueCoordinationCallIds,
-  getPendingCoordinationBatch,
-  setPendingCoordinationBatch,
-} from "#harness/coordination.js";
+import { assertUniqueCoordinationCallIds } from "#harness/coordination.js";
+import { HumanInput } from "#harness/human-input/index.js";
 import { activeTurnId } from "#harness/active-turn-id.js";
 import type { RuntimeActionResult, RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
 import type { SessionParent, SessionTraceRoot } from "#channel/types.js";
 import type { ContextReader } from "#context/key.js";
 import { resolveTraceRootSessionId } from "#shared/trace-root.js";
-import {
-  createDurableSessionState,
-  type DurableSessionState,
-  readDurableSession,
-} from "#execution/durable-session-store.js";
+import { type DurableSessionState, readDurableSession } from "#execution/durable-session-store.js";
 import { hydrateDurableSession } from "#execution/session.js";
 import { buildSubagentRunInput } from "#subagents/tool.js";
 import { resolveEffectiveAgentRuntime } from "#execution/effective-agent-config.js";
@@ -100,13 +93,16 @@ export async function prepareCoordinationDispatch(input: {
   readonly sessionState: DurableSessionState;
 }): Promise<PreparedCoordinationDispatch | undefined> {
   const durableSession = readDurableSession(input.sessionState);
-  const pending = getPendingCoordinationBatch(durableSession.state);
+  const held = HumanInput.read(durableSession.state).runtimeCalls();
 
-  if (pending === undefined) return undefined;
-  const requests = pending.tasks;
+  if (held === undefined) return undefined;
+  const requests = held.tasks;
   if (requests.length === 0) return undefined;
-  const turnId = pending.event.turnId || activeTurnId(input.sessionState.emissionState);
-  const event = pending.event.turnId === turnId ? pending.event : { ...pending.event, turnId };
+  // A step stored without its turn runs in the active one; its results read it the same way.
+  const event =
+    held.at.turnId === ""
+      ? { ...held.at, turnId: activeTurnId(input.sessionState.emissionState) }
+      : held.at;
   const ctx = await deserializeContext(input.serializedContext);
   const prepared = await prepareActionDispatch({
     batch: {
@@ -118,20 +114,7 @@ export async function prepareCoordinationDispatch(input: {
     plan: () => requests,
     serializedContext: input.serializedContext,
   });
-  if (event === pending.event) {
-    return { ...prepared, sessionState: input.sessionState };
-  }
-
-  const session = setPendingCoordinationBatch({
-    ...pending,
-    event,
-    session: prepared.session,
-  });
-  return {
-    ...prepared,
-    session,
-    sessionState: createDurableSessionState({ session }),
-  };
+  return { ...prepared, sessionState: input.sessionState };
 }
 
 interface DispatchBatch {
