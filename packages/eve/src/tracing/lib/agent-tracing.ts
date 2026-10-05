@@ -22,7 +22,8 @@ import type {
 } from "./core/types.js";
 
 export interface AgentTracingOptions {
-  readonly agentName: string;
+  /** Names invocation spans. Omit for an anonymous agent. */
+  readonly agentName?: string;
   /** Span output and context propagation. Defaults to the global OpenTelemetry provider. */
   readonly telemetry?: AgentTelemetry;
   /**
@@ -128,7 +129,7 @@ export function createAgentTracing(input: AgentTracingOptions): AgentTracing {
 
   function turnKey(identity: RunIdentity): string {
     if (checkpointer === undefined) return `turn:${randomUUID()}`;
-    return ["turn", input.agentName, identity.runId, identity.turnId]
+    return ["turn", input.agentName ?? "", identity.runId, identity.turnId]
       .map(encodeURIComponent)
       .join(":");
   }
