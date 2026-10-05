@@ -135,6 +135,14 @@
  *             imported only by the appliers (`turn*.ts`, `session.ts`),
  *             and outside the directory nothing names the commands that need
  *             I/O.
+ *   rule 51 — Only human input (`harness/hitl/`) changes human input.
+ *             Outside it, nothing calls `HumanInput.commit`, its `interrupt`
+ *             or `intake`, or builds the events a request, approval, or
+ *             authorization reports, or a `turn.waiting` on input, whether with a
+ *             builder or by hand. Runtime waits (`on: "tasks"`) and events
+ *             forwarded with their own data are fine. Every change is a commit through the host
+ *             entry points, which return its events, so nothing changes
+ *             without readers hearing it.
  *
  * Baselines for rules with pre-existing violations live in
  * `guard-invariants-baseline.json`. Counts and allowlists in that file
@@ -146,6 +154,7 @@ import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { load as loadYaml } from "js-yaml";
 import { checkExtensionCapabilityContracts } from "./extension-capability-contracts.mjs";
+import { checkHumanInputBoundary } from "./guard-hitl.mjs";
 
 const require = createRequire(import.meta.url);
 const extractorRequire = createRequire(require.resolve("@microsoft/api-extractor/package.json"));
@@ -256,6 +265,7 @@ function isTsLike(relPath) {
  *   rule48: Violation[];
  *   rule49: Violation[];
  *   rule50: Violation[];
+ *   rule51: Violation[];
  *   symlinks: string[];
  * }} state
  */
@@ -291,6 +301,7 @@ async function scanRepo(state) {
     checkRule48(posix, lines, state.rule48);
     checkRule49(posix, lines, state.rule49);
     checkRule50(posix, lines, state.rule50);
+    checkRule51(posix, lines, state.rule51);
   }
 }
 
@@ -650,6 +661,15 @@ function checkRule50(posix, lines, violations) {
       "names a human input command that needs I/O outside harness/hitl/. Carry it out in harness/hitl/host/, the only place that does that I/O.",
     );
   });
+}
+
+// ---------- Rule 51: only human input changes human input ----------
+
+/** @param {string} posix @param {string[]} lines @param {Violation[]} violations */
+function checkRule51(posix, lines, violations) {
+  for (const { line, message } of checkHumanInputBoundary(posix, lines.join("\n"))) {
+    violations.push({ rule: 51, file: posix, line, message });
+  }
 }
 
 // ---------- Rule 13: spread-ternary object composition ----------
@@ -1683,6 +1703,7 @@ async function main() {
     rule48: /** @type {Violation[]} */ ([]),
     rule49: /** @type {Violation[]} */ ([]),
     rule50: /** @type {Violation[]} */ ([]),
+    rule51: /** @type {Violation[]} */ ([]),
     symlinks: /** @type {string[]} */ ([]),
   };
 
@@ -1799,6 +1820,7 @@ async function main() {
   violations.push(...state.rule48);
   violations.push(...state.rule49);
   violations.push(...state.rule50);
+  violations.push(...state.rule51);
 
   if (violations.length === 0) {
     process.stdout.write("[eve:guard:invariants] ok — all mechanical lints passed.\n");
