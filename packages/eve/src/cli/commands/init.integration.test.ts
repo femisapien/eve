@@ -636,19 +636,22 @@ describe("runInitCommand", () => {
     expect(deps.runPackageManagerInstall).not.toHaveBeenCalled();
   });
 
-  it("uses an explicit init package spec for fresh project scaffolds", async () => {
-    const parentDirectory = await mkdtemp(join(tmpdir(), "eve-init-package-spec-"));
-    const output = logger();
-    const deps = dependencies();
-    vi.stubEnv(EVE_INIT_PACKAGE_SPEC_ENV, "file:/tmp/eve-0.11.5.tgz");
+  it.each([false, true])(
+    "preserves an explicit init package spec (Web Chat: %s)",
+    async (channelWebNextjs) => {
+      const parentDirectory = await mkdtemp(join(tmpdir(), "eve-init-package-spec-"));
+      const output = logger();
+      const deps = dependencies();
+      vi.stubEnv(EVE_INIT_PACKAGE_SPEC_ENV, "file:/tmp/eve-0.11.5.tgz");
 
-    await runInitCommand(output, parentDirectory, "my-agent", {}, deps);
+      await runInitCommand(output, parentDirectory, "my-agent", { channelWebNextjs }, deps);
 
-    const packageJson = JSON.parse(
-      await readFile(join(parentDirectory, "my-agent", "package.json"), "utf8"),
-    ) as { dependencies: Record<string, string> };
-    expect(packageJson.dependencies.eve).toBe("file:/tmp/eve-0.11.5.tgz");
-  });
+      const packageJson = JSON.parse(
+        await readFile(join(parentDirectory, "my-agent", "package.json"), "utf8"),
+      ) as { dependencies: Record<string, string> };
+      expect(packageJson.dependencies.eve).toBe("file:/tmp/eve-0.11.5.tgz");
+    },
+  );
 
   it("uses an explicit init package spec when adding to an existing project", async () => {
     const parentDirectory = await mkdtemp(join(tmpdir(), "eve-init-existing-package-spec-"));

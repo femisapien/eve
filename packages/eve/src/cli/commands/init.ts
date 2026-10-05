@@ -230,6 +230,7 @@ async function scaffoldProject(
         kind: "web",
         packageManager,
         force: overwriteExisting,
+        webPackageVersions: evePackage === undefined ? undefined : { evePackage },
         workspaceProbeDirectory: projectPath,
         configureVercelServices: false,
         onWorkspaceRootMutation: (mutation: WorkspaceRootMutation) => {
