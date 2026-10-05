@@ -7,7 +7,7 @@ An eval is a scored check that runs your agent against real sessions and grades 
 
 Evals exercise the same HTTP surface your users hit. The runner boots (or targets) a real agent server, drives sessions through the [TypeScript client](../guides/client/overview) protocol, and grades what comes back, so a passing eval means the agent booted, accepted a request, and produced the result you asserted.
 
-Use [tool stubs](./tool-stubs) to supply predictable JSON tool responses and sequences while keeping assertions on tool calls and agent responses in the eval.
+Define [tool stubs](./tool-stubs) in your eval to control tool results, then assert on the agent's tool calls and responses.
 
 ## `defineEval`
 

@@ -424,7 +424,11 @@ export interface SessionCapabilities {
  * subagent tool wrapper).
  */
 export interface RunInput {
-  /** @internal Verified tool replacement scope, inherited only by local sessions. */
+  /**
+   * @internal Authorized stub rules and ownership metadata supplied by the server.
+   * Local children share the root session's response sequence; remote agents do
+   * not receive this scope.
+   */
   readonly toolStubs?: import("#tool-stubs/types.js").StubScope;
   readonly adapter: ChannelAdapter<any>;
   /**

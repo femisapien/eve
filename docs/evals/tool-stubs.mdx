@@ -1,11 +1,11 @@
 ---
 title: "Tool Stubs"
-description: "Supply predictable tool results with partial argument matching and durable response sequences."
+description: "Define tool responses and response sequences in your evals."
 ---
 
 Pass `stubs` when creating an eval session to replace selected tool executions with JSON responses. The same rules work against local and deployed agents, without deploying mock functions or keeping the runner connected to answer tool calls.
 
-Stubs configure responses; [assertions](./assertions) verify behavior. An unused stub does not fail an eval. Use `calledTool`, counts, and `toolOrder` when a tool call is required, and response assertions or judges to check what the agent tells the user.
+Define both stubs and [assertions](./assertions) in your eval. Stubs specify what tools return; assertions check which tools the agent calls and what it tells the user. An unused stub does not fail an eval. Use `calledTool`, counts, and `toolOrder` to require particular calls, and response assertions or judges to check the answer.
 
 ## Author an eval
 
@@ -20,8 +20,19 @@ export default defineEval({
           id: "tasks",
           tool: "list_tasks",
           responses: [
-            { tasks: ["Buy milk", "Walk dog", "Pay rent"] },
-            { tasks: ["Walk dog", "Pay rent"] },
+            {
+              tasks: [
+                { id: "milk", title: "Buy milk" },
+                { id: "dog", title: "Walk dog" },
+                { id: "rent", title: "Pay rent" },
+              ],
+            },
+            {
+              tasks: [
+                { id: "dog", title: "Walk dog" },
+                { id: "rent", title: "Pay rent" },
+              ],
+            },
           ],
         },
         {
@@ -57,30 +68,50 @@ export default defineEval({
 });
 ```
 
-Use your agent's actual tool names and response shapes. The TypeScript client accepts the same `stubs` option on `client.sessions.create({ stubs })`. Import the `ToolStub` type from `eve/evals` or `eve/client` to share typed fixtures.
+Use your agent's actual tool names and response shapes. The TypeScript client accepts the same `stubs` option on `client.sessions.create({ stubs })`.
+
+### Share stub fixtures
+
+Stubs are plain JSON objects. `ToolStub` is their TypeScript type, and both `eve/evals` and `eve/client` re-export the same definition. These are two entry points in the `eve` package, so use the import that fits your eval or client code.
+
+```ts title="evals/fixtures/tasks.ts"
+import type { ToolStub } from "eve/evals";
+
+export const taskStubs = [
+  { id: "tasks", tool: "list_tasks", response: { tasks: [] } },
+] satisfies readonly ToolStub[];
+```
+
+Import `taskStubs` into any eval and pass it to `t.session({ stubs: taskStubs })`. Each session has its own sequence position, even when several sessions use the same fixture.
 
 ## Permit tool replacement
 
-The target must explicitly grant tool replacement to the verified eval caller. This is disabled by default, including in development. Keep your existing [route authentication](../guides/auth-and-route-protection) and add `allowToolStubs` to the eve channel:
+The target disables tool replacement by default, including in development. Keep your existing [route authentication](../guides/auth-and-route-protection), then use `allowToolStubs` to grant replacement permission to your eval runners. Being allowed to call the agent does not automatically allow a caller to replace its tools.
+
+This example uses Vercel OIDC to authenticate two eval projects and grants both permission to replace tools:
 
 ```ts title="agent/channels/eve.ts"
 import { localDev, vercelOidc, vercelSubject } from "eve/channels/auth";
 import { eveChannel } from "eve/channels/eve";
 
+const evalSubjects = [
+  vercelSubject({ teamSlug: "acme", projectName: "eval-runner" }),
+  vercelSubject({ teamSlug: "acme", projectName: "ci-evals" }),
+];
+
 export default eveChannel({
-  auth: [
-    vercelOidc({
-      subjects: [vercelSubject({ teamSlug: "acme", projectName: "eval-runner" })],
-    }),
-    localDev(),
-  ],
+  auth: [vercelOidc({ subjects: evalSubjects }), localDev()],
   allowToolStubs: (auth) =>
     auth.authenticator === "local-dev" ||
-    auth.subject === vercelSubject({ teamSlug: "acme", projectName: "eval-runner" }),
+    (auth.subject !== undefined && evalSubjects.includes(auth.subject)),
 });
 ```
 
-Adapt the predicate to the identities your authenticator verifies. A dedicated eval role or subject prevents ordinary application users from replacing authentication or authorization tools. `EVE_EVAL_AUTH_TOKEN` supplies the runner's bearer token; it does not itself grant replacement permission. The creating principal must retain that permission to continue, approve, control, or read a stubbed session, including local descendants. `onMessage` principal projection cannot change this ownership.
+Replace the example subjects with your eval projects. The callback checks the authenticated caller against this list of exact subjects. It also permits local development through `localDev()`. `EVE_EVAL_AUTH_TOKEN` supplies the runner's bearer token; the target still decides whether that caller may replace tools.
+
+Only the authenticated identity that created a stubbed session can send later messages, answer approvals, control the session, or read its results. eve rechecks that identity's replacement permission on each request. The same access rule applies to local child sessions.
+
+For example, an eval runner may use `onMessage` to make the agent act as Alice during a test. The runner still owns the stubbed session. Alice's ordinary credentials do not grant access to that session.
 
 ## Match tool arguments
 
@@ -113,16 +144,41 @@ Constraints use a reference-free subset of JSON Schema 2020-12: types, `const`, 
 
 ## Sequences and session scope
 
-A `response` repeats on every match. `responses` advances once per matching logical tool call and repeats its final value after exhaustion. Multiple calls in one turn consume multiple entries. Retries and durable replay of the same call reuse its recorded response. Concurrent calls receive entries in server admission order; that order is not a guarantee about completion order.
+- `response` returns the same value on every matching call.
+- `responses` returns the next value on each new matching call. After the last value, it keeps returning that value.
 
-Configuration stays fixed for the session. Later messages, local descendants, and deployment handoffs share the same playback state. A new root session starts fresh. Denied or pending approvals do not consume entries. A session supports up to 10,000 recorded tool calls.
+For example, `responses: ["pending", "completed"]` returns `"pending"` on the first matching call and `"completed"` on the second and later calls. Two calls within one agent turn consume two entries. The sequence also continues across turns in the same session.
 
-A sequence is a fixture, not a simulated database: an extra read consumes the next response even if a preceding write never happened. Assert call counts and order where the scenario requires them. Mocked completion proves the agent requested an action and received the configured result; it does not prove a real database changed.
+The sequence position is part of the session's durable Workflow execution. When a workflow resumes or replays a previously recorded call, that call keeps its original response without consuming another entry.
+
+Choose the rules when creating the session; they stay fixed for that session. Local child agents share the parent's sequence position, and deployment handoffs preserve it. A new independent session starts at the first response. Calls awaiting or denied approval do not consume entries. A session supports up to 10,000 recorded tool calls.
+
+The responses are supplied by the eval. They do not calculate new task lists from earlier writes: another `list_tasks` call takes the next response even if `complete_task` was never called. Assert the completion call and its order when the scenario requires them. A stubbed completion checks the agent's request and handling of the result; testing a real database update requires the real tool.
+
+### Parallel tool calls
+
+One user message can lead the model to call the same tool several times in parallel, such as looking up two task lists. Local child agents can also call tools in parallel while sharing the parent's stubs. This does not require the eval runner to send multiple messages at once.
+
+Each matching call takes the next response when it reaches the shared sequence. Which parallel call arrives first can vary, and the calls may finish in a different order. Use separate `match` rules when particular arguments must receive particular responses.
 
 ## Supported tools
 
-Ordinary tools, dynamic tools with local executors, and workflow tools retain their normal validation, approval, events, and task lifecycle. Persistent `serve` tools, including the `agent` tool, require unconditional stubs and remain fully mocked. A whole-agent stub does not start the child agent. Local descendants inherit configuration; remote agents never receive it.
+You can stub existing tools that eve executes, including ordinary tools, dynamically supplied tools with an executor, and workflow tools. For example, stubbing `list_tasks` replaces the tool's execution with your JSON response. eve still checks the tool's input, applies its approval rules, processes its output, and records its usual events and task status.
 
-Stub connection operations by their qualified name, such as `linear__list_issues`, with the operation's arguments in `match` and its normalized JSON result in `response`. Discovery, metadata, authentication, and argument validation still run. Stubs therefore do not make an unavailable connection usable offline. `connection_search` and `connection_execute` themselves cannot be replaced.
+### Child agents
 
-Provider-hosted tools without a local executor cannot be replaced. Stubs do not add nonexistent tools to the model's tool set.
+Stubbing the `agent` tool returns your configured delegation result without starting a child agent. Persistent tools implemented with `serve`, including `agent`, require an unconditional stub: omit `match` or use `{}`. Every call to that tool is mocked for the session; conditional mixing of real and mocked calls is unsupported.
+
+If you let a local child agent run, it uses the parent's stubs and shares their sequence position. For example, the parent and child calling `list_tasks` consume entries from the same response sequence. A remote agent on another server does not receive the parent's stub configuration.
+
+### Connections
+
+Stub a connection's operation by its qualified name, such as `linear__list_issues`. Put the operation's argument constraints in `match` and its JSON result in `response`.
+
+The connection must still be available and authenticated so eve can discover the operation and validate its arguments. A stub replaces the operation's execution; it does not provide an offline connection. The framework's `connection_search` and `connection_execute` tools cannot themselves be replaced.
+
+### Tool definitions and provider execution
+
+A stub uses the real tool's name, description, and input schema. Adding a stub for `list_tasks` does not register that tool or make it visible to the model; the agent must already have the tool.
+
+Tools that run inside the model provider, such as provider-hosted web search, have no eve executor to replace. A search tool implemented in your own eve agent can be stubbed.
