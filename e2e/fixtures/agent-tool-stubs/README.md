@@ -1,9 +1,11 @@
 # Declarative tool stub verification
 
-This fixture runs the same consumer evals with real models in `e2e-local` and
+This fixture runs consumer evals with every real model in the `e2e-local`
+matrix (`modelMatrix: full`). The tasks journey uses a semantic judge to
+distinguish acknowledging a completed task from listing it as still open;
+it carries the `real-model` tag. Matching and cross-turn playback also run
 with the shared scripted responder in the Postgres and Vercel world suites.
-`modelMatrix: full` selects every model in the CI matrix. A passing scripted
-world run is transport/durability evidence, not live-model evidence.
+A passing scripted world run is transport/durability evidence, not live-model evidence.
 
 | Contract                                                                               | Primary proof                                                                                                           |
 | -------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |

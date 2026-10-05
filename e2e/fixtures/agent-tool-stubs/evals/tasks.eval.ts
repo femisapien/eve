@@ -1,7 +1,9 @@
+import { e2eJudgeModel } from "@eve-e2e/config";
 import { defineEval } from "eve/evals";
-import { satisfies } from "eve/evals/expect";
 
 export default defineEval({
+  tags: ["real-model"],
+  judge: { model: e2eJudgeModel() },
   description:
     "A model lists stubbed tasks, completes the intended task, and reports the remaining tasks in a follow-up turn.",
   async test(t) {
@@ -56,13 +58,11 @@ export default defineEval({
     second.toolOrder(["complete_task", "list_tasks"]);
     second.messageIncludes("Walk dog");
     second.messageIncludes("Pay rent");
-    t.check(
-      second.message,
-      satisfies(
-        (value) => typeof value === "string" && !value.includes("Buy milk"),
-        "only remaining tasks are listed",
-      ),
-    );
+    t.judge(
+      "The response identifies Walk dog and Pay rent as the only remaining open tasks. " +
+        "It may acknowledge that Buy milk was completed, but must not present Buy milk as still open.",
+      { on: second.message },
+    ).gate(0.8);
     t.noFailedActions();
   },
 });
