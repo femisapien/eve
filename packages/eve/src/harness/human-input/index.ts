@@ -741,6 +741,12 @@ const STATE_KEY = "eve.harness.humanInput";
 /** Where sessions parked before the suspended step held runtime calls kept them. */
 const LEGACY_BATCH_KEY = "eve.runtime.pendingCoordinationBatch";
 
+/** What a rule leaves: the state, and the events it reports, in order. */
+export interface Reduced<S = HumanInputState> {
+  readonly events: readonly HumanInputEvent[];
+  readonly state: S;
+}
+
 /** Exported only for the rules files beside this one. */
 export interface HumanInputState {
   /** Every open request, by `requestId`. */
@@ -863,11 +869,6 @@ function isEmpty(state: HumanInputState): boolean {
 // ---------------------------------------------------------------------------
 // The rules: one reducer, (state, input) -> (state, events).
 // ---------------------------------------------------------------------------
-
-interface Reduced {
-  readonly events: readonly HumanInputEvent[];
-  readonly state: HumanInputState;
-}
 
 const STEERED_REASON = "Cancelled because a new message arrived.";
 const CANCELLED_REASON = "Cancelled.";

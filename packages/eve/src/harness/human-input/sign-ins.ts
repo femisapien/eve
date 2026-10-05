@@ -14,7 +14,12 @@ import type { ModelMessage } from "ai";
 import type { SessionAuthContext } from "#channel/types.js";
 import { authorizationEventFields } from "#harness/authorization-event-fields.js";
 import type { AuthorizationChallenge } from "#harness/authorization.js";
-import type { HumanInputEvent, HumanInputState, RequestAt } from "#harness/human-input/index.js";
+import type {
+  HumanInputEvent,
+  HumanInputState,
+  RequestAt,
+  Reduced,
+} from "#harness/human-input/index.js";
 import {
   createAuthorizationCompletedEvent,
   createAuthorizationRequiredEvent,
@@ -29,11 +34,6 @@ export interface OpenSignIn {
   readonly kind: "authorization";
   readonly at: RequestAt;
   readonly challenge: AuthorizationChallenge;
-}
-
-interface Reduced {
-  readonly events: readonly HumanInputEvent[];
-  readonly state: HumanInputState;
 }
 
 const SUPERSEDED_REASON = "Superseded by a newer authorization attempt.";

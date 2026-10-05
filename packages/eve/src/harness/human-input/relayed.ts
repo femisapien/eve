@@ -23,6 +23,7 @@ import type {
   Interrupt,
   RelayRoute,
   RequestAt,
+  Reduced,
 } from "./index.js";
 
 /** A relayed request, as the session stores it until it is answered or withdrawn. */
@@ -32,11 +33,6 @@ export interface OpenRelayed {
   readonly at: RequestAt;
   readonly request: InputRequest;
   readonly route: RelayRoute;
-}
-
-interface Reduced {
-  readonly events: readonly HumanInputEvent[];
-  readonly state: HumanInputState;
 }
 
 /**

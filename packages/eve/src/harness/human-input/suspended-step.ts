@@ -5,7 +5,7 @@ import type { StepInput } from "#harness/types.js";
 import type { RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
 import type { InputRequest } from "#shared/input.js";
 
-import type { HumanInputEvent, RequestAt } from "./index.js";
+import type { HumanInputEvent, Reduced, RequestAt } from "./index.js";
 
 // History is append-only, and a call joins it only with its result. A model
 // step whose calls wait, on a person or on runtime work, is suspended: its
@@ -136,7 +136,7 @@ export function dispatchCalls<S extends SuspendedStepState>(
 export function runApproved<S extends SuspendedStepState>(
   state: S,
   following: StepInput | undefined,
-): { readonly events: readonly HumanInputEvent[]; readonly state: S } {
+): Reduced<S> {
   const step = state.suspended;
   if (step?.approved === undefined || step.approved.length === 0) return { events: [], state };
   const { approved, ...rest } = step;
@@ -160,9 +160,7 @@ export function hasApprovedCalls(step: SuspendedStep | undefined): boolean {
  * result for every call still without one. A call that waited on a person
  * never ran; a runtime call was stopped before it finished.
  */
-export function cancelStep<S extends SuspendedStepState>(
-  cancelled: S,
-): { readonly events: readonly HumanInputEvent[]; readonly state: S } {
+export function cancelStep<S extends SuspendedStepState>(cancelled: S): Reduced<S> {
   // Input queued behind calls that already joined goes with the turn too.
   const { queued: _queued, ...unqueued } = cancelled;
   const state = unqueued as S;
@@ -243,7 +241,7 @@ export function releaseStep<S extends SuspendedStepState>(
   state: S,
   results: readonly ToolResultPart[],
   options: { readonly following: boolean } = { following: true },
-): { readonly events: readonly HumanInputEvent[]; readonly state: S } {
+): Reduced<S> {
   const messages = withResults(state.suspended?.messages ?? [], results);
   const following = state.suspended?.following;
   const { suspended: _released, ...rest } = state;
@@ -257,9 +255,7 @@ export function releaseStep<S extends SuspendedStepState>(
 }
 
 /** The turn's step reads the input that waited behind the last step's calls. */
-export function takeQueued<S extends SuspendedStepState>(
-  state: S,
-): { readonly events: readonly HumanInputEvent[]; readonly state: S } {
+export function takeQueued<S extends SuspendedStepState>(state: S): Reduced<S> {
   const { queued, ...rest } = state;
   if (queued === undefined) return { events: [], state };
   return { events: [{ input: queued, type: "input.resumed" }], state: rest as S };

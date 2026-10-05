@@ -21,6 +21,7 @@ import type {
   Intake,
   PolicyRun,
   RequestAt,
+  Reduced,
 } from "#harness/human-input/index.js";
 import { completed, signInRequested } from "#harness/human-input/sign-ins.js";
 import {
@@ -85,11 +86,6 @@ export interface ApprovalAudit {
   readonly candidateHistory: readonly FinishedCandidate[];
   readonly nextCandidateSequence: number;
   readonly settlements: Readonly<Record<string, Settlement>>;
-}
-
-interface Reduced {
-  readonly events: readonly HumanInputEvent[];
-  readonly state: HumanInputState;
 }
 
 /**

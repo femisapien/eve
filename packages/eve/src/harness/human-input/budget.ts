@@ -6,7 +6,12 @@
  * turn runs again.
  */
 import { resolveTextToResponse } from "#channel/resolve-text.js";
-import type { HumanInputEvent, HumanInputState, Interrupt } from "#harness/human-input/index.js";
+import type {
+  HumanInputEvent,
+  HumanInputState,
+  Interrupt,
+  Reduced,
+} from "#harness/human-input/index.js";
 import {
   isSessionLimitContinuationRequestId,
   SESSION_LIMIT_CONTINUE_OPTION_ID,
@@ -24,11 +29,6 @@ type BudgetRequest = Extract<
   HumanInputState["requests"][string],
   { readonly kind: "session-limit" }
 >;
-
-interface Reduced {
-  readonly events: readonly HumanInputEvent[];
-  readonly state: HumanInputState;
-}
 
 /** Opens the budget question, or holds on it again: each violation is asked once. */
 export function askBudget(

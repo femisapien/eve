@@ -12,7 +12,7 @@ import type { HarnessToolMap } from "#harness/types.js";
 import type { RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
 
-import type { HumanInputEvent, Interrupt, RequestAt } from "./index.js";
+import type { HumanInputEvent, Interrupt, RequestAt, Reduced } from "./index.js";
 import {
   heldStep,
   releaseStep,
@@ -47,11 +47,6 @@ export interface OpenApproval {
 interface ApprovalState extends SuspendedStepState {
   readonly requests: Readonly<Record<string, { readonly kind: string }>>;
   readonly grants: readonly string[];
-}
-
-interface Reduced<S> {
-  readonly events: readonly HumanInputEvent[];
-  readonly state: S;
 }
 
 type Outcome = "approved" | "denied" | "invalid" | "ignored";
