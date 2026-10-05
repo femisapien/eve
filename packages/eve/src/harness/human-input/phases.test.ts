@@ -94,6 +94,9 @@ function wrongPhases(): void {
   void HumanInput.commit(postStep, s, relayedRequest);
   // @ts-expect-error a delivery for a relayed request arrives parked
   void HumanInput.commit(preStep, s, { responses: [], type: "delivered" });
+  // A clear runs as the turn's own step.
+  // @ts-expect-error a clear commits pre-step
+  void HumanInput.commit(parked, s, { type: "cleared" });
   // A cancel settles once the turn stops, while it is parked.
   // @ts-expect-error a cancel settles parked
   void HumanInput.commit(preStep, s, cancel);

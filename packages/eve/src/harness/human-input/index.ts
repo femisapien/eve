@@ -254,6 +254,18 @@ export class HumanInput {
   }
 }
 
+/** What a cleared session keeps: what children and runs relayed through it. */
+function clearedState(state: HumanInputState): HumanInputState {
+  const requests = Object.fromEntries(
+    Object.entries(state.requests).filter(([, open]) => isOpenRelayed(open)),
+  );
+  return {
+    grants: [],
+    requests,
+    ...(state.relayedSignIns !== undefined && { relayedSignIns: state.relayedSignIns }),
+  };
+}
+
 /**
  * Fails an input or event committed in a phase it doesn't belong to. Types
  * keep a host to its phase; this keeps a cast or an untyped caller to it too.
@@ -328,6 +340,7 @@ const INPUT_PHASES = {
   "run.ended": ["parked"],
   delivered: ["parked"],
   "withdraw.requested": ["parked"],
+  cleared: ["pre-step"],
 } as const satisfies { readonly [T in (Interrupt | Intake)["type"]]: readonly Phase[] };
 
 /**
@@ -540,6 +553,12 @@ export type Intake =
    * was already published.
    */
   | { readonly type: "budget.stopped"; readonly requestId: string }
+  /**
+   * The session's context was cleared, between turns: what its conversation
+   * granted and settled goes with it. Requests children and runs relayed stay,
+   * since they belong to whoever asked.
+   */
+  | { readonly type: "cleared" }
   /** A workflow run or child session ended; nobody can answer what it relayed. */
   | { readonly type: "run.ended"; readonly runId: string }
   /**
@@ -889,6 +908,8 @@ function reduce(state: HumanInputState, input: Interrupt | Intake): Reduced {
     }
     case "time":
       return expireCandidates(state, input.now);
+    case "cleared":
+      return { events: [], state: clearedState(state) };
     default: {
       const unhandled: never = input;
       throw new TypeError(`Unhandled human input: ${JSON.stringify(unhandled)}`);

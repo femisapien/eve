@@ -322,4 +322,31 @@ describe("tool approvals", () => {
     expect(granted.stored().humanInput.grantedApprovalKeys()).toEqual(new Set(["deploy:api"]));
     expect(granted.interrupt(keyed("second")).humanInput.grantedApprovalKeys()).toEqual(new Set());
   });
+
+  it("clearing the session's context drops what it granted, but keeps what children relayed", () => {
+    const granted = Turn.idle()
+      .interrupt(
+        approvalsRequested([approval("deploy", "first")], {
+          approvalKeys: { first: "deploy:api" },
+        }),
+      )
+      .intake(answer("approve", "first"))
+      .runApproved()
+      .intake({ results: [{ content: [ran("deploy", {})], role: "tool" }], type: "calls.settled" })
+      .interrupt({
+        at: AT,
+        requests: [approval("publish", "child-publish")],
+        route: { childContinuationToken: "child_1" },
+        type: "relayed.requested",
+      })
+      .stored();
+    expect(granted.humanInput.grantedApprovalKeys()).toEqual(new Set(["deploy:api"]));
+
+    const cleared = granted.intake({ type: "cleared" }).stored();
+
+    expect(cleared.events).toEqual([]);
+    expect(cleared.humanInput.grantedApprovalKeys()).toEqual(new Set());
+    expect(cleared.humanInput.relayedRequestIds()).toEqual(new Set(["child-publish"]));
+    expect(cleared.next()).toEqual({ run: "model" });
+  });
 });

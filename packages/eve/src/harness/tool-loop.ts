@@ -546,9 +546,12 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     };
 
     if (config.clearOnly === true) {
+      const cleared = await commitTurn(new PreStepHost({ emit, emissionState }), session, {
+        type: "cleared",
+      });
       session = {
-        ...session,
-        state: clearMemorySessionState(session.state),
+        ...cleared.session,
+        state: clearMemorySessionState(cleared.session.state),
       };
       session = replaceSessionHistory(session, []);
       await emit?.(
