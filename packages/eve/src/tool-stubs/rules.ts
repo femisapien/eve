@@ -1,6 +1,6 @@
 import { isObject } from "#shared/guards.js";
 import { parseJsonValue } from "#shared/json.js";
-import { compileStubConstraint } from "#tool-stubs/schema.js";
+import { compileStubConstraint, validateStubConstraint } from "#tool-stubs/schema.js";
 import type { StubCall, StubResult, ToolStub } from "#tool-stubs/types.js";
 
 /** Validates the wire contract before admitting a stubbed session. */
@@ -45,10 +45,9 @@ export function parseToolStubs(value: unknown): readonly ToolStub[] {
     }
     if (rule.match !== undefined && !isObject(rule.match))
       throw new Error("Tool stub match must be a property-to-schema object.");
+    for (const schema of Object.values(rule.match ?? {})) validateStubConstraint(schema);
   }
-  const parsed = rules as readonly ToolStub[];
-  new StubPlayback(parsed);
-  return parsed;
+  return rules as readonly ToolStub[];
 }
 
 /** Deterministic playback; its owner supplies durable, serial call admission. */

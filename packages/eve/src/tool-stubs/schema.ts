@@ -68,13 +68,16 @@ const constraintSchema = new Validator(
   "2020-12",
 );
 
-export function compileStubConstraint(value: JsonObject | boolean): Validator {
+export function validateStubConstraint(value: unknown): void {
   if (!constraintSchema.validate(value).valid) {
     throw new Error(
       "Invalid tool stub JSON Schema. Use supported, reference-free JSON Schema constraints.",
     );
   }
   validatePatterns(value);
+}
+
+export function compileStubConstraint(value: JsonObject | boolean): Validator {
   return new Validator(structuredClone(value), "2020-12");
 }
 
