@@ -6,7 +6,6 @@ import type { SessionInboxAddress } from "#execution/session-inbox/address.js";
 import type { AuthorizationChallenge, AuthorizationResult } from "#harness/authorization.js";
 import {
   answerBudget,
-  answerBudgetByText,
   askBudget,
   stopBudget,
   withdrawBudget,
@@ -21,7 +20,6 @@ import type { TokenUsage } from "#shared/token-usage.js";
 
 import {
   answerApprovals,
-  answerApprovalsByText,
   askedCallIds,
   cancelApprovals,
   grantedApprovalKeys,
@@ -63,6 +61,7 @@ import {
   type RelayedSignIn,
 } from "./relayed.js";
 import { staleAnswersAsText } from "./stale-answers.js";
+import { typedAnswers } from "./typed-replies.js";
 import {
   cancelStep,
   dispatchCalls,
@@ -896,12 +895,15 @@ function reduce(state: HumanInputState, input: Interrupt | Intake, phase: Phase)
     // A typed reply answers the budget question or approvals when it names one
     // of their options; any other message steers the turn past everything it
     // waits on.
-    case "message":
-      return (
-        answerBudgetByText(state, input.text) ??
-        answerApprovalsByText(state, input.text) ??
-        steer(state)
+    case "message": {
+      const typed = typedAnswers(state, input.text, "own");
+      if (typed.length === 0) return steer(state);
+      const budget = answerBudget(state, typed);
+      return then(
+        { events: [{ type: "message.answered" }, ...budget.events], state: budget.state },
+        (next) => answerApprovals(next, budget.unclaimed),
       );
+    }
     case "cancelled":
       return cancel(state, phase);
     case "relayed.requested":

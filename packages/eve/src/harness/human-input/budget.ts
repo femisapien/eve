@@ -5,7 +5,6 @@
  * A message that does not answer it stays in the turn's history, read once the
  * turn runs again.
  */
-import { resolveTextToResponse } from "#channel/resolve-text.js";
 import type {
   HumanInputEvent,
   HumanInputState,
@@ -98,19 +97,6 @@ export function answerBudget(
     events.push(...decided);
   }
   return { events, state: next, unclaimed };
-}
-
-/**
- * A typed reply answers the budget question when it names one of its options.
- * Returns `undefined` when the message answers nothing and is for the model.
- */
-export function answerBudgetByText(state: HumanInputState, text: string): Reduced | undefined {
-  const open = openBudget(state);
-  if (open === undefined) return undefined;
-  const response = resolveTextToResponse(text, open.request);
-  const decided = response === undefined ? undefined : decide(open, response);
-  if (decided === undefined) return undefined;
-  return { events: [{ type: "message.answered" }, ...decided], state: close(state, open) };
 }
 
 /**

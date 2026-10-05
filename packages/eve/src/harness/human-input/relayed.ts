@@ -6,7 +6,6 @@
  * batch at the child's coordinates, forwards the answers to whoever asked, and
  * withdraws what nobody can answer anymore.
  */
-import { resolveTextToResponse } from "#channel/resolve-text.js";
 import { SESSION_LIMIT_STOP_OPTION_ID } from "#harness/human-input/budget-question.js";
 import {
   createInputRequestedEvent,
@@ -25,6 +24,7 @@ import type {
   RequestAt,
   Reduced,
 } from "./index.js";
+import { typedAnswers } from "./typed-replies.js";
 
 /** A relayed request, as the session stores it until it is answered or withdrawn. */
 export interface OpenRelayed {
@@ -88,7 +88,11 @@ export function deliverToRelayed(
   state: HumanInputState,
   input: Extract<Intake, { readonly type: "delivered" }>,
 ): Reduced {
-  const typed = input.responses.length === 0 ? answerByText(state, input.message) : undefined;
+  const { message } = input;
+  const typed =
+    input.responses.length > 0 || message === undefined || message.delegated
+      ? undefined
+      : typedAnswers(state, message.text, "relayed")[0];
   const responses = typed === undefined ? input.responses : [typed];
 
   const answers = new Map<string, InputResponse>();
@@ -242,16 +246,6 @@ export function relayedRequestIds(state: HumanInputState): ReadonlySet<string> {
 
 export function isOpenRelayed(value: { readonly kind: string } | undefined): value is OpenRelayed {
   return value?.kind === "relayed";
-}
-
-function answerByText(
-  state: HumanInputState,
-  message: Extract<Intake, { readonly type: "delivered" }>["message"],
-): InputResponse | undefined {
-  if (message === undefined || message.delegated) return undefined;
-  const questions = openRelayed(state).filter((open) => open.request.kind === "question");
-  if (questions.length !== 1) return undefined;
-  return resolveTextToResponse(message.text, questions[0]!.request);
 }
 
 /** One `input.resolved` per child batch, each request `cancelled`. */

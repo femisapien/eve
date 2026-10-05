@@ -1,6 +1,5 @@
 import type { ModelMessage, ToolResultPart } from "ai";
 
-import { resolveTextToResponses } from "#channel/resolve-text.js";
 import type { SessionAuthContext } from "#channel/types.js";
 import {
   createActionResultEvent,
@@ -171,29 +170,6 @@ export function answerApprovals<S extends ApprovalState>(
     return { events: [], state: recorded };
   }
   return resolveApprovals(recorded);
-}
-
-/**
- * A typed reply answers the open approvals whose options it names, and the
- * turn doesn't read it. Approvals a response policy guards are never answered
- * by text: the policy needs to know who answered. Returns `undefined` when the
- * reply answers nothing.
- */
-export function answerApprovalsByText<S extends ApprovalState>(
-  state: S,
-  text: string,
-): Reduced<S> | undefined {
-  const answerable = openApprovalsOf(state).filter(
-    (approval) => approval.answer === undefined && approval.responsePolicy !== true,
-  );
-  if (answerable.length === 0) return undefined;
-  const typed = resolveTextToResponses(
-    text,
-    answerable.map((approval) => approval.request),
-  );
-  if (typed.length === 0) return undefined;
-  const answered = answerApprovals(state, typed);
-  return { ...answered, events: [{ type: "message.answered" }, ...answered.events] };
 }
 
 /**
