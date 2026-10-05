@@ -96,6 +96,38 @@ describe("self-modification local agent", () => {
     },
   );
 
+  it("inherits the parent context window with the parent model", async () => {
+    await withDevHost(async () => {
+      const agent = defineSelfModificationAgent({ config: { local: { enabled: true } } });
+      const parent = { id: "custom/unlisted-model", contextWindowTokens: 1_000_000 };
+
+      for (const event of ["session.started", "turn.started"] as const) {
+        await expect(
+          agent.events[event]?.({}, { ...context, model: parent }),
+        ).resolves.toMatchObject({
+          model: "custom/unlisted-model",
+          modelContextWindowTokens: 1_000_000,
+        });
+      }
+    });
+  });
+
+  it("keeps an explicit model without the parent context window", async () => {
+    await withDevHost(async () => {
+      const agent = defineSelfModificationAgent({
+        config: { local: { enabled: true } },
+        model: "anthropic/claude-sonnet-5",
+      });
+      const resolved = await agent.events["turn.started"]?.(
+        {},
+        { ...context, model: { id: "custom/unlisted-model", contextWindowTokens: 1_000_000 } },
+      );
+
+      expect(resolved).toMatchObject({ model: "anthropic/claude-sonnet-5" });
+      expect(resolved).not.toHaveProperty("modelContextWindowTokens");
+    });
+  });
+
   it("is available to a direct remote request on an eve dev host", async () => {
     await withDevHost(async () => {
       const secret = "test-secret";

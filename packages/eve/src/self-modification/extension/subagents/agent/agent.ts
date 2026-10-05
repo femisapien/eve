@@ -84,6 +84,18 @@ export function defineSelfModificationAgent(
     const config = resolveSelfModificationConfig(options.config ?? bound);
     const mode = resolveSelfModificationMode(config);
     const model = configuredModel ?? FALLBACK_SELF_MODIFICATION_MODEL;
+    // Inheriting the parent model also inherits its context window, so custom or
+    // unlisted parent models resolve without AI Gateway metadata.
+    const inheritedContextWindowTokens =
+      options.model === undefined && bound.model === undefined
+        ? ctx.model?.contextWindowTokens
+        : undefined;
+    const modelDefinition = {
+      model,
+      ...(inheritedContextWindowTokens === undefined
+        ? undefined
+        : { modelContextWindowTokens: inheritedContextWindowTokens }),
+    };
     const description = renderDescription([
       "Delegate here immediately when the user asks to change the self-modification subagent's model, reasoning, or configuration. Also delegate when the user asks to change this eve agent or its authored source.",
       sourceDelegation,
@@ -97,7 +109,7 @@ export function defineSelfModificationAgent(
     ]);
     if (mode === "local") {
       if (getLocalDevCapability() === undefined) return null;
-      return defineAgent({ description, model, reasoning });
+      return defineAgent({ description, ...modelDefinition, reasoning });
     }
     if (mode !== "deployed" || config.deployed === undefined) return null;
     if (config.deployed.credentials.kind === "pat" && !hasGitHubCredential()) return null;
@@ -113,7 +125,7 @@ export function defineSelfModificationAgent(
     } catch {
       return null;
     }
-    return defineAgent({ description, model, reasoning });
+    return defineAgent({ description, ...modelDefinition, reasoning });
   };
 
   return defineDynamic({

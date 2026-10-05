@@ -35,7 +35,15 @@ export function buildResolveContext(
   const effectiveModel = getEffectiveModelSelection(ctx);
 
   return {
-    model: effectiveModel === null ? null : { id: effectiveModel.reference.id },
+    model:
+      effectiveModel === null
+        ? null
+        : {
+            id: effectiveModel.reference.id,
+            ...(effectiveModel.reference.contextWindowTokens === undefined
+              ? undefined
+              : { contextWindowTokens: effectiveModel.reference.contextWindowTokens }),
+          },
     session: {
       id: sessionId,
       auth: {

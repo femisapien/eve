@@ -49,7 +49,11 @@ export interface DynamicResolveContext {
   /** Active cancellation signal when resolving a dynamic model. */
   readonly abortSignal?: AbortSignal;
   /** Effective model for this resolver, or `null` before dynamic model selection. */
-  readonly model: { readonly id: string } | null;
+  readonly model: {
+    readonly id: string;
+    /** Context window of the effective model, in tokens, when known. */
+    readonly contextWindowTokens?: number;
+  } | null;
   readonly session: {
     readonly id: string;
     readonly auth: SessionAuth;

@@ -29,6 +29,16 @@ describe("buildResolveContext", () => {
     expect(resolveCtx.model).toEqual({ id: "openai/gpt-5.5" });
   });
 
+  it("includes the active model context window when configured", () => {
+    const ctx = createCtx();
+    ctx.set(StaticModelReferenceKey, { id: "custom/model", contextWindowTokens: 1_000_000 });
+
+    expect(buildResolveContext(ctx, []).model).toEqual({
+      id: "custom/model",
+      contextWindowTokens: 1_000_000,
+    });
+  });
+
   it("includes null before a model is selected", () => {
     const ctx = createCtx();
     ctx.set(StaticModelReferenceKey, null);
