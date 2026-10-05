@@ -39,27 +39,27 @@ export default selfModification({
 });
 ```
 
-Mounts that import `eve/self-modification` still work; that specifier is an alias for `eve/self-modification/local`. Neither specifier accepts a `deployed` option. If your mount sets `deployed`, eve rejects it and asks you to move that configuration to an `eve/self-modification/deployed` mount.
+## Run without self-modification
 
-## Propose changes from a deployed agent
+Pass `--no-default-extensions` when you do not want `eve dev` to mount bundled development extensions:
 
-`eve/self-modification/deployed` is a separate extension for deployed agents. Outside `eve dev`, it delegates repository work to a coding subagent that proposes changes as draft pull requests. It never changes the running agent. Changes take effect only after you review, merge, and deploy them.
-
-Mount it under its own namespace so it does not replace the local extension:
-
-```ts
-// agent/extensions/self-modification-deployed/extension.ts
-import selfModification from "eve/self-modification/deployed";
-
-export default selfModification({
-  authorize: ({ principal }) => principal?.principalId === "trusted-editor",
-  github: { repository: "acme/agents", connector: "github/agent-author" },
-  directory: "apps/support",
-  baseBranch: "main",
-});
+```bash
+eve dev --no-default-extensions
 ```
 
-This mount adds the `self-modification-deployed__agent` subagent. The extension accepts:
+This disables the complete bundled default set for that server, including self-modification. It does not remove files from your project or disable extensions that you have explicitly mounted under `agent/extensions/`.
+
+## Propose changes from a deployed agent (Experimental)
+
+`eve/self-modification/deployed` is a separate extension for deployed agents. Outside `eve dev`, it delegates repository work to a coding subagent that proposes changes as draft pull requests. It never changes the running agent. Changes take effect only after you review, merge, and deploy them. Support is limited to repositories hosted by GitHub.
+
+To configure it with guided setup, install the experimental registry item by its full name.
+
+```bash
+eve add experimental/self-modification/deployed
+```
+
+The extension accepts:
 
 - `authorize` (required): decides whether the current caller can delegate to the coding subagent.
 - `github.repository` (required): the repository to check out and open pull requests against, in `owner/repo` form.
@@ -79,32 +79,6 @@ The principal ID in the example is illustrative. Check the identities your chann
 ### Connect GitHub
 
 Create a GitHub Vercel Connect connector, attach it to the deployed project, and install it on the configured repository. Grant the repository permissions needed to read source, push branches, and create pull requests. Use repository rules to require review on protected branches.
-
-### Sandbox and checkout
-
-The deployed subagent's sandbox runs on Vercel Sandbox, or on microsandbox for self-hosted deployments. On other hosts, delegation fails with an error naming the supported providers.
-
-The sandbox checks out the repository to `/workspace/repository`, which must contain the configured application and its `agent/` directory. The subagent installs dependencies when needed, using the repository's package manager and lockfile. The project `eve` CLI is available after installation; in a monorepo, it may live at the workspace root. Private packages need their own installation credentials because the sandbox does not inherit host credentials.
-
-### Request a change
-
-Ask for persistent changes in ordinary terms, such as “Replace your hardcoded weather tool with a live weather API.” The parent delegates the work to the coding subagent, which has its own checkout, so the source does not need to exist in the parent's sandbox.
-
-Questions, investigations, and design requests are read-only. An explicit implementation request authorizes the subagent to push a branch and open a draft PR. It may edit any file in the repository; the application directory gives it context.
-
-Follow-up turns continue the same subagent and reuse its checkout. Independent requests use a separate subagent. A draft PR does not change the running agent: review and merge it, then deploy.
-
-To add a registry capability, the subagent searches with `eve registry search "slack" --json` and installs source with `eve add channel/slack --non-interactive --skip-setup`. Complete OAuth, secret binding, and other external setup after you review and deploy the change. The subagent's handoff lists the PR URL, the checks it ran, and any remaining setup.
-
-## Run without self-modification
-
-Pass `--no-default-extensions` when you do not want `eve dev` to mount bundled development extensions:
-
-```bash
-eve dev --no-default-extensions
-```
-
-This disables the complete bundled default set for that server, including self-modification. It does not remove files from your project or disable extensions that you have explicitly mounted under `agent/extensions/`.
 
 ## What to read next
 

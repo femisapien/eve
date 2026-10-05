@@ -42,7 +42,7 @@ const defaultApplyDependencies: SelfModificationApplyDependencies = {
   installScaffoldDependencies,
 };
 
-const SELF_MODIFICATION_PRODUCTION_DEPENDENCIES = {
+const SELF_MODIFICATION_DEPLOYED_DEPENDENCIES = {
   microsandbox: DEFAULT_MICROSANDBOX_PACKAGE_VERSION,
 };
 
@@ -228,7 +228,7 @@ export async function applySelfModificationSetup(
   const connector = await operations.findOrCreateConnector(plan.connectorName, plan.project);
   await operations.attachConnector(connector, plan.project);
   const packageJsonUpdated = await deps.ensurePackageDependencies({
-    dependencies: SELF_MODIFICATION_PRODUCTION_DEPENDENCIES,
+    dependencies: SELF_MODIFICATION_DEPLOYED_DEPENDENCIES,
     projectRoot: context.appRoot,
   });
   await deps.installScaffoldDependencies({
@@ -299,9 +299,9 @@ export const SELF_MODIFICATION_SETUP = defineSetupIntegration({
   apply: applySelfModificationSetup,
 });
 
-export const SELF_MODIFICATION_PRODUCTION_SETUP = defineSetupIntegration({
-  kind: "self-modification-production",
-  label: "Self-modification production",
+export const SELF_MODIFICATION_DEPLOYED_SETUP = defineSetupIntegration({
+  kind: "self-modification-deployed",
+  label: "Self-modification deployed",
   hint: "Configure deployed draft pull requests",
   describeEnvironment,
   prepare: prepareSelfModificationSetup,

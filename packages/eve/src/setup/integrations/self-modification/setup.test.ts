@@ -11,7 +11,6 @@ import {
   applySelfModificationSetup,
   prepareLocalSelfModificationSetup,
   prepareSelfModificationSetup,
-  SELF_MODIFICATION_PRODUCTION_SETUP,
   SELF_MODIFICATION_SETUP,
   type SelfModificationApplyDependencies,
 } from "./setup.js";
@@ -191,10 +190,6 @@ describe("self-modification integration setup", () => {
     expect(effects.writeConfig).toHaveBeenCalledWith(
       expect.stringContaining('connector: "github/selfmod-acme-agents"'),
     );
-  });
-
-  it("registers the production setup separately from local setup", () => {
-    expect(SELF_MODIFICATION_PRODUCTION_SETUP.kind).toBe("self-modification-production");
   });
 
   it("describes unavailable Vercel setup without suggesting portable credentials", () => {
