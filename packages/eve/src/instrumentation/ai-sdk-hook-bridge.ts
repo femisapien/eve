@@ -18,7 +18,7 @@ import {
   toolCallIdempotencyKey,
 } from "#instrumentation/lifecycle.js";
 import { structuralProviderMetadata } from "#instrumentation/content.js";
-import { modelContent, modelUsage } from "#tracing/lib/runtime.js";
+import { modelContent, modelUsage } from "#tracing/lib/index.js";
 
 type TelemetryEvent<TKey extends keyof Telemetry> = Parameters<NonNullable<Telemetry[TKey]>>[0];
 

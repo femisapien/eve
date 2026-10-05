@@ -1,6 +1,14 @@
-import type { TraceLink, TraceReference } from "#tracing/lib/runtime.js";
+import type { SpanContext } from "@opentelemetry/api";
+
 import { resolveConversationId } from "#shared/conversation-identity.js";
-import type { OperationFacts } from "#tracing/lib/runtime.js";
+import type { AgentTraceStateStore } from "#tracing/eve/agent-trace-state.js";
+import {
+  createAgentTracing,
+  type AgentTelemetry,
+  type AgentTracing,
+  type TraceCheckpointer,
+} from "#tracing/lib/index.js";
+
 export function traceSessionIdOf(scope: {
   readonly traceSessionId?: string;
   readonly rootSessionId?: string;
@@ -19,51 +27,45 @@ export function checkpointContent(value: string | undefined): unknown {
   }
 }
 
-interface EveOperationFacts {
+/** Identity of one eve turn within the shared tracing library. */
+export function eveTurnIdentity(input: {
   readonly sessionId: string;
   readonly rootSessionId?: string;
-  readonly traceSessionId?: string;
   readonly turnId: string;
-  readonly frameworkVersion: string;
-  readonly agentName?: string;
-  readonly functionId?: string;
-  readonly reference?: TraceReference;
-  readonly parent?: TraceReference;
-  readonly startTimeMs?: number;
-  readonly stepIndex?: number;
-  readonly attemptIndex?: number;
-  readonly links?: readonly TraceLink[];
-  readonly content?: { readonly recordInputs: boolean; readonly recordOutputs: boolean };
+}) {
+  return {
+    conversationId: resolveConversationId(input.rootSessionId ?? input.sessionId),
+    runId: input.sessionId,
+    turnId: input.turnId,
+  };
 }
 
-export function eveOperationInput(
-  input: EveOperationFacts,
-  key: string,
-  executionContext?: import("#tracing/lib/runtime.js").ExecutionContext,
-): OperationFacts {
+/** Content flags are recorded by eve's content processor, not withheld by the library. */
+export function eveCapture(reference: SpanContext | undefined) {
   return {
-    identity: {
-      conversationId: resolveConversationId(input.rootSessionId ?? input.sessionId),
-      runId: input.sessionId,
-      turnId: input.turnId,
-      agentName: input.agentName ?? input.functionId,
-      framework: { name: "eve", version: input.frameworkVersion },
-    },
-    capture: {
-      emit: ((input.reference ?? input.parent)?.traceFlags ?? 1) !== 0,
-      recordInputs: true,
-      recordOutputs: true,
-    },
-    attempt: { index: input.stepIndex ?? 0, attempt: input.attemptIndex ?? 0 },
-    operationId: key,
-    reference: input.reference,
-    parent: input.parent,
-    startTimeMs: input.startTimeMs,
-    links: input.links,
-    attributes: {
-      "agent.trace.content.input": input.content?.recordInputs,
-      "agent.trace.content.output": input.content?.recordOutputs,
-    },
-    context: executionContext,
+    emit: ((reference?.traceFlags ?? 1) & 1) !== 0,
+    recordInputs: true,
+    recordOutputs: true,
+  };
+}
+
+/** One tracing instance per agent name, so invocation spans carry the turn's agent. */
+export function createEveTracing(input: {
+  readonly telemetry: AgentTelemetry;
+  readonly stateStore: AgentTraceStateStore;
+}): (agentName: string | undefined) => AgentTracing {
+  const checkpointer: TraceCheckpointer = {
+    get: (key) => input.stateStore.get("checkpoint", key),
+    set: (key, value) => input.stateStore.set("checkpoint", key, value),
+    delete: (key) => input.stateStore.delete("checkpoint", key),
+  };
+  const agents = new Map<string, AgentTracing>();
+  return (agentName) => {
+    let tracing = agents.get(agentName ?? "");
+    if (tracing === undefined) {
+      tracing = createAgentTracing({ agentName, telemetry: input.telemetry, checkpointer });
+      agents.set(agentName ?? "", tracing);
+    }
+    return tracing;
   };
 }

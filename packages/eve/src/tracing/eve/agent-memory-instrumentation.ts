@@ -13,11 +13,11 @@ import {
 import type { ConversationEnvironment } from "#shared/conversation-context.js";
 import type { AgentTraceStateStore } from "#tracing/eve/agent-trace-state.js";
 import { withChannelAudience } from "#tracing/eve/channel-audience-context.js";
-import { eveOperationInput } from "#tracing/eve/operation-input.js";
-import type { DurableTraceRuntime } from "#tracing/lib/runtime.js";
+import { eveTurnIdentity } from "#tracing/eve/operation-input.js";
+import { activeTraceOperation, type AgentTracing } from "#tracing/lib/index.js";
 
 export function createAgentMemoryInstrumentation(input: {
-  lifecycle: DurableTraceRuntime;
+  tracingFor: (agentName: string | undefined) => AgentTracing;
   environment: ConversationEnvironment;
   recordOutputs?: boolean;
   stateStore: AgentTraceStateStore;
@@ -35,7 +35,7 @@ export function createAgentMemoryInstrumentation(input: {
               "turn",
               JSON.stringify([operation.sessionId, operation.turnId]),
             );
-      const active = input.lifecycle.active();
+      const active = activeTraceOperation();
       const reference = active?.reference ?? turn?.context ?? session?.context;
       if (reference === undefined) return await execute();
       const host =
@@ -62,16 +62,10 @@ export function createAgentMemoryInstrumentation(input: {
         recordOutputs:
           input.recordOutputs === true && effective?.action === "record" && effective.recordOutputs,
       };
-      const runtime = eveOperationInput(
-        { ...operation, turnId: operation.turnId ?? "", frameworkVersion: "", parent: reference },
-        operation.idempotencyKey,
-        host,
-      );
       const data = {
-        identity: runtime.identity,
-        operationId: runtime.operationId,
-        parent: runtime.parent,
-        context: runtime.context,
+        identity: eveTurnIdentity({ ...operation, turnId: operation.turnId ?? "" }),
+        parent: reference,
+        context: host,
         capture,
         phase: operation.phase,
         slot: operation.slot,
@@ -81,9 +75,10 @@ export function createAgentMemoryInstrumentation(input: {
           return { recordCount: result.recordCount, records: result.outputRecords };
         },
       };
+      const memory = input.tracingFor(turn?.agentName ?? session?.agentName).memory;
       return operation.operationName === "search_memory"
-        ? await input.lifecycle.memory.search(data, execute)
-        : await input.lifecycle.memory.write(data, execute);
+        ? await memory.search(data, execute)
+        : await memory.write(data, execute);
     },
   };
 }

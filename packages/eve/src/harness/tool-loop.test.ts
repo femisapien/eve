@@ -1,4 +1,4 @@
-import { AgentSpanIdGenerator } from "#tracing/lib/runtime.js";
+import { AgentSpanIdGenerator } from "#tracing/lib/index.js";
 import { context as otelContext, trace } from "@opentelemetry/api";
 import {
   type FilePart,

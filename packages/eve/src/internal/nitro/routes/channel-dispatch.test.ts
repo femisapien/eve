@@ -1,4 +1,4 @@
-import { AgentSpanIdGenerator } from "#tracing/lib/runtime.js";
+import { AgentSpanIdGenerator } from "#tracing/lib/index.js";
 import type { H3Event } from "nitro";
 import {
   context as apiContext,

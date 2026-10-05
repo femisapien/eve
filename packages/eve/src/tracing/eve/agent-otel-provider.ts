@@ -1,4 +1,4 @@
-import { ROOT_CONTEXT, context, type Context, type SpanContext, trace } from "@opentelemetry/api";
+import { ROOT_CONTEXT, context, trace } from "@opentelemetry/api";
 
 import type { AgentTraceStateStore } from "#tracing/eve/agent-trace-state.js";
 import { createAgentActionInstrumentation } from "#tracing/eve/agent-action-instrumentation.js";
@@ -29,14 +29,21 @@ import type {
 } from "#instrumentation/lifecycle.js";
 import { resolveInstrumentationEnvironment } from "#internal/application/dev-environment.js";
 import type { ConversationEnvironment } from "#shared/conversation-context.js";
-import { eveOperationInput } from "#tracing/eve/operation-input.js";
+import { createEveTracing } from "#tracing/eve/operation-input.js";
 import { gatewayCostAttributes } from "#tracing/eve/gateway.js";
-import type { Operation, DurableTraceRuntime } from "#tracing/lib/runtime.js";
+import type {
+  AgentSpanIdGenerator,
+  AgentTelemetry,
+  AttemptOperation,
+  ModelOperation,
+} from "#tracing/lib/index.js";
 import { isUserMessageKind } from "#harness/messages.js";
 import { isObject } from "#shared/guards.js";
 
 export interface AgentOtelInstrumentationInput {
-  readonly tracing: DurableTraceRuntime;
+  /** Span output for eve's agent spans; its `ids` make turns durable across workers. */
+  readonly telemetry: AgentTelemetry;
+  readonly idGenerator: AgentSpanIdGenerator;
   readonly environment?: ConversationEnvironment;
   /** Whether any destination records model and tool inputs. */
   readonly recordInputs?: boolean;
@@ -66,53 +73,50 @@ export function createAgentOtelInstrumentation(
   const environment = input.environment ?? resolveInstrumentationEnvironment();
   const recordInputs = input.recordInputs ?? false;
   const recordOutputs = input.recordOutputs ?? false;
-  const lifecycle = input.tracing;
-  const attemptScopes = new Map<string, InstrumentationAttemptScope>();
-  // A lost serverless worker retries the whole turn step from entry.
-  const steps = new WeakMap<
-    InstrumentationAttemptScope,
-    { runtime: Operation; context: Context }
-  >();
-  const modelSpans = new WeakMap<InstrumentationAttemptScope, Map<string, Operation>>();
+  const tracingFor = createEveTracing(input);
+  // Attempts run in one process; a lost serverless worker retries the whole step.
+  const steps = new Map<string, { attempt: AttemptOperation; agentName?: string }>();
+  const modelSpans = new Map<string, Map<string, ModelOperation>>();
+  const sessionTracing = createEveSessionTracing({ ...input, environment, tracingFor });
+  const { prepareSessionTrace, prepareTurnTrace } = sessionTracing;
+
+  /** The attempt in its turn's tree, hydrating it when another process started it. */
+  async function attemptFor(scope: InstrumentationAttemptScope) {
+    const known = steps.get(scope.attemptId);
+    if (known !== undefined) return known;
+    const turn = await turnState(scope);
+    const operation = await sessionTracing.turnFor(
+      scope.sessionId,
+      scope.turnId,
+      withChannelAudience(ROOT_CONTEXT, scope.channelAudience),
+    );
+    if (operation === undefined || operation.finished) return undefined;
+    const attempt = await operation.attempt({
+      stepIndex: scope.stepIndex,
+      attempt: scope.attemptIndex,
+    });
+    return { attempt, agentName: turn?.agentName };
+  }
+
   const actions = createAgentActionInstrumentation({
-    lifecycle,
-    frameworkVersion: input.frameworkVersion,
+    tracingFor,
+    attemptFor,
     recordInputs,
     recordOutputs,
-    resolveTraceContext: async (event) => {
-      const turn = await input.stateStore.get(
-        "turn",
-        JSON.stringify([event.scope.sessionId, event.scope.turnId]),
-      );
-      return turn?.context;
-    },
     stateStore: input.stateStore,
   });
   const approvals = createAgentApprovalInstrumentation({
-    lifecycle,
-    actionContextFor: actions.contextFor,
-    frameworkVersion: input.frameworkVersion,
+    tracingFor,
+    actionStateFor: actions.stateFor,
   });
   const tools = createAgentToolInstrumentation({
-    lifecycle,
-    actionContextFor: actions.contextFor,
+    tracingFor,
+    actionStateFor: actions.stateFor,
+    attemptFor: async (scope) => steps.get(scope.attemptId),
     recordInputs,
     recordOutputs,
-    resolveFallback: (event) => {
-      const scope = attemptScopes.get(event.scope.attemptId) ?? event.scope;
-      const step = steps.get(scope);
-      return step === undefined
-        ? undefined
-        : { context: step.context, spanContext: step.runtime.reference };
-    },
   });
-  const memory = createAgentMemoryInstrumentation({ ...input, environment, lifecycle });
-  const sessionTracing = createEveSessionTracing({
-    ...input,
-    environment,
-    lifecycle,
-  });
-  const { prepareSessionTrace, prepareTurnTrace } = sessionTracing;
+  const memory = createAgentMemoryInstrumentation({ ...input, environment, tracingFor });
 
   const capturePolicy = createEveCapturePolicy({
     stateStore: input.stateStore,
@@ -120,6 +124,10 @@ export function createAgentOtelInstrumentation(
     recordInputs,
     recordOutputs,
   });
+
+  function turnState(scope: { sessionId: string; turnId: string }) {
+    return input.stateStore.get("turn", JSON.stringify([scope.sessionId, scope.turnId]));
+  }
 
   const onSessionStarted = async (event: InstrumentationSessionStartedEvent): Promise<void> => {
     await prepareSessionTrace(event);
@@ -130,60 +138,40 @@ export function createAgentOtelInstrumentation(
   };
 
   const onStepStarted = async (event: InstrumentationStepAttemptStartedEvent): Promise<void> => {
-    const turn = await input.stateStore.get(
-      "turn",
-      JSON.stringify([event.scope.sessionId, event.scope.turnId]),
-    );
+    const turn = await turnState(event.scope);
     if (turn === undefined || !isSampledTrace(turn.context)) return;
     const session = await input.stateStore.get("session", event.scope.sessionId);
-    const turnContext = withChannelAudience(
-      contextFromSpanContext(turn.context),
-      event.scope.channelAudience,
+    const operation = await sessionTracing.turnFor(
+      event.scope.sessionId,
+      event.scope.turnId,
+      withChannelAudience(ROOT_CONTEXT, event.scope.channelAudience),
     );
+    if (operation === undefined || operation.finished) return;
     const activeSpanContext = trace.getSpan(context.active())?.spanContext();
-    const runtime = await lifecycle.attempt({
-      ...eveOperationInput(
-        {
-          ...event.scope,
-          frameworkVersion: input.frameworkVersion,
-          parent: turn.context,
-          links:
-            activeSpanContext === undefined || activeSpanContext.traceId === turn.context.traceId
-              ? undefined
-              : [{ relationship: "execution.delivery", context: activeSpanContext }],
-        },
-        event.idempotencyKey,
-        turnContext,
-      ),
-      step: {
-        index: event.scope.stepIndex,
-        attempt: event.scope.attemptIndex,
-        runtimeContext: event.runtimeContext,
-        channel: eveActivationMetadata({ session, turn, sessionId: event.scope.sessionId }).channel,
-      },
+    const attempt = await operation.attempt({
+      stepIndex: event.scope.stepIndex,
+      attempt: event.scope.attemptIndex,
+      runtimeContext: event.runtimeContext,
+      channel: eveActivationMetadata({ session, turn, sessionId: event.scope.sessionId }).channel,
+      links:
+        activeSpanContext === undefined || activeSpanContext.traceId === turn.context.traceId
+          ? undefined
+          : [{ relationship: "execution.delivery", context: activeSpanContext }],
     });
-    if (runtime === undefined) return;
-    const stepContext = trace.setSpan(turnContext, trace.wrapSpanContext(runtime.reference));
-    steps.set(event.scope, { runtime, context: stepContext });
-    attemptScopes.set(event.scope.attemptId, event.scope);
+    steps.set(event.scope.attemptId, { attempt, agentName: turn.agentName });
   };
 
   const onStepTerminal = async (event: InstrumentationStepAttemptTerminalEvent): Promise<void> => {
-    const scope = attemptScopes.get(event.scope.attemptId) ?? event.scope;
-    await drainOpenSpans({ ...event, scope });
-    await tools.drain(
-      event.scope.attemptId,
-      event.type === "step.attempt.failed" ? { error: event.error } : undefined,
-    );
-    if (event.type === "step.attempt.failed") {
-      await actions.failForAttempt(scope, event.error);
-    }
-    attemptScopes.delete(event.scope.attemptId);
-    const attempt = steps.get(scope);
-    if (attempt === undefined) return;
-    if (event.type === "step.attempt.failed") await attempt.runtime.fail(event.error);
-    else await attempt.runtime.complete();
-    steps.delete(scope);
+    const failure = event.type === "step.attempt.failed" ? { error: event.error } : undefined;
+    await drainOpenSpans(event);
+    await tools.drain(event.scope.attemptId, failure);
+    const step = steps.get(event.scope.attemptId) ?? (await attemptFor(event.scope));
+    steps.delete(event.scope.attemptId);
+    if (failure !== undefined) {
+      // A failed attempt also fails the actions it started.
+      await step?.attempt.fail(failure.error);
+      await actions.forgetAttempt(event.scope);
+    } else await step?.attempt.complete();
   };
 
   const onSessionTransition = async (
@@ -200,9 +188,9 @@ export function createAgentOtelInstrumentation(
   };
 
   const onModelCallStarted = async (event: InstrumentationModelCallStartedEvent): Promise<void> => {
-    const attempt = steps.get(event.scope);
-    if (attempt === undefined) return;
-    const runtime = await attempt.runtime.modelCall(
+    const step = steps.get(event.scope.attemptId);
+    if (step === undefined) return;
+    const operation = await step.attempt.modelCall(
       {
         provider: event.model.provider,
         modelId: event.model.modelId,
@@ -218,27 +206,24 @@ export function createAgentOtelInstrumentation(
       },
       event.idempotencyKey,
     );
-    let models = modelSpans.get(event.scope);
-    if (models === undefined) modelSpans.set(event.scope, (models = new Map()));
-    models.set(event.idempotencyKey, runtime);
+    let models = modelSpans.get(event.scope.attemptId);
+    if (models === undefined) modelSpans.set(event.scope.attemptId, (models = new Map()));
+    models.set(event.idempotencyKey, operation);
   };
 
   const onModelCallTerminal = async (
     event: InstrumentationModelCallTerminalEvent,
   ): Promise<void> => {
-    const models = modelSpans.get(event.scope);
-    const state = models?.get(event.idempotencyKey);
+    const models = modelSpans.get(event.scope.attemptId);
+    const operation = models?.get(event.idempotencyKey);
     models?.delete(event.idempotencyKey);
-    if (state === undefined) return;
-    if (event.type === "model.call.failed") {
-      await state.fail(event.error);
-    } else {
-      await sessionTracing.recordModelUsage(event.scope.sessionId, event.scope.turnId, event.usage);
-      await state.complete({
+    if (operation === undefined) return;
+    if (event.type === "model.call.failed") await operation.fail(event.error);
+    else
+      await operation.complete({
         outcome: "completed",
         result: { ...event, content: recordOutputs ? event.content : undefined },
       });
-    }
   };
 
   const channelDeliveries = createAgentChannelDeliveryInstrumentation({
@@ -247,24 +232,19 @@ export function createAgentOtelInstrumentation(
   });
 
   const onStepMetadata = (event: InstrumentationStepAttemptMetadataEvent): void => {
-    const attempt = steps.get(event.scope);
-    if (attempt === undefined) return;
+    const step = steps.get(event.scope.attemptId);
+    if (step === undefined) return;
     // Vercel AI Gateway reports per-call cost in providerMetadata.gateway;
     // attributes exist only when it was actually the gateway serving the call.
     const cost = readGatewayCostData(event.providerMetadata);
-    if (cost !== undefined) attempt.runtime.attributes(gatewayCostAttributes(cost));
+    if (cost !== undefined) step.attempt.attributes(gatewayCostAttributes(cost));
   };
 
   return {
     hook: {
       events: {
         ...channelDeliveries,
-        "action.completed": actions.events["action.completed"],
-        "action.failed": actions.events["action.failed"],
-        async "action.started"(event, ctx) {
-          await actions.events["action.started"]!(event, ctx);
-          await tools.actionStarted(event);
-        },
+        ...actions.events,
         ...approvals,
         "step.attempt.completed": onStepTerminal,
         "step.attempt.failed": onStepTerminal,
@@ -291,48 +271,31 @@ export function createAgentOtelInstrumentation(
     prepareTurnTrace,
     async runInContext(operation, execute) {
       if (operation.type === "memory.operation") return memory.runInContext(operation, execute);
-      const scope = attemptScopes.get(operation.scope.attemptId) ?? operation.scope;
       const ceiling = { emit: true, ...(await capturePolicy.forOperation(operation.scope)) };
       const active =
         operation.type === "model.call"
-          ? modelSpans.get(scope)?.get(operation.idempotencyKey)
-          : tools.operationFor(operation.scope.attemptId, operation.idempotencyKey);
-      if (active !== undefined) return active.run(execute, ceiling);
-      {
-        const turn = await input.stateStore.get(
-          "turn",
-          JSON.stringify([operation.scope.sessionId, operation.scope.turnId]),
-        );
-        if (turn !== undefined) {
-          const parent = withChannelAudience(
-            contextFromSpanContext(turn.context),
-            operation.scope.channelAudience,
-          );
-          return lifecycle.run(
-            turn.context,
-            { ...ceiling, emit: isSampledTrace(turn.context) },
-            execute,
-            parent,
-          );
-        }
-      }
+          ? modelSpans.get(operation.scope.attemptId)?.get(operation.idempotencyKey)
+          : tools.operationFor(operation.idempotencyKey);
+      if (active !== undefined && !active.finished) return active.run(execute, ceiling);
+      const turn = await sessionTracing.turnFor(
+        operation.scope.sessionId,
+        operation.scope.turnId,
+        withChannelAudience(ROOT_CONTEXT, operation.scope.channelAudience),
+      );
+      if (turn !== undefined && !turn.finished) return turn.run(execute, ceiling);
       return execute();
     },
   };
 
   async function drainOpenSpans(event: InstrumentationStepAttemptTerminalEvent): Promise<void> {
-    for (const state of modelSpans.get(event.scope)?.values() ?? []) {
-      if (event.type === "step.attempt.failed") await state.fail(event.error);
+    for (const operation of modelSpans.get(event.scope.attemptId)?.values() ?? []) {
+      if (event.type === "step.attempt.failed") await operation.fail(event.error);
       else
-        await state.complete({
+        await operation.complete({
           outcome: "completed",
           result: { finishReason: "unknown", usage: {} },
         });
     }
-    modelSpans.delete(event.scope);
+    modelSpans.delete(event.scope.attemptId);
   }
-}
-
-function contextFromSpanContext(spanContext: SpanContext): Context {
-  return trace.setSpan(ROOT_CONTEXT, trace.wrapSpanContext(spanContext));
 }

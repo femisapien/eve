@@ -22,10 +22,8 @@ import {
   createAgentOtelInstrumentation,
   type AgentOtelInstrumentationInput,
 } from "#tracing/eve/agent-otel-provider.js";
-import { AgentSpanIdGenerator } from "#tracing/lib/runtime.js";
-import { createTraceRecorder } from "#tracing/lib/runtime.js";
-import { durableOtelBackend } from "#tracing/lib/runtime.js";
-import { aiSdkContentSerializer } from "#tracing/lib/runtime.js";
+import { AgentSpanIdGenerator } from "#tracing/lib/index.js";
+import { otelTelemetry } from "#tracing/lib/index.js";
 import { eveOutputMapping } from "#tracing/eve/profile.js";
 import { ContextAgentTraceStateStore } from "#tracing/eve/agent-trace-context-store.js";
 import type { AgentTraceStateStore } from "#tracing/eve/agent-trace-state.js";
@@ -44,10 +42,10 @@ import {
 } from "#instrumentation/lifecycle.js";
 import type { ChannelAudience } from "#shared/channel-audience.js";
 import { channelAudienceFromContext } from "#tracing/eve/channel-audience-context.js";
-import { activeTraceOperation } from "#tracing/lib/runtime.js";
+import { activeTraceOperation } from "#tracing/lib/index.js";
 import { contentFilteringProcessor } from "#tracing/eve/content-span-processor.js";
 import { parseLocalTraceSegment } from "#tracing/local/trace-reader.js";
-import { CONTENT_ATTRIBUTE_LIMIT } from "#tracing/lib/runtime.js";
+import { CONTENT_ATTRIBUTE_LIMIT } from "#tracing/lib/index.js";
 import type { TraceCapturePolicy } from "#tracing/eve/otel-declaration.js";
 import type { TraceCaptureContext } from "#shared/trace-policy.js";
 import {
@@ -107,15 +105,14 @@ function createRuntime(
     recordInputs: true,
     recordOutputs: true,
     stateStore,
-    tracing: createTraceRecorder({
-      output: durableOtelBackend({
-        tracer,
-        idGenerator,
-        samplesTrace: samplesTrace ?? (() => true),
-        mapping: eveOutputMapping(),
-      }),
-      serializer: aiSdkContentSerializer,
+    telemetry: otelTelemetry({
+      provider,
+      tracerName: "eve.agent",
+      idGenerator,
+      samplesTrace: samplesTrace ?? (() => true),
+      mapping: eveOutputMapping(),
     }),
+    idGenerator,
   };
   if (tracePolicy !== null) agentOtelInput.tracePolicy = tracePolicy;
   const agentOtel = createAgentOtelInstrumentation(agentOtelInput);
@@ -2837,15 +2834,13 @@ describe("createAgentOtelInstrumentation", () => {
     const agentOtel = createAgentOtelInstrumentation({
       frameworkVersion: "test",
       stateStore: new InMemoryAgentTraceStateStore(),
-      tracing: createTraceRecorder({
-        output: durableOtelBackend({
-          tracer: provider.getTracer("eve.agent"),
-          idGenerator,
-          samplesTrace: () => true,
-          mapping: eveOutputMapping(),
-        }),
-        serializer: aiSdkContentSerializer,
+      telemetry: otelTelemetry({
+        provider,
+        tracerName: "eve.agent",
+        idGenerator,
+        mapping: eveOutputMapping(),
       }),
+      idGenerator,
     });
     const hooks = createInstrumentationHooks([agentOtel.hook]).forTrace!(traceContext("public"));
     await emitAttempt({

@@ -1,4 +1,4 @@
-import { AgentSpanIdGenerator } from "#tracing/lib/runtime.js";
+import { AgentSpanIdGenerator } from "#tracing/lib/index.js";
 import { ToolLoopAgent } from "ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { Runtime } from "#channel/types.js";

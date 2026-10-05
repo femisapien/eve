@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ROOT_CONTEXT, SpanStatusCode, context, trace, type Span } from "@opentelemetry/api";
-import { withErrorContent } from "#tracing/lib/runtime.js";
+import { withErrorContent } from "#tracing/lib/index.js";
 
 import {
   createErrorId,

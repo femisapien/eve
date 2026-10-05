@@ -1,4 +1,4 @@
-import { AgentSpanIdGenerator } from "#tracing/lib/runtime.js";
+import { AgentSpanIdGenerator } from "#tracing/lib/index.js";
 import { describe, expect, it, vi } from "vitest";
 
 import { ContextContainer, contextStorage } from "#context/container.js";

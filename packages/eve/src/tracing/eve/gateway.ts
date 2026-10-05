@@ -1,5 +1,5 @@
 /** Converts Gateway response metadata to cost data. */
-import type { Attributes } from "#tracing/lib/runtime.js";
+import type { Attributes } from "#tracing/lib/index.js";
 export function gatewayCostAttributes(input: {
   cost?: number;
   gatewayCost?: number;

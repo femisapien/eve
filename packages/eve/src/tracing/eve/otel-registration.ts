@@ -2,9 +2,9 @@ import { context, metrics, propagation, trace, SpanKind, type Context } from "@o
 import { registerOTel } from "@vercel/otel";
 import type { Configuration, SpanProcessor, SpanProcessorOrName } from "./otel-configuration.js";
 
-import { AgentSpanIdGenerator } from "#tracing/lib/runtime.js";
+import { AgentSpanIdGenerator } from "#tracing/lib/index.js";
 import type { OtelConfiguration } from "./otel-configuration.js";
-import { invocationName, type Attributes } from "#tracing/lib/runtime.js";
+import { invocationName, type Attributes } from "#tracing/lib/index.js";
 export type SamplingOperation = { readonly name: string; readonly attributes?: Attributes };
 
 const REGISTRATION_SPAN_NAME = "agent.tracing.registration";

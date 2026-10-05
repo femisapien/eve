@@ -7,7 +7,7 @@ import {
   type TextMapGetter,
 } from "@opentelemetry/api";
 import { getInstrumentationRuntime } from "#instrumentation/runtime.js";
-import { withErrorContent } from "#tracing/lib/runtime.js";
+import { withErrorContent } from "#tracing/lib/index.js";
 import { markAgentTraceContext } from "#tracing/eve/agent-trace-context.js";
 
 export interface ChannelRequestTrace {

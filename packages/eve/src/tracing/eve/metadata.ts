@@ -3,14 +3,14 @@ import type {
   AgentTurnTraceState,
 } from "#tracing/eve/agent-trace-state.js";
 import { normalizeInstrumentationChannelKind } from "#internal/instrumentation.js";
-import type { TurnMetadata } from "#tracing/lib/runtime.js";
+import type { TurnInput } from "#tracing/lib/index.js";
 import { checkpointContent } from "#tracing/eve/operation-input.js";
 
 export function eveActivationMetadata(input: {
   readonly session?: AgentSessionTraceState;
   readonly turn: AgentTurnTraceState;
   readonly sessionId: string;
-}): TurnMetadata {
+}): Pick<TurnInput, "sequence" | "lineage" | "channel" | "attributes"> {
   const { session, turn, sessionId } = input;
   const lineage = turn.parentLineage ?? session?.parentLineage;
   const owns = lineage === undefined || turn.traceSessionId === sessionId;
@@ -25,10 +25,14 @@ export function eveActivationMetadata(input: {
           : normalizeInstrumentationChannelKind(session.channelType))));
   return {
     sequence: turn.sequence,
-    subagent: lineage !== undefined,
-    subagentName: turn.subagentName,
-    parentCallId: lineage?.callId,
-    parentRunId: lineage?.sessionId,
+    lineage:
+      lineage === undefined
+        ? undefined
+        : {
+            agentName: turn.subagentName,
+            parentCallId: lineage.callId,
+            parentRunId: lineage.sessionId,
+          },
     channel: {
       kind,
       origin:

@@ -3,7 +3,7 @@ import {
   boundedPrincipalId,
   telemetryByteLength,
   truncateTelemetryText,
-} from "#tracing/lib/runtime.js";
+} from "#tracing/lib/index.js";
 
 describe("boundedPrincipalId", () => {
   it.each(["x".repeat(1024), String.fromCodePoint(0x1f600).repeat(256)])(

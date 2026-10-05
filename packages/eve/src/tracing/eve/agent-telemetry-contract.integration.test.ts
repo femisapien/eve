@@ -32,10 +32,8 @@ import {
 } from "#instrumentation/lifecycle.js";
 import { bindInstrumentationRuntime } from "#instrumentation/runtime.js";
 import { createAgentOtelInstrumentation } from "#tracing/eve/agent-otel-provider.js";
-import { AgentSpanIdGenerator } from "#tracing/lib/runtime.js";
-import { createTraceRecorder } from "#tracing/lib/runtime.js";
-import { durableOtelBackend } from "#tracing/lib/runtime.js";
-import { aiSdkContentSerializer } from "#tracing/lib/runtime.js";
+import { AgentSpanIdGenerator } from "#tracing/lib/index.js";
+import { otelTelemetry } from "#tracing/lib/index.js";
 import { eveOutputMapping } from "#tracing/eve/profile.js";
 import { ContextAgentTraceStateStore } from "#tracing/eve/agent-trace-context-store.js";
 import { AGENT_TRACE_CONTEXT_KEY } from "#tracing/eve/agent-trace-context-store.js";
@@ -80,15 +78,13 @@ function createRuntime() {
     recordInputs: true,
     recordOutputs: true,
     stateStore: new ContextAgentTraceStateStore(),
-    tracing: createTraceRecorder({
-      output: durableOtelBackend({
-        tracer: provider.getTracer("eve.agent"),
-        idGenerator,
-        samplesTrace: () => true,
-        mapping: eveOutputMapping(),
-      }),
-      serializer: aiSdkContentSerializer,
+    telemetry: otelTelemetry({
+      provider,
+      tracerName: "eve.agent",
+      idGenerator,
+      mapping: eveOutputMapping(),
     }),
+    idGenerator,
   });
   const hooks = createInstrumentationHooks([agent.hook]);
   return {

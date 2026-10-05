@@ -13,7 +13,6 @@ import type {
   AgentTurnTraceState,
 } from "#tracing/eve/agent-trace-state.js";
 import { actionIdempotencyKey } from "#instrumentation/lifecycle.js";
-import { snapshotReference } from "#tracing/lib/runtime.js";
 import type { SessionStateMap } from "#harness/types.js";
 import { getBlockingWorkflowToolRuns } from "#harness/workflow-tool-runs.js";
 
@@ -27,12 +26,12 @@ import { parseJsonObject } from "#shared/json.js";
 
 export const AGENT_TRACE_CONTEXT_KEY = "eve.harness.agentTrace";
 interface AgentTraceContextState {
-  readonly pendingTools?: unknown;
   readonly entries: Readonly<Record<string, AgentTraceEntry>>;
 }
 type AgentTraceEntry =
   | { kind: "session"; value: AgentSessionTraceState }
   | { kind: "turn"; value: AgentTurnTraceState }
+  | { kind: "checkpoint"; value: AgentTraceValues["checkpoint"] }
   | { kind: "action"; value: AgentActionTraceState; active: boolean; retained: boolean };
 const traceStateKey = (kind: AgentTraceEntry["kind"], key: string) => JSON.stringify([kind, key]);
 function traceStateValue<K extends AgentTraceEntry["kind"]>(
@@ -52,12 +51,18 @@ function deserializeAgentTraceContextState(data: unknown): AgentTraceContextStat
     for (const [key, value] of Object.entries(state.entries)) {
       if (value === null || typeof value !== "object" || Array.isArray(value)) continue;
       const record = value as import("#shared/json.js").JsonObject;
-      if (record.kind !== "session" && record.kind !== "turn" && record.kind !== "action") continue;
+      if (
+        record.kind !== "session" &&
+        record.kind !== "turn" &&
+        record.kind !== "checkpoint" &&
+        record.kind !== "action"
+      )
+        continue;
       if (record.value === null || typeof record.value !== "object" || Array.isArray(record.value))
         continue;
       entries[key] = value as object as AgentTraceEntry;
     }
-    return { pendingTools: state.pendingTools, entries };
+    return { entries };
   } catch {
     return emptyAgentTraceContextState();
   }
@@ -70,18 +75,9 @@ const AgentTraceContextKey = new ContextKey<AgentTraceContextState>(AGENT_TRACE_
   },
 });
 
-export function readPendingToolSnapshot(): unknown {
-  return contextStorage.getStore()?.get(AgentTraceContextKey)?.pendingTools;
-}
 export function currentTraceSessionId(runId: string): string | undefined {
   return traceStateValue(contextStorage.getStore()?.get(AgentTraceContextKey), "session", runId)
     ?.traceSessionId;
-}
-export function writePendingToolSnapshot(snapshot: unknown): void {
-  const context = contextStorage.getStore();
-  if (context === undefined) return;
-  const state = context.get(AgentTraceContextKey) ?? emptyAgentTraceContextState();
-  context.set(AgentTraceContextKey, { ...state, pendingTools: snapshot });
 }
 
 /** Run after task-provider commits, so a pending workflow tool call keeps its anchor. */
@@ -170,11 +166,9 @@ export function readActionTraceContext(
   const key = actionIdempotencyKey(sessionId, turnId, callId);
   const action = traceStateValue(state, "action", key);
   if (action === undefined) return undefined;
-  const reference = snapshotReference(action.snapshot);
-  if (reference === undefined) return undefined;
   return withTraceDecision(
     serializedContext,
-    { ...reference, isRemote: false },
+    { ...action.context, isRemote: false },
     traceStateValue(state, "session", action.sessionId)?.decision,
   );
 }

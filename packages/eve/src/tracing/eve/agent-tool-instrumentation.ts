@@ -1,139 +1,58 @@
-import type { Context, SpanContext } from "@opentelemetry/api";
 import type {
-  InstrumentationActionStartedEvent,
+  InstrumentationAttemptScope,
   InstrumentationToolCallStartedEvent,
   InstrumentationToolCallTerminalEvent,
 } from "#instrumentation/lifecycle.js";
-import { actionIdempotencyKey } from "#instrumentation/lifecycle.js";
-import type { AgentActionContext } from "#tracing/eve/agent-action-instrumentation.js";
-import { resolveConversationId } from "#shared/conversation-identity.js";
-import type { DurableTraceRuntime } from "#tracing/lib/runtime.js";
-import {
-  readPendingToolSnapshot,
-  writePendingToolSnapshot,
-} from "#tracing/eve/agent-trace-context-store.js";
+import { resumeAction } from "#tracing/eve/agent-action-instrumentation.js";
+import type { AgentActionTraceState } from "#tracing/eve/agent-trace-state.js";
+import type { AgentTracing, AttemptOperation, ToolOperation } from "#tracing/lib/index.js";
 
+const OPEN_TOOLS = 10000;
+
+/** Tool executions finish in the process that ran them; a lost worker retries the step. */
 export function createAgentToolInstrumentation(input: {
-  readonly lifecycle: DurableTraceRuntime;
-  readonly actionContextFor: (
+  readonly tracingFor: (agentName: string | undefined) => AgentTracing;
+  readonly actionStateFor: (
     sessionId: string,
     turnId: string,
     callId: string,
-  ) => Promise<AgentActionContext | undefined>;
+  ) => Promise<AgentActionTraceState | undefined>;
+  readonly attemptFor: (
+    scope: InstrumentationAttemptScope,
+  ) => Promise<{ attempt: AttemptOperation } | undefined>;
   readonly recordInputs: boolean;
   readonly recordOutputs: boolean;
-  readonly resolveFallback: (
-    event: InstrumentationToolCallStartedEvent,
-  ) => { context: Context; spanContext: SpanContext } | undefined;
 }) {
-  const tools = new Map<
-    string,
-    {
-      actionKey: string;
-      group: string;
-      handle: Awaited<ReturnType<DurableTraceRuntime["pendingTool"]>>;
-    }
-  >();
-  const completed = new Set<string>();
-  function forget(key: string) {
-    tools.delete(key);
-    completed.add(key);
-    if (completed.size > 10000) completed.delete(completed.values().next().value!);
-  }
-  async function restore() {
-    const snapshot = readPendingToolSnapshot();
-    if (!Array.isArray(snapshot) || snapshot.length > 10000) return;
-    for (const tool of snapshot) {
-      if (
-        tool === null ||
-        typeof tool !== "object" ||
-        typeof tool.key !== "string" ||
-        typeof tool.group !== "string" ||
-        typeof tool.actionKey !== "string"
-      )
-        continue;
-      if (tools.has(tool.key) || completed.has(tool.key)) continue;
-      const handle = await input.lifecycle.resumeTool(tool.state);
-      if (handle !== undefined)
-        tools.set(tool.key, { actionKey: tool.actionKey, group: tool.group, handle });
-    }
-  }
-  function persist() {
-    writePendingToolSnapshot(
-      [...tools].map(([key, tool]) => ({
-        key,
-        actionKey: tool.actionKey,
-        group: tool.group,
-        state: tool.handle.snapshot(),
-      })),
-    );
-  }
-  async function actionAvailable(event: {
-    scope: InstrumentationToolCallStartedEvent["scope"];
-    callId: string;
-  }) {
-    await restore();
-    const parent = await input.actionContextFor(
+  const tools = new Map<string, { attemptId: string; handle: ToolOperation }>();
+
+  async function onStarted(event: InstrumentationToolCallStartedEvent) {
+    if (tools.has(event.idempotencyKey) || tools.size >= OPEN_TOOLS) return;
+    const state = await input.actionStateFor(
       event.scope.sessionId,
       event.scope.turnId,
       event.callId,
     );
-    if (parent !== undefined)
-      for (const [key, tool] of tools)
-        if (
-          tool.actionKey ===
-          actionIdempotencyKey(event.scope.sessionId, event.scope.turnId, event.callId)
-        ) {
-          await tool.handle.attach(parent.spanContext, parent.context);
-          if (tool.handle.finished) {
-            forget(key);
-          }
-        }
-    persist();
+    const action = state === undefined ? undefined : await resumeAction(input.tracingFor, state);
+    const handle =
+      action === undefined
+        ? await (
+            await input.attemptFor(event.scope)
+          )?.attempt.toolCall({
+            callId: event.callId,
+            name: event.toolName,
+            arguments: input.recordInputs ? event.input : undefined,
+          })
+        : await action.toolExecution({
+            arguments: input.recordInputs ? event.input : undefined,
+          });
+    if (handle !== undefined)
+      tools.set(event.idempotencyKey, { attemptId: event.scope.attemptId, handle });
   }
-  async function onStarted(event: InstrumentationToolCallStartedEvent) {
-    await restore();
-    const fallback =
-      input.resolveFallback(event) ??
-      (await input.actionContextFor(event.scope.sessionId, event.scope.turnId, event.callId));
-    if (fallback === undefined) return;
-    if (
-      tools.has(event.idempotencyKey) ||
-      completed.has(event.idempotencyKey) ||
-      tools.size >= 10000
-    )
-      return;
-    const handle = await input.lifecycle.pendingTool({
-      identity: {
-        conversationId: resolveConversationId(event.scope.rootSessionId ?? event.scope.sessionId),
-        runId: event.scope.sessionId,
-        turnId: event.scope.turnId,
-        agentName: event.scope.functionId,
-        framework: { name: "eve" },
-      },
-      key: event.idempotencyKey,
-      callId: event.callId,
-      name: event.toolName,
-      arguments: input.recordInputs ? event.input : undefined,
-      parent: fallback.spanContext,
-      capture: {
-        emit: (fallback.spanContext.traceFlags & 1) !== 0,
-        recordInputs: input.recordInputs,
-        recordOutputs: input.recordOutputs,
-      },
-      context: fallback.context,
-    });
-    tools.set(event.idempotencyKey, {
-      handle,
-      group: event.scope.attemptId,
-      actionKey: actionIdempotencyKey(event.scope.sessionId, event.scope.turnId, event.callId),
-    });
-    await actionAvailable(event);
-  }
+
   async function onTerminal(event: InstrumentationToolCallTerminalEvent) {
-    await restore();
-    const handle = tools.get(event.idempotencyKey)?.handle;
-    await handle?.complete(
+    const tool = tools.get(event.idempotencyKey);
+    tools.delete(event.idempotencyKey);
+    await tool?.handle.complete(
       event.type === "tool.call.failed" || event.output.type === "error"
         ? {
             outcome: "failed",
@@ -148,22 +67,21 @@ export function createAgentToolInstrumentation(input: {
           }
         : { outcome: "completed", output: input.recordOutputs ? event.output.output : undefined },
     );
-    if (handle?.finished) {
-      forget(event.idempotencyKey);
-    }
-    persist();
   }
+
   return {
-    actionStarted: (event: InstrumentationActionStartedEvent) => actionAvailable(event),
-    operationFor: (_attemptId: string, key: string) => tools.get(key)?.handle,
-    drain: async (attemptId: string, failure?: { error: unknown }) => {
-      await restore();
+    operationFor: (key: string) => tools.get(key)?.handle,
+    /** Closes tools whose terminal event never arrived before their step ended. */
+    async drain(attemptId: string, failure?: { error: unknown }) {
       for (const [key, tool] of tools)
-        if (tool.group === attemptId) {
-          await tool.handle.drain({ failed: failure !== undefined, error: failure?.error });
-          forget(key);
+        if (tool.attemptId === attemptId) {
+          tools.delete(key);
+          await tool.handle.complete({
+            outcome: "abandoned",
+            failed: failure !== undefined,
+            error: failure?.error,
+          });
         }
-      persist();
     },
     events: {
       "tool.call.started": onStarted,

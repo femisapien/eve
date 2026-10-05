@@ -23,7 +23,7 @@ import {
   withMcpToolCallSpan,
   withMcpToolsListSpan,
 } from "#runtime/connections/mcp-tracing.js";
-import { liveOtelBackend } from "#tracing/lib/runtime.js";
+import { otelTelemetry } from "#tracing/lib/index.js";
 
 describe("MCP trace propagation", () => {
   let exporter: InMemorySpanExporter;
@@ -49,20 +49,17 @@ describe("MCP trace propagation", () => {
   it("injects configured propagation into params._meta and annotates the tool span", async () => {
     const setAttributes = vi.fn();
     const capture = { emit: true, recordInputs: false, recordOutputs: false };
-    const backend = liveOtelBackend(provider.getTracer("test.mcp"));
+    const telemetry = otelTelemetry({ provider });
     let toolContext = ROOT_CONTEXT;
-    backend.run(
-      { traceId: "1".repeat(32), spanId: "2".repeat(16), traceFlags: 1 },
-      capture,
-      () => {
-        toolContext = runtimeContext.active();
-      },
-      undefined,
+    telemetry.run(
       {
         type: "tool",
         reference: { traceId: "1".repeat(32), spanId: "2".repeat(16), traceFlags: 1 },
         capture,
         mcp: { update: setAttributes, error() {}, arguments() {}, result() {} },
+      },
+      () => {
+        toolContext = runtimeContext.active();
       },
     );
     const fetcher = vi.fn(
@@ -180,11 +177,13 @@ describe("MCP trace propagation", () => {
 
   it("propagates the fallback CLIENT span context for tools/call", async () => {
     const parent = runtimeTrace.getTracer("test.mcp").startSpan("parent");
-    const backend = liveOtelBackend(provider.getTracer("test.mcp"));
     let parentContext = ROOT_CONTEXT;
-    backend.run(
-      parent.spanContext(),
-      { emit: true, recordInputs: true, recordOutputs: true },
+    otelTelemetry({ provider }).run(
+      {
+        type: "activation",
+        reference: parent.spanContext(),
+        capture: { emit: true, recordInputs: true, recordOutputs: true },
+      },
       () => {
         parentContext = runtimeContext.active();
       },

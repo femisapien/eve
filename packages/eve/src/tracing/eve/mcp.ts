@@ -6,13 +6,18 @@ import {
   type TextMapSetter,
 } from "@opentelemetry/api";
 
-import type { McpLifecycle, McpUpdate } from "#tracing/lib/runtime.js";
-import { activeTraceOperation } from "#tracing/lib/runtime.js";
-import { liveOtelBackend } from "#tracing/lib/runtime.js";
+import {
+  activeTraceOperation,
+  contentAttribute,
+  mcpLifecycle,
+  otelTelemetry,
+  truncateTelemetryText,
+  type CaptureDecision,
+  type ContentSerializer,
+  type McpLifecycle,
+  type McpUpdate,
+} from "#tracing/lib/index.js";
 import { eveOutputMapping } from "./profile.js";
-import { aiSdkContentSerializer } from "#tracing/lib/runtime.js";
-import { mcpLifecycle, type CaptureDecision } from "#tracing/lib/runtime.js";
-import { truncateTelemetryText } from "#tracing/lib/runtime.js";
 function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
@@ -106,8 +111,18 @@ function injectMcpTraceContext(
   };
 }
 
+const noContent = () => undefined;
+const MCP_SERIALIZER: ContentSerializer = {
+  json: contentAttribute,
+  text: noContent,
+  inputMessages: noContent,
+  instructions: noContent,
+  outputMessages: noContent,
+  toolResults: noContent,
+};
+
 export function createMcpTracing() {
-  const backend = liveOtelBackend(trace.getTracer("eve.mcp"), eveOutputMapping());
+  const telemetry = otelTelemetry({ tracerName: "eve.mcp", mapping: eveOutputMapping() });
   function start(input: {
     method: "tools/list" | "tools/call";
     connectionName: string;
@@ -116,7 +131,7 @@ export function createMcpTracing() {
     executionContext: OtelContext;
     capture: CaptureDecision;
   }) {
-    const span = backend.start(
+    const span = telemetry.startSpan(
       {
         type: "mcp",
         operationId: `${input.connectionName}:${input.method}`,
@@ -136,10 +151,10 @@ export function createMcpTracing() {
           "gen_ai.tool.name": input.toolName,
         },
       },
-      input.executionContext,
+      { context: input.executionContext },
     );
     const semantic = mcpLifecycle({
-      serializer: aiSdkContentSerializer,
+      serializer: MCP_SERIALIZER,
       ...input.capture,
       write(attributes) {
         for (const [key, value] of Object.entries(attributes))
@@ -151,12 +166,11 @@ export function createMcpTracing() {
       ...semantic,
       end: span.end,
       run<T>(execute: () => T): T {
-        return backend.run(span.reference, input.capture, execute, input.executionContext, {
-          type: "mcp",
-          reference: span.reference,
-          capture: input.capture,
-          mcp: semantic,
-        });
+        return telemetry.run(
+          { type: "mcp", reference: span.reference, capture: input.capture, mcp: semantic },
+          execute,
+          input.executionContext,
+        );
       },
     };
   }

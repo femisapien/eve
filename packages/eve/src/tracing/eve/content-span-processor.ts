@@ -1,6 +1,6 @@
 import type { SpanProcessor } from "#compiled/@vercel/otel/index.js";
 
-import { withoutDeclinedContent, type ResolvedContentOptions } from "#tracing/lib/runtime.js";
+import { withoutDeclinedContent, type ResolvedContentOptions } from "#tracing/lib/index.js";
 import { hasConversationRelease, type LocalTracesProcessor } from "#tracing/local/traces.js";
 import { normalizeChannelAudience } from "#shared/channel-audience.js";
 import type { ChannelAudience } from "#shared/channel-audience.js";

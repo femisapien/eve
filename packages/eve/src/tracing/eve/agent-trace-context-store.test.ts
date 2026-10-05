@@ -40,10 +40,7 @@ describe("ContextAgentTraceStateStore", () => {
         sequence: 0,
         startTimeMs: 1_700_000_000_000,
         subagentName: "researcher",
-        snapshot: {
-          terminal: { outcome: "failed", error: { message: "failed" } },
-          usage: { inputTokens: 12, outputTokens: 4 },
-        },
+        terminal: { outcome: "failed", errorName: "Error", errorMessage: "failed" },
       });
     });
 
@@ -69,10 +66,7 @@ describe("ContextAgentTraceStateStore", () => {
         },
         currentPrincipal: { id: "user-123", type: "user" },
         initiatorPrincipal: { type: "none" },
-        snapshot: {
-          terminal: { outcome: "failed", error: { message: "failed" } },
-          usage: { inputTokens: 12, outputTokens: 4 },
-        },
+        terminal: { outcome: "failed", errorName: "Error", errorMessage: "failed" },
         caller: { ...spanContext("4", "2"), isRemote: true },
         startTimeMs: 1_700_000_000_000,
         subagentName: "researcher",
@@ -127,7 +121,7 @@ describe("ContextAgentTraceStateStore", () => {
 
       store.update("turn", JSON.stringify(["session-1", "turn-1"]), (turn) => ({
         ...turn,
-        snapshot: { usage: { inputTokens: 12, outputTokens: 4 } },
+        terminal: { outcome: "completed" },
       }));
       store.update("turn", JSON.stringify(["session-1", "turn-1"]), (turn) => ({
         ...turn,
@@ -135,13 +129,13 @@ describe("ContextAgentTraceStateStore", () => {
       }));
 
       expect(store.get("turn", JSON.stringify(["session-1", "turn-1"]))).toMatchObject({
-        snapshot: { usage: { inputTokens: 12, outputTokens: 4 } },
+        terminal: { outcome: "completed" },
         channelDelivery: { deliveryId: "delivery" },
       });
       store.delete("turn", JSON.stringify(["session-1", "turn-1"]));
       store.update("turn", JSON.stringify(["session-1", "turn-1"]), (turn) => ({
         ...turn,
-        snapshot: { usage: { inputTokens: 99 } },
+        terminal: { outcome: "cancelled" },
       }));
       expect(store.get("turn", JSON.stringify(["session-1", "turn-1"]))).toBeUndefined();
     });
@@ -248,10 +242,7 @@ describe("readActionTraceContext", () => {
         traceId: "1".repeat(32),
       });
       new ContextAgentTraceStateStore().set("action", "action:session-1:turn-1:call-1", {
-        callId: "call-1",
-        snapshot: actionSnapshot(),
-        sessionId: "session-1",
-        turnId: "turn-1",
+        ...actionState(),
       });
     });
     const serialized = await serializeContext(context);
@@ -281,10 +272,7 @@ describe("readActionTraceContext", () => {
         traceSessionId: "session-1",
       });
       store.set("action", "action:session-1:turn-1:call-1", {
-        callId: "call-1",
-        snapshot: actionSnapshot(),
-        sessionId: "session-1",
-        turnId: "turn-1",
+        ...actionState(),
       });
     });
 
@@ -299,14 +287,14 @@ describe("readActionTraceContext", () => {
 function spanContext(traceId: string, spanId: string) {
   return { spanId: spanId.repeat(16), traceFlags: 1, traceId: traceId.repeat(32) };
 }
-function actionSnapshot() {
+function actionState() {
   return {
-    version: 1,
-    key: "action",
-    identity: { conversationId: "session-1", runId: "session-1", turnId: "turn-1" },
-    data: { type: "action", options: { callId: "call-1", name: "researcher" } },
-    capture: { emit: true, recordInputs: true, recordOutputs: false },
-    reference: spanContext("1", "3"),
-    startTimeMs: 1,
+    attemptIndex: 0,
+    callId: "call-1",
+    context: spanContext("1", "3"),
+    name: "researcher",
+    sessionId: "session-1",
+    stepIndex: 0,
+    turnId: "turn-1",
   };
 }

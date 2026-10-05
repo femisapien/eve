@@ -1,4 +1,4 @@
-import type { Attributes, MappingContext, OutputMapping } from "#tracing/lib/runtime.js";
+import type { Attributes, MappingContext, OutputMapping } from "#tracing/lib/index.js";
 import { currentTraceSessionId } from "#tracing/eve/agent-trace-context-store.js";
 
 export function eveOutputMapping(options?: {

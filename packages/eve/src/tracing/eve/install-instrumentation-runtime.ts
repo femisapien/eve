@@ -12,14 +12,12 @@ import {
 } from "#instrumentation/runtime.js";
 import { createLogger, formatError } from "#internal/logging.js";
 import { resolveInstrumentationEnvironment } from "#internal/application/dev-environment.js";
-import { AgentSpanIdGenerator } from "#tracing/lib/runtime.js";
+import { AgentSpanIdGenerator } from "#tracing/lib/index.js";
 import { ContextAgentTraceStateStore } from "#tracing/eve/agent-trace-context-store.js";
 import { createAgentOtelInstrumentation } from "#tracing/eve/agent-otel-provider.js";
 import { hasConversationRelease, type LocalTracesProcessor } from "#tracing/local/traces.js";
 import type { CollectedOtel, RuntimeContextResolver } from "#tracing/eve/otel-declaration.js";
-import { createTraceRecorder } from "#tracing/lib/runtime.js";
-import { durableOtelBackend } from "#tracing/lib/runtime.js";
-import { aiSdkContentSerializer } from "#tracing/lib/runtime.js";
+import { otelTelemetry } from "#tracing/lib/index.js";
 import type { RegisteredOtelPipeline } from "#tracing/eve/otel-registration.js";
 import { registerOtel } from "#tracing/eve/otel-registration.js";
 import { eveOutputMapping } from "#tracing/eve/profile.js";
@@ -60,15 +58,14 @@ export function installInstrumentationRuntime(input: {
     const agentOtel = createAgentOtelInstrumentation({
       environment: resolveInstrumentationEnvironment(),
       frameworkVersion: input.frameworkVersion,
-      tracing: createTraceRecorder({
-        output: durableOtelBackend({
-          tracer: otelRuntime.provider.getTracer("eve.agent"),
-          idGenerator,
-          samplesTrace: otelRuntime.samplesTrace,
-          mapping: eveOutputMapping(),
-        }),
-        serializer: aiSdkContentSerializer,
+      telemetry: otelTelemetry({
+        provider: otelRuntime.provider,
+        tracerName: "eve.agent",
+        idGenerator,
+        samplesTrace: otelRuntime.samplesTrace,
+        mapping: eveOutputMapping(),
       }),
+      idGenerator,
       recordInputs: input.collected.settings.recordInputs,
       recordOutputs: input.collected.settings.recordOutputs,
       stateStore: new ContextAgentTraceStateStore(),

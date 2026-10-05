@@ -52,7 +52,7 @@ describe("resolveToolCallAgentTrace", () => {
 
       expect(dispatch.parentTraceContext).toMatchObject({
         ...action.parent,
-        spanId: recorded ? action.spanId : action.parent.spanId,
+        spanId: recorded ? action.context.spanId : action.parent.spanId,
         decision: { action: "record", recordInputs: false, recordOutputs: false },
       });
       expect(dispatch.originAudience).toBe("public");
@@ -64,15 +64,7 @@ function workflowAction() {
   return {
     attemptIndex: 0,
     callId: "workflow",
-    snapshot: {
-      version: 1,
-      key: "action",
-      identity: { conversationId: "session-1", runId: "session-1", turnId: "turn-1" },
-      data: { type: "action", options: { callId: "workflow", name: "coordinate" } },
-      capture: { emit: true, recordInputs: true, recordOutputs: true },
-      reference: { spanId: "3".repeat(16), traceId: "1".repeat(32), traceFlags: 1 },
-      startTimeMs: 1,
-    },
+    context: { spanId: "3".repeat(16), traceId: "1".repeat(32), traceFlags: 1 },
     channelAudience: "private" as const,
     kind: "tool-call" as const,
     name: "coordinate",
@@ -82,10 +74,7 @@ function workflowAction() {
       traceId: "1".repeat(32),
     },
     rootSessionId: "session-1",
-    traceSessionId: "session-1",
     sessionId: "session-1",
-    spanId: "3".repeat(16),
-    startTimeMs: 1,
     stepIndex: 0,
     turnId: "turn-1",
   };
