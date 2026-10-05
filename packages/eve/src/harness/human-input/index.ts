@@ -130,7 +130,11 @@ export class HumanInput {
           await publishWaiting(host, current, event.relayed === true ? "relayed" : "own");
           continue;
         case "turn.cancelled":
-          return { ending: { kind: "cancelled" }, session: current };
+          return {
+            ending:
+              event.closed === "own" ? { closed: "own", kind: "cancelled" } : { kind: "cancelled" },
+            session: current,
+          };
         // Stop resolved the budget question: the turn ends as cancelled.
         case "budget.declined":
           return {
@@ -372,6 +376,7 @@ const INPUT_PHASES = {
   "withdraw.requested": ["parked"],
   cleared: ["pre-step"],
   "queued.taken": ["pre-step"],
+  "cancel.carried": ["pre-step"],
 } as const satisfies { readonly [T in (Interrupt | Intake)["type"]]: readonly Phase[] };
 
 /**
@@ -432,7 +437,11 @@ export interface Carried<S, P extends Phase> {
 
 /** How human input ended the turn: cancelled, or by a Stop at the budget question. */
 export type Ending =
-  | { readonly kind: "cancelled"; readonly declined?: undefined }
+  /**
+   * `closed: "own"`: a cancel in the turn's step, which closed and reported
+   * the turn's own requests; the parked settle withdraws only relayed ones.
+   */
+  | { readonly kind: "cancelled"; readonly declined?: undefined; readonly closed?: "own" }
   | { readonly kind: "cancelled"; readonly declined: "budget"; readonly requestId: string };
 
 export interface Committed<S> {
@@ -595,6 +604,12 @@ export type Intake =
    * last step's calls, ahead of what arrived for it.
    */
   | { readonly type: "queued.taken" }
+  /**
+   * A cancel in the turn's step ended it; the session saved before that
+   * step, which the turn settles from, closes what the cancel closed and
+   * reported, without reporting it again.
+   */
+  | { readonly type: "cancel.carried" }
   /** A workflow run or child session ended; nobody can answer what it relayed. */
   | { readonly type: "run.ended"; readonly runId: string }
   /**
@@ -683,7 +698,8 @@ export type HumanInputEvent =
   | { readonly type: "budget.declined"; readonly requestId: string }
   /** Tell the model something with the turn's next input. */
   | { readonly type: "note"; readonly text: string }
-  | { readonly type: "turn.cancelled" };
+  /** End the turn as cancelled; `closed: "own"` when a cancel closed its own requests. */
+  | { readonly type: "turn.cancelled"; readonly closed?: "own" };
 
 export type Next =
   | { readonly run: "model" }
@@ -938,6 +954,8 @@ function reduce(state: HumanInputState, input: Interrupt | Intake, phase: Phase)
       return { events: [], state: clearedState(state) };
     case "queued.taken":
       return takeQueued(state);
+    case "cancel.carried":
+      return carryCancel(state);
     default: {
       const unhandled: never = input;
       throw new TypeError(`Unhandled human input: ${JSON.stringify(unhandled)}`);
@@ -953,18 +971,41 @@ function reduce(state: HumanInputState, input: Interrupt | Intake, phase: Phase)
  * turn; its relayed requests stay open until the cancelled turn settles, parked.
  */
 function cancel(state: HumanInputState, phase: Phase): Reduced {
-  const closed = then(
+  if (phase !== "parked") {
+    const closed = closeOwn(state, { step: true });
+    return {
+      events: [...closed.events, { closed: "own", type: "turn.cancelled" }],
+      state: closed.state,
+    };
+  }
+  return then(
     staleCandidates(state, CANCELLED_REASON),
-    (next) => (phase === "parked" ? withdrawRelayed(next) : { events: [], state: next }),
+    (next) => withdrawRelayed(next),
+    (next) => closeOwn(next, { step: true }),
+  );
+}
+
+/**
+ * A cancel in the turn's step already closed and reported the turn's own
+ * requests; the session the turn settles from, saved before that step,
+ * closes them again without reporting them. Its suspended step stays, for
+ * the parked settle to cancel with what the step left.
+ */
+function carryCancel(state: HumanInputState): Reduced {
+  const closed = closeOwn(state, { step: false });
+  return { events: closed.events.filter((event) => event.type !== "publish"), state: closed.state };
+}
+
+/** Closes what the turn's own calls wait on, as cancelled: its step too, with `step`. */
+function closeOwn(state: HumanInputState, options: { readonly step: boolean }): Reduced {
+  return then(
+    staleCandidates(state, CANCELLED_REASON),
     (next) => endRelayedSignIns(next),
     withdrawBudget,
     cancelApprovals,
-    cancelStep,
+    (next) => (options.step ? cancelStep(next) : { events: [], state: next }),
     (next) => closeSignIns(next, { outcome: "declined", reason: CANCELLED_REASON }),
   );
-  return phase === "parked"
-    ? closed
-    : { events: [...closed.events, { type: "turn.cancelled" }], state: closed.state };
 }
 
 /**

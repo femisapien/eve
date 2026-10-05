@@ -9,7 +9,8 @@ import {
   type HumanInputHost,
   type Phase,
 } from "#harness/human-input/index.js";
-import type { SessionStateMap } from "#harness/types.js";
+import { settledByEnding } from "#harness/human-input/effects/index.js";
+import type { HarnessSession, SessionStateMap } from "#harness/types.js";
 import {
   AT,
   BUDGET_QUESTION,
@@ -54,6 +55,14 @@ class RecordingHost<P extends Phase> implements HumanInputHost<Session, P> {
     return report === undefined ? { session } : { report, session };
   }
 }
+
+const harnessSession: HarnessSession = {
+  agent: { modelReference: { id: "model" }, system: "", tools: [] },
+  compaction: { recentWindowSize: 10, threshold: 100_000 },
+  continuationToken: "http:session",
+  history: [],
+  sessionId: "session",
+};
 
 describe("HumanInput.commit", () => {
   it("stores what the rules leave and publishes what they report", async () => {
@@ -151,11 +160,10 @@ describe("HumanInput.commit", () => {
   });
 
   it.each(["pre-step", "post-step"] as const)(
-    "ends the turn when cancelled %s, leaving relayed requests for the parked settle to withdraw",
+    "resolves each request once when cancelled %s and settled from the session saved before the step",
     async (phase) => {
-      const relaying = new RecordingHost("parked");
       const relayed = await HumanInput.commit(
-        relaying,
+        new RecordingHost("parked"),
         {},
         {
           at: AT,
@@ -164,32 +172,61 @@ describe("HumanInput.commit", () => {
           type: "relayed.requested",
         },
       );
-      const held = await HumanInput.commit(
+      // The session saved before the step, which the cancelled turn settles from.
+      const saved = await HumanInput.commit(
         new RecordingHost("post-step"),
         relayed.session,
         approvalsRequested([approval("deploy")]),
       );
       const host = new RecordingHost(phase);
 
-      const cancelled = await HumanInput.commit(host, held.session, cancel);
+      const cancelled = await HumanInput.commit(host, saved.session, cancel);
 
-      expect(cancelled.ending).toEqual({ kind: "cancelled" });
+      expect(cancelled.ending).toEqual({ closed: "own", kind: "cancelled" });
       // A turn's host publishes to the turn's own stream; relayed events aren't its to carry.
-      expect(host.published.filter(([origin]) => origin === "relayed")).toEqual([]);
-      const left = HumanInput.read(cancelled.session.state);
-      expect(left.next()).toEqual({ run: "model" });
-      expect(left.relayedRequestIds()).toEqual(new Set(["child-deploy"]));
+      expect(resolvedIds(host, "relayed")).toEqual([]);
+      expect(resolvedIds(host, "own")).toEqual(["deploy"]);
 
-      // The cancelled turn settles parked, which withdraws what the child asked.
+      // The step's work rolls back; what the cancel reported stays closed.
+      const settleFrom = new RecordingHost("pre-step");
+      const carried = await HumanInput.commit(settleFrom, saved.session, {
+        type: "cancel.carried",
+      });
+      expect(settleFrom.published).toEqual([]);
       const parked = new RecordingHost("parked");
-      const settled = await HumanInput.commit(parked, cancelled.session, cancel);
-      expect(
-        settled.ending === undefined &&
-          parked.published.some(
-            ([origin, event]) => origin === "relayed" && event.type === "input.resolved",
-          ),
-      ).toBe(true);
+      const settled = await HumanInput.commit(parked, carried.session, cancel);
+
+      expect(resolvedIds(parked, "own")).toEqual([]);
+      expect(resolvedIds(parked, "relayed")).toEqual(["child-deploy"]);
+      // The step's call joins history once, with its not-run result.
+      expect(parked.carried).toContain("history.appended");
+      expect(HumanInput.read(settled.session.state).heldStep()).toBeUndefined();
       expect(HumanInput.read(settled.session.state).relayedRequestIds().size).toBe(0);
     },
   );
+
+  it("settles from the saved session with the cancel's closures only when a cancel in the step closed them", async () => {
+    const held = await HumanInput.commit(
+      new RecordingHost("post-step"),
+      {},
+      approvalsRequested([approval("deploy")]),
+    );
+    const saved = { ...harnessSession, state: held.session.state };
+
+    const afterCancel = await settledByEnding(saved, { closed: "own", kind: "cancelled" });
+    // Another ending, such as a relayed Stop, closed nothing of the turn's own.
+    const afterOther = await settledByEnding(saved, { kind: "cancelled" });
+
+    expect(HumanInput.read(afterCancel.state).openRequestIds().size).toBe(0);
+    expect(HumanInput.read(afterCancel.state).heldStep()).toBeDefined();
+    expect(afterOther).toBe(saved);
+  });
 });
+
+function resolvedIds(host: RecordingHost<Phase>, origin: EventOrigin): string[] {
+  return host.published.flatMap(([from, event]) =>
+    from === origin && event.type === "input.resolved"
+      ? event.data.resolutions.map((resolution) => resolution.requestId)
+      : [],
+  );
+}

@@ -358,21 +358,26 @@ export async function holdForInput(input: {
 }
 
 /**
- * The session a turn a budget Stop ended settles from as cancelled: `session`,
- * from before the step that read the Stop, with that question closed again so
- * the cancel doesn't withdraw it a second time. Other endings keep `session`.
+ * The session a cancelled turn settles from: `session`, saved before the step
+ * that ended it, with what that step closed and reported closed again, so the
+ * parked settle doesn't report it a second time. A budget Stop closed its
+ * question; a cancel in the step closed the turn's own requests. Otherwise
+ * `session` is kept.
  */
 export async function settledByEnding(
   session: HarnessSession,
   ending: Ending,
 ): Promise<HarnessSession> {
-  if (ending.declined !== "budget") return session;
   const host = new PreStepHost({ emissionState: getHarnessEmissionState(session.state) });
-  const settled = await HumanInput.commit(host, session, {
-    requestId: ending.requestId,
-    type: "budget.stopped",
-  });
-  return settled.session;
+  if (ending.declined === "budget") {
+    const settled = await HumanInput.commit(host, session, {
+      requestId: ending.requestId,
+      type: "budget.stopped",
+    });
+    return settled.session;
+  }
+  if (ending.closed !== "own") return session;
+  return (await HumanInput.commit(host, session, { type: "cancel.carried" })).session;
 }
 
 /** A message that answered requests isn't turn input, nor is the context sent with it. */
