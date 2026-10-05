@@ -6,7 +6,7 @@ import {
 } from "@opentelemetry/sdk-trace-base";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 import { context, ROOT_CONTEXT, createContextKey } from "@opentelemetry/api";
-import { liveOtelBackend, durableOtelBackend } from "./otel.js";
+import { otelTelemetry } from "./otel.js";
 import { AgentSpanIdGenerator } from "./otel-ids.js";
 import { createSpanWriter } from "../core/writer.js";
 
@@ -33,7 +33,7 @@ describe("OTel trace output", () => {
     context.setGlobalContextManager(manager);
     try {
       const operation = createSpanWriter({
-        backend: liveOtelBackend(provider.getTracer("host")),
+        telemetry: otelTelemetry({ provider }),
       }).start(
         {
           type: "channelRequest",
@@ -64,11 +64,7 @@ describe("OTel trace output", () => {
       spanProcessors: [new SimpleSpanProcessor(exporter)],
     });
     try {
-      const backend = durableOtelBackend({
-        tracer: provider.getTracer("deferred"),
-        idGenerator,
-        samplesTrace: () => true,
-      });
+      const telemetry = otelTelemetry({ provider, idGenerator });
       const capture = { emit: true, recordInputs: false, recordOutputs: false };
       const span = {
         type: "activation" as const,
@@ -84,10 +80,14 @@ describe("OTel trace output", () => {
           },
         ],
       };
-      const reference = backend.reserveActivation({ key: "activation", span, capture });
-      const engine = createSpanWriter({ backend });
-      const childReference = backend.reserveChild(reference, "tool");
-      const child = engine.startReserved(
+      const reference = {
+        traceId: telemetry.ids!.traceId("activation"),
+        spanId: telemetry.ids!.spanId("activation"),
+        traceFlags: 1,
+      };
+      const engine = createSpanWriter({ telemetry });
+      const childReference = { ...reference, spanId: telemetry.ids!.spanId("tool") };
+      const child = engine.start(
         {
           type: "tool",
           operationId: "tool",
@@ -95,12 +95,13 @@ describe("OTel trace output", () => {
           parent: reference,
           attributes: span.attributes,
         },
-        childReference,
         capture,
+        undefined,
+        childReference,
       );
       child.setAttribute("agent.connection.name", "catalog");
       child.end(2000);
-      const root = engine.startReserved(span, reference, capture);
+      const root = engine.start(span, capture, undefined, reference);
       root.addEvent("turn.completed", undefined, 3000);
       root.end(3000);
       const recorded = exporter.getFinishedSpans();

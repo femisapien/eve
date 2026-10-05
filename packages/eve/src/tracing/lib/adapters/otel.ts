@@ -8,13 +8,13 @@ import {
   createContextKey,
   type SpanContext,
   type Context as OtelContext,
-  type Tracer as OtelTracer,
+  type TracerProvider,
 } from "@opentelemetry/api";
 import { recordAgentSpanError } from "./otel-error.js";
 import { AgentSpanIdGenerator } from "./otel-ids.js";
 import type {
   Attributes,
-  TraceBackend,
+  AgentTelemetry,
   OutputMapping,
   PreparedSpan,
   SpanWriter,
@@ -26,7 +26,6 @@ import { activeOperation, intersectCapture } from "../core/activation.js";
 import { withCapture } from "../capture.js";
 
 type Context = OtelContext;
-type Tracer = Pick<OtelTracer, "startSpan">;
 const ACTIVE_OPERATION = createContextKey("agent.tracing.active-operation");
 const SUPPRESS_TRACING_KEY = createContextKey("OpenTelemetry SDK Context Key SUPPRESS_TRACING");
 
@@ -82,10 +81,45 @@ function mappedAttributes(
   return mapping?.attributes(span, attributes) ?? attributes;
 }
 
-export function liveOtelBackend(
-  tracer: Tracer,
-  mapping?: OutputMapping,
-): Pick<TraceBackend, "start" | "run" | "current" | "active" | "suppressed"> {
+export interface OtelTelemetryOptions {
+  /** Defaults to the global tracer provider. */
+  readonly provider?: TracerProvider;
+  /**
+   * Generator installed on `provider`. Required for durable tracing so a span
+   * started in a later process carries the ID its children already reference.
+   */
+  readonly idGenerator?: AgentSpanIdGenerator;
+  /** Defaults to recording every trace. */
+  readonly samplesTrace?: (
+    traceId: string,
+    operation: { name: string; attributes: Attributes },
+  ) => boolean;
+  readonly mapping?: OutputMapping;
+  readonly tracerName?: string;
+  /** Override the provider's lifecycle, for example to flush metric readers too. */
+  readonly forceFlush?: () => Promise<void>;
+  readonly shutdown?: () => Promise<void>;
+}
+
+/** OpenTelemetry implementation of {@link AgentTelemetry}. */
+export function otelTelemetry(options: OtelTelemetryOptions = {}): AgentTelemetry {
+  const provider = options.provider ?? trace.getTracerProvider();
+  const tracer = provider.getTracer(options.tracerName ?? "agent.tracing");
+  const mapping = options.mapping;
+  const idGenerator = options.idGenerator;
+  function lifecycle(method: "forceFlush" | "shutdown"): () => Promise<void> {
+    return (
+      options[method] ??
+      (async () => {
+        const callback = (
+          provider as TracerProvider & { forceFlush?(): Promise<void>; shutdown?(): Promise<void> }
+        )[method];
+        if (callback === undefined)
+          throw new Error(`The tracer provider does not support ${method}.`);
+        await callback.call(provider);
+      })
+    );
+  }
   function start(span: PreparedSpan, executionContext?: ExecutionContext): SpanWriter {
     const recorded = tracer.startSpan(
       span.name,
@@ -123,98 +157,53 @@ export function liveOtelBackend(
     };
   }
   return {
-    start,
-    current: () => {
-      const active = trace.getSpan(context.active())?.spanContext();
-      return active === undefined ? undefined : portableReference(active);
-    },
-    active: () => activeTraceOperation(),
-    suppressed<T>(execute: () => T): T {
-      return context.with(withErrorContent(suppressTracing(ROOT_CONTEXT), false), execute);
-    },
-    run(reference, capture, execute, executionContext, operation) {
-      capture = intersectCapture(capture, activeTraceOperation()?.capture);
-      // Retain baggage and host context while replacing the semantic parent span.
-      let active = trace.setSpan(
-        (executionContext as Context | undefined) ?? context.active(),
-        trace.wrapSpanContext(otelReference(reference)),
-      );
-      capture = intersectCapture(
-        capture,
-        (active.getValue(ACTIVE_OPERATION) as ActiveOperation | undefined)?.capture,
-      );
-      active = active.setValue(
-        ACTIVE_OPERATION,
-        activeOperation(operation ?? { type: "activation", reference, capture }, capture),
-      );
-      active = withCapture(active, capture);
-      if (!capture.emit || (reference.traceFlags & 1) === 0) active = suppressTracing(active);
-      return context.with(active, execute);
-    },
-  };
-}
-
-export function durableOtelBackend(input: {
-  readonly tracer: Tracer;
-  readonly idGenerator?: AgentSpanIdGenerator;
-  readonly samplesTrace: (
-    traceId: string,
-    operation: { name: string; attributes: Attributes },
-  ) => boolean;
-  readonly mapping?: OutputMapping;
-}): TraceBackend {
-  const live = liveOtelBackend(input.tracer, input.mapping);
-  const idGenerator = input.idGenerator;
-  const ids = idGenerator ?? new AgentSpanIdGenerator();
-  return {
-    ...live,
-    reserveReference({ key, parent, traceFlags }) {
-      return {
-        ...parent,
-        traceId: parent?.traceId ?? ids.deriveTraceId(key),
-        spanId: ids.deriveSpanId(key),
-        traceFlags,
-        isRemote: false,
-      };
-    },
-    admits(span, reference) {
-      return input.samplesTrace(reference.traceId, {
-        name: span.name,
-        attributes: mappedAttributes(input.mapping, span, span.attributes),
-      });
-    },
-    reserveActivation({ key, span, capture }) {
-      const traceId = ids.deriveTraceId(key);
-      return {
-        traceId,
-        spanId: ids.deriveSpanId(key),
-        traceFlags:
-          capture.emit &&
-          input.samplesTrace(traceId, {
-            name: span.name,
-            attributes: mappedAttributes(input.mapping, span, span.attributes),
-          })
-            ? 1
-            : 0,
-      };
-    },
-    reserveChild: (parent, key) => ({
-      ...parent,
-      spanId: ids.deriveSpanId(key),
-      isRemote: false,
-    }),
-    startReserved(span, reference, executionContext) {
-      if (idGenerator === undefined) return live.start(span, executionContext);
+    startSpan(span, { reference, context: host } = {}) {
+      if (reference === undefined || idGenerator === undefined) return start(span, host);
       const writer = idGenerator.withTraceId(reference.traceId, () =>
-        idGenerator.withSpanId(reference.spanId, () => live.start(span, executionContext)),
+        idGenerator.withSpanId(reference.spanId, () => start(span, host)),
       );
       if (
         writer.reference.spanId !== reference.spanId ||
         writer.reference.traceId !== reference.traceId
       ) {
-        throw new Error("The tracer provider must use the durable backend's ID generator.");
+        throw new Error("The tracer provider must use the telemetry's ID generator.");
       }
       return writer;
     },
+    active: () => activeTraceOperation(),
+    suppressed<T>(execute: () => T): T {
+      return context.with(withErrorContent(suppressTracing(ROOT_CONTEXT), false), execute);
+    },
+    run(operation, execute, executionContext) {
+      let capture = intersectCapture(operation.capture, activeTraceOperation()?.capture);
+      // Retain baggage and host context while replacing the semantic parent span.
+      let active = trace.setSpan(
+        (executionContext as Context | undefined) ?? context.active(),
+        trace.wrapSpanContext(otelReference(operation.reference)),
+      );
+      capture = intersectCapture(
+        capture,
+        (active.getValue(ACTIVE_OPERATION) as ActiveOperation | undefined)?.capture,
+      );
+      active = active.setValue(ACTIVE_OPERATION, activeOperation(operation, capture));
+      active = withCapture(active, capture);
+      if (!capture.emit || (operation.reference.traceFlags & 1) === 0)
+        active = suppressTracing(active);
+      return context.with(active, execute);
+    },
+    samples: (traceId, span) =>
+      options.samplesTrace?.(traceId, {
+        name: span.name,
+        attributes: mappedAttributes(mapping, span, span.attributes),
+      }) ?? true,
+    ids:
+      idGenerator === undefined
+        ? undefined
+        : {
+            traceId: (key) => idGenerator.deriveTraceId(key),
+            spanId: (key) => idGenerator.deriveSpanId(key),
+          },
+    forceFlush: lifecycle("forceFlush"),
+    shutdown: lifecycle("shutdown"),
   };
 }

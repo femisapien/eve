@@ -45,7 +45,7 @@ export interface CaptureDecision {
 }
 
 export interface TraceErrorContext {
-  readonly phase: "start" | "serialize" | "complete" | "context" | "restore";
+  readonly phase: "start" | "serialize" | "complete" | "context" | "restore" | "checkpoint";
   readonly operation?: SpanType;
   readonly reference?: TraceReference;
 }
@@ -77,35 +77,35 @@ export interface SpanWriter {
   end(timeMs?: number): void;
 }
 
-export interface TraceBackend {
-  start(span: PreparedSpan, executionContext?: ExecutionContext): SpanWriter;
-  run<T>(
-    reference: TraceReference,
-    capture: CaptureDecision,
-    execute: () => T,
-    executionContext?: ExecutionContext,
-    operation?: ActiveOperation,
-  ): T;
-  current(): TraceReference | undefined;
-  active?(): ActiveOperation | undefined;
-  suppressed?<T>(execute: () => T): T;
-  reserveReference(input: {
-    key: string;
-    parent?: TraceReference;
-    traceFlags: number;
-  }): TraceReference;
-  admits(span: PreparedSpan, reference: TraceReference): boolean;
-  reserveActivation(input: {
-    key: string;
-    span: PreparedSpan;
-    capture: CaptureDecision;
-  }): TraceReference;
-  reserveChild(parent: TraceReference, key: string): TraceReference;
-  startReserved(
+/** Span output and context propagation used by agent tracing. */
+export interface AgentTelemetry {
+  /** Starts a span. A `reference` requests that exact trace and span ID. */
+  startSpan(
     span: PreparedSpan,
-    reference: TraceReference,
-    executionContext?: ExecutionContext,
+    options?: { readonly reference?: TraceReference; readonly context?: ExecutionContext },
   ): SpanWriter;
+  /** Returns the operation active in the current execution context. */
+  active(): ActiveOperation | undefined;
+  /** Runs `execute` with `operation` as the active trace context. */
+  run<T>(operation: ActiveOperation, execute: () => T, context?: ExecutionContext): T;
+  /** Runs `execute` without creating spans. */
+  suppressed?<T>(execute: () => T): T;
+  /** Decides whether a durable turn's trace is recorded. Defaults to recording. */
+  samples?(traceId: string, span: PreparedSpan): boolean;
+  /** Derives stable IDs from keys. Present only when `startSpan` honors `reference`. */
+  readonly ids?: {
+    traceId(key: string): string;
+    spanId(key: string): string;
+  };
+  forceFlush(): Promise<void>;
+  shutdown(): Promise<void>;
+}
+
+/** Durable storage for in-flight turns. Values are JSON; keys are chosen by the library. */
+export interface TraceCheckpointer {
+  get(key: string): unknown | PromiseLike<unknown>;
+  set(key: string, value: TraceSnapshot): void | PromiseLike<void>;
+  delete(key: string): void | PromiseLike<void>;
 }
 
 export interface ActiveOperation {
@@ -235,7 +235,6 @@ export interface ScopeTerminal {
   readonly endTimeMs?: number;
 }
 export interface ScopeRecord {
-  readonly pendingParent?: boolean;
   readonly version?: 1;
   readonly finished?: boolean;
   readonly key: string;
@@ -254,32 +253,6 @@ export interface ScopeRecord {
   readonly children?: readonly ScopeRecord[];
   readonly terminal?: ScopeTerminal;
 }
-export interface OperationFacts {
-  identity: ScopeIdentity;
-  capture: CaptureDecision;
-  operationId: string;
-  reference?: TraceReference;
-  parent?: TraceReference;
-  startTimeMs?: number;
-  links?: readonly TraceLink[];
-  context?: object;
-  attributes?: Attributes;
-  attempt?: { index: number; attempt: number };
-}
-export interface MemoryFacts<T> {
-  identity: ScopeIdentity;
-  storeId: string;
-  slot: string;
-  phase: string;
-  capture?: CaptureDecision;
-  parent?: TraceReference;
-  context?: ExecutionContext;
-  operationId?: string;
-  describe?: (value: T) => {
-    recordCount?: number;
-    records?: readonly { id?: string; content: string }[];
-  };
-}
 export interface Operation {
   child(data: ScopeData, key?: string): Promise<Operation>;
   waitUntil(completion: Promise<void>): void;
@@ -296,8 +269,6 @@ export interface Operation {
   complete(result?: ScopeTerminal & { errorType?: string; result?: ModelResult }): Promise<void>;
   fail(error: unknown): Promise<void>;
   modelCall(input: ModelOptions, key?: string): Promise<Operation>;
-  attach(parent: TraceReference, context?: object): Promise<void>;
-  drain(result?: ScopeTerminal): Promise<void>;
 }
 
 export type ContentPart =

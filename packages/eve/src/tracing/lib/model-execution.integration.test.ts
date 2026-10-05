@@ -4,7 +4,7 @@ import {
   InMemorySpanExporter,
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
-import { createAgentTracing } from "./index.js";
+import { createAgentTracing, otelTelemetry } from "./index.js";
 
 describe("wrapped model streams", () => {
   it.each(["completed", "failed", "cancelled"])(
@@ -14,7 +14,10 @@ describe("wrapped model streams", () => {
       const provider = new BasicTracerProvider({
         spanProcessors: [new SimpleSpanProcessor(exporter)],
       });
-      const tracing = createAgentTracing({ agentName: "stream", provider });
+      const tracing = createAgentTracing({
+        agentName: "stream",
+        telemetry: otelTelemetry({ provider }),
+      });
       try {
         const turn = await tracing.turn({
           identity: { conversationId: "c", runId: "r", turnId: "t" },

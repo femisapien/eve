@@ -1,8 +1,6 @@
-import type { ExecutionContext } from "./types.js";
+import { randomBytes } from "node:crypto";
 import { createSpanWriter, type TraceOperation } from "./writer.js";
 import { usageAttributes } from "./attributes.js";
-import type { ContentSerializer } from "./types.js";
-import type { Attributes, CaptureDecision, TraceBackend, TraceReference } from "./types.js";
 import {
   completeScope,
   capturedScopeData as capturedData,
@@ -10,60 +8,107 @@ import {
   parentKinds,
   applyAttributes,
 } from "./span-kinds.js";
-import { mcpLifecycle } from "./mcp.js";
+import { mcpLifecycle, type McpLifecycle } from "./mcp.js";
 import { intersectCapture } from "./activation.js";
-import {
-  snapshotRecord,
-  traceSnapshot,
-  validSnapshot,
-  checkpointSnapshot,
-  boundedSerializer,
-} from "./snapshot.js";
-import type { Operation, OperationFacts, MemoryFacts } from "./types.js";
+import { snapshotRecord, traceSnapshot, validSnapshot, boundedSerializer } from "./snapshot.js";
 import { withAgentHandoff } from "./delegation.js";
 import { withoutDeclinedContent } from "./content-policy.js";
 import { runTraceContext } from "./context.js";
-import { randomBytes, randomUUID } from "node:crypto";
-const UNFINISHED_CHILDREN = 10000;
+import type {
+  AgentTelemetry,
+  Attributes,
+  CaptureDecision,
+  ContentSerializer,
+  ExecutionContext,
+  Operation,
+  ScopeData,
+  ScopeIdentity,
+  ScopeRecord,
+  TraceErrorHandler,
+  TraceLink,
+  TraceReference,
+  Usage,
+} from "./types.js";
 
-import type { ScopeIdentity, ScopeData, ScopeRecord } from "./types.js";
-type Construction = Partial<ScopeRecord> & {
-  key: string;
-  reservationKey?: string;
-  parentKey?: string;
-  deferred?: boolean;
-  executionContext?: ExecutionContext;
-};
-interface LiveOperation extends Operation {
+const UNFINISHED_CHILDREN = 10000;
+const NO_CAPTURE: CaptureDecision = { emit: false, recordInputs: false, recordOutputs: false };
+
+interface Construction extends Partial<ScopeRecord> {
+  readonly key: string;
+  readonly deferred?: boolean;
+  readonly executionContext?: ExecutionContext;
+}
+export interface LiveOperation extends Operation {
   child(data: ScopeData, key?: string): Promise<LiveOperation>;
-  usage(usage: import("./types.js").Usage, key?: string): Promise<void>;
+  usage(usage: Usage, key?: string): Promise<void>;
   error(error?: unknown, type?: string): void;
-  readonly mcp: import("./mcp.js").McpLifecycle;
+  readonly mcp: McpLifecycle;
   record(): ScopeRecord;
 }
-export interface ToolCallInput {
-  identity: ScopeIdentity;
-  key: string;
-  name: string;
-  callId: string;
-  arguments?: unknown;
-  parent: TraceReference;
-  capture: CaptureDecision;
-  context?: ExecutionContext;
+
+/** Durable trees reserve stable IDs and defer spans whose lifetime can cross processes. */
+const DEFERRED_WHEN_DURABLE: ReadonlySet<ScopeData["type"]> = new Set([
+  "activation",
+  "action",
+  "approval",
+]);
+
+function segment(value: string | number): string {
+  return encodeURIComponent(String(value));
 }
 
-export function createTraceRecorder(input: {
-  readonly output: TraceBackend;
+/** Children with a stable identity hydrate on re-entry; the rest are numbered. */
+function semanticKey(data: ScopeData): string | undefined {
+  switch (data.type) {
+    case "step":
+      return `step:${segment(data.options.index)}:${segment(data.options.attempt ?? 0)}`;
+    case "action":
+      return `action:${segment(data.options.callId)}`;
+    case "tool":
+      return "tool";
+    case "approval":
+      return `approval:${segment(data.options.requestId)}`;
+    default:
+      return undefined;
+  }
+}
+
+export function createScopes(input: {
+  readonly telemetry: AgentTelemetry;
   readonly serializer: ContentSerializer;
-  readonly onError?: import("./types.js").TraceErrorHandler;
+  readonly durable: boolean;
+  readonly onError?: TraceErrorHandler;
 }) {
-  const backend = input.output;
-  input = {
-    ...input,
-    serializer: boundedSerializer(input.serializer, input.onError),
+  const telemetry = input.telemetry;
+  const serializer = boundedSerializer(input.serializer, input.onError);
+  const engine = createSpanWriter({ telemetry, onError: input.onError });
+  const report: TraceErrorHandler = (error, context) => {
+    try {
+      input.onError?.(error, context);
+    } catch {}
   };
-  const engine = createSpanWriter({ backend, onError: input.onError });
-  const serializer = input.serializer;
+
+  function reserve(
+    data: ScopeData,
+    key: string,
+    parent: TraceReference | undefined,
+    prepared: ReturnType<typeof prepareScope>,
+    capture: CaptureDecision,
+  ): TraceReference | undefined {
+    const ids = telemetry.ids;
+    if (!input.durable || ids === undefined) return undefined;
+    if (data.type === "activation") {
+      const traceId = ids.traceId(key);
+      return {
+        traceId,
+        spanId: ids.spanId(key),
+        traceFlags: capture.emit && (telemetry.samples?.(traceId, prepared) ?? true) ? 1 : 0,
+      };
+    }
+    return parent === undefined
+      ? undefined
+      : { ...parent, spanId: ids.spanId(key), isRemote: false };
+  }
 
   async function construct(
     identity: ScopeIdentity,
@@ -72,27 +117,20 @@ export function createTraceRecorder(input: {
     parent: LiveOperation | undefined,
     attempt: ScopeRecord["attempt"],
     binding: Construction,
+    onChange: () => Promise<void>,
   ): Promise<LiveOperation> {
     try {
-      return await constructOperation(identity, capture, data, parent, attempt, binding);
+      return await constructOperation(identity, capture, data, parent, attempt, binding, onChange);
     } catch (error) {
-      try {
-        input.onError?.(error, {
-          phase: "start",
-          operation: data.type,
-          reference: binding.reference,
-        });
-      } catch {}
+      report(error, { phase: "start", operation: data.type, reference: binding.reference });
       return constructOperation(
         identity,
-        { emit: false, recordInputs: false, recordOutputs: false },
-        capturedData(data, { emit: false, recordInputs: false, recordOutputs: false }),
+        NO_CAPTURE,
+        capturedData(data, NO_CAPTURE),
         parent,
         attempt,
         {
           ...binding,
-          parentKey: undefined,
-          reservationKey: undefined,
           reference: {
             traceId:
               binding.reference?.traceId ??
@@ -103,6 +141,7 @@ export function createTraceRecorder(input: {
             traceFlags: 0,
           },
         },
+        onChange,
       );
     }
   }
@@ -114,6 +153,7 @@ export function createTraceRecorder(input: {
     parent: LiveOperation | undefined,
     attempt: ScopeRecord["attempt"],
     binding: Construction,
+    onChange: () => Promise<void>,
   ): Promise<LiveOperation> {
     if (
       binding.terminal?.error !== null &&
@@ -128,11 +168,8 @@ export function createTraceRecorder(input: {
     }
     const key = binding.key;
     const startTimeMs = binding.startTimeMs ?? Date.now();
-    let parentReference =
-      binding.parentKey !== undefined && binding.parent !== undefined
-        ? backend.reserveChild(binding.parent, binding.parentKey)
-        : (parent?.reference ?? binding.parent);
-    if (capture.emit) capture = intersectCapture(capture, backend.active?.()?.capture);
+    const parentReference = parent?.reference ?? binding.parent;
+    if (capture.emit) capture = intersectCapture(capture, telemetry.active()?.capture);
     let actualCapture = capture;
     let actualData = capturedData(data, actualCapture);
     let prepared = prepareScope(
@@ -148,10 +185,7 @@ export function createTraceRecorder(input: {
       },
       serializer,
     );
-    prepared = {
-      ...prepared,
-      attributes: { ...prepared.attributes, ...binding.attributes },
-    };
+    prepared = { ...prepared, attributes: { ...prepared.attributes, ...binding.attributes } };
     actualData = snapshotRecord(
       {
         key,
@@ -165,70 +199,52 @@ export function createTraceRecorder(input: {
         },
         startTimeMs,
       },
-      input.serializer,
+      serializer,
     ).data;
-    const deferred = binding.deferred === true || binding.pendingParent === true;
-    let pendingParent = binding.pendingParent === true;
-    let host = binding.executionContext;
-    let reference = binding.reference;
-    if (reference === undefined && (deferred || binding.reservationKey !== undefined)) {
-      reference =
-        data.type === "activation"
-          ? backend.reserveActivation({
-              key: binding.reservationKey ?? key,
-              span: prepared,
-              capture: actualCapture,
-            })
-          : parentReference === undefined
-            ? undefined
-            : backend.reserveChild(parentReference, binding.reservationKey ?? key);
-    }
+    const deferred =
+      binding.deferred ?? (input.durable && DEFERRED_WHEN_DURABLE.has(actualData.type));
+    const host = binding.executionContext;
+    const reference =
+      binding.reference ?? reserve(data, key, parentReference, prepared, actualCapture);
     let operation: TraceOperation | undefined = deferred
       ? undefined
-      : reference === undefined
-        ? engine.start(prepared, actualCapture, binding?.executionContext)
-        : engine.startReserved(prepared, reference, actualCapture, binding?.executionContext);
-    reference ??= operation?.reference;
-    if (reference === undefined)
-      throw new Error("A child trace scope requires its constructed parent.");
-    const retainedReference = reference;
+      : engine.start(prepared, actualCapture, host, reference);
+    const retainedReference = reference ?? operation?.reference;
+    if (retainedReference === undefined)
+      throw new Error("A deferred trace scope requires a reserved reference.");
+    const sampled = (retainedReference.traceFlags & 1) !== 0;
     actualCapture = {
-      emit: actualCapture.emit && (reference.traceFlags & 1) !== 0,
-      recordInputs:
-        actualCapture.emit && (reference.traceFlags & 1) !== 0 && actualCapture.recordInputs,
-      recordOutputs:
-        actualCapture.emit && (reference.traceFlags & 1) !== 0 && actualCapture.recordOutputs,
+      emit: actualCapture.emit && sampled,
+      recordInputs: actualCapture.emit && sampled && actualCapture.recordInputs,
+      recordOutputs: actualCapture.emit && sampled && actualCapture.recordOutputs,
     };
     actualData = capturedData(actualData, actualCapture);
     let finished = binding.finished ?? false;
     let terminalResult = binding.terminal;
-    const children = new Set<LiveOperation>();
+    const children = new Map<string, LiveOperation>();
     const pending = new Set<Promise<void>>();
     let childSequence = binding.childSequence ?? 0;
     let totalUsage = binding.usage;
     const usageKeys = new Set(binding.usageKeys ?? []);
     const enrichment: Record<string, Attributes[string]> = {};
-    async function child(childData: ScopeData, childBinding: Construction): Promise<LiveOperation> {
+
+    function changed(): void {
+      void onChange();
+    }
+
+    async function child(childData: ScopeData, childKey: string): Promise<LiveOperation> {
+      const existing = children.get(childKey);
+      if (input.durable && existing !== undefined && !existing.finished) return existing;
+      for (const [previousKey, previous] of children)
+        if (previous.finished) children.delete(previousKey);
+      let childCapture = actualCapture;
       if (children.size >= UNFINISHED_CHILDREN) {
-        for (const previous of children) if (previous.finished) children.delete(previous);
-        if (children.size >= UNFINISHED_CHILDREN) {
-          const error = new Error("Trace unfinished-child limit reached.");
-          try {
-            input.onError?.(error, {
-              phase: "start",
-              operation: childData.type,
-              reference: retainedReference,
-            });
-          } catch {}
-          return construct(
-            identity,
-            { emit: false, recordInputs: false, recordOutputs: false },
-            childData,
-            runtime,
-            attempt,
-            childBinding,
-          );
-        }
+        report(new Error("Trace unfinished-child limit reached."), {
+          phase: "start",
+          operation: childData.type,
+          reference: retainedReference,
+        });
+        childCapture = NO_CAPTURE;
       }
       if (childData.type === "model" && operation !== undefined)
         applyAttributes(operation, {
@@ -237,17 +253,20 @@ export function createTraceRecorder(input: {
         });
       const next = await construct(
         identity,
-        actualCapture,
+        childCapture,
         childData,
         runtime,
         childData.type === "step"
           ? { index: childData.options.index, attempt: childData.options.attempt ?? 0 }
           : attempt,
-        childBinding,
+        { key: childKey, executionContext: host },
+        onChange,
       );
-      children.add(next);
+      if (childCapture.emit || children.size < UNFINISHED_CHILDREN) children.set(childKey, next);
+      await onChange();
       return next;
     }
+
     const runtime: LiveOperation = {
       waitUntil(completion) {
         pending.add(completion);
@@ -263,18 +282,6 @@ export function createTraceRecorder(input: {
       fail(error) {
         runtime.error(error);
         return runtime.complete({ outcome: "failed", failed: true });
-      },
-      async attach(reference, context) {
-        if (finished || !pendingParent) return;
-        parentReference = reference;
-        prepared = { ...prepared, parent: reference };
-        host = context ?? host;
-        pendingParent = false;
-        if (terminalResult !== undefined) await runtime.complete(terminalResult);
-      },
-      async drain(result = {}) {
-        pendingParent = false;
-        await runtime.complete(terminalResult ?? result);
       },
       update(update) {
         if (finished) return;
@@ -294,19 +301,19 @@ export function createTraceRecorder(input: {
           links: update.links ?? prepared.links,
         };
         if (operation !== undefined) applyAttributes(operation, attributes);
+        changed();
       },
       record() {
         return snapshotRecord(
           {
             version: 1,
-            pendingParent,
             finished,
             terminal: terminalResult,
             usage: totalUsage,
             usageKeys: [...usageKeys],
             attributes: { ...prepared.attributes, ...enrichment },
             childSequence,
-            children: [...children]
+            children: [...children.values()]
               .filter((child) => !child.finished)
               .map((child) => child.record()),
             key,
@@ -329,7 +336,11 @@ export function createTraceRecorder(input: {
       child(data, childKey) {
         if (finished || !parentKinds(data).includes(actualData.type))
           throw new Error("The operation is not permitted in this trace scope.");
-        return child(data, { key: childKey ?? JSON.stringify([key, data.type, childSequence++]) });
+        const name =
+          childKey === undefined
+            ? ((input.durable ? semanticKey(data) : undefined) ?? `${data.type}:${childSequence++}`)
+            : `${data.type}:${segment(childKey)}`;
+        return child(data, `${key}/${name}`);
       },
       type: actualData.type,
       reference: retainedReference,
@@ -337,7 +348,7 @@ export function createTraceRecorder(input: {
         return actualCapture;
       },
       mcp: mcpLifecycle({
-        serializer: input.serializer,
+        serializer,
         ...actualCapture,
         write(attributes) {
           const permitted = (withoutDeclinedContent(attributes, actualCapture) ??
@@ -356,7 +367,7 @@ export function createTraceRecorder(input: {
         if (finished) throw new Error("The trace scope has already finished.");
         actualCapture = intersectCapture(
           intersectCapture(actualCapture, ceiling),
-          backend.active?.()?.capture,
+          telemetry.active()?.capture,
         );
         actualData = capturedData(actualData, actualCapture);
         if (!actualCapture.recordOutputs && terminalResult !== undefined)
@@ -385,7 +396,7 @@ export function createTraceRecorder(input: {
                   execute,
                 )
             : execute;
-        return runTraceContext(backend, retainedReference, actualCapture, callback, host, runtime);
+        return runTraceContext(telemetry, runtime, callback, host);
       },
       async complete(result = terminalResult ?? {}) {
         if (finished) return;
@@ -404,50 +415,34 @@ export function createTraceRecorder(input: {
           failed: result.failed || result.outcome === "failed",
           errorCode: "errorType" in result ? result.errorType : result.errorCode,
         };
-        if (pendingParent) {
-          terminalResult = {
-            ...result,
-            output: actualCapture.recordOutputs ? result.output : undefined,
-            error: actualCapture.recordOutputs ? result.error : undefined,
-          };
-          return;
-        }
         finished = true;
         terminalResult = result;
-        for (const next of children)
+        for (const next of children.values())
           if (!next.finished)
             await next.complete({
               failed: result.failed,
               error: result.error,
               outcome: "abandoned",
             });
-        operation ??= engine.startReserved(prepared, retainedReference, actualCapture, host);
+        operation ??= engine.start(prepared, actualCapture, host, retainedReference);
         const terminal =
           actualData.type === "activation" && result.usage === undefined
             ? { ...result, usage: totalUsage }
             : result;
         try {
-          completeScope(
-            operation,
-            actualData,
-            terminal,
-            actualCapture,
-            startTimeMs,
-            input.serializer,
-          );
+          completeScope(operation, actualData, terminal, actualCapture, startTimeMs, serializer);
         } catch (error) {
-          try {
-            input.onError?.(error, {
-              phase: "complete",
-              operation: actualData.type,
-              reference: retainedReference,
-            });
-          } catch {}
+          report(error, {
+            phase: "complete",
+            operation: actualData.type,
+            reference: retainedReference,
+          });
         }
         applyAttributes(operation, enrichment);
         if (actualData.type === "model" && result.model !== undefined)
           await parent?.usage(result.model.usage, key);
         operation.end(result.endTimeMs);
+        await onChange();
       },
       async usage(usage, callKey) {
         if (callKey !== undefined && usageKeys.has(callKey)) return;
@@ -477,17 +472,20 @@ export function createTraceRecorder(input: {
           errorCode: errorType ?? (error instanceof Error ? error.name : undefined),
         };
         if (operation !== undefined) operation.fail(terminalResult.error, terminalResult.errorCode);
+        changed();
       },
     };
     for (const saved of binding.children ?? [])
-      children.add(
+      children.set(
+        saved.key,
         await construct(
           saved.identity,
           intersectCapture(saved.capture, actualCapture),
           saved.data,
           runtime,
           saved.attempt,
-          { ...saved, deferred: true, executionContext: binding.executionContext },
+          { ...saved, deferred: true, executionContext: host },
+          onChange,
         ),
       );
     if (!finished && operation !== undefined && actualData.type === "step")
@@ -495,202 +493,54 @@ export function createTraceRecorder(input: {
     return runtime;
   }
 
-  function restore(
-    record: ScopeRecord,
-    options: { deferred?: boolean; executionContext?: import("./types.js").ExecutionContext } = {},
-  ) {
-    return construct(record.identity, record.capture, record.data, undefined, record.attempt, {
-      ...record,
-      deferred: options.deferred,
-      executionContext: options.executionContext,
-    });
-  }
-
-  async function start(
-    facts: OperationFacts,
-    data: ScopeData,
-    binding: Partial<Construction> = {},
-  ): Promise<Operation> {
-    return construct(facts.identity, facts.capture, data, undefined, facts.attempt, {
-      key: facts.operationId,
-      reference: facts.reference,
-      parent: facts.parent,
-      startTimeMs: facts.startTimeMs,
-      links: facts.links,
-      executionContext: facts.context,
-      attributes: facts.attributes,
-      deferred: data.type !== "step" && data.type !== "memory",
-      ...binding,
-    });
-  }
-  async function resume(
-    snapshot: unknown,
-    options: { capture?: CaptureDecision; context?: ExecutionContext } = {},
-  ): Promise<Operation | undefined> {
-    if (!validSnapshot(snapshot)) {
-      try {
-        input.onError?.(new Error("Invalid tracing snapshot"), { phase: "restore" });
-      } catch {}
-      return undefined;
-    }
-    return restore(
-      { ...snapshot, capture: intersectCapture(snapshot.capture, options.capture) },
-      { deferred: true, executionContext: options.context },
-    );
-  }
-  async function memory<T>(
-    operation: "search_memory" | "upsert_memory",
-    data: MemoryFacts<T>,
-    execute: () => T | PromiseLike<T>,
-  ): Promise<T> {
-    const active = backend.active?.();
-    const handle = await start(
-      {
-        ...data,
-        operationId: data.operationId ?? randomUUID(),
-        parent: data.parent ?? active?.reference,
-        capture: data.capture ??
-          active?.capture ?? { emit: true, recordInputs: false, recordOutputs: false },
-      },
-      {
-        type: "memory",
-        options: { operation, phase: data.phase, slot: data.slot, storeId: data.storeId },
-      },
-    );
-    let value: T;
-    try {
-      value = await handle.run(execute);
-    } catch (error) {
-      try {
-        await handle.fail(error);
-      } catch (tracingError) {
-        try {
-          input.onError?.(tracingError, { phase: "complete" });
-        } catch {}
-      }
-      throw error;
-    }
-    try {
-      await handle.complete({ outcome: "completed", ...data.describe?.(value) });
-    } catch (error) {
-      try {
-        input.onError?.(error, { phase: "complete" });
-      } catch {}
-    }
-    return value;
-  }
   return {
-    resume,
-    checkpoint(snapshot: unknown, update: Parameters<typeof checkpointSnapshot>[1]) {
-      const saved = checkpointSnapshot(snapshot, update, serializer);
-      return saved === undefined ? undefined : traceSnapshot(saved);
-    },
-    session(identity: ScopeIdentity, capture: CaptureDecision) {
-      return backend.reserveReference({
-        key: `session:${identity.runId}`,
-        traceFlags: capture.emit ? 1 : 0,
-      });
-    },
-    turnReference(key: string, capture: CaptureDecision) {
-      return backend.reserveReference({ key: `turn:${key}`, traceFlags: capture.emit ? 1 : 0 });
-    },
-    turn(facts: OperationFacts & { metadata: import("./types.js").TurnMetadata }) {
-      return start(facts, { type: "activation", options: facts.metadata });
-    },
-    activation(facts: OperationFacts & { metadata: import("./types.js").TurnMetadata }) {
-      return start(facts, { type: "activation", options: facts.metadata }, { deferred: false });
-    },
-    attempt(facts: OperationFacts & { step: import("./types.js").StepOptions }) {
-      return start(
-        facts,
-        { type: "step", options: facts.step },
-        { reservationKey: facts.operationId },
-      );
-    },
-    action(
-      facts: OperationFacts & {
-        action: import("./types.js").ActionOptions;
-        parentAttemptId: string;
-      },
-    ) {
-      return start(
-        facts,
-        { type: "action", options: facts.action },
-        {
-          reservationKey: `action:${facts.operationId}`,
-          parentKey: `step:${facts.parentAttemptId}`,
-        },
-      );
-    },
-    approval(
-      facts: OperationFacts & { approval: Extract<ScopeData, { type: "approval" }>["options"] },
-    ) {
-      return start(
-        facts,
-        { type: "approval", options: facts.approval },
-        { reservationKey: `approval:${facts.operationId}` },
-      );
-    },
-    memory: {
-      search<T>(data: MemoryFacts<T>, execute: () => T | PromiseLike<T>) {
-        return memory("search_memory", data, execute);
-      },
-      write<T>(data: MemoryFacts<T>, execute: () => T | PromiseLike<T>) {
-        return memory("upsert_memory", data, execute);
-      },
-    },
-    active: () => backend.active?.(),
-    async pendingTool(input: ToolCallInput): Promise<Operation> {
+    /** Starts a turn tree. Durable turns reserve their IDs from `key`. */
+    start(facts: {
+      identity: ScopeIdentity;
+      key: string;
+      capture: CaptureDecision;
+      data: ScopeData;
+      parent?: TraceReference;
+      links?: readonly TraceLink[];
+      context?: ExecutionContext;
+      onChange?: () => Promise<void>;
+    }): Promise<LiveOperation> {
       return construct(
-        input.identity,
-        input.capture,
-        {
-          type: "tool",
-          options: { callId: input.callId, name: input.name, arguments: input.arguments },
-        },
+        facts.identity,
+        facts.capture,
+        facts.data,
         undefined,
         undefined,
         {
-          key: input.key,
-          parent: input.parent,
-          reference: backend.reserveReference({
-            key: `tool:${input.key}`,
-            parent: input.parent,
-            traceFlags: input.parent.traceFlags,
-          }),
-          pendingParent: true,
-          executionContext: input.context,
+          key: facts.key,
+          parent: facts.parent,
+          links: facts.links,
+          executionContext: facts.context,
         },
+        facts.onChange ?? (() => Promise.resolve()),
       );
     },
-    resumeTool(snapshot: unknown, context?: ExecutionContext) {
-      return validSnapshot(snapshot) && snapshot.data.type === "tool"
-        ? resume(snapshot, { context })
-        : Promise.resolve(undefined);
-    },
-    run<T>(
-      reference: TraceReference,
-      capture: CaptureDecision,
-      execute: () => T,
-      executionContext?: import("./types.js").ExecutionContext,
-    ) {
-      const active = backend.active?.();
-      return runTraceContext(
-        backend,
-        reference,
-        capture,
-        execute,
-        executionContext,
-        active?.reference.spanId === reference.spanId &&
-          active.reference.traceId === reference.traceId
-          ? active
-          : undefined,
-      );
-    },
-    sample(snapshot: unknown) {
-      return (
-        validSnapshot(snapshot) &&
-        backend.admits(prepareScope(snapshot, serializer), snapshot.reference)
+    /** Rebuilds a tree from a checkpoint, or returns `undefined` for an unusable one. */
+    async restore(
+      snapshot: unknown,
+      options: {
+        capture?: CaptureDecision;
+        context?: ExecutionContext;
+        onChange?: () => Promise<void>;
+      } = {},
+    ): Promise<LiveOperation | undefined> {
+      if (!validSnapshot(snapshot)) {
+        report(new Error("Invalid tracing checkpoint."), { phase: "restore" });
+        return undefined;
+      }
+      return construct(
+        snapshot.identity,
+        intersectCapture(snapshot.capture, options.capture),
+        snapshot.data,
+        undefined,
+        snapshot.attempt,
+        { ...snapshot, deferred: true, executionContext: options.context },
+        options.onChange ?? (() => Promise.resolve()),
       );
     },
   };

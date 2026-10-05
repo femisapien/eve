@@ -1,25 +1,30 @@
 # Agent tracing
 
 `@vercel/agent-tracing` records agent execution with OpenTelemetry. It owns
-span topology, capture, completion, and durable snapshots. The source package
+span topology, capture, completion, and durable checkpoints. The source package
 is private; it is not yet published to npm. Its only runtime package dependency
 is `@opentelemetry/api`.
 
 ## Setup
 
-Supply your application's tracer provider. The library does not register global
-telemetry or install another model SDK tracing pipeline.
+Pass a telemetry object that writes spans and tracks the active trace context.
+`otelTelemetry()` adapts an OpenTelemetry tracer provider; it does not register
+global telemetry or install another model SDK tracing pipeline.
 
 ```ts
-import { createAgentTracing } from "@vercel/agent-tracing";
+import { createAgentTracing, otelTelemetry } from "@vercel/agent-tracing";
 
-const tracing = createAgentTracing({ agentName: "support", provider });
+const tracing = createAgentTracing({
+  agentName: "support",
+  telemetry: otelTelemetry({ provider }),
+});
 ```
 
-Your provider owns exporters, sampling, and context propagation. Install its
-context manager before concurrent work. `forceFlush()` and `shutdown()` call the
-provider's lifecycle methods. A shared registration object can instead supply
-`provider`, `idGenerator`, `samplesTrace`, `forceFlush`, and `shutdown`.
+Omit `telemetry` to use the global provider. Your provider owns exporters,
+sampling, and context propagation. Install its context manager before
+concurrent work. `forceFlush()` and `shutdown()` call the telemetry's lifecycle
+methods, which default to the provider's. Other backends implement
+`AgentTelemetry` directly.
 
 ## Wrapped execution
 
@@ -61,8 +66,8 @@ await attempt.complete();
 await turn.complete();
 ```
 
-Handles expose execution, attributes, completion, and identity—not snapshots or
-replay. Parent completion closes unfinished children. `complete()` is idempotent.
+Handles expose execution, attributes, completion, and identity. Parent
+completion closes unfinished children. `complete()` is idempotent.
 
 ## Model calls and streams
 
@@ -106,22 +111,47 @@ validates the bounded `x-agent-tracing` header before calling your trust callbac
 Metadata is not authorization: verify authenticated provenance and the expected
 caller, parent run, and call. Rejected metadata does not change application work.
 
-## Durable runtimes
+## Durable turns
 
-`@vercel/agent-tracing/runtime` exposes the recorder for framework adapters such
-as eve. The host stores opaque `TraceSnapshot` JSON in its existing transaction.
-`snapshot()`, `resume()`, and `checkpoint()` retain identity, outcomes, usage,
-links, and unfinished children. `pendingTool()` and `resumeTool()` use the same
-handle lifecycle when a tool's action parent arrives later.
+Pass a checkpointer when a turn can outlive the process that started it, for
+example across workflow steps. Durable spans need stable IDs, so install an
+`AgentSpanIdGenerator` on the provider and give it to the telemetry.
 
-These APIs are not present on `createAgentTracing()` or its handles. Durable
-hosts select live attempts and deferred turns/actions without a public mode flag.
-Request/MCP transport and authentication remain host responsibilities.
+```ts
+const idGenerator = new AgentSpanIdGenerator();
+const provider = new BasicTracerProvider({ idGenerator, spanProcessors });
+const tracing = createAgentTracing({
+  agentName: "support",
+  telemetry: otelTelemetry({ provider, idGenerator }),
+  checkpointer: { get, set, delete: remove },
+});
+```
+
+Resume by calling the same operations with the same identifiers. The library
+continues the saved turn instead of starting a new one:
+
+```ts
+const turn = await tracing.turn({ identity, sequence: 0 });
+const attempt = await turn.attempt({ stepIndex: 0, attempt: 0 });
+const action = await attempt.action({ callId: "lookup", name: "lookup" });
+const approval = await action.approval({ requestId: "approval" });
+await approval.complete({ outcome: "approved" });
+```
+
+Turns are keyed by agent name, `runId`, and `turnId`; attempts by step index
+and attempt; actions by `callId`; approvals by `requestId`. Model calls,
+memory, and tool executions finish within one process and are not resumed.
+
+The library writes JSON after each change and deletes the entry when the turn
+completes. Back the checkpointer with storage that commits alongside your
+workflow step. An unreadable checkpoint is reported to `onError` and the turn
+starts fresh. Durable turns, actions, and approvals are exported when they
+complete, so their spans carry the IDs their children already reference.
 
 ## Privacy and failures
 
-Declined content does not enter snapshots. Failure classes survive redaction;
-exception content does not. Serialized content is capped at 32 KiB, snapshots at
+Declined content does not enter checkpoints. Failure classes survive redaction;
+exception content does not. Serialized content is capped at 32 KiB, checkpoints at
 64 KiB, and unfinished children at 10,000. `onError(error, context)` is the only
 tracing error channel. Trace output retains schema version 4.
 

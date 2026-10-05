@@ -5,8 +5,7 @@ const SERIALIZED_BYTES = 32768;
 const SNAPSHOT_BYTES = 65536;
 const UNFINISHED_CHILDREN = 10000;
 import { withoutDeclinedContent } from "./content-policy.js";
-import type { ScopeTerminal } from "./types.js";
-import type { Attributes, TraceLink, Usage } from "./types.js";
+
 import type { TraceSnapshot } from "./types.js";
 export function boundedSerializer(
   serializer: ContentSerializer,
@@ -57,8 +56,6 @@ export function validSnapshot(
       return false;
     if (record.version !== 1) return false;
     if (record.finished !== undefined && typeof record.finished !== "boolean") return false;
-    if (record.pendingParent !== undefined && typeof record.pendingParent !== "boolean")
-      return false;
     if (
       record.childSequence !== undefined &&
       (!Number.isSafeInteger(record.childSequence) || record.childSequence < 0)
@@ -233,49 +230,4 @@ export function snapshotRecord(record: ScopeRecord, serializer: ContentSerialize
   } catch {
     return fallback();
   }
-}
-
-export function checkpointSnapshot(
-  snapshot: unknown,
-  update: {
-    terminal?: ScopeTerminal;
-    usage?: Usage;
-    attributes?: Attributes;
-    links?: readonly TraceLink[];
-  },
-  serializer: ContentSerializer,
-): ScopeRecord | undefined {
-  if (!validSnapshot(snapshot)) return undefined;
-  return snapshotRecord(
-    {
-      ...snapshot,
-      terminal: update.terminal ?? snapshot.terminal,
-      usage:
-        update.usage === undefined
-          ? snapshot.usage
-          : {
-              inputTokens:
-                update.usage.inputTokens === undefined
-                  ? snapshot.usage?.inputTokens
-                  : (snapshot.usage?.inputTokens ?? 0) + update.usage.inputTokens,
-              outputTokens:
-                update.usage.outputTokens === undefined
-                  ? snapshot.usage?.outputTokens
-                  : (snapshot.usage?.outputTokens ?? 0) + update.usage.outputTokens,
-              costUsd:
-                update.usage.costUsd === undefined
-                  ? snapshot.usage?.costUsd
-                  : (snapshot.usage?.costUsd ?? 0) + update.usage.costUsd,
-            },
-      attributes: { ...snapshot.attributes, ...update.attributes },
-      links: update.links ?? snapshot.links,
-    },
-    serializer,
-  );
-}
-
-export function snapshotReference(
-  snapshot: unknown,
-): import("./types.js").TraceReference | undefined {
-  return validSnapshot(snapshot) ? snapshot.reference : undefined;
 }

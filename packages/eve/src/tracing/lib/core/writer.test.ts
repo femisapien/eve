@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createSpanWriter } from "./writer.js";
-import type { TraceBackend, SpanWriter, PreparedSpan } from "./types.js";
+import type { AgentTelemetry, SpanWriter, PreparedSpan } from "./types.js";
 
 describe("trace engine failure and capture boundary", () => {
   it("runs application code exactly once when context fails and preserves application errors", () => {
@@ -12,9 +12,8 @@ describe("trace engine failure and capture boundary", () => {
       setStatus: vi.fn(),
       end: vi.fn(),
     };
-    const backend: Pick<TraceBackend, "start" | "run" | "current" | "suppressed"> = {
-      start: () => writer,
-      current: () => undefined,
+    const telemetry: Pick<AgentTelemetry, "startSpan" | "run" | "suppressed"> = {
+      startSpan: () => writer,
       run() {
         throw new Error("context unavailable");
       },
@@ -22,7 +21,7 @@ describe("trace engine failure and capture boundary", () => {
         throw new Error("suppression unavailable");
       },
     };
-    const engine = createSpanWriter({ backend });
+    const engine = createSpanWriter({ telemetry });
     const operation = engine.start(
       { type: "tool", operationId: "tool", name: "execute_tool lookup", attributes: {} },
       { emit: true, recordInputs: false, recordOutputs: false },
@@ -31,7 +30,7 @@ describe("trace engine failure and capture boundary", () => {
     expect(operation.run(execute)).toBe("result");
     expect(execute).toHaveBeenCalledTimes(1);
     const error = new Error("application");
-    backend.run = (_reference, _capture, callback) => callback();
+    telemetry.run = (_operation, callback) => callback();
     const fail = vi.fn(() => {
       throw error;
     });
@@ -49,12 +48,11 @@ describe("trace engine failure and capture boundary", () => {
       end: vi.fn(),
     };
     const start = vi.fn((_span: PreparedSpan) => writer);
-    const backend: Pick<TraceBackend, "start" | "run" | "current"> = {
-      start,
-      current: () => undefined,
-      run: (_reference, _capture, callback) => callback(),
+    const telemetry: Pick<AgentTelemetry, "startSpan" | "run"> = {
+      startSpan: start,
+      run: (_operation, callback) => callback(),
     };
-    const operation = createSpanWriter({ backend }).start(
+    const operation = createSpanWriter({ telemetry }).start(
       {
         type: "tool",
         operationId: "tool",

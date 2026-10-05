@@ -1,41 +1,46 @@
-import { trace, type TracerProvider } from "@opentelemetry/api";
 import { randomUUID } from "node:crypto";
-import type { AgentSpanIdGenerator } from "./adapters/otel-ids.js";
-import { durableOtelBackend } from "./adapters/otel.js";
+import { otelTelemetry } from "./adapters/otel.js";
 import { aiSdkContentSerializer } from "./adapters/serialization.js";
-import { createTraceRecorder } from "./core/scopes.js";
+import { createScopes, type LiveOperation } from "./core/scopes.js";
 import { currentAgentHandoff } from "./core/delegation.js";
 import { intersectCapture } from "./core/activation.js";
 import { operationHandle, wrappedOperation, type TurnOperation } from "./operations.js";
 import type {
-  RunIdentity,
-  FrameworkIdentity,
-  CaptureDecision,
+  AgentTelemetry,
   Attributes,
+  CaptureDecision,
+  ContentSerializer,
+  FrameworkIdentity,
+  RunIdentity,
+  TraceCheckpointer,
   TraceErrorHandler,
 } from "./core/types.js";
 
-export interface AgentTracingRegistration {
-  readonly provider: TracerProvider;
-  readonly idGenerator: AgentSpanIdGenerator;
-  readonly samplesTrace: (
-    traceId: string,
-    operation: { name: string; attributes: Attributes },
-  ) => boolean;
-  readonly forceFlush: () => Promise<void>;
-  readonly shutdown: () => Promise<void>;
+export interface AgentTracingOptions {
+  readonly agentName: string;
+  /** Span output and context propagation. Defaults to the global OpenTelemetry provider. */
+  readonly telemetry?: AgentTelemetry;
+  /**
+   * Makes turns durable. Each in-flight turn is saved under a library-chosen
+   * key and removed when the turn completes. Calling `turn()` again with the
+   * same identity, in this or a later process, continues the saved turn.
+   */
+  readonly checkpointer?: TraceCheckpointer;
+  /** Defaults to the AI SDK content serializer. */
+  readonly serializer?: ContentSerializer;
+  readonly onError?: TraceErrorHandler;
 }
+
+export interface TurnInput {
+  readonly identity: RunIdentity;
+  readonly sequence: number;
+  readonly framework?: FrameworkIdentity;
+  readonly capture?: CaptureDecision;
+  readonly attributes?: Attributes;
+}
+
 export interface AgentTracing {
-  turn: import("./operations.js").WrappedOperation<
-    {
-      identity: RunIdentity;
-      sequence: number;
-      framework?: FrameworkIdentity;
-      capture?: CaptureDecision;
-      attributes?: Attributes;
-    },
-    TurnOperation
-  >;
+  turn: import("./operations.js").WrappedOperation<TurnInput, TurnOperation>;
   memory: AgentMemoryTracing;
   forceFlush(): Promise<void>;
   shutdown(): Promise<void>;
@@ -55,47 +60,68 @@ export interface AgentMemoryTracing {
   search<T>(data: MemoryInput<T>, execute: () => T | PromiseLike<T>): Promise<T>;
   write<T>(data: MemoryInput<T>, execute: () => T | PromiseLike<T>): Promise<T>;
 }
-export function createAgentTracing(input: {
-  agentName: string;
-  provider?: TracerProvider;
-  registration?: AgentTracingRegistration;
-  onError?: TraceErrorHandler;
-}): AgentTracing {
-  const provider = input.registration?.provider ?? input.provider ?? trace.getTracerProvider();
-  const tracer = provider.getTracer("agent.tracing");
-  const output = durableOtelBackend({
-    tracer,
-    idGenerator: input.registration?.idGenerator,
-    samplesTrace: input.registration?.samplesTrace ?? (() => true),
-  });
-  const recorder = createTraceRecorder({
-    output,
-    serializer: aiSdkContentSerializer,
+
+const METADATA_ONLY: CaptureDecision = { emit: true, recordInputs: false, recordOutputs: false };
+
+export function createAgentTracing(input: AgentTracingOptions): AgentTracing {
+  const telemetry = input.telemetry ?? otelTelemetry();
+  const checkpointer = input.checkpointer;
+  if (checkpointer !== undefined && telemetry.ids === undefined)
+    throw new Error(
+      "Durable agent tracing needs stable span IDs. Pass the AgentSpanIdGenerator installed on your tracer provider to otelTelemetry({ idGenerator }).",
+    );
+  const report: TraceErrorHandler = (error, context) => {
+    try {
+      input.onError?.(error, context);
+    } catch {}
+  };
+  const scopes = createScopes({
+    telemetry,
+    serializer: input.serializer ?? aiSdkContentSerializer,
+    durable: checkpointer !== undefined,
     onError: input.onError,
   });
-  async function lifecycle(method: "forceFlush" | "shutdown") {
-    try {
-      const callback = (
-        provider as TracerProvider & { forceFlush?(): Promise<void>; shutdown?(): Promise<void> }
-      )[method];
-      if (callback === undefined)
-        throw new Error(`The tracer provider does not support ${method}.`);
-      await callback.call(provider);
-    } catch (error) {
-      try {
-        input.onError?.(error, { phase: "complete" });
-      } catch {}
-    }
+  // Turns hydrated in this process, so concurrent hooks share one tree.
+  const live = new Map<string, Promise<LiveOperation>>();
+
+  function turnKey(identity: RunIdentity): string {
+    if (checkpointer === undefined) return `turn:${randomUUID()}`;
+    return ["turn", input.agentName, identity.runId, identity.turnId]
+      .map(encodeURIComponent)
+      .join(":");
   }
-  const turn = wrappedOperation(
-    async (data: {
-      identity: RunIdentity;
-      sequence: number;
-      framework?: FrameworkIdentity;
-      capture?: CaptureDecision;
-      attributes?: Attributes;
-    }) => {
-      const handoff = currentAgentHandoff();
+
+  /** Writes are serialized so a slow store never persists an older tree last. */
+  function persistence(key: string, root: () => LiveOperation | undefined) {
+    let queue = Promise.resolve();
+    return () => {
+      if (checkpointer === undefined) return queue;
+      queue = queue.then(async () => {
+        const operation = root();
+        if (operation === undefined) return;
+        try {
+          if (operation.finished) await checkpointer.delete(key);
+          else await checkpointer.set(key, operation.snapshot());
+        } catch (error) {
+          report(error, { phase: "checkpoint", operation: "activation" });
+        }
+      });
+      return queue;
+    };
+  }
+
+  async function openTurn(data: TurnInput): Promise<LiveOperation> {
+    const handoff = currentAgentHandoff();
+    const key = turnKey(data.identity);
+    const capture = intersectCapture(data.capture ?? METADATA_ONLY, handoff?.capture);
+    let root: LiveOperation | undefined;
+    const onChange = persistence(key, () => root);
+    const saved = checkpointer === undefined ? undefined : await loadCheckpoint(key);
+    root =
+      saved === undefined
+        ? undefined
+        : await scopes.restore(saved, { capture: data.capture, onChange });
+    if (root === undefined) {
       const metadata = {
         sequence: data.sequence,
         attributes: data.attributes,
@@ -104,37 +130,96 @@ export function createAgentTracing(input: {
         parentRunId: handoff?.parentRunId,
         parentCallId: handoff?.parentCallId,
       };
-      const runtime = await recorder.activation({
+      root = await scopes.start({
         identity: {
           ...data.identity,
           conversationId: handoff?.conversationId ?? data.identity.conversationId,
           agentName: input.agentName,
           framework: data.framework,
         },
-        operationId: randomUUID(),
-        capture: intersectCapture(
-          data.capture ?? { emit: true, recordInputs: false, recordOutputs: false },
-          handoff?.capture,
-        ),
-        metadata,
+        key,
+        capture,
+        data: { type: "activation", options: metadata },
         links:
           handoff !== undefined && data.sequence === 0
             ? [{ relationship: "agent.dispatch", context: handoff.caller }]
             : undefined,
+        onChange,
       });
-      return operationHandle(
-        runtime,
-        { type: "activation", options: metadata },
-        input.onError,
-      ) as TurnOperation;
-    },
-    undefined,
-    input.onError,
-  );
+    }
+    await onChange();
+    return root;
+  }
+
+  async function loadCheckpoint(key: string): Promise<unknown> {
+    try {
+      return await checkpointer!.get(key);
+    } catch (error) {
+      report(error, { phase: "restore", operation: "activation" });
+      return undefined;
+    }
+  }
+
+  async function turnOperation(data: TurnInput): Promise<TurnOperation> {
+    const key = checkpointer === undefined ? undefined : turnKey(data.identity);
+    for (const [cached, turn] of live) if ((await turn).finished) live.delete(cached);
+    let opened = key === undefined ? undefined : live.get(key);
+    if (opened === undefined) {
+      opened = openTurn(data);
+      if (key !== undefined) live.set(key, opened);
+    }
+    const operation = await opened;
+    return operationHandle(
+      operation,
+      { type: "activation", options: { sequence: data.sequence } },
+      input.onError,
+    ) as TurnOperation;
+  }
+
+  async function lifecycle(callback: () => Promise<void>) {
+    try {
+      await callback();
+    } catch (error) {
+      report(error, { phase: "complete" });
+    }
+  }
+
+  async function memory<T>(
+    operation: "search_memory" | "upsert_memory",
+    data: MemoryInput<T>,
+    execute: () => T | PromiseLike<T>,
+  ): Promise<T> {
+    const active = telemetry.active();
+    const handle = await scopes.start({
+      identity: data.identity,
+      key: `memory:${randomUUID()}`,
+      capture: data.capture ?? active?.capture ?? METADATA_ONLY,
+      parent: active?.reference,
+      data: {
+        type: "memory",
+        options: { operation, phase: data.phase, slot: data.slot, storeId: data.storeId },
+      },
+    });
+    let value: T;
+    try {
+      value = await handle.run(execute);
+    } catch (error) {
+      await handle.fail(error).catch((tracingError) => report(tracingError, { phase: "complete" }));
+      throw error;
+    }
+    await handle
+      .complete({ outcome: "completed", ...data.describe?.(value) })
+      .catch((error) => report(error, { phase: "complete" }));
+    return value;
+  }
+
   return {
-    turn,
-    memory: recorder.memory,
-    forceFlush: input.registration?.forceFlush ?? (() => lifecycle("forceFlush")),
-    shutdown: input.registration?.shutdown ?? (() => lifecycle("shutdown")),
+    turn: wrappedOperation(turnOperation, undefined, input.onError),
+    memory: {
+      search: (data, execute) => memory("search_memory", data, execute),
+      write: (data, execute) => memory("upsert_memory", data, execute),
+    },
+    forceFlush: () => lifecycle(() => telemetry.forceFlush()),
+    shutdown: () => lifecycle(() => telemetry.shutdown()),
   };
 }

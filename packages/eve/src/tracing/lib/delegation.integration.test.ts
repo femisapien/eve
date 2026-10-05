@@ -5,7 +5,7 @@ import {
   SimpleSpanProcessor,
 } from "@opentelemetry/sdk-trace-base";
 import { context, propagation, trace } from "@opentelemetry/api";
-import { createAgentTracing } from "@vercel/agent-tracing";
+import { createAgentTracing, otelTelemetry } from "@vercel/agent-tracing";
 import { createAgentDelegationTransport } from "@vercel/agent-tracing/delegation";
 import { AsyncLocalStorageContextManager } from "@opentelemetry/context-async-hooks";
 
@@ -15,8 +15,14 @@ describe("agent delegation", () => {
     const otel = { spanProcessors: [new SimpleSpanProcessor(exporter)] };
     const provider = new BasicTracerProvider(otel);
     context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
-    const parent = createAgentTracing({ agentName: "parent", provider });
-    const child = createAgentTracing({ agentName: "child", provider });
+    const parent = createAgentTracing({
+      agentName: "parent",
+      telemetry: otelTelemetry({ provider }),
+    });
+    const child = createAgentTracing({
+      agentName: "child",
+      telemetry: otelTelemetry({ provider }),
+    });
     try {
       await parent.turn(
         {
@@ -83,8 +89,14 @@ describe("agent delegation", () => {
     const otel = { spanProcessors: [new SimpleSpanProcessor(exporter)] };
     const provider = new BasicTracerProvider(otel);
     context.setGlobalContextManager(new AsyncLocalStorageContextManager().enable());
-    const caller = createAgentTracing({ agentName: "caller", provider });
-    const callee = createAgentTracing({ agentName: "callee", provider });
+    const caller = createAgentTracing({
+      agentName: "caller",
+      telemetry: otelTelemetry({ provider }),
+    });
+    const callee = createAgentTracing({
+      agentName: "callee",
+      telemetry: otelTelemetry({ provider }),
+    });
     const transport = createAgentDelegationTransport();
     let sent = new Headers();
     const fetcher = transport.transport(async (_request, init) => {

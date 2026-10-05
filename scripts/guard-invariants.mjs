@@ -288,12 +288,12 @@ async function scanRepo(state) {
     if (!posix.startsWith("packages/eve/src/tracing/lib/")) {
       lines.forEach((line, index) => {
         const privateImport =
-          /['"]#tracing\/lib\/(?!(?:index|runtime|delegation)\.js['"])/.test(line) ||
-          /['"]@vercel\/agent-tracing\/(?!(?:runtime|delegation)['"])/.test(line) ||
+          /['"]#tracing\/lib\/(?!(?:index|delegation)\.js['"])/.test(line) ||
+          /['"]@vercel\/agent-tracing\/(?!delegation['"])/.test(line) ||
           [...line.matchAll(/(?:from\s+|import\s*\()(["'])([^"']+)\1/g)].some(
             (match) =>
               match[2].startsWith(".") &&
-              /^packages\/eve\/src\/tracing\/lib\/(?!(?:index|runtime|delegation)\.js$)/.test(
+              /^packages\/eve\/src\/tracing\/lib\/(?!(?:index|delegation)\.js$)/.test(
                 toPosix(relative(REPO_ROOT, resolve(dirname(absPath), match[2]))),
               ),
           );
@@ -303,7 +303,7 @@ async function scanRepo(state) {
             file: posix,
             line: index + 1,
             message:
-              "Import the tracing library public or runtime entrypoint, not private core modules.",
+              "Import the tracing library public or delegation entrypoint, not private core modules.",
           });
       });
     }

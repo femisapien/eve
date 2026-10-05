@@ -1,8 +1,12 @@
 export {
   createAgentTracing,
   type AgentTracing,
-  type AgentTracingRegistration,
+  type AgentTracingOptions,
+  type AgentMemoryTracing,
+  type TurnInput,
 } from "./agent-tracing.js";
+export { otelTelemetry, type OtelTelemetryOptions } from "./adapters/otel.js";
+export { AgentSpanIdGenerator } from "./adapters/otel-ids.js";
 export type {
   Operation,
   TurnOperation,
@@ -16,11 +20,24 @@ export type {
   ModelStreamReturn,
 } from "./operations.js";
 export type {
+  ActiveOperation,
+  AgentTelemetry,
+  Attributes,
   CaptureDecision,
-  Usage,
   ContentPart,
-  TraceErrorHandler,
+  ContentSerializer,
+  ExecutionContext,
+  MappingContext,
+  OutputMapping,
+  PreparedSpan,
+  SpanWriter,
+  TraceCheckpointer,
   TraceErrorContext,
+  TraceErrorHandler,
+  TraceLink,
+  TraceReference,
+  TraceSnapshot,
+  Usage,
 } from "./core/types.js";
 export { currentCapture } from "./capture.js";
 export { modelUsage, modelContent } from "./adapters/ai-sdk-payload.js";

@@ -2,7 +2,7 @@ import type {
   PreparedSpan,
   SpanWriter,
   ExecutionContext,
-  TraceBackend,
+  AgentTelemetry,
   TraceReference,
   CaptureDecision,
   Attributes,
@@ -16,8 +16,7 @@ export interface TraceOperation extends SpanWriter {
   run<T>(execute: () => T): T;
 }
 export function createSpanWriter(input: {
-  backend: Pick<TraceBackend, "start" | "run" | "suppressed"> &
-    Partial<Pick<TraceBackend, "startReserved">>;
+  telemetry: Pick<AgentTelemetry, "startSpan" | "run" | "suppressed">;
   onError?: TraceErrorHandler;
 }) {
   function safely<T>(
@@ -45,9 +44,10 @@ export function createSpanWriter(input: {
     const writer = capture.emit
       ? safely(
           () =>
-            reserved === undefined
-              ? input.backend.start({ ...span, attributes }, host)
-              : input.backend.startReserved!({ ...span, attributes }, reserved, host),
+            input.telemetry.startSpan(
+              { ...span, attributes },
+              { reference: reserved, context: host },
+            ),
           "start",
           reserved,
         )
@@ -106,7 +106,12 @@ export function createSpanWriter(input: {
       run(execute) {
         return finished
           ? execute()
-          : runTraceContext(input.backend, reference, capture, execute, host);
+          : runTraceContext(
+              input.telemetry,
+              { type: span.type, reference, capture },
+              execute,
+              host,
+            );
       },
     };
   }

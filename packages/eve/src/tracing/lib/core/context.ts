@@ -1,36 +1,27 @@
-import type {
-  ActiveOperation,
-  CaptureDecision,
-  ExecutionContext,
-  TraceBackend,
-  TraceReference,
-} from "./types.js";
+import type { ActiveOperation, AgentTelemetry, ExecutionContext } from "./types.js";
 
+/** Runs `execute` exactly once, even when the telemetry cannot enter the context. */
 export function runTraceContext<T>(
-  backend: Pick<TraceBackend, "run" | "suppressed">,
-  reference: TraceReference,
-  capture: CaptureDecision,
+  telemetry: Pick<AgentTelemetry, "run" | "suppressed">,
+  operation: ActiveOperation,
   execute: () => T,
   host?: ExecutionContext,
-  operation?: ActiveOperation,
 ): T {
   let entered = false;
   try {
-    return backend.run(
-      reference,
-      capture,
+    return telemetry.run(
+      operation,
       () => {
         entered = true;
         return execute();
       },
       host,
-      operation,
     );
   } catch (error) {
     if (entered) throw error;
-    if (backend.suppressed !== undefined) {
+    if (telemetry.suppressed !== undefined) {
       try {
-        return backend.suppressed(() => {
+        return telemetry.suppressed(() => {
           entered = true;
           return execute();
         });
