@@ -1,3 +1,4 @@
+import { parseToolStubs } from "#tool-stubs/rules.js";
 import type { FilePart, TextPart, UserContent } from "ai";
 
 import type {
@@ -114,6 +115,16 @@ export function parseCreateBody(input: Record<string, unknown>): ParsedCreateBod
     context,
     outputSchema,
   };
+  if (payload.stubs !== undefined) {
+    try {
+      result.stubs = parseToolStubs(payload.stubs);
+    } catch (error) {
+      return Response.json(
+        { ok: false, error: error instanceof Error ? error.message : "Invalid tool stubs." },
+        { status: 400 },
+      );
+    }
+  }
   if (message !== undefined) result.message = message;
   if (typeof rawOperationId === "string") result.operationId = rawOperationId;
   if (protocolVersion !== undefined) result.protocolVersion = protocolVersion;
@@ -136,6 +147,12 @@ export function parseSessionMessageBody(
   input: Record<string, unknown>,
 ): ParsedSessionMessageBody | Response {
   const { payload } = splitLegacyTaskFields(input);
+  if (Object.hasOwn(payload, "stubs")) {
+    return Response.json(
+      { ok: false, error: "Tool stubs are fixed at session creation." },
+      { status: 400 },
+    );
+  }
   const tokenRejection = rejectSessionContinuationToken(payload);
   if (tokenRejection !== null) return tokenRejection;
 

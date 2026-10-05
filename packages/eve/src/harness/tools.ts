@@ -20,6 +20,7 @@ import { toModelSchema } from "#tools/schema.js";
 import { normalizeToolJsonOutput, normalizeToolModelOutput } from "#harness/tool-model-output.js";
 import type { ToolExecuteOptions } from "#tools/definition.js";
 import { isAsyncIterable } from "#shared/async-iterable.js";
+import { executeWithToolStub, recordToolStubFailure } from "#tool-stubs/execute.js";
 
 type NativeApprovalStatus = Exclude<ApprovalStatus, boolean>;
 
@@ -80,11 +81,12 @@ export function buildToolSet(input: {
                 };
               }
               if (authorToModelOutput !== undefined) {
-                return normalizeToolModelOutput({
-                  output: await authorToModelOutput(output),
+                return await convertToolOutput(
+                  authorToModelOutput,
+                  output,
+                  definition.name,
                   toolCallId,
-                  toolName: definition.name,
-                });
+                );
               }
               if (typeof output === "string") {
                 return { type: "text" as const, value: output };
@@ -105,11 +107,7 @@ export function buildToolSet(input: {
                 readonly output: unknown;
                 readonly toolCallId?: string;
               }) =>
-                normalizeToolModelOutput({
-                  output: await authorToModelOutput(output),
-                  toolCallId,
-                  toolName: definition.name,
-                }),
+                await convertToolOutput(authorToModelOutput, output, definition.name, toolCallId),
             }
           : {}),
     });
@@ -162,7 +160,7 @@ export function wrapToolExecute(
   return (input, options) => {
     let output: unknown;
     try {
-      output = execute(input, options);
+      output = executeWithToolStub(definition.name, input, options, () => execute(input, options));
     } catch (error) {
       return Promise.reject(error);
     }
@@ -298,4 +296,18 @@ export function buildToolApproval(
       isApprovedToolCall(messages, toolCall.toolCallId),
     )) as ToolApprovalStatus;
   };
+}
+
+async function convertToolOutput(
+  convert: (output: unknown) => unknown,
+  output: unknown,
+  toolName: string,
+  toolCallId: string | undefined,
+) {
+  try {
+    return normalizeToolModelOutput({ output: await convert(output), toolName, toolCallId });
+  } catch (error) {
+    await recordToolStubFailure(toolName, toolCallId);
+    throw error;
+  }
 }

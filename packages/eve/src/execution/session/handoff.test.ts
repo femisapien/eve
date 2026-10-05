@@ -50,7 +50,7 @@ describe("SessionHandoff", () => {
       checkpoint: expect.objectContaining({
         history,
         sessionTimeoutMs: 60_000,
-        version: 11,
+        version: 12,
       }),
       delivery: trigger.delivery,
       targetDeploymentId: "deployment-b",

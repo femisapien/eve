@@ -43,6 +43,43 @@ function createTestEval(test: (t: EveEvalContext) => unknown, id = "test-eval"):
 }
 
 describe("executeTask", () => {
+  it("fails a recovered agent turn when the session recorded a stub failure", async () => {
+    const server = createScriptedServer([
+      {
+        sessionId: "stubbed",
+        events: [
+          turnStarted("turn_0"),
+          messageCompleted("I recovered", "turn_0"),
+          sessionWaiting(),
+        ],
+      },
+    ]);
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (request, init) => {
+      const path = new URL(String(request)).pathname;
+      if (path === "/eve/v1/session")
+        return Response.json({ sessionId: "stubbed" }, { status: 202 });
+      if (path === "/eve/v1/session/stubbed/stubs") {
+        return Response.json({ error: 'Ambiguous tool stubs for "list_tasks": a, b.' });
+      }
+      return await server.fetch(request, init);
+    });
+    const outcome = await executeTask({
+      client: new Client({ host: target.url }),
+      target,
+      evaluation: createTestEval(async (t) => {
+        const session = await t.session({
+          stubs: [
+            { id: "a", tool: "list_tasks", response: [] },
+            { id: "b", tool: "list_tasks", response: [] },
+          ],
+        });
+        const turn = await session.send("List my tasks");
+        turn.expectOk();
+      }),
+    });
+    expect(outcome.error).toContain('Ambiguous tool stubs for "list_tasks": a, b.');
+  });
+
   it("creates accepted sessions without consuming events and reuses them for sends", async () => {
     const server = createScriptedServer([
       { sessionId: "session_1", events: [turnStarted("turn_0", TRACE_A), sessionWaiting()] },

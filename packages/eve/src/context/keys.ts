@@ -18,6 +18,7 @@ import type {
   SessionTurn,
 } from "#channel/types.js";
 import { ContextKey } from "#context/key.js";
+import { STUB_CONTEXT_KEY, type StubScope } from "#tool-stubs/types.js";
 import {
   SESSION_INBOX_CONTEXT_KEY,
   type SessionInboxAddress,
@@ -79,6 +80,7 @@ export interface Session {
 // ---------------------------------------------------------------------------
 
 export const AuthKey = new ContextKey<SessionAuthContext | null>("eve.auth");
+export const ToolStubsKey = new ContextKey<StubScope>(STUB_CONTEXT_KEY);
 export const InitiatorAuthKey = new ContextKey<SessionAuthContext | null>("eve.initiatorAuth");
 export const SessionIdKey = new ContextKey<string>("eve.sessionId");
 export const ConversationIdKey = new ContextKey<string>("eve.conversationId");

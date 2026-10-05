@@ -17,6 +17,7 @@ import {
   resetClientSession,
 } from "#client/session-controls.js";
 import { serializeOutputSchema } from "#tools/schema.js";
+import { parseToolStubs } from "#tool-stubs/rules.js";
 import { createClientUrl } from "#client/url.js";
 import type { InputResponse } from "#shared/input.js";
 import type {
@@ -379,7 +380,13 @@ async function postCreateSession(
   options: CreateSessionOptions,
 ): Promise<Response> {
   const headers = await context.resolveHeaders(options.headers);
+  const body =
+    options.stubs === undefined
+      ? undefined
+      : JSON.stringify({ stubs: parseToolStubs(options.stubs) });
+  if (body !== undefined) headers.set("content-type", "application/json");
   const response = await fetch(createClientUrl(context.host, EVE_SESSION_ROUTE_PATH), {
+    body,
     headers,
     method: "POST",
     redirect: context.redirect,

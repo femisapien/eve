@@ -5,6 +5,7 @@ import type { LegacyRemoteAgentCaller } from "#execution/legacy-remote-agent/pro
 import type { JsonObject } from "#shared/json.js";
 
 export interface ParsedCreateBody {
+  stubs?: readonly import("#tool-stubs/types.js").ToolStub[];
   callback?: SessionCallback;
   capabilities?: SessionCapabilities;
   message?: string | UserContent;

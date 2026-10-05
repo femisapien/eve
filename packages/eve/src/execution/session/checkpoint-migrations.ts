@@ -87,6 +87,9 @@ const CHECKPOINT_UPGRADES: Readonly<
       sessionState: { ...sessionState, snapshot: { ...snapshot, session }, version: 2 },
     };
   },
+  // Older readers must refuse sessions whose tool execution is replaced.
+  // Pre-stub checkpoints need no new state.
+  11: (checkpoint) => checkpoint,
 };
 
 /**

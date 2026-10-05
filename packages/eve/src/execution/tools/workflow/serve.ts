@@ -1,10 +1,12 @@
 import type { SessionContext } from "#context/session-context.js";
+import { callToolStubStep } from "#execution/tool-stubs/steps.js";
 import type { AgentSessionContext } from "#execution/agent-sessions/context.js";
 import { createAgentSessions } from "#execution/agent-sessions/session.js";
 import { createRunUsageTally, type RunUsageTally } from "#execution/agent-sessions/usage.js";
 import {
   ask,
   attachWorkflowToolRunContext,
+  findWorkflowToolRunContext,
   WorkflowToolRunAsks,
   type WorkflowToolRunContext,
 } from "#execution/tools/workflow/ask.js";
@@ -375,7 +377,11 @@ async function executeServeBody(
 ): Promise<WorkflowToolRunOutcome> {
   let outcome: WorkflowToolRunOutcome;
   try {
-    const serve = resolveWorkflowEntryPoint<ServeEntryPoint>(input);
+    const scope = input.agentContext.toolStubs;
+    const serve =
+      scope !== undefined && scope.rules.some((rule) => rule.tool === input.toolName)
+        ? serveStub
+        : resolveWorkflowEntryPoint<ServeEntryPoint>(input);
     const output = await serve(() => calls.receive(), ctx);
     outcome = { output, status: "completed" };
   } catch (error) {
@@ -428,4 +434,27 @@ function createPendingReceive(): PendingReceive {
     reject = rejectPromise;
   });
   return { promise, reject, resolve };
+}
+
+async function serveStub(
+  receive: WorkflowServeReceive<JsonValue>,
+  ctx: ServeContext,
+): Promise<JsonValue> {
+  // A reply settles all received calls, so receive only after replying to its predecessor.
+  while (true) {
+    const call = await receive();
+    if (call.abortSignal.aborted) continue;
+    const scope = findWorkflowToolRunContext(ctx)!.agentContext.toolStubs!;
+    const result = await callToolStubStep(scope, {
+      callId: `${ctx.session.id}:${ctx.session.turn.id}:${call.callId}`,
+      input: call.input,
+      tool: ctx.toolName,
+      persistent: true,
+    });
+    if (result.kind !== "stub")
+      throw new Error(
+        result.kind === "error" ? result.error : "Persistent stub configuration changed.",
+      );
+    ctx.reply(result.response);
+  }
 }

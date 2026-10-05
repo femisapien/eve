@@ -110,6 +110,8 @@ export interface SendTurnInput<TOutput = unknown> extends SendTurnOptions<TOutpu
 
 /** Request options for creating a conversation session before its first turn. */
 export interface CreateSessionOptions {
+  /** Fixed response rules for this session and its local descendants. Requires server permission. */
+  readonly stubs?: readonly import("#tool-stubs/types.js").ToolStub[];
   /** Abort signal for cancelling the creation request. */
   readonly signal?: AbortSignal;
   /** Additional headers for this request only. */

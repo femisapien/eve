@@ -424,6 +424,8 @@ export interface SessionCapabilities {
  * subagent tool wrapper).
  */
 export interface RunInput {
+  /** @internal Verified tool replacement scope, inherited only by local sessions. */
+  readonly toolStubs?: import("#tool-stubs/types.js").StubScope;
   readonly adapter: ChannelAdapter<any>;
   /**
    * Registered channel name for root sessions started from an authored

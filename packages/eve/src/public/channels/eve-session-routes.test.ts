@@ -548,3 +548,9 @@ describe("eve ID-addressed session routes", () => {
     expect(session[operation]).not.toHaveBeenCalled();
   });
 });
+
+// Route contract tests use ordinary sessions. Stub ownership is covered with a real world in integration tests.
+vi.mock("#internal/workflow/runtime.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("#internal/workflow/runtime.js")>()),
+  getWorld: async () => ({ runs: { get: async () => ({ attributes: {} }) } }),
+}));

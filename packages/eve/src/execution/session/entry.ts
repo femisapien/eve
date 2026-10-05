@@ -1,4 +1,5 @@
 import { failSession, runPreparedSession, type SessionBoot } from "#execution/session/program.js";
+import { withStubPlayback } from "#execution/tool-stubs/playback.js";
 import { getWorkflowMetadata, getWritable } from "#compiled/@workflow/core/index.js";
 
 import type { DeliverHookPayload, RunInput, SessionCapabilities } from "#channel/types.js";
@@ -56,7 +57,11 @@ export async function workflowEntry(input: WorkflowEntryInput): Promise<Workflow
       ? await bootInitialOwner(input, getWorkflowMetadata().workflowRunId)
       : await bootHandoffOwner(input);
   if (boot === undefined) return { output: "" };
-  const result = await runPreparedSession(boot.session, boot.inbox);
+  const result = await withStubPlayback(
+    boot.session.serializedContext,
+    boot.session.sessionId,
+    () => runPreparedSession(boot.session, boot.inbox),
+  );
   return { output: result.output };
 }
 

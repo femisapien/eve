@@ -1,3 +1,4 @@
+import { connectionToolStub } from "#tool-stubs/execute.js";
 /**
  * `connection_search` and `connection_execute`: fixed tools that reach every
  * connection tool without adding definitions to the model's tool list, so
@@ -362,6 +363,12 @@ async function executeConnectionTool(
   const input = await validToolInput(connection, tool, target.input);
 
   const toolName = qualifiedToolName(target);
+  const stub = await connectionToolStub(toolName, input, ctx.callId);
+  if (stub.kind === "error") throw new Error(stub.error);
+  if (stub.kind === "stub") {
+    reportNestedToolAction(ctx.callId, { input, output: stub.response, toolName });
+    return stub.response;
+  }
   let raw: unknown;
   try {
     raw = await client.executeTool(tool.name, input, {

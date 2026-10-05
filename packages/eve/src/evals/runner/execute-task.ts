@@ -88,6 +88,7 @@ export async function executeTask(options: ExecuteTaskOptions): Promise<ExecuteT
   let skipReason: string | undefined;
   try {
     await runUntilAborted(evaluation.test(context), signal);
+    await runUntilAborted(manager.verifyStubs(), signal);
   } catch (err) {
     if (err instanceof EvalSkipped) {
       skipReason = err.reason;

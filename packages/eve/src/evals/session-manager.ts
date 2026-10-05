@@ -5,6 +5,7 @@ import { AssertionCollector } from "#evals/assertions/collector.js";
 import { EvalSessionDriver, type EvalSessionStartedEvent } from "#evals/session.js";
 import { cleanupEvalSessions } from "#evals/session-cleanup.js";
 import type { EveEvalLiveTurn, EveEvalSessionResult } from "#evals/types.js";
+import { createEveSessionRoutePath } from "#protocol/routes.js";
 
 export class EvalSessionManager {
   readonly #client: Client;
@@ -12,6 +13,10 @@ export class EvalSessionManager {
   readonly #collector: AssertionCollector;
   readonly #onSessionStart: ((event: EvalSessionStartedEvent) => void) | undefined;
   readonly #sessions: EvalSessionDriver[] = [];
+  readonly #stubbedSessions: {
+    readonly sessionId: string;
+    readonly headers?: Readonly<Record<string, string>>;
+  }[] = [];
   #lastTurnSession: EvalSessionDriver | undefined;
 
   constructor(input: {
@@ -31,7 +36,30 @@ export class EvalSessionManager {
       ...options,
       signal: options.signal ?? this.#signal,
     });
+    if (options.stubs !== undefined)
+      this.#stubbedSessions.push({ sessionId: session.state.sessionId, headers: options.headers });
     return this.#register(session);
+  }
+
+  /** Stub failures are gates even when authored assertions or the agent recover. */
+  async verifyStubs(): Promise<void> {
+    for (const session of this.#stubbedSessions) {
+      const response = await this.#client.fetch(
+        createEveSessionRoutePath(session.sessionId) + "/stubs",
+        {
+          headers: session.headers,
+          signal: this.#signal,
+        },
+      );
+      if (!response.ok)
+        throw new Error(
+          `Could not verify tool stubs for session ${session.sessionId} (HTTP ${response.status}).`,
+        );
+      const result: unknown = await response.json();
+      if (typeof result !== "object" || result === null || !("error" in result))
+        throw new Error("Invalid tool stub verification response.");
+      if (result.error !== null) throw new Error(`Tool stubbing failed: ${String(result.error)}`);
+    }
   }
 
   async send(message: SendTurnInput["message"], options: SendTurnOptions = {}) {
