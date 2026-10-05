@@ -1,6 +1,7 @@
 import { createProcessor } from "@mdx-js/mdx";
 import { toMarkdown, type Options } from "mdast-util-to-markdown";
 import { describe, expect, it } from "vitest";
+import { remarkComponentMarkdown } from "./remark-component-markdown";
 import config from "../../source.config";
 
 describe("component Markdown export", () => {
@@ -16,6 +17,8 @@ describe("component Markdown export", () => {
       "<AgentRuntimeDiagram />",
       "",
       "<Callout>Keep this content.</Callout>",
+      "",
+      '<EveCodeBenchmark dataset="deepswe-lean" />',
       "",
       "```mdx",
       "<AgentRuntimeDiagram />",
@@ -51,7 +54,12 @@ describe("component Markdown export", () => {
     expect(markdown).toContain("**Workspace** — Persistent per-session files");
     expect(markdown).toContain("`/workspace`");
     expect(markdown).toContain("`from agent/sandbox/workspace/**`");
-    expect(markdown).toContain("<Callout>Keep this content.</Callout>");
+    expect(markdown).toContain(
+      "| Harness | Resolved | 95% interval | Median latency | p90 latency | Measured |",
+    );
+    expect(markdown).toContain("<Callout>");
+    expect(markdown).toContain("Keep this content.");
+    expect(markdown).toContain("</Callout>");
     expect(markdown).toContain("```mdx\n<AgentRuntimeDiagram />\n```");
     expect(markdown.match(/<AgentRuntimeDiagram \/>/g)).toHaveLength(1);
 
