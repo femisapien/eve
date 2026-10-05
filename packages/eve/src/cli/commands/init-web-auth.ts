@@ -69,7 +69,7 @@ export async function runInitWebAuth(input: {
       if (!linked) throw new Error("Vercel project linking did not complete.");
     }
     const project = input.interactive
-      ? await deps.ensureVercelProject({ appRoot: input.appRoot, prompter })
+      ? await deps.ensureVercelProject({ appRoot: input.appRoot, prompter, allowLogin: true })
       : await deps.readProjectLink(input.appRoot);
     if (project === undefined) {
       throw new Error(

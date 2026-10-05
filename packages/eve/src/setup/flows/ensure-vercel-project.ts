@@ -25,6 +25,8 @@ export interface EnsureVercelProjectDeps {
 export async function ensureVercelProject(input: {
   appRoot: string;
   prompter: Prompter;
+  /** Interactive init can perform login directly; TUI callers use the action runner. */
+  allowLogin?: boolean;
   signal?: AbortSignal;
   teamSelectMessage?: (currentTeam: string) => string;
   deps?: Partial<EnsureVercelProjectDeps>;
@@ -34,7 +36,7 @@ export async function ensureVercelProject(input: {
     appRoot: input.appRoot,
     prompter: input.prompter,
     signal: input.signal,
-    allowLogin: false,
+    allowLogin: input.allowLogin ?? false,
   });
   if (login.kind === "cancelled") throw new WizardCancelledError();
   if (login.kind !== "already" && login.kind !== "logged-in") {

@@ -165,6 +165,7 @@ function isLoggedOutFailure(failure: VercelCaptureFailure): boolean {
   return (
     text.includes("credentials") ||
     text.includes("not authenticated") ||
+    text.includes("not authorized") ||
     text.includes("not logged in") ||
     text.includes("specified token is not valid") ||
     text.includes("scope-not-accessible") ||

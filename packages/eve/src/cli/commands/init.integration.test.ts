@@ -1156,7 +1156,10 @@ describe("runInitCommand", () => {
       deps.isCodingAgentLaunch.mockResolvedValue(mode === "coding-agent");
       deps.webAuth = {
         createPrompter: () => fake.prompter,
-        ensureVercelProject: async () => project,
+        ensureVercelProject: async (input) => {
+          expect(input.allowLogin).toBe(true);
+          return project;
+        },
         runNonInteractiveLink: link,
         provisionWebChatAuth: provision,
         installScaffoldDependencies: async () => {},
