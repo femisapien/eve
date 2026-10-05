@@ -41,7 +41,7 @@ export class EvalSessionManager {
     return this.#register(session);
   }
 
-  /** Stub failures are gates even when authored assertions or the agent recover. */
+  /** A recorded stub failure always fails the eval, even if the agent recovers. */
   async verifyStubs(): Promise<void> {
     for (const session of this.#stubbedSessions) {
       const response = await this.#client.fetch(
