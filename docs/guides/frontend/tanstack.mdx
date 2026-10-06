@@ -11,6 +11,23 @@ description: "Run an eve agent and a TanStack Start app as one project with the 
 - An existing eve agent directory. If you don't have one, start from [Getting started](../../getting-started).
 - A TanStack Start app using React, with the [Nitro Vite plugin](https://tanstack.com/start/latest/docs/framework/react/guide/hosting#nitro) (`nitro` installed and `nitro()` registered). TanStack Start deploys to Vercel through Nitro, and the plugin attaches eve to it.
 
+## Add the generated Web Chat app
+
+For a standalone agent, install the generated TanStack Start Web Chat app:
+
+```bash
+eve add channel/tanstack
+```
+
+The installer creates a TanStack Start app under `apps/web/` and adds the `dev:web` and `build:web` scripts. It asks how to deploy it:
+
+- **Vercel services** (recommended) deploys Web Chat and the agent as separate services. Run both locally with `pnpm dev:all`; you don't need to link a Vercel project to do that.
+- **TanStack Start** hosts the agent in the TanStack Start app through `eveTanStack()`. Run it with `pnpm dev:web`.
+
+The chat has the same URL-addressed durable sessions as the [Next.js Web Chat](./nextjs#use-the-generated-web-chat-routes): `/`, `/s`, and `/s/$sessionId`. Before accepting production browser traffic, replace the generated placeholder authorization policy. See [Authenticate browser requests](./overview#authenticate-browser-requests).
+
+The installer doesn't support selecting a workspace agent for single-app hosting: a workspace agent always deploys as a separate Vercel service. If you already have a TanStack Start app, skip the installer and follow the steps below.
+
 ## Register the Vite plugin
 
 Add `eveTanStack()` to `vite.config.ts` next to `nitro()`:

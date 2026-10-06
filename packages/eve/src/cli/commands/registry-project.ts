@@ -85,8 +85,17 @@ function parseRegistryMapping(argument: string): { namespace: string; url: strin
   return { namespace, url };
 }
 
+/** Dev and build commands that run the Web Chat app in `apps/web`, by host framework. */
+const WEB_CHAT_SCRIPTS = {
+  next: { "dev:web": "next dev apps/web", "build:web": "next build apps/web" },
+  tanstack: { "dev:web": "vite dev apps/web", "build:web": "vite build apps/web" },
+} as const;
+
 /** Resolves and prepares the root package that owns Web Chat. */
-export async function prepareWebChatProjectRoot(appRoot: string): Promise<string> {
+export async function prepareWebChatProjectRoot(
+  appRoot: string,
+  framework: keyof typeof WEB_CHAT_SCRIPTS = "next",
+): Promise<string> {
   const project = await resolveEveProjectContext(appRoot);
   if (project.kind === "workspace") {
     throw new Error("Web Chat setup requires a selected workspace agent.");
@@ -99,8 +108,9 @@ export async function prepareWebChatProjectRoot(appRoot: string): Promise<string
     [key: string]: unknown;
   };
   const scripts = { ...document.scripts };
-  scripts["dev:web"] ??= "next dev apps/web";
-  scripts["build:web"] ??= "next build apps/web";
+  for (const [name, command] of Object.entries(WEB_CHAT_SCRIPTS[framework])) {
+    scripts[name] ??= command;
+  }
   await writeFile(
     packageJsonPath,
     `${JSON.stringify({ ...document, scripts }, null, 2)}\n`,

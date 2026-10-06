@@ -52,7 +52,7 @@ export interface WebSetupDeps {
   writeTextFile: typeof writeTextFile;
 }
 
-const defaultDeps: WebSetupDeps = {
+export const defaultWebSetupDeps: WebSetupDeps = {
   detectPackageManager,
   pathExists,
   readTextFile: (path) => readFile(path, "utf8"),
@@ -67,7 +67,7 @@ interface WebSetupPlan {
 
 export async function prepareWebSetup(
   context: SetupPrepareContext,
-  deps: WebSetupDeps = defaultDeps,
+  deps: WebSetupDeps = defaultWebSetupDeps,
 ): Promise<WebSetupPlan> {
   const project = await deps.resolveEveProjectContext(context.appRoot);
   if (project.kind === "workspace") {
@@ -101,7 +101,7 @@ export async function prepareWebSetup(
   };
 }
 
-function runScriptCommand(packageManager: PackageManagerKind, script: string): string {
+export function runScriptCommand(packageManager: PackageManagerKind, script: string): string {
   switch (packageManager) {
     case "npm":
       return `npm run ${script}`;
@@ -114,7 +114,7 @@ function runScriptCommand(packageManager: PackageManagerKind, script: string): s
   }
 }
 
-async function configurePeerServiceScripts(root: string, deps: WebSetupDeps): Promise<void> {
+export async function configurePeerServiceScripts(root: string, deps: WebSetupDeps): Promise<void> {
   const path = join(root, "package.json");
   const document = JSON.parse(await deps.readTextFile(path)) as {
     scripts?: Record<string, string>;
@@ -129,7 +129,10 @@ async function configurePeerServiceScripts(root: string, deps: WebSetupDeps): Pr
   });
 }
 
-async function assertInstallerOwned(path: string, allowed: readonly string[]): Promise<void> {
+export async function assertInstallerOwned(
+  path: string,
+  allowed: readonly string[],
+): Promise<void> {
   try {
     const source = await readFile(path, "utf8");
     if (allowed.includes(source)) return;
@@ -145,7 +148,7 @@ async function assertInstallerOwned(path: string, allowed: readonly string[]): P
 export async function applyWebSetup(
   plan: WebSetupPlan,
   context: SetupApplyContext,
-  deps: WebSetupDeps = defaultDeps,
+  deps: WebSetupDeps = defaultWebSetupDeps,
 ) {
   const project = await deps.resolveEveProjectContext(context.appRoot);
   if (project.kind === "workspace") {

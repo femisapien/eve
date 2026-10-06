@@ -550,6 +550,44 @@ describe("registry commands", () => {
     expect(logger.errors).toEqual([]);
   });
 
+  it("installs the TanStack Start Web Chat at the project root with its own setup", async () => {
+    const logger = createLogger();
+    const runSetupCommand = vi.fn(async () => ({ kind: "completed" as const, facts: [] }));
+    getRegistryItems.mockResolvedValue([
+      {
+        name: "channel/tanstack",
+        type: "registry:item",
+        meta: {
+          eve: {
+            setup: [{ package: "eve", bin: "eve", args: ["integration", "setup", "tanstack"] }],
+          },
+        },
+      },
+    ]);
+
+    await runAddCommand(
+      logger,
+      "/project",
+      "channel/tanstack",
+      { yes: true },
+      { loadSetupCommandRunner: async () => runSetupCommand },
+    );
+
+    expect(addRegistryItems).toHaveBeenCalledWith(["https://eve.dev/r/channel/tanstack.json"], {
+      config: expect.any(Object),
+      cwd: "/project",
+      overwrite: undefined,
+      silent: undefined,
+    });
+    expect(runSetupCommand).toHaveBeenCalledWith(
+      "/project",
+      expect.any(Object),
+      "channel/tanstack",
+      expect.objectContaining({ prompter: expect.any(Object) }),
+    );
+    expect(logger.errors).toEqual([]);
+  });
+
   it("surfaces required deployment in non-interactive completion", async () => {
     const logger = createLogger();
     const runSetupCommand = vi.fn(async () => ({

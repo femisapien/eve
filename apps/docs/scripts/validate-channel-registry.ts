@@ -48,6 +48,7 @@ const setupKindsByCatalogSlug: Readonly<Record<string, string>> = {
   github: "github",
   "linear-agent": "linear",
   eve: "web",
+  tanstack: "tanstack",
   linq: "linq",
   photon: "photon",
   teams: "teams",
@@ -133,7 +134,7 @@ for (const [index, item] of items.entries()) {
 
   const entry = registryEntries[index];
   if (entry === undefined) throw new Error(`Unexpected channel registry item "${item.name}".`);
-  if (entry.slug === "eve") {
+  if (entry.slug === "eve" || entry.slug === "tanstack") {
     if (
       item.dependencies?.some((dependency) => dependency === "ai" || dependency.startsWith("ai@"))
     ) {
