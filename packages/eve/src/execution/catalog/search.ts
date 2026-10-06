@@ -1,7 +1,7 @@
 /**
- * `search`: finds catalog entries, the agent's deferred tools and every
- * connection tool, by keyword. Its definition is fixed for each eve version,
- * so the catalog can change without changing the model's tool list.
+ * `search`: finds catalog entries, the agent's deferred tools and skills and
+ * every connection tool, by keyword. Its definition is fixed for each eve
+ * version, so the catalog can change without changing the model's tool list.
  */
 
 import { isConnectionAuthorizationRequiredError } from "#connections/errors.js";
@@ -29,6 +29,7 @@ import {
 } from "./connection-auth.js";
 import { rankCandidates, type RankCandidate } from "./rank.js";
 import { connectionToolSignature, entrySignature } from "./signatures.js";
+import type { CatalogSkill } from "./skills.js";
 
 const log = createLogger("framework.catalog-search");
 
@@ -36,9 +37,10 @@ const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 50;
 
 const SEARCH_DESCRIPTION = [
-  "Find more of your own tools, agents, and connected services (MCP servers and OpenAPI APIs) by keyword.",
+  "Find more of your own tools, agents, skills, and connected services (MCP servers and OpenAPI APIs) by keyword.",
   "This searches what you can do, not the web.",
-  "Returns each match's exact tool name, description, and TypeScript signature; call it with execute.",
+  "Returns each tool's exact name, description, and TypeScript signature, to call with execute({ tool, input }),",
+  "and each skill's name and description, to load with execute({ skill }).",
   "Omit `query` to list every entry, or pair it with `connection` to list one connection's tools.",
   "Connections the user has not signed in to are listed under `unavailable` with `requiresSignIn`;",
   "when the request needs one, search it again with `connection` and `signIn: true` to ask the user to sign in.",
@@ -77,11 +79,9 @@ interface SearchInput {
   readonly signIn?: boolean;
 }
 
-interface SearchResult {
-  readonly description: string;
-  readonly signature: string;
-  readonly tool: string;
-}
+type SearchResult =
+  | { readonly description: string; readonly signature: string; readonly tool: string }
+  | { readonly description: string; readonly path?: string; readonly skill: string };
 
 interface UnavailableConnection {
   readonly connection: string;
@@ -97,19 +97,17 @@ interface SearchOutput {
   readonly unavailable?: readonly UnavailableConnection[];
 }
 
-/** `signature` renders only for the results a page returns. */
-type SearchCandidate = RankCandidate & {
-  readonly signature: () => string;
-  readonly tool: string;
-};
+/** `result` renders only for the results a page returns, since signatures cost a render. */
+type SearchCandidate = RankCandidate & { readonly result: () => SearchResult };
 
 /**
- * Builds `search` over one step's deferred entries. `describe` returns an
- * entry's description as the model would read it in its tool list.
+ * Builds `search` over one step's deferred entries and skills. `describe`
+ * returns an entry's description as the model would read it in its tool list.
  */
 export function createSearchTool(input: {
   readonly deferred: readonly HarnessToolDefinition[];
   readonly describe: (definition: HarnessToolDefinition) => string;
+  readonly skills: readonly CatalogSkill[];
 }): HarnessToolDefinition {
   return {
     description: SEARCH_DESCRIPTION,
@@ -143,7 +141,10 @@ async function search(
   const targets = searchedConnections(registry, connectionName);
   const candidates: SearchCandidate[] =
     connectionName === undefined
-      ? catalog.deferred.map((definition) => entryCandidate(definition, catalog.describe))
+      ? [
+          ...catalog.deferred.map((definition) => entryCandidate(definition, catalog.describe)),
+          ...catalog.skills.map(skillCandidate),
+        ]
       : [];
   const unavailable: UnavailableConnection[] = [];
   if (registry !== undefined && targets.length > 0) {
@@ -168,9 +169,7 @@ async function search(
   const limit = clampInteger(input.limit, 1, MAX_LIMIT, DEFAULT_LIMIT);
   const offset = clampInteger(input.offset, 0, Number.MAX_SAFE_INTEGER, 0);
   const output: { -readonly [K in keyof SearchOutput]: SearchOutput[K] } = {
-    results: ranked
-      .slice(offset, offset + limit)
-      .map(({ description, signature, tool }) => ({ description, signature: signature(), tool })),
+    results: ranked.slice(offset, offset + limit).map((candidate) => candidate.result()),
     total: ranked.length,
   };
   if (unavailable.length > 0) output.unavailable = unavailable;
@@ -182,12 +181,24 @@ function entryCandidate(
   describe: (definition: HarnessToolDefinition) => string,
 ): SearchCandidate {
   const inputSchema = serializeInputSchema(definition.inputSchema as ToolSchemaSource);
+  const description = describe(definition);
   return {
-    description: describe(definition),
+    description,
     inputSchema,
     name: definition.name,
-    signature: () => entrySignature(definition, inputSchema),
-    tool: definition.name,
+    result: () => ({
+      description,
+      signature: entrySignature(definition, inputSchema),
+      tool: definition.name,
+    }),
+  };
+}
+
+function skillCandidate({ description, name, path }: CatalogSkill): SearchCandidate {
+  return {
+    description,
+    name,
+    result: () => ({ description, path, skill: name }),
   };
 }
 
@@ -200,8 +211,11 @@ function connectionCandidate(
     description: tool.description,
     inputSchema: tool.inputSchema,
     name: tool.name,
-    signature: () => connectionToolSignature(connection, tool),
-    tool: connectionToolName(connection.connectionName, tool.name),
+    result: () => ({
+      description: tool.description,
+      signature: connectionToolSignature(connection, tool),
+      tool: connectionToolName(connection.connectionName, tool.name),
+    }),
   };
 }
 

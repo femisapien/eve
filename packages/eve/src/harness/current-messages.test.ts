@@ -78,34 +78,6 @@ describe("createCurrentMessages", () => {
     ]);
   });
 
-  it("prepares tracked announcements without advancing the recorded baseline", () => {
-    const recorded = { availableSkills: "working" };
-    const current = createCurrentMessages([{ role: "user", content: "working", kind: "user" }], {
-      historyState: recorded,
-    });
-
-    current.addAnnouncements({ availableSkills: "working" });
-    current.addAnnouncements({ availableSkills: "completed" });
-    current.addAnnouncements({ availableSkills: "completed" });
-
-    expect(recorded).toEqual({ availableSkills: "working" });
-    expect(current.historyState).toEqual({ availableSkills: "completed" });
-    expect(current.history).toEqual([
-      { role: "user", content: "working", kind: "user" },
-      { role: "user", content: "completed", kind: "context.state" },
-    ]);
-  });
-
-  it("ignores empty or absent announcements", () => {
-    const current = createCurrentMessages([]);
-    current.addAnnouncements({ availableSkills: "skills" });
-    current.addAnnouncements({ availableSkills: "" });
-    current.addAnnouncements({});
-
-    expect(current.history).toEqual([{ role: "user", content: "skills", kind: "context.state" }]);
-    expect(current.historyState).toEqual({ availableSkills: "skills" });
-  });
-
   it("persists additions without storing client context or replacing projected history", () => {
     const hidden = {
       role: "user" as const,
@@ -157,13 +129,10 @@ describe("createCurrentMessages", () => {
       approvalTail,
     ]);
 
-    current.addAnnouncements({
-      availableSkills: "skills",
-      keyed: { connections: { value: "[]", render: () => "connections" } },
-    });
+    current.addAnnouncements({ connections: { value: "[]", render: () => "connections" } });
 
     // A system-message fallback would change the cached prefix; nothing is
-    // recorded, so the next step appends both announcements.
+    // recorded, so the next step appends the announcement.
     expect(current.systemMessages).toEqual([]);
     expect(current.nonSystemMessages.at(-1)).toBe(approvalTail);
     expect(current.historyState).toEqual({});

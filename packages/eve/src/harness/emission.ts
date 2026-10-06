@@ -39,6 +39,7 @@ import type { TokenUsage } from "#shared/token-usage.js";
 import {
   createRuntimeToolResultFromStepResult,
   createRuntimeToolResultFromToolError,
+  toActionResult,
   createToolResultMessagePartFromToolError,
 } from "#harness/action-result-helpers.js";
 import {
@@ -435,7 +436,7 @@ async function consumeStreamContent(
     await emitFn(
       createActionResultEvent({
         presentation: resultPresentation,
-        result,
+        result: toActionResult(result, actionInputs.get(result.callId)),
         sequence: state.sequence,
         stepIndex: state.stepIndex,
         turnId: state.turnId,

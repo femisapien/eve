@@ -12,12 +12,17 @@ interface ListedConnection {
 interface CatalogListing {
   readonly agents: readonly string[];
   readonly connections: readonly ListedConnection[];
+  readonly skills: readonly string[];
   readonly tools: readonly string[];
 }
 
+/** Each name group's label, which both the listing and its diffs start lines with. */
+export const NAME_GROUP_LABELS = { agents: "Agents", skills: "Skills", tools: "Tools" } as const;
+
 const NAME_GROUPS = [
-  ["tools", "Tools"],
-  ["agents", "Agents"],
+  ["tools", NAME_GROUP_LABELS.tools],
+  ["agents", NAME_GROUP_LABELS.agents],
+  ["skills", NAME_GROUP_LABELS.skills],
 ] as const;
 
 const ANNOUNCEMENT_KEY = "catalog";
@@ -25,6 +30,7 @@ const ANNOUNCEMENT_KEY = "catalog";
 /**
  * Announces the catalog: a baseline listing once it has entries, then only
  * what changed. Names only; descriptions and signatures come from `search`.
+ * Skills that aren't deferred are announced with their descriptions elsewhere.
  * Connection tools stay unlisted, since listing them needs a network call
  * and maybe a sign-in. `announced` holds the values announced so far.
  */
@@ -58,6 +64,10 @@ function listCatalog(catalog: StepCatalog): CatalogListing {
         name: connection.connectionName,
       }))
       .sort((a, b) => a.name.localeCompare(b.name)),
+    skills: [...catalog.skills.values()]
+      .filter((skill) => skill.deferred)
+      .map((skill) => skill.name)
+      .sort(),
     tools: names(false),
   };
 }
@@ -96,7 +106,9 @@ function renderCatalogAnnouncement(
       .filter((entry) => !currentConnections.has(entry.name))
       .map((entry) => entry.name),
   );
-  if (removed.length > 0) parts.push(`No longer available, do not call: ${removed.join(", ")}`);
+  if (removed.length > 0) {
+    parts.push(`No longer available, do not call or load: ${removed.join(", ")}`);
+  }
 
   const delta = parts.join("\n");
   const replacement = `The catalog changed. This list replaces the previous one.\n${renderListing(current)}`;
@@ -105,7 +117,7 @@ function renderCatalogAnnouncement(
 
 function renderListing(listing: CatalogListing): string {
   const lines = [
-    "More tools are available than your tool list shows. Find them with search and call them with execute({ tool, input }).",
+    "More tools and skills are available than your context shows. Find them with search, call tools with execute({ tool, input }), and load skills with execute({ skill }).",
   ];
   for (const [key, label] of NAME_GROUPS) {
     if (listing[key].length > 0) lines.push(`${label}: ${listing[key].join(", ")}`);
@@ -124,7 +136,7 @@ function formatConnection(entry: ListedConnection): string {
 
 function isEmpty(listing: CatalogListing): boolean {
   return (
-    listing.tools.length === 0 && listing.agents.length === 0 && listing.connections.length === 0
+    NAME_GROUPS.every(([key]) => listing[key].length === 0) && listing.connections.length === 0
   );
 }
 

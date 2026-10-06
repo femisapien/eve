@@ -24,7 +24,7 @@ export default defineAgent({
 
 This turns off the optional defaults described below. Add back only the tools the agent needs with the command in each tool's section. Existing files under `agent/tools/` remain available, including same-name replacements such as `agent/tools/bash.ts`.
 
-`search` and `execute` stay available because they reach deferred tools, deferred agents, and connection tools.
+`search` and `execute` stay available because they reach deferred tools, deferred agents, and connection tools, and they load skills.
 
 ### `bash`
 
@@ -250,49 +250,18 @@ import { disableTool } from "eve/tools";
 export default disableTool();
 ```
 
-### `load_skill`
-
-`load_skill` pulls an on-demand [skill](../skills)'s instructions into the current turn. It appears only when the agent declares skills and adds no execution surface by itself.
-
-```sh
-eve add tool/load_skill
-```
-
-```ts title="agent/tools/load_skill.ts"
-export { default } from "eve/tools/load_skill";
-```
-
-Override it:
-
-```ts title="agent/tools/load_skill.ts"
-import { defineTool } from "eve/tools";
-import { loadSkill } from "eve/tools/load_skill";
-
-export default defineTool({
-  ...loadSkill,
-  description: "Load instructions for an available skill.",
-});
-```
-
-Disable it:
-
-```ts title="agent/tools/load_skill.ts"
-import { disableTool } from "eve/tools";
-
-export default disableTool();
-```
-
 ### `search` and `execute`
 
-`search` and `execute` let the model reach entries that are not in its tool list: tools defined with `deferred: true`, agents defined with `tool: "deferred"`, and every tool from the agent's [connections](../connections). eve adds both to every session of every agent, even when `defaultTools` is `false`, so there is no add command.
+`search` and `execute` let the model reach entries that are not in its tool list: tools defined with `deferred: true`, agents defined with `tool: "deferred"`, and every tool from the agent's [connections](../connections). The model also loads every [skill](../skills) through `execute`. eve adds both to every session of every agent, even when `defaultTools` is `false`, so there is no add command.
 
-- `search({ query?, connection?, signIn?, limit?, offset? })` returns matching entries, each with its exact `tool` name, its `description`, and a TypeScript `signature` rendered from its schemas, plus the `total` number of matches. Omit `query` to list every entry, or pass `connection` to search only that connection's tools. A plain search never asks the user to sign in. A connection the user has not signed in to appears under `unavailable` with `requiresSignIn: true` and an error that points to `signIn: true`. Matches from everything else are still returned.
+- `search({ query?, connection?, signIn?, limit?, offset? })` returns matching entries, plus the `total` number of matches. A tool match has its exact `tool` name, its `description`, and a TypeScript `signature` rendered from its schemas. A deferred skill's match has its `skill` name, its `description`, and the `path` of its `SKILL.md` when it has supporting files. Tools and skills rank together. Omit `query` to list every entry, or pass `connection` to search only that connection's tools. A plain search never asks the user to sign in. A connection the user has not signed in to appears under `unavailable` with `requiresSignIn: true` and an error that points to `signIn: true`. Matches from everything else are still returned.
 - `search({ connection, signIn: true, query? })` asks the user to sign in to that one connection when they have not yet, then returns its matching tools. Without `connection` it fails, so the user is asked about one service at a time.
 - `execute({ tool, input })` calls the entry named `tool` with `input`. A connection tool's name is `<connection>__<tool>`, such as `linear__list_issues`. eve checks `input` against the entry's input schema. An invalid input fails with the entry's signature, an unknown name fails with the closest names, and a tool already in the model's tool list fails with a reminder to call it directly. When a connection needs the user's authorization, the call asks the user to sign in and parks until sign-in completes.
+- `execute({ skill })` loads the named skill, deferred or not, and returns its instructions. An unknown name fails with the closest skill names. A name that matches a connection says to find its tools with `search({ connection })`. Pass exactly one of `tool` or `skill`; `input` goes only with `tool`.
 
-After `execute` resolves its entry, the call runs exactly like a direct call to that entry. Approval policies and `approvedTools`, workflow tools and tasks, agents, `endsTurn`, `toModelOutput`, hooks, and stream events all see the entry's own name and input, such as `linear__list_issues`. Only model history records the call as `execute`.
+After `execute` resolves its entry, the call runs exactly like a direct call to that entry. A skill load reports a `load-skill` action named for its skill and an `execute_tool eve:load-skill` span. Approval policies and `approvedTools`, workflow tools and tasks, agents, `endsTurn`, `toModelOutput`, hooks, and stream events all see the entry's own name and input, such as `linear__list_issues`. Only model history records the call as `execute`.
 
-eve tells the model what it can reach in append-only context messages rather than in the system prompt: the names of deferred tools and agents, and each connection's name and description. A later step adds a message only when that listing changes. The definitions of `search` and `execute` never change, so adding a deferred entry, signing in, or resolving a dynamic connection keeps the cached prompt prefix.
+eve tells the model what it can reach in append-only context messages rather than in the system prompt: the names of deferred tools, agents, and skills, and each connection's name and description. A later step adds a message only when that listing changes. The definitions of `search` and `execute` never change, so adding a deferred entry, signing in, or resolving a dynamic connection keeps the cached prompt prefix.
 
 Both names are reserved. The compiler rejects an authored `agent/tools/search.ts` or `agent/tools/execute.ts`, and a subagent or dynamic tool cannot use either name.
 
