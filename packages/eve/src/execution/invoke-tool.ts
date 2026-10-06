@@ -134,17 +134,19 @@ export async function invokeTool(
   }
 
   const callId = `call_${createUlid()}`;
+  // Each call is its own run in traces. A tool session id is stable per caller
+  // and key, so it only finds the sandbox: as a run or conversation id it would
+  // join calls days apart and show which calls came from the same caller.
+  const runSessionId = `call_session_${createUlid()}`;
   const sessionId =
-    key === undefined
-      ? `call_session_${createUlid()}`
-      : deriveToolSessionId({ current: options.auth, key });
+    key === undefined ? runSessionId : deriveToolSessionId({ current: options.auth, key });
   return await withInvokeToolSpan(
     {
       agentName: runtime.agentName,
       auth: options.auth,
       callId,
       origin: runtime.origin,
-      sessionId,
+      sessionId: runSessionId,
       toolName: name,
     },
     (observer) =>

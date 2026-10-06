@@ -282,6 +282,7 @@ In a tool session:
 - The sandbox opens on the first `ctx.getSandbox()` and is kept for later calls with the same key. Concurrent first calls share one sandbox.
 - The sandbox belongs to the agent's current sandbox definition. A deploy that changes it (the template, its snapshot, or the open options in `sandbox.ts` and its resources) starts a fresh, empty sandbox for the same key; the old one expires as below.
 - `ctx.session.id` is the same for every call with the key.
+- Traces still show each call as its own run. Its `agent.run.id` and `gen_ai.conversation.id` are a fresh id for that call, not `ctx.session.id`, so traces do not link calls that share a key.
 - Authored state still starts from its initial value on every call, and updates are not kept. Keep data that must outlive a call in the sandbox.
 - Calls may still run in parallel, and nothing orders them.
 
