@@ -13,10 +13,7 @@ import {
   writeTaskTable,
   type TaskTable,
 } from "#execution/tasks/table.js";
-import {
-  getProxyInputRequests,
-  upsertProxyInputRequestState,
-} from "#harness/proxy-input-requests.js";
+import { HumanInput, reduceHumanInput } from "#harness/hitl/index.js";
 import { createTestSessionState } from "#internal/testing/session-state.js";
 
 // No workflow runtime runs here: the run's cancel hook is a stub, and the
@@ -65,7 +62,9 @@ describe("answerTaskCancel", () => {
     });
 
     const committed = cursor.sessionState.snapshot.session;
-    expect([...getProxyInputRequests(committed.state).keys()]).toEqual(["summarize-run-ask-1"]);
+    expect(HumanInput.read(committed.state).relayedRequestIds()).toEqual(
+      new Set(["summarize-run-ask-1"]),
+    );
     expect(published).toEqual([
       {
         event: {
@@ -131,7 +130,9 @@ describe("applyTaskRunMessageStep", () => {
     );
 
     const committed = cursor.sessionState.snapshot.session;
-    expect([...getProxyInputRequests(committed.state).keys()]).toEqual(["summarize-run-ask-1"]);
+    expect(HumanInput.read(committed.state).relayedRequestIds()).toEqual(
+      new Set(["summarize-run-ask-1"]),
+    );
     expect(published).toEqual([
       {
         event: {
@@ -202,21 +203,18 @@ function startedTask(
 
 function withQuestion(session: DurableSession, runId: string): DurableSession {
   const requestId = `${runId}-ask-1`;
-  const state = upsertProxyInputRequestState({
-    entries: [
-      [
+  const asked = reduceHumanInput(session.state, {
+    at: REQUEST_EVENT,
+    requests: [
+      {
+        action: { callId: requestId, input: {}, kind: "tool-call", toolName: "ask" },
+        kind: "question",
+        prompt: "Which sources should the research cover?",
         requestId,
-        {
-          childContinuationToken: requestId,
-          event: REQUEST_EVENT,
-          kind: "question",
-          runId,
-          workflowAsk: { control: `${runId}-control`, question: {} },
-        },
-      ],
+      },
     ],
-    forChildContinuationToken: requestId,
-    state: session.state,
+    route: { childContinuationToken: requestId, control: `${runId}-control`, runId },
+    type: "relayed.requested",
   });
-  return { ...session, state };
+  return { ...session, state: asked.state };
 }

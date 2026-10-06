@@ -231,6 +231,64 @@ describe("relayed requests", () => {
     },
   );
 
+  it("records a typed answer as the person's message, before the answer it gave", () => {
+    const turn = relayed([question("q")]).input(
+      delivered([], { delegated: false, text: "production" }),
+    );
+
+    const types = turn.events.map((event) =>
+      event.type === "publish"
+        ? `${event.relayed === true ? "relayed:" : ""}${event.event.type}`
+        : event.type,
+    );
+    expect(types).toEqual([
+      "consumeMessage",
+      "message.received",
+      "forwardAnswer",
+      "relayed:input.resolved",
+    ]);
+    expect(turn.published("message.received")[0]?.data).toMatchObject({
+      message: "production",
+      sequence: CHILD_AT.sequence,
+      turnId: CHILD_AT.turnId,
+    });
+  });
+
+  it("parks the turn again when answers leave relayed requests open and nothing for the turn", () => {
+    const alice = { childContinuationToken: "alice" };
+    const bob = { childContinuationToken: "bob" };
+    const asked = relayed([question("b")], {
+      from: relayed([question("a")], { route: alice }),
+      route: bob,
+    });
+
+    const partial = asked.input(delivered([{ optionId: "staging", requestId: "a" }]));
+    expect(partial.humanInput.relayedRequestIds()).toEqual(new Set(["b"]));
+    expect(partial.events.filter((event) => event.type === "waitTurn")).toEqual([
+      { relayed: true, type: "waitTurn" },
+    ]);
+
+    // An answer the turn itself must read, or a message that answered nothing, resumes it instead.
+    const withOwn = asked.input(
+      delivered([
+        { optionId: "staging", requestId: "a" },
+        { optionId: "approve", requestId: "own" },
+      ]),
+    );
+    expect(withOwn.events.some((event) => event.type === "waitTurn")).toBe(false);
+    const withMessage = asked.input(
+      delivered([{ optionId: "staging", requestId: "a" }], {
+        delegated: false,
+        text: "Also check logs.",
+      }),
+    );
+    expect(withMessage.events.some((event) => event.type === "waitTurn")).toBe(false);
+
+    // The last answer leaves nothing open, so the turn's own step reports where it stands.
+    const complete = partial.input(delivered([{ optionId: "production", requestId: "b" }]));
+    expect(complete.events.some((event) => event.type === "waitTurn")).toBe(false);
+  });
+
   it("a relayed budget question answered Stop cancels this turn too", () => {
     const turn = relayed([BUDGET_QUESTION]).input(
       delivered([{ optionId: "stop", requestId: BUDGET_QUESTION.requestId }]),

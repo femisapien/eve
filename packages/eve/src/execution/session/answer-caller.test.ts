@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { SessionAuthContext } from "#channel/types.js";
 import { attributeAnswers } from "#execution/session/answer-caller.js";
-import { appendPendingInputBatch } from "#harness/pending-input-batches.js";
+import { Turn, approvalsRequested } from "#internal/testing/hitl.js";
 import type { InputRequest } from "#shared/input.js";
 
 const approval: InputRequest = {
@@ -28,17 +28,15 @@ const bob: SessionAuthContext = {
   principalId: "bob",
   principalType: "user",
 };
-const state = appendPendingInputBatch({
-  requests: [approval, question],
-  responseMessages: [],
-  session: {
-    agent: { modelReference: { id: "test" }, system: "", tools: [] },
-    compaction: { recentWindowSize: 10, threshold: 0.8 },
-    continuationToken: "test",
-    history: [],
-    sessionId: "session-1",
-  },
-}).state;
+const state = Turn.idle()
+  .input(approvalsRequested([approval]))
+  .input({
+    type: "relayed.requested",
+    at: { sequence: 0, stepIndex: 0, turnId: "turn" },
+    requests: [question],
+    route: { childContinuationToken: "child" },
+  })
+  .stored().state;
 const approve = { optionId: "approve", requestId: approval.requestId };
 const saturday = { optionId: "saturday", requestId: question.requestId };
 

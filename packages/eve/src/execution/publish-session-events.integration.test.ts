@@ -2,9 +2,8 @@ import { expect, it } from "vitest";
 
 import { replaceDurableSessionSnapshot } from "#execution/durable-session-store.js";
 import { emitWorkflowToolRunReportStep } from "#execution/tools/workflow/emit-workflow-tool-run-report-step.js";
-import { withdrawWorkflowToolRunQuestionStep } from "#execution/tools/workflow/withdraw-step.js";
-import { upsertProxyInputRequests } from "#harness/proxy-input-requests.js";
-import type { HarnessSession } from "#harness/types.js";
+import { withdrawRelayedRequestsStep } from "#harness/hitl/host/session-step.js";
+import { reduceHumanInput } from "#harness/hitl/index.js";
 import { createTestRuntime } from "#internal/testing/app-harness.js";
 import { createTestSessionState } from "#internal/testing/session-state.js";
 import type { MessageStreamEvent } from "#protocol/message.js";
@@ -83,30 +82,33 @@ it("publishes a session step's action.partial to the stream and its hooks", asyn
 it("relays a withdrawn workflow question's input.resolved to the stream and its hooks", async () => {
   const { hooked, runtime, sessionWritable, streamed } = await createPublishingRuntime();
   const base = createTestSessionState();
-  const asked = upsertProxyInputRequests({
-    entries: [
-      [
-        "ask-1",
-        {
-          workflowAsk: { control: "control", question: {} },
-          runId: "run-1",
-          childContinuationToken: "ask-1",
-          event: { sequence: 1, stepIndex: 0, turnId: "turn-1" },
-          kind: "question",
-        },
-      ],
+  const { state } = reduceHumanInput(base.snapshot.session.state, {
+    at: { sequence: 1, stepIndex: 0, turnId: "turn-1" },
+    requests: [
+      {
+        action: { callId: "ask-1", input: {}, kind: "tool-call", toolName: "ask" },
+        kind: "question",
+        prompt: "Which region?",
+        requestId: "ask-1",
+      },
     ],
-    forChildContinuationToken: "ask-1",
-    session: base.snapshot.session as HarnessSession,
+    route: { childContinuationToken: "ask-1", control: "control", runId: "run-1" },
+    type: "relayed.requested",
   });
 
   await runtime.run(async () => {
-    await withdrawWorkflowToolRunQuestionStep({
-      control: "control",
-      requestId: "ask-1",
-      runId: "run-1",
+    await withdrawRelayedRequestsStep({
+      intake: {
+        control: "control",
+        requestId: "ask-1",
+        runId: "run-1",
+        type: "relayed.withdrawn",
+      },
       serializedContext,
-      sessionState: replaceDurableSessionSnapshot({ session: asked, state: base }),
+      sessionState: replaceDurableSessionSnapshot({
+        session: { ...base.snapshot.session, state },
+        state: base,
+      }),
       sessionWritable,
     });
   });

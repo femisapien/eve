@@ -1,10 +1,11 @@
 import {
-  commitCancelledCoordinationBatch,
-  getPendingCoordinationBatch,
-} from "#harness/coordination.js";
-import type { DurableSessionState } from "#execution/durable-session-store.js";
+  readDurableSession,
+  replaceDurableSessionSnapshot,
+  type DurableSessionState,
+} from "#execution/durable-session-store.js";
 import {
   publishFromSessionStep,
+  relaySessionEvents,
   restoreSessionStep,
   type SessionHistoryStepState,
 } from "#execution/publish-session-events.js";
@@ -12,16 +13,10 @@ import {
   withSessionStateDelta,
   type WithSessionStateDelta,
 } from "#execution/session/state-delta.js";
-import { relayWithdrawnRequests } from "#execution/tools/workflow/withdraw-step.js";
 import { emitCancelledTurn } from "#harness/cancelled-turn-emission.js";
-import { declinedSignInEvents, withdrawHeldSignIns } from "#harness/held-requests.js";
-import {
-  cancelApprovalInputBatches,
-  getPendingApprovalRequests,
-} from "#harness/hitl/approval-input-requests.js";
-import { createInputResolvedEvent } from "#protocol/message.js";
-import type { HarnessModelMessage } from "#harness/messages.js";
-import { clearPendingSessionLimitPrompt } from "#harness/input-requests.js";
+import { HumanInput } from "#harness/hitl/index.js";
+import { type HarnessModelMessage, validateHarnessModelMessages } from "#harness/messages.js";
+import { cancelParkedTurn } from "#harness/hitl/host/index.js";
 import { getHarnessEmissionState, setHarnessEmissionState } from "#harness/emission.js";
 import { removeBlockingWorkflowToolRuns } from "#harness/workflow-tool-runs.js";
 import {
@@ -30,8 +25,6 @@ import {
   takeSessionUsageDelta,
 } from "#harness/turn-tag-state.js";
 import type { TokenUsage } from "#shared/token-usage.js";
-
-const CANCELLED_REASON = "Cancelled.";
 
 export interface CancelledTurnSettleResult {
   readonly serializedContext: Record<string, unknown>;
@@ -51,11 +44,10 @@ interface CancelledTurnSettleInput extends SessionHistoryStepState {
 }
 
 /**
- * Settles one cancelled turn: relays `input.resolved` for every request the
- * session proxies, emits `turn.cancelled` → `session.waiting`, drops pending
- * coordination state, and persists the between-turns session. Runs in the
- * owner, whose wake sources exclude the cancel hook, so a queued cancel wake
- * cannot re-dispatch it.
+ * Settles one cancelled turn: tells human input the turn was cancelled, emits
+ * `turn.cancelled` → `session.waiting`, drops the runs the turn waited on, and
+ * persists the between-turns session. Runs in the owner, whose wake sources
+ * exclude the cancel hook, so a queued cancel wake cannot re-dispatch it.
  */
 export async function settleCancelledTurnStep(
   input: CancelledTurnSettleInput,
@@ -68,68 +60,45 @@ export async function settleCancelledTurnStep(
 export async function settleCancelledTurn(
   input: CancelledTurnSettleInput,
 ): Promise<CancelledTurnSettleResult> {
-  // The cancel stopped every descendant and task, so nobody can answer a request the session relays.
-  const relayed = await relayWithdrawnRequests(input, () => true);
+  const parked = readDurableSession(input.sessionState);
+  // The turn that made the held step's calls owns the runs they started.
+  const owningTurnId =
+    HumanInput.read(parked.state).heldCalls()?.at.turnId ?? input.sessionState.emissionState.turnId;
+  // The held step joins history with each call it waited on answered as not run.
+  const cancelled = await cancelParkedTurn(parked);
+  // The cancel stopped every child and run, so channels stop offering what they asked.
+  const withdrawn = await relaySessionEvents(
+    {
+      ...input,
+      sessionState: replaceDurableSessionSnapshot({
+        session: cancelled.session,
+        state: input.sessionState,
+      }),
+    },
+    cancelled.relayed,
+  );
   const step = {
-    ...(await restoreSessionStep({ ...relayed, sessionWritable: input.sessionWritable })),
+    ...(await restoreSessionStep({ ...withdrawn, sessionWritable: input.sessionWritable })),
     history: input.history,
   };
   const durableState = step.durableSession.state;
-  // Every request the turn held ends with it: its sign-ins and its approvals.
-  const withdraw = { completedAt: Date.now(), reason: CANCELLED_REASON };
-  const withdrawal = withdrawHeldSignIns(durableState, withdraw);
-  const cancelledApprovals = getPendingApprovalRequests(durableState);
   const { published, result: usage } = await publishFromSessionStep(step, {
     origin: "own",
     async publish(emit) {
+      for (const event of cancelled.own) await emit(event);
       const emissionState = getHarnessEmissionState(durableState);
-      for (const event of declinedSignInEvents(
-        withdrawal.withdrawn,
-        CANCELLED_REASON,
-        emissionState,
-      )) {
-        await emit(event);
-      }
-      if (cancelledApprovals.length > 0) {
-        await emit(
-          createInputResolvedEvent({
-            resolutions: cancelledApprovals.map((request) => ({
-              kind: request.kind,
-              outcome: "cancelled",
-              requestId: request.requestId,
-            })),
-            sequence: emissionState.sequence,
-            stepIndex: emissionState.stepIndex,
-            turnId: emissionState.turnId,
-          }),
-        );
-      }
       return await emitCancelledTurn(emit, emissionState, getSessionUsage(step.durableSession));
     },
-    updateSession(baseSession, emissionState) {
-      const session = {
-        ...baseSession,
-        state: withdrawHeldSignIns(baseSession.state, withdraw).state,
-      };
-      // `clearPendingSessionLimitPrompt`: cancellation settles with the step's
-      // input snapshot, which can resurrect an already-answered session-limit
-      // prompt (the decline that cancelled this turn consumed the answer in the
-      // discarded turn state). The pre-model gate re-raises the prompt while the
-      // violation holds, so the next delivery gets a fresh prompt instead of
-      // queueing forever behind a stale one.
-      const owningTurnId =
-        getPendingCoordinationBatch(session.state)?.event.turnId ??
-        input.sessionState.emissionState.turnId;
+    updateSession(session, emissionState) {
+      const committed = removeBlockingWorkflowToolRuns(
+        { ...session, outputSchema: undefined },
+        owningTurnId,
+      );
       const cancelledSession = setHarnessEmissionState(
-        clearPendingSessionLimitPrompt(
-          // After the coordination batch, which owns an assistant response it
-          // shares with approvals raised beside its calls.
-          cancelApprovalInputBatches(
-            commitCancelledCoordinationBatch(
-              removeBlockingWorkflowToolRuns({ ...session, outputSchema: undefined }, owningTurnId),
-            ),
-          ),
-        ),
+        {
+          ...committed,
+          history: validateHarnessModelMessages([...committed.history, ...cancelled.history]),
+        },
         emissionState,
       );
       if (!input.reportUsage || getTurnUsageState(session.state) === undefined) {

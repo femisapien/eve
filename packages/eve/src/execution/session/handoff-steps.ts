@@ -1,3 +1,4 @@
+import { HumanInput } from "#harness/hitl/index.js";
 import { getBlockingWorkflowToolRuns } from "#harness/workflow-tool-runs.js";
 import {
   EntityConflictError,
@@ -17,7 +18,6 @@ import { getResolvedRuntimeAgentNode } from "#runtime/graph.js";
 import { BundleKey } from "#runtime/sessions/runtime-context-keys.js";
 import { getSandboxEnvironmentRuntime } from "#shared/sandbox-environment.js";
 import { walkCauseChain } from "#shared/errors.js";
-import { isObject } from "#shared/guards.js";
 
 const log = createLogger("execution.handoff");
 
@@ -27,24 +27,12 @@ export function isSessionStateIdleForHandoff(sessionState: DurableSessionState):
   // Decoding the run registry rejects corrupt state before any busy-work shortcut.
   const workflowToolRuns = getBlockingWorkflowToolRuns(state);
 
-  // These registries are deleted when work settles. Their ordinary readers
-  // tolerate malformed values as absent; that must not authorize a handoff.
-  const pendingKeys = [
-    "eve.runtime.pendingAuthorization",
-    "eve.runtime.pendingInputBatch",
-    "eve.runtime.pendingCoordinationBatch",
-    "eve.runtime.deferredStepInput",
-    "eve.harness.pendingWorkflowInterrupt",
-  ];
-  if (pendingKeys.some((key) => state?.[key] !== undefined)) return false;
-  const batches = state?.["eve.runtime.pendingInputBatches"];
-  if (batches !== undefined && (!Array.isArray(batches) || batches.length > 0)) return false;
-  const proxyRequests = state?.["eve.runtime.proxyInputRequests"];
-  if (
-    proxyRequests !== undefined &&
-    (!isObject(proxyRequests) || Object.keys(proxyRequests).length > 0)
-  )
-    return false;
+  // Requests parked where this build can't read them still wait on a person.
+  if (HumanInput.unreadableKeys(state).length > 0) return false;
+  const humanInput = HumanInput.read(state);
+  // A held step counts even when its legacy record can't be read.
+  if (humanInput.holdsStep()) return false;
+  if (humanInput.isWaitingForInput() || humanInput.relayedRequestIds().size > 0) return false;
   return workflowToolRuns.length === 0;
 }
 

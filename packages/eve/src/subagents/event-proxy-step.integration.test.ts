@@ -13,8 +13,13 @@ import {
 } from "#context/keys.js";
 import type { DurableSession } from "#execution/durable-session-store.js";
 import { openSessionEventPublisher } from "#execution/publish-session-events.js";
-import { createSessionLimitContinuationRequest } from "#harness/session-limit-continuation.js";
-import { getProxyInputRequests } from "#harness/proxy-input-requests.js";
+import {
+  createSessionLimitContinuationRequest,
+  HumanInput,
+  type Command,
+  reduceHumanInput,
+} from "#harness/hitl/index.js";
+import type { SessionStateMap } from "#harness/types.js";
 import { createAuthorizationRequiredEvent, type MessageStreamEvent } from "#protocol/message.js";
 import type { HookContext } from "#public/definitions/hook.js";
 import { createRuntimeHookRegistry } from "#runtime/hooks/registry.js";
@@ -23,8 +28,43 @@ import {
   ChannelKey,
   type CompiledBundle,
 } from "#runtime/sessions/runtime-context-keys.js";
-import { emitProxiedSubagentEvent } from "#subagents/event-proxy-step.js";
-import { routeDeliverPayload } from "#subagents/hitl-proxy.js";
+import type { InputResponse } from "#shared/input.js";
+import { deserializeContext } from "#context/serialize.js";
+import { replaceDurableSessionSnapshot } from "#execution/durable-session-store.js";
+import { createTestSessionState } from "#internal/testing/session-state.js";
+import type { RestoredSessionStep, SessionStepState } from "#execution/publish-session-events.js";
+import { relaySubagentEvent } from "#harness/hitl/host/index.js";
+
+// The relay restores the parent context from the step's serialized context;
+// these tests hand it the context they built instead.
+vi.mock("#context/serialize.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("#context/serialize.js")>()),
+  deserializeContext: vi.fn(),
+}));
+
+async function relay({
+  ctx,
+  durableSession,
+  ...input
+}: RestoredSessionStep & Omit<Parameters<typeof relaySubagentEvent>[0], keyof SessionStepState>) {
+  vi.mocked(deserializeContext).mockResolvedValue(ctx);
+  return await relaySubagentEvent({
+    ...input,
+    serializedContext: {},
+    sessionState: replaceDurableSessionSnapshot({
+      session: durableSession,
+      state: createTestSessionState(),
+    }),
+  });
+}
+
+/** Where the session sends these answers, and the `input.resolved` it relays for them. */
+function answered(
+  state: SessionStateMap | undefined,
+  responses: readonly InputResponse[],
+): readonly Command[] {
+  return reduceHumanInput(state, { responses, type: "delivery.received" }).events;
+}
 
 function fixture() {
   const order: string[] = [];
@@ -121,7 +161,7 @@ function fixture() {
 describe("proxied stream hooks", () => {
   it("publishes the request and parks the open turn in parent context", async () => {
     const f = fixture();
-    const result = await emitProxiedSubagentEvent(f);
+    const result = await relay(f);
     expect(f.events.map((event) => event.type)).toEqual(["input.requested", "turn.waiting"]);
     expect(f.events[1]).toMatchObject({ data: { sequence: 1, turnId: "parent-turn" } });
     expect(f.order).toEqual([
@@ -147,28 +187,33 @@ describe("proxied stream hooks", () => {
       state: { pendingRequests: [f.request] },
     });
     expect(result.sessionState.continuationToken).toBe("http:parent-thread");
-    expect(result.sessionState.hasProxyInputRequests).toBe(true);
     expect(result.sessionState.emissionState).toMatchObject({ sequence: 1, turnId: "parent-turn" });
-    const routed = routeDeliverPayload({
-      payload: { inputResponses: [{ requestId: f.request.requestId, optionId: "continue" }] },
-      state: result.sessionState.snapshot.session.state,
-    });
-    expect(routed.forSelf).toBeUndefined();
-    expect(routed.forChildren).toEqual([
+    const answer = [{ requestId: f.request.requestId, optionId: "continue" }];
+    expect(answered(result.sessionState.snapshot.session.state, answer)).toEqual([
       {
-        childContinuationToken: "child-token",
-        payload: { inputResponses: [{ requestId: f.request.requestId, optionId: "continue" }] },
-        resolved: {
-          event: { sequence: 7, stepIndex: 2, turnId: "child-turn" },
-          resolutions: [
-            {
-              kind: "session-limit",
-              outcome: "answered",
-              requestId: f.request.requestId,
-              response: { requestId: f.request.requestId, optionId: "continue" },
-            },
-          ],
+        responses: answer,
+        route: { childContinuationToken: "child-token" },
+        type: "forwardAnswer",
+      },
+      {
+        event: {
+          data: {
+            resolutions: [
+              {
+                kind: "session-limit",
+                outcome: "answered",
+                requestId: f.request.requestId,
+                response: answer[0],
+              },
+            ],
+            sequence: 7,
+            stepIndex: 2,
+            turnId: "child-turn",
+          },
+          type: "input.resolved",
         },
+        relayed: true,
+        type: "publish",
       },
     ]);
   });
@@ -329,7 +374,7 @@ describe("proxied stream hooks", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
     try {
-      const result = await emitProxiedSubagentEvent({ ...f, hookPayload });
+      const result = await relay({ ...f, hookPayload });
       expect(fetchMock).toHaveBeenCalledOnce();
       const forwarded = JSON.parse(fetchMock.mock.calls[0]![1]!.body as string);
       expect(forwarded).toMatchObject({
@@ -340,19 +385,12 @@ describe("proxied stream hooks", () => {
       expect(forwarded.inputSource).toBe(JSON.stringify(["child-token", "nested-alice"]));
       expect(f.order).not.toContain("channel:input.requested");
       expect(f.events.map((event) => event.type)).toEqual(["input.requested", "turn.waiting"]);
-      expect(result.sessionState.hasProxyInputRequests).toBe(true);
 
-      const answer = { inputResponses: [{ requestId: f.request.requestId, optionId: "continue" }] };
-      expect(
-        routeDeliverPayload({ payload: answer, state: result.sessionState.snapshot.session.state }),
-      ).toMatchObject({
-        forSelf: undefined,
-        forChildren: [
-          {
-            childContinuationToken: "child-token",
-            payload: answer,
-          },
-        ],
+      const answer = [{ requestId: f.request.requestId, optionId: "continue" }];
+      expect(answered(result.sessionState.snapshot.session.state, answer)).toContainEqual({
+        responses: answer,
+        route: { childContinuationToken: "child-token", inputSource: "nested-alice" },
+        type: "forwardAnswer",
       });
     } finally {
       vi.unstubAllGlobals();
@@ -383,7 +421,7 @@ describe("proxied stream hooks", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
     try {
-      await emitProxiedSubagentEvent({
+      await relay({
         ...f,
         hookPayload: {
           callId: "nested-call",
@@ -432,7 +470,7 @@ describe("proxied stream hooks", () => {
           prompt: `Approve ${name}'s issue?`,
           requestId: `approval-${name}`,
         };
-        const result = await emitProxiedSubagentEvent({
+        const result = await relay({
           ...f,
           durableSession: session,
           hookPayload: {
@@ -459,28 +497,22 @@ describe("proxied stream hooks", () => {
           inputSource: JSON.stringify([`child-${name}`, null]),
         })),
       );
-      expect([...getProxyInputRequests(session.state).keys()]).toEqual([
-        "approval-Alice",
-        "approval-Bob",
-      ]);
-      const routed = routeDeliverPayload({
-        payload: {
-          inputResponses: ["Alice", "Bob"].map((name) => ({
-            requestId: `approval-${name}`,
-            optionId: "approve",
-          })),
-        },
-        state: session.state,
-      });
+      expect(HumanInput.read(session.state).relayedRequestIds()).toEqual(
+        new Set(["approval-Alice", "approval-Bob"]),
+      );
+      const answers = ["Alice", "Bob"].map((name) => ({
+        requestId: `approval-${name}`,
+        optionId: "approve",
+      }));
       expect(
-        routed.forChildren.map(({ childContinuationToken, payload }) => ({
-          childContinuationToken,
-          payload,
-        })),
+        answered(session.state, answers).flatMap((event) =>
+          event.type === "forwardAnswer" ? [event] : [],
+        ),
       ).toEqual(
-        ["Alice", "Bob"].map((name) => ({
-          childContinuationToken: `child-${name}`,
-          payload: { inputResponses: [{ requestId: `approval-${name}`, optionId: "approve" }] },
+        ["Alice", "Bob"].map((name, index) => ({
+          responses: [answers[index]],
+          route: { childContinuationToken: `child-${name}` },
+          type: "forwardAnswer",
         })),
       );
     } finally {
@@ -501,11 +533,11 @@ describe("proxied stream hooks", () => {
       vi.fn(async () => Response.json({ ok: false }, { status: 503 })),
     );
     try {
-      await expect(emitProxiedSubagentEvent(f)).rejects.toThrow("HTTP 503");
+      await expect(relay(f)).rejects.toThrow("HTTP 503");
       expect(f.order).not.toContain("channel:input.requested");
       expect(f.events).toHaveLength(0);
       expect(f.sessionWritable.locked).toBe(false);
-      expect(getProxyInputRequests(f.durableSession.state).size).toBe(0);
+      expect(HumanInput.read(f.durableSession.state).relayedRequestIds().size).toBe(0);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -514,7 +546,7 @@ describe("proxied stream hooks", () => {
   it("isolates hook failures after publication and releases the writer", async () => {
     const f = fixture();
     f.typed.mockRejectedValueOnce(new Error("audit unavailable"));
-    await emitProxiedSubagentEvent(f);
+    await relay(f);
     expect(f.events.map((event) => event.type)).toEqual(["input.requested", "turn.waiting"]);
     expect(f.typed).toHaveBeenCalledTimes(2);
     expect(f.wildcard).toHaveBeenCalledTimes(2);

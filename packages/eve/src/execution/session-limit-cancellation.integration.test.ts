@@ -107,10 +107,10 @@ describe("session-limit continuation decline integration", () => {
         expect(firstTurn.at(-1)?.type).toBe("session.waiting");
         expectNoFailureEvents(firstTurn);
 
-        // Turn 2 parks on the continuation prompt before any model call.
+        // Turn 2 waits on the continuation prompt before any model call.
         await deliver(continuationToken, { message: "keep going please" });
         const promptTurn = await stream.nextTurn();
-        expect(promptTurn.at(-1)?.type).toBe("session.waiting");
+        expect(promptTurn.at(-1)).toMatchObject({ data: { on: "input" }, type: "turn.waiting" });
         const requestId = requestIdFromPromptTurn(promptTurn);
 
         // Declining settles the turn as cancelled — a user decision, not an
@@ -121,13 +121,18 @@ describe("session-limit continuation decline integration", () => {
         const declinedTurn = await stream.nextTurn();
 
         expect(declinedTurn.at(-1)?.type).toBe("session.waiting");
+        // Stop answers the question once, then cancels the turn waiting on it.
         expect(
           containsEventSequence(declinedTurn, [
-            "turn.started",
+            "input.resolved",
             "turn.cancelled",
             "session.waiting",
           ]),
         ).toBe(true);
+        expect(filterEventsByType(declinedTurn, "input.resolved")).toMatchObject([
+          { data: { resolutions: [{ outcome: "answered", requestId }] } },
+        ]);
+        expect(filterEventsByType(declinedTurn, "turn.started")).toHaveLength(0);
         expect(filterEventsByType(declinedTurn, "turn.cancelled")).toHaveLength(1);
         expect(filterEventsByType(declinedTurn, "session.completed")).toHaveLength(0);
         expectNoFailureEvents(declinedTurn);
@@ -137,7 +142,7 @@ describe("session-limit continuation decline integration", () => {
         await deliver(continuationToken, { message: "try again" });
         const repromptTurn = await stream.nextTurn();
 
-        expect(repromptTurn.at(-1)?.type).toBe("session.waiting");
+        expect(repromptTurn.at(-1)?.type).toBe("turn.waiting");
         expect(filterEventsByType(repromptTurn, "input.requested")).toHaveLength(1);
         expect(filterEventsByType(repromptTurn, "turn.cancelled")).toHaveLength(0);
         expectNoFailureEvents(repromptTurn);

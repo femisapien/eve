@@ -303,11 +303,10 @@ async function runSessionLoop(
           return { kind: "terminal", outcome: { kind: "expired" } };
         case "clear":
         case "compact":
+        case "cancel-turn":
           continue;
         case "turn":
           return await runDeliveredTurn(next);
-        case "cancel-turn":
-          continue;
       }
     }
   };

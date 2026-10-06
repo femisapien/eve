@@ -1,5 +1,5 @@
 import type { SessionAuthContext } from "#channel/types.js";
-import { getPendingInputBatches } from "#harness/pending-input-batches.js";
+import { HumanInput } from "#harness/hitl/index.js";
 import type { SessionStateMap, StepInput } from "#harness/types.js";
 
 /**
@@ -20,19 +20,17 @@ export function attributeAnswers(input: {
   if (stepInput === undefined || stepInput.message !== undefined || responses.length === 0) {
     return undefined;
   }
+  const humanInput = HumanInput.read(input.state);
   const requests = new Map(
-    getPendingInputBatches(input.state).flatMap((batch) =>
-      batch.requests.map((request) => [request.requestId, request.kind] as const),
-    ),
+    [...humanInput.openRequestIds(), ...humanInput.relayedRequestIds()].map((requestId) => [
+      requestId,
+      humanInput.isApproval(requestId) ? "approval" : "question",
+    ]),
   );
   if (!responses.every((response) => requests.has(response.requestId))) return undefined;
 
-  const approvals = responses.filter(
-    (response) => requests.get(response.requestId) === "tool-approval",
-  );
-  const others = responses.filter(
-    (response) => requests.get(response.requestId) !== "tool-approval",
-  );
+  const approvals = responses.filter((response) => requests.get(response.requestId) === "approval");
+  const others = responses.filter((response) => requests.get(response.requestId) !== "approval");
   // An unauthenticated approval stays attributed to no one; it must never pass
   // as the turn's caller.
   const { inputResponses: _answered, ...rest } = stepInput;

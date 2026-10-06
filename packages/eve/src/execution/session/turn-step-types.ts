@@ -49,6 +49,8 @@ interface DurableStepResultFields {
 export type DurableStepResult = (
   | {
       readonly action: "continue" | "done";
+      /** The step ran approved calls; the next step reads their results before any delivery. */
+      readonly readsResults?: true;
       readonly output?: unknown;
       readonly isError?: boolean;
       readonly usage?: TokenUsage;
@@ -57,14 +59,14 @@ export type DurableStepResult = (
   | { readonly action: "cancelled" | "steered" }
   /** The model ended the turn while tasks work; the turn waits for them. */
   | { readonly action: "held"; readonly hold: "tasks"; readonly taskIds: readonly string[] }
-  /** The turn waits on a sign-in or tool approval it raised. */
+  /** The turn waits on a person: an answer, a message from its own person, or a cancel. */
   | {
       readonly action: "held";
-      readonly authorizationAttemptIds: readonly string[];
-      readonly hasPendingInputBatch: boolean;
-      readonly hold: "request";
-      /** Pending input request ids an answer can resolve. */
+      readonly hold: "input";
+      /** The open requests an answer can resolve. */
       readonly inputRequestIds: readonly string[];
+      /** The authorization attempts whose callbacks, all of them, wake the turn. */
+      readonly authorizationAttemptIds: readonly string[];
     }
   | {
       readonly action: "park";

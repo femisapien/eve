@@ -1,4 +1,5 @@
 import type { DeliverHookPayload, DeliverPayload } from "#channel/types.js";
+import type { Steering } from "#harness/hitl/index.js";
 import { coalesceDeliveries } from "#harness/messages.js";
 import { ANONYMOUS_PRINCIPAL, principalOf } from "#execution/session/principal.js";
 
@@ -97,12 +98,7 @@ export class SessionInputQueue {
       (entry): entry is QueuedAuthorization =>
         entry.kind === "authorization" && attemptIds.has(entry.attemptId),
     );
-    if (
-      taken.length === 0 ||
-      new Set(taken.map((entry) => entry.attemptId)).size < attemptIds.size
-    ) {
-      return undefined;
-    }
+    if (taken.length === 0 || taken.length < attemptIds.size) return undefined;
     this.retain((entry) => !taken.includes(entry as QueuedAuthorization));
     return taken.map((entry) => entry.payload);
   }
@@ -130,13 +126,13 @@ export class SessionInputQueue {
   takeSteering(
     admitted: ReadonlySet<number>,
     turn: SteeringTurn,
-    options?: SteeringOptions,
+    humanInput?: Pick<Steering, "overridesQueue">,
   ): TurnSelection | undefined {
     const steering = this.entries.filter(
       (entry): entry is QueuedDelivery =>
         entry.kind === "delivery" &&
         admitted.has(entry.sequence) &&
-        isSteeringDelivery(entry.delivery, turn, options),
+        isSteeringDelivery(entry.delivery, turn, humanInput),
     );
     if (steering.length === 0) return undefined;
     this.retain((entry) => entry.kind !== "delivery" || !steering.includes(entry));
@@ -149,7 +145,7 @@ export class SessionInputQueue {
   }
 
   /**
-   * Takes the next turn or control. Sign-ins end with the turn that raised
+   * Takes the next turn or control. Authorizations end with the turn that asked for
    * them, so a callback still queued between turns is stale and dropped.
    */
   takeNext(options?: {
@@ -217,27 +213,19 @@ export interface SteeringTurn {
   readonly principal: string;
 }
 
-export interface SteeringOptions {
-  /**
-   * The turn waits on its own person for a sign-in or approval. Their message
-   * steers even with `turnPolicy: "queue"`: queued, it would wait for a turn
-   * that cannot end until they act.
-   */
-  readonly heldOnPerson?: boolean;
-}
-
 /**
  * Only the turn's own principal steers it; another principal's message waits
  * for the turn to end. A delivery without auth acts as the session's current
- * identity, which is the turn's.
+ * identity, which is the turn's. Whether it steers past a queue turn policy
+ * is human input's to say (`HumanInput#steering`).
  */
 export function isSteeringDelivery(
   delivery: DeliverHookPayload,
   turn: SteeringTurn,
-  options?: SteeringOptions,
+  steering?: Pick<Steering, "overridesQueue">,
 ): boolean {
   return (
-    (options?.heldOnPerson === true || (delivery.turnPolicy ?? "steer") === "steer") &&
+    (steering?.overridesQueue === true || (delivery.turnPolicy ?? "steer") === "steer") &&
     (delivery.caller === undefined || delivery.caller.callId === turn.callerCallId) &&
     (delivery.auth === undefined || principalOf(delivery.auth) === turn.principal)
   );
@@ -259,6 +247,8 @@ function combine(entries: readonly DeliveryAdmission[]): DeliverHookPayload {
 }
 
 function authorizationAttemptId(payload: DeliverPayload): string | undefined {
-  const callback = payload["authorizationCallback"] as { readonly attemptId?: unknown } | undefined;
-  return typeof callback?.attemptId === "string" ? callback.attemptId : undefined;
+  const callback: unknown = payload["authorizationCallback"];
+  if (typeof callback !== "object" || callback === null) return undefined;
+  const attemptId: unknown = Reflect.get(callback, "attemptId");
+  return typeof attemptId === "string" ? attemptId : undefined;
 }

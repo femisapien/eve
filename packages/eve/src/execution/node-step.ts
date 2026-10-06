@@ -7,7 +7,12 @@ import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import type { ExecutionInstrumentation } from "#instrumentation/runtime.js";
 import { LOAD_SKILL_TOOL_NAME } from "#runtime/skills/fragment-context.js";
 import { createToolLoopHarness } from "#harness/tool-loop.js";
-import type { HandleEventFn, HarnessToolMap, StepFn } from "#harness/types.js";
+import type {
+  HandleEventFn,
+  HarnessToolMap,
+  StepFn,
+  ToolLoopHarnessConfig,
+} from "#harness/types.js";
 import { resolveInstalledPackageInfo } from "#internal/application/package.js";
 import { createLogger } from "#internal/logging.js";
 import type { RuntimeIdentity } from "#protocol/message.js";
@@ -58,6 +63,8 @@ interface CreateExecutionNodeStepInput {
    * capability-gated behavior tracks the current run.
    */
   readonly capabilities?: SessionCapabilities;
+  /** The authorization callbacks the step's delivery carried. */
+  readonly authorizationCallbacks?: ToolLoopHarnessConfig["authorizationCallbacks"];
   /** Runs only a context clear and returns to the parked session. */
   readonly clearOnly?: boolean;
   /** Runs only a forced context compaction and returns to the parked session. */
@@ -99,6 +106,7 @@ export function createExecutionNodeStep(input: CreateExecutionNodeStepInput): St
   const step = createToolLoopHarness({
     steeringSignal: input.steeringSignal,
     abortSignal: input.abortSignal,
+    authorizationCallbacks: input.authorizationCallbacks,
     capabilities: input.capabilities,
     clearOnly: input.clearOnly,
     compactOnly: input.compactOnly,

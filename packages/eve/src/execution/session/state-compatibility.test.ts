@@ -38,7 +38,7 @@ describe("handoff state inspection", () => {
     expect(() =>
       isSessionStateIdleForHandoff(
         checkpoint({
-          "eve.runtime.pendingAuthorization": {},
+          "eve.runtime.pendingCoordinationBatch": {},
           "eve.workflowTool": {
             version: 4,
             runs: [{ ...run, address: { ...run.address, runId: null } }],
@@ -47,15 +47,29 @@ describe("handoff state inspection", () => {
       ),
     ).toThrow("Corrupt workflow tool run registry");
   });
+  // Releases before HumanInput parked requests under these keys. This build
+  // doesn't read them, so a session still carrying one must stay put.
   it.each([
     ["eve.runtime.pendingAuthorization", false],
+    ["eve.runtime.pendingAuthorization", { challenges: [{ attemptId: "a", name: "github" }] }],
     ["eve.runtime.pendingInputBatch", {}],
     ["eve.runtime.pendingInputBatches", [null]],
+    [
+      "eve.runtime.pendingInputBatches",
+      [{ requests: [{ kind: "tool-approval", requestId: "r" }], responseMessages: [] }],
+    ],
     ["eve.runtime.pendingCoordinationBatch", {}],
     ["eve.runtime.deferredStepInput", {}],
     ["eve.harness.pendingWorkflowInterrupt", {}],
     ["eve.runtime.proxyInputRequests", { malformed: null }],
+    ["eve.runtime.proxyInputRequests", "unreadable"],
   ])("refuses nonempty or unreadable pending work in %s", (key, value) => {
     expect(isSessionStateIdleForHandoff(checkpoint({ [key]: value }))).toBe(false);
+  });
+  it.each([
+    ["eve.runtime.pendingInputBatches", []],
+    ["eve.runtime.proxyInputRequests", {}],
+  ])("accepts %s once nothing in it is open", (key, value) => {
+    expect(isSessionStateIdleForHandoff(checkpoint({ [key]: value }))).toBe(true);
   });
 });

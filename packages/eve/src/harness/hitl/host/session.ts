@@ -6,6 +6,7 @@ import type {
   SubagentAuthorizationEventHookPayload,
   SubagentInputRequestHookPayload,
 } from "#channel/types.js";
+import { TurnDeliveryIdsKey } from "#context/keys.js";
 import { hasDelegatedSessionContext } from "#execution/delegated-session-context.js";
 import {
   readDurableSession,
@@ -185,6 +186,9 @@ export async function forwardRelayedAnswers(
   const host = new SessionHost();
   const forwards = new Map<string, Forward>();
   const kept: [index: number, payload: DeliverPayload][] = [];
+  // Deliveries whose message answered a question: like a steering message,
+  // the answer joins the open turn, so the turn's later events carry its ids.
+  const answerDeliveryIds: string[] = [];
   let cancelled = false;
   for (const [index, payload] of delivery.payloads.entries()) {
     const text = readAnswerText(payload);
@@ -196,6 +200,11 @@ export async function forwardRelayedAnswers(
     session = committed.session;
     cancelled ||= committed.ending !== undefined;
     const { forwarded: answered, messageAnswered } = host.take();
+    if (messageAnswered) {
+      for (const metadata of delivery.deliveryMetadata ?? []) {
+        if (metadata.payloadIndex === index) answerDeliveryIds.push(metadata.deliveryId);
+      }
+    }
     const forwarded = new Set<string>();
     let first: Forward | undefined;
     for (const event of answered) {
@@ -223,14 +232,14 @@ export async function forwardRelayedAnswers(
     await forwardAnswers(forward, delivery, serializedContext);
   }
 
-  const context = await relaySessionEvents(
-    {
-      serializedContext,
-      sessionState: replaceDurableSessionSnapshot({ session, state: input.sessionState }),
-      sessionWritable: input.sessionWritable,
-    },
-    host.relayed,
-  );
+  const target = {
+    serializedContext: joinTurnDeliveryIds(serializedContext, answerDeliveryIds),
+    sessionState: replaceDurableSessionSnapshot({ session, state: input.sessionState }),
+    sessionWritable: input.sessionWritable,
+  };
+  // The session's own events first (the message that answered), then what it relays.
+  const own = await publishCollected(target, "own", host.own);
+  const context = await relaySessionEvents({ ...target, ...own }, host.relayed);
   if (cancelled) return { ...context, kind: "cancel-turn" };
   const metadata = kept.flatMap(([index], payloadIndex) =>
     (delivery.deliveryMetadata ?? [])
@@ -246,6 +255,19 @@ export async function forwardRelayedAnswers(
           payloads: kept.map(([, payload]) => payload),
         };
   return { ...context, kind: "continue", remainder };
+}
+
+function joinTurnDeliveryIds(
+  serializedContext: Record<string, unknown>,
+  deliveryIds: readonly string[],
+): Record<string, unknown> {
+  if (deliveryIds.length === 0) return serializedContext;
+  const current =
+    (serializedContext[TurnDeliveryIdsKey.name] as readonly string[] | undefined) ?? [];
+  return {
+    ...serializedContext,
+    [TurnDeliveryIdsKey.name]: [...new Set([...current, ...deliveryIds])],
+  };
 }
 
 /**

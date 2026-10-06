@@ -185,15 +185,20 @@ export class SessionExecution {
         };
       }
 
-      if (result.action === "held" && result.hold === "request") {
+      if (result.action === "held" && result.hold === "input") {
+        // An authorization needs no channel support: its callback reaches the session itself.
         if (
-          result.hasPendingInputBatch &&
+          result.inputRequestIds.length > 0 &&
           this.input.capabilities?.requestInput !== true &&
           !hasDelegatedCallerContext(this.input.cursor.serializedContext)
         ) {
           throw new Error(NO_INPUT_CAPABILITY_ERROR_MESSAGE);
         }
-        const woke = await this.waitForHeldRequest(turn, result);
+        const woke = await this.waitForHeldInput(
+          turn,
+          new Set(result.inputRequestIds),
+          new Set(result.authorizationAttemptIds),
+        );
         if (woke === "cancelled") return await this.finishCancelledTurn(turn);
         nextStepInput = { delivery: woke };
         continue;
@@ -226,6 +231,15 @@ export class SessionExecution {
       }
 
       if (result.action === "park") return { kind: "park", settled: result.settled };
+
+      // Approved calls and the model reading their results are one piece of
+      // work: what arrived while they ran waits for the boundary after it, or
+      // starts the next turn.
+      if (result.action === "continue" && result.readsResults === true) {
+        turn.deferSteering();
+        nextStepInput = undefined;
+        continue;
+      }
 
       const steering = await turn.takeSteering();
       nextStepInput = steering === undefined ? undefined : { delivery: steering };
@@ -313,26 +327,22 @@ export class SessionExecution {
   }
 
   /**
-   * The turn waits on a sign-in or tool approval it raised. It wakes with the
-   * delivery its next step reads: the sign-in callback, an approval answer
-   * from any responder, or a message from the turn's own person, which steers
-   * the turn and cancels the request. Anyone else's message queues behind it.
+   * The turn waits on a person. It wakes with the delivery its next step
+   * reads: the callbacks of every authorization it waits on, an answer from any
+   * responder, or a delivery from the turn's own person, which steers it.
+   * Anyone else's message queues behind it.
    */
-  private async waitForHeldRequest(
+  private async waitForHeldInput(
     turn: ActiveTurn,
-    held: {
-      readonly authorizationAttemptIds: readonly string[];
-      readonly inputRequestIds: readonly string[];
-    },
+    requestIds: ReadonlySet<string>,
+    attemptIds: ReadonlySet<string>,
   ): Promise<DeliverHookPayload | "cancelled"> {
-    const attemptIds = new Set(held.authorizationAttemptIds);
-    const requestIds = new Set(held.inputRequestIds);
     while (true) {
-      const callbacks = this.input.queue.takeAuthorizations(attemptIds);
-      if (callbacks !== undefined) return { kind: "deliver", payloads: callbacks };
+      const callbacks = turn.takeAuthorizationCallbacks(attemptIds);
+      if (callbacks !== undefined) return callbacks;
       const answer = await turn.takeInputResponses(requestIds);
       if (answer !== undefined) return answer;
-      const steering = await turn.takeSteering({ heldOnPerson: true });
+      const steering = await turn.takeSteering();
       if (steering !== undefined) return steering;
       const next = await turn.nextRuntimeEvent([]);
       if (next === "cancelled") return next;

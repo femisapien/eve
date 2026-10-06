@@ -1,4 +1,4 @@
-import { routeSelectedDelivery } from "#execution/session/route-selected-delivery.js";
+import { forwardRelayedAnswers } from "#harness/hitl/host/workflow.js";
 import type {
   SessionControl,
   SessionInputQueue,
@@ -13,22 +13,24 @@ export type NextTurnInstruction =
   | { readonly kind: "workflow"; readonly message: WorkflowToolRunMessage }
   | { readonly kind: SessionControl }
   | { readonly kind: "closed" }
+  /** A relayed budget Stop: the open turn, if any, is cancelled. */
   | { readonly kind: "cancel-turn" }
   /** `session.cancel()` while no turn runs, but tasks are working. */
   | { readonly kind: "cancel-working-tasks" }
   | TurnSelection;
 
 /**
- * Waits for the next input the parked owner must act on. Fully routed
- * descendant deliveries leave nothing for the parent, so the wait continues.
+ * Waits for the next input the parked owner must act on. A delivery that only
+ * answers relayed requests leaves nothing for the session, so the wait
+ * continues.
  */
 export async function nextTurnDelivery(input: {
-  readonly inbox: SessionInboxReader;
   readonly cursor: SessionStateCursor;
+  readonly inbox: SessionInboxReader;
   readonly hasWorkingTasks: () => boolean;
   readonly queue: SessionInputQueue;
 }): Promise<NextTurnInstruction> {
-  const { inbox, cursor, queue } = input;
+  const { inbox, queue } = input;
   // A delivery admitted while the owner was fully idle (nothing queued, nothing
   // pumped) is the only kind that may move the session to another deployment.
   let freshSequence: number | undefined;
@@ -38,10 +40,10 @@ export async function nextTurnDelivery(input: {
     });
     if (selected?.kind === "control") return { kind: selected.control };
     if (selected?.kind === "turn") {
-      const routed = await routeSelectedDelivery(selected, cursor);
-      if (routed.kind === "cancel-turn") return routed;
-      if (routed.kind === "consumed") continue;
-      return routed;
+      const forwarded = await forwardRelayedAnswers(selected.delivery, input.cursor);
+      if (forwarded.kind === "cancel-turn") return forwarded;
+      if (forwarded.remainder === undefined) continue;
+      return { ...selected, delivery: forwarded.remainder };
     }
 
     // A delivery may already be in the pump queue by the time the owner exits

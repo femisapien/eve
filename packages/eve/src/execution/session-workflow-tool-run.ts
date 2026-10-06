@@ -4,18 +4,14 @@ import {
   emitWorkflowToolRunReportStep,
 } from "#execution/tools/workflow/emit-workflow-tool-run-report-step.js";
 import type {
-  WorkflowToolAskRequest,
   WorkflowToolRunAgentStartedMessage,
   WorkflowToolRunMessage,
   WorkflowToolRunOutcomeMessage,
   WorkflowToolRunRequestMessage,
   WorkflowToolRunWithdrawMessage,
 } from "#execution/tools/workflow/messages.js";
-import {
-  withdrawFinishedRunQuestionsStep,
-  withdrawWorkflowToolRunQuestionStep,
-} from "#execution/tools/workflow/withdraw-step.js";
 import type { SessionStateCursor } from "#execution/session/state-cursor.js";
+import { withdrawRelayedRequests } from "#harness/hitl/host/workflow.js";
 import {
   workflowToolRunOutcomeToToolResult,
   workflowToolRunRequestToInputRequestPayload,
@@ -25,7 +21,6 @@ import {
   isInboxToolResultFromRecordedWorkflowToolRun,
 } from "#harness/workflow-tool-runs.js";
 import { runProxySubagentEventStep } from "#subagents/event-proxy-step.js";
-import type { WorkflowAskRoute } from "#harness/proxy-input-requests.js";
 import type { RuntimeActionResult } from "#shared/action-types.js";
 
 interface HandlerInput<T> {
@@ -97,11 +92,7 @@ async function handleWorkflowToolRunOutcome(
 
   const result = workflowToolRunOutcomeToToolResult(message);
   if (!isInboxToolResultFromRecordedWorkflowToolRun(state, result)) return undefined;
-
-  if (cursor.sessionState.hasProxyInputRequests) {
-    const { runId } = message.from;
-    await cursor.advance((current) => withdrawFinishedRunQuestionsStep({ ...current, runId }));
-  }
+  await withdrawRelayedRequests(cursor, { runId: message.from.runId, type: "run.ended" });
   return result;
 }
 
@@ -120,9 +111,7 @@ async function handleWorkflowToolRunRequest(
   }
   await cursor.advance((state) =>
     runProxySubagentEventStep({
-      ...(message.request.kind === "ask" && {
-        workflowAsk: createWorkflowAskRoute(message.request),
-      }),
+      ...(message.request.kind === "ask" && { control: message.request.control }),
       hookPayload: workflowToolRunRequestToInputRequestPayload(message),
       runId: message.from.runId,
       ...state,
@@ -139,23 +128,10 @@ async function handleWorkflowToolRunWithdraw(
   input: HandlerInput<WorkflowToolRunWithdrawMessage>,
 ): Promise<void> {
   const { cursor, message } = input;
-  await cursor.advance((state) =>
-    withdrawWorkflowToolRunQuestionStep({
-      ...state,
-      control: message.control,
-      requestId: message.replyTo,
-      runId: message.from.runId,
-    }),
-  );
-}
-
-function createWorkflowAskRoute(ask: WorkflowToolAskRequest): WorkflowAskRoute {
-  const { allowFreeform, options } = ask.request;
-  return {
-    control: ask.control,
-    question: {
-      ...(allowFreeform !== undefined && { allowFreeform }),
-      ...(options !== undefined && { options: [...options] }),
-    },
-  };
+  await withdrawRelayedRequests(cursor, {
+    control: message.control,
+    requestId: message.replyTo,
+    runId: message.from.runId,
+    type: "relayed.withdrawn",
+  });
 }

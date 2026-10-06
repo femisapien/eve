@@ -4,12 +4,7 @@ import { setEveAttributes } from "#runtime/attributes/emit.js";
 import { defaultDeliverResult } from "#channel/adapter.js";
 import { contextStorage } from "#context/container.js";
 import { runStep } from "#context/run-step.js";
-import {
-  drainDynamicInstructionUserMessages,
-  prepareDynamicInstructionPreamble,
-} from "#context/dynamic-instruction-lifecycle.js";
 import { refreshDynamicSessionSubagentsForRuntimeRevision } from "#context/dynamic-subagent-lifecycle.js";
-import { drainMemoryCommit, prepareMemoryPreamble } from "#context/memory-lifecycle.js";
 import {
   rebindMissingCompiledDynamicToolCallbacks,
   refreshDynamicSessionToolsForRuntimeRevision,
@@ -29,28 +24,19 @@ import {
 } from "#context/keys.js";
 import { BundleKey, ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
-import {
-  emitTurnPreamble,
-  getHarnessEmissionState,
-  isHarnessBetweenTurns,
-  setHarnessEmissionState,
-} from "#harness/emission.js";
+import { getHarnessEmissionState, isHarnessBetweenTurns } from "#harness/emission.js";
 import { bindSessionInstrumentation } from "#instrumentation/runtime.js";
 import { RuntimeActionSettlementTimesKey } from "#harness/runtime-action-settlement-state.js";
 import * as agentTraceState from "#tracing/agent-trace-context-store.js";
-import { matchAuthorizationCallbacks } from "#execution/authorization-callback-match.js";
 import { isTurnCancellation, throwIfTurnAborted } from "#harness/turn-cancellation.js";
 import { setChannelContext } from "#execution/channel-context.js";
 import { activeTurnId } from "#harness/active-turn-id.js";
-import {
-  coalesceTurnInputs,
-  createTurnInputMessages,
-  validateHarnessModelMessages,
-  type UserModelMessage,
-} from "#harness/messages.js";
-import { consumeDeferredStepInput } from "#harness/pending-input-batches.js";
+import { settledByEnding, settledByRollback } from "#harness/hitl/host/index.js";
+import { coalesceTurnInputs, validateHarnessModelMessages } from "#harness/messages.js";
 import type { HandleEventFn, HarnessSession, StepInput, StepResult } from "#harness/types.js";
 import { attributeAnswers } from "#execution/session/answer-caller.js";
+import type { DeliverPayload } from "#channel/types.js";
+import type { AuthorizationCallback } from "#shared/connection-types.js";
 import type {
   DurableStepResult,
   TurnStepInput,
@@ -61,18 +47,8 @@ import { withSessionStateDelta } from "#execution/session/state-delta.js";
 import { openSessionEventPublisher } from "#execution/publish-session-events.js";
 import { createTurnEventHandler } from "#execution/session/turn-event-handler.js";
 import { derivePendingState } from "#execution/session/pending-turn-state.js";
-import {
-  createAuthorizationCompletedEvent,
-  createSessionStartedEvent,
-  createTurnStartedEvent,
-} from "#protocol/message.js";
-import { authorizationEventFields } from "#harness/authorization-event-fields.js";
-import {
-  CallbackBaseUrlKey,
-  clearPendingAuthorization,
-  getPendingAuthorization,
-  PendingAuthorizationResultKey,
-} from "#harness/authorization.js";
+import { createSessionStartedEvent, createTurnStartedEvent } from "#protocol/message.js";
+import { CallbackBaseUrlKey, type ReceivedAuthorizationCallback } from "#harness/authorization.js";
 import { resolveWorkflowCallbackBaseUrl } from "#execution/workflow-callback-url.js";
 import { countRunUsage } from "#execution/agent-sessions/usage.js";
 import {
@@ -80,7 +56,6 @@ import {
   readDurableSession,
 } from "#execution/durable-session-store.js";
 import { buildRuntimeIdentity, createExecutionNodeStep } from "#execution/node-step.js";
-import { prepareWorkflowPreambleTrace } from "#execution/workflow-trace-context.js";
 import { bindTurnCallerContext } from "#subagents/parent-notification.js";
 import { resolveEffectiveAgentRuntime } from "#execution/effective-agent-config.js";
 import { reconcileSessionContinuationToken } from "#execution/reconcile-session-continuation-token.js";
@@ -116,9 +91,17 @@ export async function turnStep(input: TurnStepInput): Promise<TurnStepResult> {
 }
 
 async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> {
-  // The delivery as accepted, before authorization callbacks are matched out of it.
   const rawDelivery = input.input?.delivery;
-  let delivery = rawDelivery;
+  // Authorization callbacks are for human input, not the channel's `deliver` hook.
+  const authorizationCallbacks = rawDelivery?.payloads.flatMap(readAuthorizationCallback) ?? [];
+  const otherPayloads =
+    rawDelivery?.payloads.filter((payload) => payload["authorizationCallback"] === undefined) ?? [];
+  const delivery =
+    authorizationCallbacks.length === 0 || rawDelivery === undefined
+      ? rawDelivery
+      : otherPayloads.length === 0
+        ? undefined
+        : { ...rawDelivery, payloads: otherPayloads };
   const runtimeResults = input.input?.runtimeResults;
 
   let durableSession = readDurableSession(input.sessionState);
@@ -143,27 +126,6 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
     // Outside a workflow context (e.g. tests) — getHookUrl will return undefined.
   }
 
-  const pendingAuth = getPendingAuthorization(durableSession.state);
-  let completedAuths: ReturnType<typeof matchAuthorizationCallbacks>["matches"] | undefined;
-  if (pendingAuth && delivery !== undefined) {
-    const { matches, remainingPayloads } = matchAuthorizationCallbacks(
-      pendingAuth,
-      delivery.payloads,
-    );
-    delivery = { ...delivery, payloads: remainingPayloads };
-    if (matches.length > 0) {
-      const matchedAttemptIds = matches.map((match) => match.result.attemptId);
-      const authResults = matches.map((match) => match.result);
-      ctx.set(PendingAuthorizationResultKey, authResults);
-      durableSession = {
-        ...durableSession,
-        state: clearPendingAuthorization(durableSession.state, matchedAttemptIds),
-      };
-      completedAuths = matches;
-      if (remainingPayloads.length === 0) delivery = undefined;
-    }
-  }
-
   const previousAuth = ctx.get(AuthKey);
   const hadInitiator = ctx.has(InitiatorAuthKey);
 
@@ -173,15 +135,6 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
     ctx.set(AuthKey, delivery.auth ?? null);
     if (!ctx.has(InitiatorAuthKey)) ctx.set(InitiatorAuthKey, delivery.auth ?? null);
   }
-  // A sign-in callback carries no identity. Resume as the user who started the
-  // sign-in, not whoever spoke in the session while it was pending. Approval
-  // sign-ins (`candidateId`) bind their responder separately.
-  const requester =
-    delivery === undefined
-      ? completedAuths?.find(({ challenge }) => challenge.candidateId === undefined)?.challenge
-          .requester
-      : undefined;
-  if (requester !== undefined) ctx.set(AuthKey, requester);
   const initialSession: HarnessSession = {
     ...hydrateDurableSession({
       compactionOverrides: {
@@ -277,8 +230,15 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
       instrumentation,
       publisher,
     });
+    // Requests this step resolved and published, which a cancel that rolls
+    // the step back must not resolve again. Recorded before the emit, since
+    // a hook can cancel the step while the resolution is being published.
+    const resolvedInStep: string[] = [];
     const handleEvent: HandleEventFn = async (event, messages) => {
       if (event.type === "compaction.completed") compacted = true;
+      if (event.type === "input.resolved") {
+        resolvedInStep.push(...event.data.resolutions.map(({ requestId }) => requestId));
+      }
       await emitTurnEvent(event, messages);
     };
     const previousAdapterState =
@@ -446,6 +406,7 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
     const runHarnessStep = async (
       lifecycleSession: HarnessSession,
       stepInput: StepInput | undefined,
+      authorizationCallbacks: readonly ReceivedAuthorizationCallback[] = [],
     ): Promise<StepResult> => {
       const refreshedSession = refreshSessionFromTurnAgent({
         compactionOverrides: {
@@ -459,6 +420,7 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
       const step = createExecutionNodeStep({
         steeringSignal: input.steeringSignal,
         abortSignal,
+        authorizationCallbacks,
         capabilities,
         clearOnly: input.input?.control === "clear",
         compactOnly: input.input?.control === "compact",
@@ -505,69 +467,15 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
                 ? undefined
                 : { sequence: connectionState.sequence, turnId: activeTurnId(connectionState) },
             );
-            if (firstCall && completedAuths) {
-              let emissionState = getHarnessEmissionState(schemaSession.state);
-              const startsTurn = completedAuths.some(
-                ({ challenge }) => challenge.candidateId === undefined,
-              );
-              if (startsTurn && isHarnessBetweenTurns(schemaSession)) {
-                const turnInput = createTurnInputMessages(
-                  consumeDeferredStepInput({ session: schemaSession, input: stepInput }).input,
-                );
-                prepareDynamicInstructionPreamble(ctx, history.messages(schemaSession));
-                prepareMemoryPreamble(ctx, {
-                  history: schemaSession.history,
-                  input: turnInput,
-                  projector: history.projector,
-                  state: schemaSession.state,
-                });
-                let instructionMessages: readonly UserModelMessage[] = [];
-                const traceContext = await prepareWorkflowPreambleTrace({
-                  emissionState,
-                  instrumentation,
-                });
-                try {
-                  emissionState = await emitTurnPreamble(
-                    handleEvent,
-                    {},
-                    emissionState,
-                    history.projector({
-                      messages: [...schemaSession.history, ...turnInput],
-                      state: schemaSession.state,
-                    }),
-                    runtimeIdentity,
-                    traceContext,
-                  );
-                } finally {
-                  instructionMessages = drainDynamicInstructionUserMessages(ctx);
-                  const memoryCommit = drainMemoryCommit(ctx);
-                  schemaSession = {
-                    ...schemaSession,
-                    history: validateHarnessModelMessages([
-                      ...schemaSession.history,
-                      ...(memoryCommit?.recalledMessages ?? []),
-                      ...instructionMessages,
-                    ]),
-                    state: memoryCommit?.state ?? schemaSession.state,
-                  };
-                }
-                schemaSession = setHarnessEmissionState(schemaSession, emissionState);
-              }
-              for (const { challenge } of completedAuths) {
-                await handleEvent(
-                  createAuthorizationCompletedEvent({
-                    ...authorizationEventFields(challenge),
-                    outcome: "authorized",
-                    sequence: emissionState.sequence,
-                    stepIndex: emissionState.stepIndex,
-                    turnId: emissionState.turnId,
-                  }),
-                );
-              }
-            }
-
-            return runHarnessStep(schemaSession, stepInput);
+            // Only the step's first model call reports its callbacks.
+            return runHarnessStep(
+              schemaSession,
+              stepInput,
+              firstCall ? authorizationCallbacks : [],
+            );
           });
+          // Human input ended the turn: the cancel keeps none of this call's work.
+          if (result.cancelled !== undefined) return result;
           // The waiting boundary may reach the client before this step returns.
           // Its settled result wins over a cancellation of that completed turn.
           if (result.settledTurn === undefined) throwIfTurnAborted(abortSignal);
@@ -584,7 +492,28 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
         beforeBatchContext: input.serializedContext,
         checkpoint: completedModelCall,
         ctx,
-        initialSession,
+        initialSession: await settledByRollback(initialSession, resolvedInStep),
+        stepInput: resolved,
+      });
+    }
+    if (stepResult.cancelled !== undefined) {
+      // Stop already resolved the budget question, so the cancel must not
+      // withdraw it again, whichever session it settles from.
+      const ending = stepResult.cancelled;
+      return createCancelledModelCallBatchResult({
+        beforeBatchContext: input.serializedContext,
+        checkpoint:
+          completedModelCall === undefined
+            ? undefined
+            : {
+                ...completedModelCall,
+                result: {
+                  ...completedModelCall.result,
+                  session: await settledByEnding(completedModelCall.result.session, ending),
+                },
+              },
+        ctx,
+        initialSession: await settledByEnding(initialSession, ending),
         stepInput: resolved,
       });
     }
@@ -601,4 +530,34 @@ async function runSessionStep(input: TurnStepInput): Promise<DurableStepResult> 
   } finally {
     publisher.writer.release();
   }
+}
+
+/** The authorization callback a payload carries, as the connection callback route sends it. */
+function readAuthorizationCallback(payload: DeliverPayload): ReceivedAuthorizationCallback[] {
+  const value: unknown = payload["authorizationCallback"];
+  if (typeof value !== "object" || value === null) return [];
+  const attemptId: unknown = Reflect.get(value, "attemptId");
+  const connectionName: unknown = Reflect.get(value, "connectionName");
+  if (typeof attemptId !== "string" || typeof connectionName !== "string") return [];
+  const callback: unknown = Reflect.get(value, "callback");
+  return [
+    isAuthorizationCallback(callback)
+      ? { attemptId, callback, connectionName }
+      : { attemptId, connectionName },
+  ];
+}
+
+function isAuthorizationCallback(value: unknown): value is AuthorizationCallback {
+  if (typeof value !== "object" || value === null) return false;
+  const method: unknown = Reflect.get(value, "method");
+  const params: unknown = Reflect.get(value, "params");
+  const body: unknown = Reflect.get(value, "body");
+  return (
+    typeof method === "string" &&
+    typeof params === "object" &&
+    params !== null &&
+    !Array.isArray(params) &&
+    Object.values(params).every((param) => typeof param === "string") &&
+    (body === undefined || typeof body === "string")
+  );
 }

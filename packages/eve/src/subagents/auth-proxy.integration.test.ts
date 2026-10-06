@@ -7,7 +7,11 @@ import type {
 } from "#channel/types.js";
 import { ContextContainer } from "#context/container.js";
 import { AuthKey, ContinuationTokenKey, SessionIdKey } from "#context/keys.js";
-import { emitProxiedSubagentEvent } from "#subagents/event-proxy-step.js";
+import { deserializeContext } from "#context/serialize.js";
+import { replaceDurableSessionSnapshot } from "#execution/durable-session-store.js";
+import { createTestSessionState } from "#internal/testing/session-state.js";
+import type { RestoredSessionStep, SessionStepState } from "#execution/publish-session-events.js";
+import { relaySubagentEvent } from "#harness/hitl/host/index.js";
 import { projectToDurableSession } from "#execution/session.js";
 import { setHarnessEmissionState } from "#harness/emission-state.js";
 import type { HarnessSession } from "#harness/types.js";
@@ -20,6 +24,29 @@ import {
   ChannelKey,
   type CompiledBundle,
 } from "#runtime/sessions/runtime-context-keys.js";
+
+// The relay restores the parent context from the step's serialized context;
+// these tests hand it the context they built instead.
+vi.mock("#context/serialize.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("#context/serialize.js")>()),
+  deserializeContext: vi.fn(),
+}));
+
+async function relay({
+  ctx,
+  durableSession,
+  ...input
+}: RestoredSessionStep & Omit<Parameters<typeof relaySubagentEvent>[0], keyof SessionStepState>) {
+  vi.mocked(deserializeContext).mockResolvedValue(ctx);
+  return await relaySubagentEvent({
+    ...input,
+    serializedContext: {},
+    sessionState: replaceDurableSessionSnapshot({
+      session: durableSession,
+      state: createTestSessionState(),
+    }),
+  });
+}
 
 interface AuthorizationAdapterState extends Record<string, unknown> {
   outcome?: string;
@@ -192,13 +219,13 @@ describe("subagent authorization proxy", () => {
       type: "approval.settled",
     };
 
-    await emitProxiedSubagentEvent({
+    await relay({
       ctx,
       durableSession: projectToDurableSession(session),
       hookPayload: authorizationPayload(candidateEvent),
       sessionWritable,
     });
-    await emitProxiedSubagentEvent({
+    await relay({
       ctx,
       durableSession: projectToDurableSession(session),
       hookPayload: authorizationPayload(settledEvent),
@@ -237,7 +264,7 @@ describe("subagent authorization proxy", () => {
       type: "authorization.required",
     };
 
-    const required = await emitProxiedSubagentEvent({
+    const required = await relay({
       ctx,
       durableSession: projectToDurableSession(session),
       hookPayload: authorizationPayload(requiredEvent),
@@ -262,7 +289,7 @@ describe("subagent authorization proxy", () => {
       },
       type: "authorization.completed",
     };
-    const completed = await emitProxiedSubagentEvent({
+    const completed = await relay({
       ctx: rehydrateContext({ bundle, serializedContext: required.serializedContext }),
       durableSession: required.sessionState.snapshot.session,
       hookPayload: authorizationPayload(completedEvent),

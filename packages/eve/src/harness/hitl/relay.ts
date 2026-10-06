@@ -10,6 +10,7 @@ import { SESSION_LIMIT_STOP_OPTION_ID } from "#harness/hitl/budget-question.js";
 import {
   createInputRequestedEvent,
   createInputResolvedEvent,
+  createMessageReceivedEvent,
   type InputResolution,
 } from "#protocol/message.js";
 import type { InputResponse } from "#shared/input.js";
@@ -68,7 +69,14 @@ export function relay(
  * A plain-text message answers a relayed question when it is the only one
  * waiting, whatever else is open, but only a person's own message with no
  * explicit answers: a delegating caller or a client that chose what to answer
- * meant something else. A relayed budget Stop also cancels this turn.
+ * meant something else. The message is still the person's turn in the
+ * conversation, so it is recorded as received before the answer it gave.
+ * A relayed budget Stop also cancels this turn.
+ *
+ * A delivery that answers relayed requests and leaves nothing for the turn
+ * (every answer went to a relayed request, and any message answered one)
+ * parks the turn again when relayed requests still wait, as a partial answer
+ * to the turn's own approvals does.
  */
 export function deliverToRelayed(
   state: HumanInputState,
@@ -100,7 +108,19 @@ export function deliverToRelayed(
       );
   }
 
-  const events: Command[] = typed === undefined ? [] : [{ type: "consumeMessage" }];
+  const events: Command[] = [];
+  if (typed !== undefined && message !== undefined) {
+    const { at } = state.requests[typed.requestId] as OpenRelayed;
+    events.push({ type: "consumeMessage" });
+    events.push({
+      event: createMessageReceivedEvent({
+        message: message.text,
+        sequence: at.sequence,
+        turnId: at.turnId,
+      }),
+      type: "publish",
+    });
+  }
   let next = state;
   let stopped = false;
   for (const members of batches.values()) {
@@ -132,7 +152,20 @@ export function deliverToRelayed(
     );
   }
   if (stopped) events.push({ type: "cancelTurn" });
+  else if (leavesNothingForTurn(input, answers, typed) && openRelayed(next).length > 0) {
+    events.push({ relayed: true, type: "waitTurn" });
+  }
   return { events, state: next };
+}
+
+/** Every answer went to a relayed request, and the message, if any, answered one. */
+function leavesNothingForTurn(
+  input: Extract<Input, { readonly type: "delivery.received" }>,
+  answers: ReadonlyMap<string, InputResponse>,
+  typed: InputResponse | undefined,
+): boolean {
+  if (input.message !== undefined && typed === undefined) return false;
+  return input.responses.every((response) => answers.has(response.requestId));
 }
 
 /**
