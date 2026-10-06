@@ -1,15 +1,29 @@
+import type { LanguageModel } from "ai";
+
+import { ROOT_COMPILED_AGENT_NODE_ID } from "#compiler/manifest.js";
 import { ContextContainer } from "#context/container.js";
 import { buildResolveContext } from "#context/dynamic-resolve-context.js";
+import {
+  dispatchDynamicSubagentEvent,
+  getDynamicSubagentSelection,
+} from "#context/dynamic-subagent-lifecycle.js";
 import { StaticModelReferenceKey } from "#context/keys.js";
 import type { DynamicResolveContext } from "#dynamic/definition.js";
+import { mockModel } from "#evals/mock-model.js";
+import { formatLanguageModelGatewayId } from "#internal/runtime-model.js";
+import { captureLogRecords } from "#internal/testing/log-records.js";
+import { defineAgent } from "#public/definitions/agent.js";
+import { createSessionStartedEvent, createTurnStartedEvent } from "#protocol/message.js";
 import type { RuntimeModelReference } from "#runtime/agent/bootstrap.js";
+import { resolveRuntimeModelReference } from "#runtime/agent/resolve-model.js";
+import type { ResolvedDynamicSubagentResolver } from "#runtime/subagents/registry.js";
 import {
   installLocalDevCapabilityEnvironment,
   withLocalDevRequestScope,
 } from "#runtime/local-dev-capability.js";
 import { stampDevelopmentClientAddress } from "#internal/nitro/dev-client-address.js";
 import { DEVELOPMENT_WORKFLOW_SECRET_ENV } from "#internal/workflow/development-world-protocol.js";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { defineSelfModificationAgent, type SelfModificationAgentOptions } from "./agent.js";
 
@@ -21,15 +35,79 @@ const context: DynamicResolveContext = {
   session: { auth: { current: null, initiator: null }, id: "session" },
 };
 
-function resolveContextFor(reference: RuntimeModelReference): DynamicResolveContext {
+const SELF_MODIFICATION_NODE_ID = "subagents/self-modification";
+const PARENT_SOURCE = {
+  sourceKind: "module" as const,
+  logicalPath: "agent.ts",
+  sourceId: "agent-config",
+};
+
+function parentContext(reference: RuntimeModelReference): ContextContainer {
   const ctx = new ContextContainer();
   ctx.set(StaticModelReferenceKey, reference);
-  return buildResolveContext(ctx, []);
+  return ctx;
+}
+
+function resolveContextFor(reference: RuntimeModelReference): DynamicResolveContext {
+  return buildResolveContext(parentContext(reference), []);
+}
+
+/** Authored parent `agent.ts` in the root node, as the compiler records it. */
+function authoredParent(model: LanguageModel, contextWindowTokens: number) {
+  return {
+    moduleMap: {
+      nodes: {
+        [ROOT_COMPILED_AGENT_NODE_ID]: {
+          modules: {
+            [PARENT_SOURCE.sourceId]: {
+              default: defineAgent({ model, modelContextWindowTokens: contextWindowTokens }),
+            },
+          },
+        },
+      },
+    },
+    reference: {
+      id: formatLanguageModelGatewayId(model),
+      contextWindowTokens,
+      source: PARENT_SOURCE,
+    } satisfies RuntimeModelReference,
+  };
+}
+
+function selfModificationResolver(
+  agent: ReturnType<typeof defineSelfModificationAgent>,
+): ResolvedDynamicSubagentResolver {
+  return {
+    eventNames: ["session.started", "turn.started"],
+    events: agent.events as ResolvedDynamicSubagentResolver["events"],
+    kind: "subagent",
+    logicalPath: "self-modification/agent.ts",
+    name: "self-modification",
+    nodeId: SELF_MODIFICATION_NODE_ID,
+    sourceId: "self-modification-agent",
+    sourceKind: "module",
+  };
+}
+
+function codexModel(): LanguageModel {
+  return {
+    specificationVersion: "v3",
+    provider: "codex.responses",
+    modelId: "gpt-5.5",
+    supportedUrls: {},
+    doGenerate: async () => {
+      throw new Error("unused");
+    },
+    doStream: async () => {
+      throw new Error("unused");
+    },
+  } as unknown as LanguageModel;
 }
 
 const savedEnvironment = { ...process.env };
 
 afterEach(() => {
+  vi.unstubAllEnvs();
   process.env = { ...savedEnvironment };
 });
 
@@ -70,13 +148,6 @@ describe("self-modification local agent", () => {
       reasoning: undefined,
     },
     {
-      label: "parent model",
-      options: {},
-      parent: { id: "openai/gpt-6-luna-fast" },
-      model: "openai/gpt-6-luna-fast",
-      reasoning: undefined,
-    },
-    {
       label: "explicit reasoning",
       options: { reasoning: "low" },
       parent: null,
@@ -106,50 +177,92 @@ describe("self-modification local agent", () => {
     },
   );
 
-  it("inherits the context window of a Gateway-routed parent model", async () => {
+  it("returns the parent model selection without forcing fallback reasoning", async () => {
     await withDevHost(async () => {
       const agent = defineSelfModificationAgent({ config: { local: { enabled: true } } });
-      const parent = resolveContextFor({
-        id: "custom/unlisted-model",
-        contextWindowTokens: 1_000_000,
-      });
-
-      for (const event of ["session.started", "turn.started"] as const) {
-        await expect(agent.events[event]?.({}, parent)).resolves.toMatchObject({
-          model: "custom/unlisted-model",
-          modelContextWindowTokens: 1_000_000,
-        });
-      }
-    });
-  });
-
-  it("does not inherit the context window of a source-backed parent model", async () => {
-    await withDevHost(async () => {
-      const agent = defineSelfModificationAgent({ config: { local: { enabled: true } } });
-      const parent = resolveContextFor({
-        id: "codex/gpt-5.5",
-        contextWindowTokens: 200_000,
-        source: { sourceKind: "module", logicalPath: "agent.ts", sourceId: "agent" },
-      });
+      const parent = resolveContextFor({ id: "openai/gpt-6-luna-fast" });
       const resolved = await agent.events["turn.started"]?.({}, parent);
 
-      expect(resolved).toMatchObject({ model: "codex/gpt-5.5" });
-      expect(resolved).not.toHaveProperty("modelContextWindowTokens");
+      expect(resolved).toHaveProperty("model", parent.model);
+      expect(resolved).toHaveProperty("reasoning", undefined);
     });
   });
 
-  it("keeps an explicit model without the parent context window", async () => {
+  it.each([
+    { label: "mockModel", model: mockModel("ok"), contextWindowTokens: 1_000_000 },
+    { label: "codex", model: codexModel(), contextWindowTokens: 200_000 },
+  ])(
+    "runs on the authored $label parent model instead of rebuilding it from its id",
+    async ({ model, contextWindowTokens }) => {
+      // Unit tests otherwise swap authored models for eve's test mocks.
+      vi.stubEnv("NODE_ENV", "production");
+      await withDevHost(async () => {
+        const logs = captureLogRecords();
+        const parent = authoredParent(model, contextWindowTokens);
+        const resolver = selfModificationResolver(
+          defineSelfModificationAgent({ config: { local: { enabled: true } } }),
+        );
+
+        for (const event of [
+          createSessionStartedEvent(),
+          createTurnStartedEvent({ sequence: 1, turnId: "turn-1" }),
+        ]) {
+          const ctx = parentContext(parent.reference);
+          await dispatchDynamicSubagentEvent({ ctx, event, messages: [], resolvers: [resolver] });
+
+          const selection = getDynamicSubagentSelection(ctx, SELF_MODIFICATION_NODE_ID);
+          expect(selection?.agentConfig?.model).toEqual({
+            ...parent.reference,
+            sourceNodeId: ROOT_COMPILED_AGENT_NODE_ID,
+          });
+          // The child resolves the parent's authored module from its own node.
+          await expect(
+            resolveRuntimeModelReference(selection!.agentConfig!.model, {
+              moduleMap: parent.moduleMap,
+              nodeId: SELF_MODIFICATION_NODE_ID,
+            }),
+          ).resolves.toBe(model);
+        }
+        expect(logs.records).toEqual([]);
+      });
+    },
+  );
+
+  it("inherits a Gateway parent model id with its context window", async () => {
+    await withDevHost(async () => {
+      const logs = captureLogRecords();
+      const ctx = parentContext({ id: "custom/unlisted-model", contextWindowTokens: 1_000_000 });
+      const resolver = selfModificationResolver(
+        defineSelfModificationAgent({ config: { local: { enabled: true } } }),
+      );
+
+      await dispatchDynamicSubagentEvent({
+        ctx,
+        event: createTurnStartedEvent({ sequence: 1, turnId: "turn-1" }),
+        messages: [],
+        resolvers: [resolver],
+      });
+
+      expect(
+        getDynamicSubagentSelection(ctx, SELF_MODIFICATION_NODE_ID)?.agentConfig?.model,
+      ).toEqual({ id: "custom/unlisted-model", contextWindowTokens: 1_000_000 });
+      expect(logs.records).toEqual([]);
+    });
+  });
+
+  it("keeps an explicit model without inheriting the parent model", async () => {
     await withDevHost(async () => {
       const agent = defineSelfModificationAgent({
         config: { local: { enabled: true } },
         model: "anthropic/claude-sonnet-5",
       });
+      const parent = authoredParent(mockModel("ok"), 1_000_000);
       const resolved = await agent.events["turn.started"]?.(
         {},
-        resolveContextFor({ id: "custom/unlisted-model", contextWindowTokens: 1_000_000 }),
+        resolveContextFor(parent.reference),
       );
 
-      expect(resolved).toMatchObject({ model: "anthropic/claude-sonnet-5" });
+      expect(resolved).toHaveProperty("model", "anthropic/claude-sonnet-5");
       expect(resolved).not.toHaveProperty("modelContextWindowTokens");
     });
   });

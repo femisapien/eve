@@ -2,4 +2,4 @@
 "eve": patch
 ---
 
-The self-modification subagent now inherits a Gateway-routed parent model's context window, so it stays available on unlisted AI Gateway models instead of logging `Cannot select model "<id>" because AI Gateway did not provide context window metadata`. Dynamic resolvers can read the effective model's window and routing from `ctx.model.contextWindowTokens` and `ctx.model.routing`.
+Dynamic subagents can return `ctx.model` as their `model` to run on the parent's model, keeping its provider and context window instead of rebuilding it from its id through AI Gateway. The self-modification subagent now does this, so it stays available on custom and authored provider models such as `mockModel`.
