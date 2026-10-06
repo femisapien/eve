@@ -62,6 +62,7 @@ const BASE_VERSIONS = {
 
 const WEB_VERSIONS = {
   ...BASE_VERSIONS,
+  betterAuthPackageVersion: "1.6.26-test",
   nextPackageVersion: "16.0.0",
   reactDomPackageVersion: "19.0.0",
   reactPackageVersion: "19.0.0",
@@ -1151,6 +1152,12 @@ describe("runInitCommand", () => {
       const interactive = mode === "interactive";
       const fake = createFakePrompter(interactive ? { single: () => "vercel" } : {});
       const provision = vi.fn(async () => {});
+      const extraInstall = vi.fn(async () => {});
+      deps.runPackageManagerInstall.mockImplementation(async () => {
+        const pkg = JSON.parse(await readFile(join(projectPath, "package.json"), "utf8"));
+        expect(pkg.dependencies["better-auth"]).toBe("1.6.26-test");
+        return packageInstallResult();
+      });
       const link = vi.fn(async () => {
         await mkdir(join(projectPath, ".vercel"));
         await writeFile(join(projectPath, ".vercel/project.json"), JSON.stringify(project));
@@ -1169,7 +1176,7 @@ describe("runInitCommand", () => {
         },
         runNonInteractiveLink: link,
         provisionWebChatAuth: provision,
-        installScaffoldDependencies: async () => {},
+        installScaffoldDependencies: extraInstall,
       };
       deps.tryInitializeGit.mockImplementation(async () => {
         expect(await readFile(join(projectPath, "lib/auth.ts"), "utf8")).toContain("betterAuth");
@@ -1187,7 +1194,9 @@ describe("runInitCommand", () => {
 
       await runInitCommand(output, parentDirectory, "web-agent", options, deps);
 
-      expect(provision).toHaveBeenCalledWith(project);
+      expect(provision).toHaveBeenCalledWith(project, undefined);
+      expect(deps.runPackageManagerInstall).toHaveBeenCalledTimes(1);
+      expect(extraInstall).not.toHaveBeenCalled();
       expect(fake.selectMessages).toEqual(
         interactive ? ["How should people sign in to Web Chat?"] : [],
       );
@@ -1215,8 +1224,10 @@ describe("runInitCommand", () => {
         ],
       ).toBeDefined();
       expect(await pathExists(join(projectPath, "apps/web"))).toBe(false);
-      expect(output.messages.join("\n")).toContain(
-        "Production and preview credentials are configured.",
+      expect(fake.prompter.note).toHaveBeenCalledWith(
+        expect.stringContaining("Production and preview credentials are configured."),
+        "Next steps",
+        expect.anything(),
       );
     },
   );
@@ -1259,9 +1270,9 @@ describe("runInitCommand", () => {
       if (outcome !== "failed") expect(provision).not.toHaveBeenCalled();
       expect(await pathExists(join(projectPath, "app/page.tsx"))).toBe(true);
       expect(await readFile(join(projectPath, "agent/channels/eve.ts"), "utf8")).toContain(
-        "placeholderAuth",
+        "betterAuthSession",
       );
-      expect(await pathExists(join(projectPath, "lib/auth.ts"))).toBe(false);
+      expect(await pathExists(join(projectPath, "lib/auth.ts"))).toBe(true);
       expect(deps.tryInitializeGit).not.toHaveBeenCalled();
       expect(deps.spawnPackageManager).not.toHaveBeenCalled();
     },
@@ -1287,49 +1298,58 @@ describe("runInitCommand", () => {
     expect(output.messages.join("\n")).toContain("Configure authentication before deploying.");
   });
 
-  it("resumes Web Chat setup on the init layout without creating apps/web or relocating the agent", async () => {
-    const parentDirectory = await mkdtemp(join(tmpdir(), "eve-init-web-resume-"));
-    const projectPath = join(parentDirectory, "web-agent");
-    await runInitCommand(
-      logger(),
-      parentDirectory,
-      "web-agent",
-      {
-        channelWebNextjs: true,
-        nonInteractive: true,
-      },
-      dependencies(),
-    );
-    const nextConfig = await readFile(join(projectPath, "next.config.ts"), "utf8");
-    const context = createSetupContexts({
-      appRoot: projectPath,
-      asker: withAnswers({ "web-authentication": "vercel" })(headlessAsker()),
-      environment: integrationSetupEnvironment("authenticated", { kind: "unresolved" }),
-      prompter: createFakePrompter().prompter,
-      resolveVercelProject: async () => ({ orgId: "team_example", projectId: "prj_example" }),
-    });
-    const effects: WebSetupDeps = {
-      detectPackageManager,
-      pathExists,
-      readTextFile: (path) => readFile(path, "utf8"),
-      resolveEveProjectContext,
-      writeTextFile,
-      prepareWebAuthScaffold,
-      provisionWebChatAuth: async () => {},
-      installScaffoldDependencies: async () => {},
-    };
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const plan = await prepareWebSetup(context.prepare, effects);
-      const result = await applyWebSetup(plan, context.apply, effects);
-      expect(result.deploymentRequired).toBe(true);
-      expect(result.facts).toContainEqual({ label: "", value: "Start locally with `pnpm dev`." });
-    }
-    expect(await readFile(join(projectPath, "next.config.ts"), "utf8")).toBe(nextConfig);
-    expect(await readFile(join(projectPath, "agent/channels/eve.ts"), "utf8")).toContain(
-      'from "../../lib/auth.js"',
-    );
-    expect(await pathExists(join(projectPath, "apps/web"))).toBe(false);
-  });
+  it.each(["custom", "vercel"] as const)(
+    "resumes %s Web Chat setup on the init layout without relocating the agent",
+    async (webAuthentication) => {
+      const parentDirectory = await mkdtemp(join(tmpdir(), "eve-init-web-resume-"));
+      const projectPath = join(parentDirectory, "web-agent");
+      const init = runInitCommand(
+        logger(),
+        parentDirectory,
+        "web-agent",
+        {
+          channelWebNextjs: true,
+          webAuthentication,
+          nonInteractive: true,
+        },
+        dependencies(),
+      );
+      if (webAuthentication === "vercel") {
+        await expect(init).rejects.toThrow("eve add channel/web --skip-install");
+      } else {
+        await init;
+      }
+      const nextConfig = await readFile(join(projectPath, "next.config.ts"), "utf8");
+      const context = createSetupContexts({
+        appRoot: projectPath,
+        asker: withAnswers({ "web-authentication": "vercel" })(headlessAsker()),
+        environment: integrationSetupEnvironment("authenticated", { kind: "unresolved" }),
+        prompter: createFakePrompter().prompter,
+        resolveVercelProject: async () => ({ orgId: "team_example", projectId: "prj_example" }),
+      });
+      const effects: WebSetupDeps = {
+        detectPackageManager,
+        pathExists,
+        readTextFile: (path) => readFile(path, "utf8"),
+        resolveEveProjectContext,
+        writeTextFile,
+        prepareWebAuthScaffold,
+        provisionWebChatAuth: async () => {},
+        installScaffoldDependencies: async () => {},
+      };
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const plan = await prepareWebSetup(context.prepare, effects);
+        const result = await applyWebSetup(plan, context.apply, effects);
+        expect(result.deploymentRequired).toBe(true);
+        expect(result.facts).toContainEqual({ label: "", value: "Start locally with `pnpm dev`." });
+      }
+      expect(await readFile(join(projectPath, "next.config.ts"), "utf8")).toBe(nextConfig);
+      expect(await readFile(join(projectPath, "agent/channels/eve.ts"), "utf8")).toContain(
+        'from "../../lib/auth.js"',
+      );
+      expect(await pathExists(join(projectPath, "apps/web"))).toBe(false);
+    },
+  );
 
   it("removes the staged project when Web Chat scaffolding fails", async () => {
     const parentDirectory = await mkdtemp(join(tmpdir(), "eve-init-web-fail-"));

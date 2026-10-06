@@ -63,7 +63,11 @@ import {
 import { cleanupFreshInitTarget, workspaceFailureNote } from "./init-recovery.js";
 import { hasInteractiveTerminal } from "./preconditions.js";
 import { resolveInitTarget } from "./init-target.js";
-import { runInitWebAuth, type InitWebAuthDeps } from "./init-web-auth.js";
+import {
+  resolveInitWebAuthentication,
+  runInitWebAuth,
+  type InitWebAuthDeps,
+} from "./init-web-auth.js";
 
 export type { InitCliLogger, InitCommandOptions } from "./init-agent-workspace.js";
 
@@ -229,7 +233,10 @@ async function scaffoldProject(
         projectRoot: stagedProjectPath,
         kind: "web",
         packageManager,
-        force: overwriteExisting,
+        // The base scaffold's generated placeholder must become the selected web channel.
+        force: true,
+        webAuthentication:
+          options.webAuthentication === "vercel" ? "sign-in-with-vercel" : undefined,
         webPackageVersions: evePackage === undefined ? undefined : { evePackage },
         workspaceProbeDirectory: projectPath,
         configureVercelServices: false,
@@ -279,7 +286,7 @@ async function runInitSteps(input: {
     dependencies,
     interactive,
     logger,
-    options,
+    options: requestedOptions,
     parentDirectory,
     target,
     trackStep,
@@ -288,6 +295,17 @@ async function runInitSteps(input: {
   const debug = isLogLevelEnabled("debug");
   const initTarget = await resolveInitTarget({ parentDirectory, target });
   const evePackage = resolveInitEvePackageOverride();
+  const options =
+    initTarget.kind === "fresh" && requestedOptions.channelWebNextjs === true
+      ? {
+          ...requestedOptions,
+          webAuthentication: await resolveInitWebAuthentication({
+            interactive: interactive && !agentLaunched && !requestedOptions.nonInteractive,
+            options: requestedOptions,
+            deps: dependencies.webAuth,
+          }),
+        }
+      : requestedOptions;
 
   const startedAt = dependencies.now();
   const progressOptions = {

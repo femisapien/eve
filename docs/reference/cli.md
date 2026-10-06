@@ -63,8 +63,9 @@ After scaffolding in an interactive human terminal, eve opens the TUI directly. 
 | `-n, --non-interactive`           | flag   | off                                                  | Scaffold and install dependencies without starting development.                                                           |
 
 With `--channel-web-nextjs`, interactive initialization asks how people should
-sign in. Choosing **Sign in with Vercel** creates or selects a Vercel project,
-provisions a team-only Vercel App, and installs browser session authentication.
+sign in before creating the app. Choosing **Sign in with Vercel** scaffolds browser
+session authentication and installs all dependencies once. Setup then creates or
+selects a Vercel project and provisions a team-only Vercel App.
 If your Vercel CLI login is missing or rejected, interactive setup opens browser
 login before selecting a project. The team picker shows all listed teams and
 disables those without Vercel App and environment-variable permissions. Team

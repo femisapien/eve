@@ -527,7 +527,10 @@ async function ensureWebChannel(
   filesSkipped.push(...packageManagerConfiguration.filesSkipped);
 
   if (!options.skipDependencyMutation) {
-    const channelTemplate = WEB_CHANNEL_TEMPLATES[options.webAuthentication ?? "default"];
+    const channelTemplate = WEB_CHANNEL_TEMPLATES[options.webAuthentication ?? "default"].replace(
+      '"@/lib/auth"',
+      '"../../lib/auth.js"',
+    );
     const templateFiles = {
       ...WEB_APP_TEMPLATE_FILES,
       ...(options.webAuthentication === "sign-in-with-vercel"
@@ -550,6 +553,13 @@ async function ensureWebChannel(
       if (existed) {
         filesOverwritten.push(filePath);
       }
+    }
+    if (options.webAuthentication === "sign-in-with-vercel") {
+      await appendEnv(join(options.environmentRoot ?? options.projectRoot, ".env.example"), {
+        VERCEL_APP_CLIENT_ID: "",
+        VERCEL_APP_CLIENT_SECRET: "",
+        BETTER_AUTH_SECRET: "",
+      });
     }
   }
 

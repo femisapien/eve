@@ -9,6 +9,7 @@ import { installScaffoldDependencies } from "../shared/scaffold.js";
 import { prepareWebAuthScaffold } from "./auth-scaffold.js";
 import { WEB_AUTHENTICATION_QUESTION } from "./auth-options.js";
 import { provisionWebChatAuth } from "./provision-auth.js";
+import { setupWebAuth } from "./setup-auth.js";
 import { detectPackageManager, type PackageManagerKind } from "#setup/package-manager.js";
 import { pathExists, writeTextFile } from "#setup/scaffold/files.js";
 import { WEB_CHANNEL_TEMPLATES } from "#setup/scaffold/create/web-template.js";
@@ -246,20 +247,16 @@ export default withEve(nextConfig);
     startScript = plan.rootWebChat ? "dev" : "dev:web";
   }
   if (plan.authProject !== undefined && writeAuth !== undefined) {
-    await deps.provisionWebChatAuth(plan.authProject, context.signal);
-    context.signal?.throwIfAborted();
-    await writeAuth();
-    await deps.installScaffoldDependencies({
-      changed: true,
-      log: context.presenter.log,
-      projectPath: project.environmentRoot,
-      signal: context.signal,
-    });
-    context.presenter.log.success("Configured Sign in with Vercel for this project's team");
-    context.presenter.nextSteps([
-      "Local setup is complete. Run `eve deploy` to publish these changes. Production and preview credentials are configured.",
-      "Local development continues to use localDev() without signing in.",
-    ]);
+    await setupWebAuth(
+      {
+        project: plan.authProject,
+        environmentRoot: project.environmentRoot,
+        presenter: context.presenter,
+        writeAuth,
+        signal: context.signal,
+      },
+      deps,
+    );
   }
   context.presenter.log.success("Configured channel: web");
   const completion: RegistrySetupCompletion = {

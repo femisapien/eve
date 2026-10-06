@@ -4,13 +4,13 @@ import {
   WEB_AUTHENTICATION_QUESTION,
   WEB_CHAT_TEAM_REQUIREMENT,
 } from "#setup/integrations/web/auth-options.js";
-import { prepareWebAuthScaffold } from "#setup/integrations/web/auth-scaffold.js";
 import { provisionWebChatAuth } from "#setup/integrations/web/provision-auth.js";
 import { installScaffoldDependencies } from "#setup/integrations/shared/scaffold.js";
+import { createSetupPresenter } from "#setup/integrations/shared/ui.js";
+import { setupWebAuth } from "#setup/integrations/web/setup-auth.js";
 import { createPrompter } from "#setup/prompter.js";
 import { readProjectLink } from "#setup/project-resolution.js";
 import { WizardCancelledError } from "#setup/step.js";
-import { withSpinner } from "#setup/with-spinner.js";
 
 import type { InitCliLogger, InitCommandOptions } from "./init-agent-workspace.js";
 import { runNonInteractiveLink } from "./vercel-non-interactive.js";
@@ -19,7 +19,6 @@ export interface InitWebAuthDeps {
   createPrompter: typeof createPrompter;
   ensureVercelProject: typeof ensureVercelProject;
   installScaffoldDependencies: typeof installScaffoldDependencies;
-  prepareWebAuthScaffold: typeof prepareWebAuthScaffold;
   provisionWebChatAuth: typeof provisionWebChatAuth;
   readProjectLink: typeof readProjectLink;
   runNonInteractiveLink: typeof runNonInteractiveLink;
@@ -29,11 +28,21 @@ const defaultDeps: InitWebAuthDeps = {
   createPrompter,
   ensureVercelProject,
   installScaffoldDependencies,
-  prepareWebAuthScaffold,
   provisionWebChatAuth,
   readProjectLink,
   runNonInteractiveLink,
 };
+
+export async function resolveInitWebAuthentication(input: {
+  interactive: boolean;
+  options: InitCommandOptions;
+  deps?: Partial<InitWebAuthDeps>;
+}): Promise<"vercel" | "custom"> {
+  if (input.options.webAuthentication !== undefined) return input.options.webAuthentication;
+  if (!input.interactive) return "custom";
+  const prompter = (input.deps?.createPrompter ?? createPrompter)();
+  return interactiveAsker(prompter).ask(WEB_AUTHENTICATION_QUESTION);
+}
 
 /** Runs after the local app is installed, so a remote failure preserves a usable project. */
 export async function runInitWebAuth(input: {
@@ -47,22 +56,12 @@ export async function runInitWebAuth(input: {
   const prompter = deps.createPrompter();
   const resume = `Web Chat was created at ${input.appRoot}. To finish sign-in setup, run \`eve link\` there if needed, then \`eve add channel/web --skip-install\`. Do not rerun eve init.`;
   try {
-    const authentication =
-      input.options.webAuthentication ??
-      (input.interactive
-        ? await interactiveAsker(prompter).ask(WEB_AUTHENTICATION_QUESTION)
-        : "custom");
-    if (authentication === "custom") {
+    if (input.options.webAuthentication !== "vercel") {
       input.logger.log(
         "Web Chat uses the current channel auth. Configure authentication before deploying.",
       );
       return;
     }
-    const writeAuth = await deps.prepareWebAuthScaffold({
-      environmentRoot: input.appRoot,
-      agentAppRoot: input.appRoot,
-      webRoot: input.appRoot,
-    });
     if (input.options.project !== undefined) {
       const linked = await deps.runNonInteractiveLink({
         logger: input.logger,
@@ -85,20 +84,14 @@ export async function runInitWebAuth(input: {
         "Sign in with Vercel requires a linked project. Pass --project <name-or-id> (and --team <slug-or-id>) for non-interactive initialization.",
       );
     }
-    await withSpinner(prompter, "Configuring Sign in with Vercel…", () =>
-      deps.provisionWebChatAuth(project),
+    await setupWebAuth(
+      {
+        project,
+        environmentRoot: input.appRoot,
+        presenter: createSetupPresenter(prompter),
+      },
+      deps,
     );
-    await writeAuth();
-    await deps.installScaffoldDependencies({
-      changed: true,
-      log: prompter.log,
-      projectPath: input.appRoot,
-    });
-    input.logger.log("Configured Sign in with Vercel for this project's team");
-    input.logger.log(
-      "Created locally; not deployed yet. Run `eve deploy` to publish your Web Chat. Production and preview credentials are configured.",
-    );
-    input.logger.log("Local development continues to use localDev() without signing in.");
   } catch (error) {
     if (error instanceof WizardCancelledError) {
       input.logger.log(resume);
