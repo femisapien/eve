@@ -136,6 +136,7 @@ import {
 import { coordinateApprovalDelivery } from "#harness/approval-delivery-coordinator.js";
 import type { InstrumentationAttempt, InstrumentationStepScope } from "#instrumentation/runtime.js";
 import {
+  answerSessionLimitFromText,
   consumeDeferredStepInput,
   getApprovedTools,
   getPendingInputRequestIds,
@@ -190,6 +191,7 @@ import {
   workingTaskIds,
 } from "#execution/tasks/model-step.js";
 import { renderFinalOutputWhileWorkingError } from "#execution/tasks/render.js";
+import { setApprovedCallCallers } from "#harness/approved-call-callers.js";
 import {
   classifyModelCallError,
   ContentFilteredModelResponseError,
@@ -650,7 +652,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     // replay only after they finish.
     const stepInput =
       pendingCoordination === undefined
-        ? consumeDeferredStepInput({ input, session })
+        ? consumeDeferredStepInput({ input: answerSessionLimitFromText(session, input), session })
         : { input, session };
     session = stepInput.session;
     const coordination = await resolvePendingCoordination({
@@ -1203,6 +1205,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     const replayRequests = (pending.resolvedInputs ?? []).flatMap((batch) =>
       batch.inputs.filter((input) => input.outcome === "approved"),
     );
+    setApprovedCallCallers(pending.resolvedInputs, session.state);
     if (replayRequests.length > 0) {
       const replayTools = buildResponseAuthorizationTools({
         authoredTools: config.tools,

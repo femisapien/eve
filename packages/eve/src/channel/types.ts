@@ -427,7 +427,7 @@ export interface SessionCapabilities {
  */
 export interface RunInput {
   /**
-   * @internal Authorized stub rules and ownership metadata supplied by the server.
+   * @internal Authorized stub rules and playback routing supplied by the server.
    * Local children share the root session's response sequence; remote agents do
    * not receive this scope.
    */
