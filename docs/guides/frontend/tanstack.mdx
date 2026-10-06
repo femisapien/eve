@@ -100,7 +100,7 @@ eve ships hook bindings for React, Vue, and Svelte. A TanStack Start app that us
 
 ## Dev vs deploy topology
 
-- **Local dev.** `npm run dev` boots the eve dev server next to TanStack Start and Nitro proxies `/eve/v1/**` to it, so the browser only ever hits the TanStack Start origin. The plugin uses the server named by `EVE_BASE_URL` when that variable is set, then a healthy shared eve dev server already running for the app, and otherwise starts one.
+- **Local dev.** `npm run dev` boots the eve dev server next to TanStack Start and Nitro proxies `/eve/v1/**` to it, so the browser only ever hits the TanStack Start origin. The plugin uses the server named by `EVE_BASE_URL` when that variable is set, then a healthy shared eve dev server already running for the app, and otherwise starts one. Any tool that loads `vite.config.ts` in serve mode starts or reuses this server, including test runners such as Vitest. Keep `eveTanStack()` out of a separate test config if you don't want that.
 - **Vercel.** The TanStack Start app and the eve runtime deploy as a single project. On Vercel builds the plugin adds Build Output [`services`](https://vercel.com/docs/services) for eve and a `routes` entry that sends `/eve/v1/**` to that service before filesystem routing; the TanStack Start app remains the default app. No `vercel.json` is required. By default the generated service runs the installed eve binary from the TanStack Start app's dependencies, so the agent directory does not need its own `package.json`. When the agent needs its own build step, set `eveBuildCommand`:
 
   ```ts

@@ -1,11 +1,14 @@
+import { createRequire } from "node:module";
+
 import type { ScenarioAppDescriptor } from "#internal/testing/scenario-app.js";
 
 // Not resolved from the installed workspace like the Next.js descriptor's
 // dependencies: TanStack Start is not an eve dependency, so no copy is
-// installed to resolve a version from. `nitro` matches the version eve ships.
+// installed to resolve a version from. `nitro` is the copy eve ships.
+const require = createRequire(import.meta.url);
 const TANSTACK_ROUTER_VERSION = "^1.170.0";
 const TANSTACK_START_VERSION = "^1.168.0";
-const NITRO_VERSION = "3.0.260903-beta";
+const NITRO_VERSION = (require("nitro/package.json") as { version: string }).version;
 const VITE_REACT_VERSION = "^6.1.0";
 const VITE_VERSION = "^8.1.5";
 const REACT_VERSION = "^19.0.0";

@@ -48,10 +48,20 @@ function resolveApplicationRoot(hostRoot: string, appPath: string | undefined): 
   return isAbsolute(appPath) ? appPath : resolve(hostRoot, appPath);
 }
 
+function parseEveBaseUrl(value: string): string {
+  const url = URL.parse(value);
+  if (url === null || (url.protocol !== "http:" && url.protocol !== "https:")) {
+    throw new Error(
+      `${EVE_BASE_URL_ENV} must be an absolute http(s) URL such as http://127.0.0.1:2000, received "${value}".`,
+    );
+  }
+  return url.origin;
+}
+
 async function resolveEveDevOrigin(appRoot: string): Promise<string> {
   const configuredEveBaseUrl = process.env[EVE_BASE_URL_ENV]?.trim();
   if (configuredEveBaseUrl && configuredEveBaseUrl.length > 0) {
-    return new URL(configuredEveBaseUrl).origin;
+    return parseEveBaseUrl(configuredEveBaseUrl);
   }
 
   return (await resolveSharedEveDevServer({ appRoot, host: EVE_TANSTACK_HOST })).origin;

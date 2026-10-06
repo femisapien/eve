@@ -87,6 +87,15 @@ describe("eveTanStack", () => {
     });
   });
 
+  it("names EVE_BASE_URL when it is not an absolute URL", async () => {
+    vi.stubEnv("EVE_BASE_URL", "localhost:2000");
+
+    await expect(
+      getConfigHook(eveTanStack())({}, { command: "serve", mode: "development" }),
+    ).rejects.toThrow(/EVE_BASE_URL must be an absolute http\(s\) URL/);
+    expect(resolveSharedEveDevServerMock).not.toHaveBeenCalled();
+  });
+
   it("resolves eveRoot against the Vite root", async () => {
     await getConfigHook(eveTanStack({ eveRoot: "agent" }))(
       { root: "/projects/web" },
