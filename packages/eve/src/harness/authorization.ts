@@ -297,6 +297,14 @@ export const CallbackBaseUrlKey = new ContextKey<string>("eve.callbackBaseUrl");
 /** Hook token of a runtime that owns its callback instead of using the session hook. */
 export const AuthorizationHookKey = new ContextKey<string>("eve.authorizationHook");
 
+/** One authorization callback, as the connection callback route delivers it. */
+export interface ReceivedAuthorizationCallback {
+  readonly attemptId: string;
+  /** Absent when the callback couldn't be read. */
+  readonly callback?: AuthorizationCallback;
+  readonly connectionName: string;
+}
+
 // ---------------------------------------------------------------------------
 // Session state persistence (internal — used by framework only)
 // ---------------------------------------------------------------------------
