@@ -84,7 +84,9 @@ Gating a side effect on approval is also how you make non-idempotent work safe a
 
 ### Authorizing approval responses
 
-You may also define an approval response policy that decides whether the authenticated person who selects **Approve** or **Cancel** may settle that specific call:
+By default, only the person whose turn requested a call can approve or cancel it.
+
+Define an approval response policy to change who may settle a call, for example, to specify a set of designated approvers who must approve a certain tool. A tool with a `response` policy replaces the default entirely, so return `{ status: "allowed" }` to let any responder through:
 
 ```ts title="agent/tools/refund_charge.ts"
 import { defineTool } from "eve/tools";
