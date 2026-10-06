@@ -125,11 +125,26 @@ npx eve@latest init my-agent
 `eve init` writes a new agent with eve's default model. Pass `--model
 openai/gpt-5.5` to choose another AI Gateway model, `--reasoning high` to set a
 reasoning effort, or `--channel-web-nextjs` to add the Web Chat application. It
-installs dependencies, initializes Git, and starts the development server. When
-it finds a supported coding-agent REPL, the handoff menu can open that REPL
-instead or exit. Targeting an existing project directory (`eve init .`) adds the
-agent files and missing dependencies instead. It does not create a Vercel
-project or deploy the agent.
+installs dependencies, initializes Git, and opens the terminal UI in an interactive
+human terminal. Coding-agent invocations return setup instructions instead.
+Targeting an existing project directory (`eve init .`) adds the agent files and
+missing dependencies instead. Initialization does not create a Vercel project,
+configure browser sign-in, or deploy the agent.
+
+To add Web Chat with **Sign in with Vercel**, run these commands from the agent's directory:
+
+```bash
+npx eve link
+npx eve add channel/web
+```
+
+Choose a hosting layout, then **Sign in with Vercel**. The terminal UI's `/add`
+channel picker offers the same setup. A team owner or a custom role with App and
+environment permissions can provision access for members of the project's team.
+Setup configures production and preview credentials; run `npx eve deploy` to publish.
+Local development works without browser sign-in. See the
+[Web Chat setup guide](https://eve.dev/docs/channels/eve#web-chat-with-sign-in-with-vercel)
+for recovery steps.
 
 CLI commands:
 
@@ -139,6 +154,7 @@ CLI commands:
 - `eve build` — compile `.eve/` and build the host output
 - `eve start` — serve the built `.output/` app
 - `eve dev` — start the local runtime and REPL
+- `eve add channel/web` — add Web Chat and configure browser authentication
 - `eve set [--model <model-id>] [--reasoning <effort>]` — change root model settings
 - `eve extension init <name>` — create a new extension package
 - `eve extension build` — build an extension package
