@@ -2142,7 +2142,7 @@
           "target": "apps/web/app/routes/index.tsx"
         },
         {
-          "path": "registry/channel/tanstack/app/routes/s.$sessionId.tsx",
+          "path": "registry/channel/tanstack/app/routes/s.session-id.tsx",
           "type": "registry:file",
           "target": "apps/web/app/routes/s.$sessionId.tsx"
         },
