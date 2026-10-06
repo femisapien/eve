@@ -32,7 +32,7 @@ import type { AgentTraceStateStore } from "#tracing/agent-trace-state.js";
 import { InMemoryAgentTraceStateStore } from "#internal/testing/in-memory-agent-trace-state-store.js";
 import {
   createInstrumentationHooks,
-  type InstrumentationActionKind,
+  type InstrumentationToolCallKind,
   type InstrumentationAttemptScope,
   type InstrumentationContextRunner,
   type InstrumentationEvent,
@@ -140,7 +140,7 @@ async function emitAttempt(input: {
   readonly parentTraceContext?: InstrumentationTraceContext;
   readonly runInContext: InstrumentationContextRunner;
   readonly providerMetadata?: Readonly<Record<string, unknown>>;
-  readonly actionKind?: InstrumentationActionKind;
+  readonly actionKind?: InstrumentationToolCallKind;
   readonly runtimeContext?: Readonly<Record<string, unknown>>;
   readonly sessionId: string;
   readonly skipModelTerminal?: boolean;
@@ -234,9 +234,9 @@ async function emitAttempt(input: {
     idempotencyKey: actionKey,
     input: { secret: "value" },
     kind: input.actionKind ?? "tool-call",
-    name: "weather",
+    toolName: "weather",
     scope,
-    type: "action.started",
+    type: "tool.call.started",
   });
   await Reflect.apply(bridge.onToolExecutionStart!, bridge, [
     {
@@ -269,7 +269,7 @@ async function emitAttempt(input: {
             outcome: "completed",
             output: { output: { temperature: 72 }, type: "result" },
             scope,
-            type: "action.completed",
+            type: "tool.call.completed",
             usage: input.actionUsage,
           }
         : {
@@ -278,7 +278,7 @@ async function emitAttempt(input: {
             idempotencyKey: actionKey,
             outcome: "failed",
             scope,
-            type: "action.failed",
+            type: "tool.call.failed",
           },
     );
   }
@@ -1425,7 +1425,6 @@ describe("createAgentOtelInstrumentation", () => {
     const turn = byName(spans, "invoke_agent weather")[0]!;
     const step = byName(spans, "agent.step")[0]!;
     const model = byName(spans, "chat claude-test")[0]!;
-    const action = byName(spans, "agent.action")[0]!;
     const tool = byName(spans, "execute_tool weather")[0]!;
 
     expect(byName(spans, "agent.session")).toHaveLength(0);
@@ -1445,13 +1444,14 @@ describe("createAgentOtelInstrumentation", () => {
           apiTrace.getSpan(parent as never)?.spanContext().spanId === model.spanContext().spanId,
       ),
     ).toBe(true);
-    expect(action.parentSpanContext?.spanId).toBe(step.spanContext().spanId);
-    expect(tool.parentSpanContext?.spanId).toBe(action.spanContext().spanId);
+    expect(tool.parentSpanContext?.spanId).toBe(step.spanContext().spanId);
+    expect(byName(spans, "agent.action")).toHaveLength(0);
+    expect(byName(spans, "execute_tool weather")).toHaveLength(1);
     expect(turn.attributes["agent.channel.audience"]).toBe("public");
-    for (const span of [step, model, action, tool]) {
+    for (const span of [step, model, tool]) {
       expect(span.attributes).not.toHaveProperty("agent.channel.audience");
     }
-    for (const span of [turn, step, model, action, tool]) {
+    for (const span of [turn, step, model, tool]) {
       expect(span.attributes).toMatchObject({
         "gen_ai.conversation.id": "session-1",
       });
@@ -1495,7 +1495,7 @@ describe("createAgentOtelInstrumentation", () => {
       "gen_ai.usage.input_tokens": 10,
       "gen_ai.usage.output_tokens": 5,
     });
-    expect(action.attributes).toMatchObject({
+    expect(tool.attributes).toMatchObject({
       "agent.action.kind": "tool-call",
       "agent.action.name": "weather",
       "agent.framework.name": "eve",
@@ -1511,7 +1511,7 @@ describe("createAgentOtelInstrumentation", () => {
     });
   });
 
-  it("projects production workflow tool calls as agent.action spans", async () => {
+  it("projects production workflow tool calls as tool spans", async () => {
     const context = new ContextContainer();
     let runtime: TestRuntime | undefined;
 
@@ -1623,7 +1623,9 @@ describe("createAgentOtelInstrumentation", () => {
     });
 
     await runtime!.provider.forceFlush();
-    const actions = byName(runtime!.exporter.getFinishedSpans(), "agent.action");
+    const actions = runtime!.exporter
+      .getFinishedSpans()
+      .filter((span) => span.attributes["gen_ai.operation.name"] === "execute_tool");
     expect(actions.map((span) => span.attributes["agent.action.call_id"]).sort()).toEqual([
       "wait",
       "workflow",
@@ -1972,12 +1974,7 @@ describe("createAgentOtelInstrumentation", () => {
 
     const firstSpans = first.exporter.getFinishedSpans();
     const redeliverySpans = redelivery.exporter.getFinishedSpans();
-    for (const name of [
-      "invoke_agent weather",
-      "agent.step",
-      "agent.action",
-      "execute_tool weather",
-    ]) {
+    for (const name of ["invoke_agent weather", "agent.step", "execute_tool weather"]) {
       expect(byName(redeliverySpans, name)[0]!.spanContext().spanId).toBe(
         byName(firstSpans, name)[0]!.spanContext().spanId,
       );
@@ -1990,7 +1987,7 @@ describe("createAgentOtelInstrumentation", () => {
     );
   });
 
-  it("parents a tool to its action when SDK telemetry arrives first", async () => {
+  it("merges early SDK telemetry into one durable tool span", async () => {
     const runtime = createRuntime();
     const scope: InstrumentationAttemptScope = {
       attemptId: "session-1:turn-1:0:0",
@@ -2015,21 +2012,20 @@ describe("createAgentOtelInstrumentation", () => {
       scope,
       type: "step.attempt.started",
     });
-    await runtime.hooks.publish({
-      callId: "tool-1",
-      idempotencyKey: toolKey,
-      input: { secret: "value" },
-      scope,
-      toolName: "weather",
-      type: "tool.call.started",
-    });
-    await runtime.hooks.publish({
-      durationMs: 1500,
-      idempotencyKey: toolKey,
-      output: { output: "sunny", type: "result" },
-      scope,
-      type: "tool.call.completed",
-    });
+    const executionStart = Date.now();
+    await runtime.runInContext(
+      {
+        callId: "tool-1",
+        idempotencyKey: toolKey,
+        input: { secret: "value" },
+        scope,
+        toolName: "weather",
+        type: "tool.call",
+        startedAtMs: executionStart,
+        completedAtMs: executionStart + 1500,
+      },
+      () => Promise.resolve("sunny"),
+    );
     const later = Date.now() + 100;
     const clock = vi.spyOn(Date, "now").mockReturnValue(later);
     await runtime.hooks.publish({
@@ -2037,9 +2033,9 @@ describe("createAgentOtelInstrumentation", () => {
       idempotencyKey: actionKey,
       input: { secret: "value" },
       kind: "tool-call",
-      name: "weather",
+      toolName: "weather",
       scope,
-      type: "action.started",
+      type: "tool.call.started",
     });
     clock.mockRestore();
     await runtime.hooks.publish({
@@ -2047,23 +2043,20 @@ describe("createAgentOtelInstrumentation", () => {
       outcome: "completed",
       output: { output: "sunny", type: "result" },
       scope,
-      type: "action.completed",
-    });
-    const uncorrelatedToolKey = `tool:${scope.attemptId}:tool-2:0`;
-    await runtime.hooks.publish({
-      callId: "tool-2",
-      idempotencyKey: uncorrelatedToolKey,
-      input: {},
-      scope,
-      toolName: "final_output",
-      type: "tool.call.started",
-    });
-    await runtime.hooks.publish({
-      idempotencyKey: uncorrelatedToolKey,
-      output: { output: "done", type: "result" },
-      scope,
       type: "tool.call.completed",
     });
+    const uncorrelatedToolKey = `tool:${scope.attemptId}:tool-2:0`;
+    await runtime.runInContext(
+      {
+        callId: "tool-2",
+        idempotencyKey: uncorrelatedToolKey,
+        input: {},
+        scope,
+        toolName: "final_output",
+        type: "tool.call",
+      },
+      () => Promise.resolve("done"),
+    );
     await runtime.hooks.publish({
       idempotencyKey: attemptIdempotencyKey(scope),
       scope,
@@ -2072,14 +2065,17 @@ describe("createAgentOtelInstrumentation", () => {
     await runtime.provider.forceFlush();
 
     const spans = runtime.exporter.getFinishedSpans();
-    const action = byName(spans, "agent.action")[0]!;
     const tool = byName(spans, "execute_tool weather")[0]!;
     const uncorrelatedTool = byName(spans, "execute_tool final_output")[0]!;
-    expect(tool.parentSpanContext?.spanId).toBe(action.spanContext().spanId);
-    expect(nanos(action.startTime)).toBeLessThanOrEqual(nanos(tool.startTime));
+    expect(tool.parentSpanContext?.spanId).toBe(
+      byName(spans, "agent.step")[0]!.spanContext().spanId,
+    );
+    expect(byName(spans, "execute_tool weather")).toHaveLength(1);
+    expect(byName(spans, "agent.action")).toHaveLength(0);
+    expect(nanos(tool.startTime)).toBeLessThan(BigInt(later) * 1_000_000n);
     // Seconds, as `@ai-sdk/otel` records it; a publisher that measured nothing sets none.
     expect(tool.attributes["gen_ai.execute_tool.duration"]).toBe(1.5);
-    expect(uncorrelatedTool.attributes["gen_ai.execute_tool.duration"]).toBeUndefined();
+    expect(uncorrelatedTool.attributes["gen_ai.execute_tool.duration"]).toEqual(expect.any(Number));
     expect(uncorrelatedTool.parentSpanContext?.spanId).toBe(
       byName(spans, "agent.step")[0]!.spanContext().spanId,
     );
@@ -2116,9 +2112,9 @@ describe("createAgentOtelInstrumentation", () => {
         idempotencyKey: actionKey,
         input: { secret: "value" },
         kind: "tool-call",
-        name: "weather",
+        toolName: "weather",
         scope,
-        type: "action.started",
+        type: "tool.call.started",
       });
       await first.hooks.publish({
         idempotencyKey: attemptIdempotencyKey(scope),
@@ -2142,35 +2138,31 @@ describe("createAgentOtelInstrumentation", () => {
     await contextStorage.run(restored, async () => {
       // Approval-resumed tools can execute before the replacement AI SDK emits
       // a new step start. The persisted action context is still their parent.
-      await replacement.hooks.publish({
-        callId: "tool-1",
-        idempotencyKey: toolKey,
-        input: {},
-        scope: replacementScope,
-        toolName: "weather",
-        type: "tool.call.started",
-      });
-      await replacement.hooks.publish({
-        idempotencyKey: toolKey,
-        output: { output: "ok", type: "result" },
-        scope: replacementScope,
-        type: "tool.call.completed",
-      });
+      await replacement.runInContext(
+        {
+          callId: "tool-1",
+          idempotencyKey: toolKey,
+          input: {},
+          scope: replacementScope,
+          toolName: "weather",
+          type: "tool.call",
+        },
+        () => Promise.resolve("ok"),
+      );
       await replacement.hooks.publish({
         acceptedAtMs,
         idempotencyKey: actionKey,
         outcome: "completed",
         output: { output: { temperature: 72 }, type: "result" },
         scope,
-        type: "action.completed",
+        type: "tool.call.completed",
       });
     });
     await replacement.provider.forceFlush();
 
     const replacementSpans = replacement.exporter.getFinishedSpans();
-    const action = byName(replacementSpans, "agent.action")[0]!;
-    const tool = byName(replacementSpans, "execute_tool weather")[0]!;
-    expect(action.spanContext().spanId).toBe(tool.parentSpanContext?.spanId);
+    const action = byName(replacementSpans, "execute_tool weather")[0]!;
+    expect(byName(replacementSpans, "execute_tool weather")).toHaveLength(1);
     expect(action.parentSpanContext?.spanId).toBe(step.spanContext().spanId);
     expect(action.attributes).toMatchObject({
       "agent.action.kind": "tool-call",
@@ -2207,9 +2199,9 @@ describe("createAgentOtelInstrumentation", () => {
         idempotencyKey: actionKey,
         input: { city: "SF" },
         kind: "tool-call",
-        name: "weather",
+        toolName: "weather",
         scope,
-        type: "action.started",
+        type: "tool.call.started",
       });
       await first.hooks.publish({
         action: { callId: "tool-1", name: "weather" },
@@ -2240,14 +2232,14 @@ describe("createAgentOtelInstrumentation", () => {
         outcome: "completed",
         output: { output: { temperature: 72 }, type: "result" },
         scope,
-        type: "action.completed",
+        type: "tool.call.completed",
       });
     });
     await replacement.provider.forceFlush();
 
     const spans = replacement.exporter.getFinishedSpans();
     const approval = byName(spans, "agent.approval")[0]!;
-    const action = byName(spans, "agent.action")[0]!;
+    const action = byName(spans, "execute_tool weather")[0]!;
     expect(approval.parentSpanContext?.spanId).toBe(action.spanContext().spanId);
     expect(approval.status.code).toBe(SpanStatusCode.UNSET);
     expect(approval.attributes).toMatchObject({
@@ -2323,9 +2315,9 @@ describe("createAgentOtelInstrumentation", () => {
         idempotencyKey: actionKey,
         input: { city: "SF" },
         kind: "tool-call",
-        name: "weather",
+        toolName: "weather",
         scope,
-        type: "action.started",
+        type: "tool.call.started",
       });
       await runtime.hooks.publish({
         action: { callId: "tool-1", name: "weather" },
@@ -2349,7 +2341,7 @@ describe("createAgentOtelInstrumentation", () => {
         outcome: "completed",
         output: { output: { temperature: 72 }, type: "result" },
         scope,
-        type: "action.completed",
+        type: "tool.call.completed",
       });
       await runtime.hooks.publish({
         agentName: "weather",
@@ -2394,18 +2386,16 @@ describe("createAgentOtelInstrumentation", () => {
       scope,
       type: "step.attempt.started",
     });
-    await runtime.hooks.publish({
-      callId: "tool-1",
-      idempotencyKey: "tool:session-1:turn-1:tool-1",
-      input: { city: "SF" },
-      scope,
-      toolName: "weather",
-      type: "tool.call.started",
-    });
-
     const withSpy = vi.spyOn(context, "with");
     await runtime.runInContext(
-      { idempotencyKey: "tool:session-1:turn-1:tool-1", scope, type: "tool.call" },
+      {
+        idempotencyKey: "tool:session-1:turn-1:tool-1",
+        scope,
+        type: "tool.call",
+        callId: "tool-1",
+        toolName: "weather",
+        input: { city: "SF" },
+      },
       async () => undefined,
     );
 
@@ -2450,52 +2440,47 @@ describe("createAgentOtelInstrumentation", () => {
       idempotencyKey: actionKey,
       input: { issue: "ISSUE-1" },
       kind: "tool-call",
-      name: "linear__get_issue",
-      scope,
-      type: "action.started",
-    });
-    await runtime.hooks.publish({
-      callId: "tool-1",
-      idempotencyKey: toolKey,
-      input: { issue: "ISSUE-1" },
-      scope,
       toolName: "linear__get_issue",
+      scope,
       type: "tool.call.started",
     });
-
     const withSpy = vi.spyOn(context, "with");
-    await runtime.runInContext({ idempotencyKey: toolKey, scope, type: "tool.call" }, async () => {
-      const active = withSpy.mock.calls[0]?.[0];
-      expect(active).toBeDefined();
-      expect(agentToolContentPolicy(active!)).toEqual({
-        recordInputs: false,
-        recordOutputs: false,
-      });
-      annotateAgentToolSpan(
-        {
-          "eve.connection.name": "linear",
-          "gen_ai.operation.name": "execute_tool",
-          "gen_ai.tool.name": "get_issue",
-          "jsonrpc.request.id": "7",
-          "mcp.method.name": "tools/call",
-        },
-        active!,
-      );
-    });
+    await runtime.runInContext(
+      {
+        idempotencyKey: toolKey,
+        scope,
+        type: "tool.call",
+        callId: "tool-1",
+        toolName: "linear__get_issue",
+        input: { issue: "ISSUE-1" },
+      },
+      async () => {
+        const active = withSpy.mock.calls[0]?.[0];
+        expect(active).toBeDefined();
+        expect(agentToolContentPolicy(active!)).toEqual({
+          recordInputs: false,
+          recordOutputs: false,
+        });
+        annotateAgentToolSpan(
+          {
+            "eve.connection.name": "linear",
+            "gen_ai.operation.name": "execute_tool",
+            "gen_ai.tool.name": "get_issue",
+            "jsonrpc.request.id": "7",
+            "mcp.method.name": "tools/call",
+          },
+          active!,
+        );
+      },
+    );
     withSpy.mockRestore();
 
-    await runtime.hooks.publish({
-      idempotencyKey: toolKey,
-      output: { output: { title: "private issue" }, type: "result" },
-      scope,
-      type: "tool.call.completed",
-    });
     await runtime.hooks.publish({
       idempotencyKey: actionKey,
       outcome: "completed",
       output: { output: { title: "private issue" }, type: "result" },
       scope,
-      type: "action.completed",
+      type: "tool.call.completed",
     });
     await runtime.hooks.publish({
       idempotencyKey: attemptIdempotencyKey(scope),
@@ -2551,7 +2536,7 @@ describe("createAgentOtelInstrumentation", () => {
     expect(byName(runtime.exporter.getFinishedSpans(), "agent.approval")).toHaveLength(0);
   });
 
-  it("ends SDK spans but leaves durable actions for their own terminal", async () => {
+  it("ends model spans but leaves durable tools for their own terminal", async () => {
     const runtime = createRuntime();
     await emitAttempt({
       hooks: runtime.hooks,
@@ -2567,7 +2552,7 @@ describe("createAgentOtelInstrumentation", () => {
     const spans = runtime.exporter.getFinishedSpans();
     expect(byName(spans, "chat claude-test")).toHaveLength(1);
     expect(byName(spans, "agent.action")).toHaveLength(0);
-    expect(byName(spans, "execute_tool weather")).toHaveLength(1);
+    expect(byName(spans, "execute_tool weather")).toHaveLength(0);
     expect(byName(spans, "agent.step")).toHaveLength(1);
   });
 
@@ -2596,9 +2581,9 @@ describe("createAgentOtelInstrumentation", () => {
         idempotencyKey: actionIdempotencyKey(sessionId, scope.turnId, "tool-1"),
         input: {},
         kind: "tool-call",
-        name: "publish",
+        toolName: "publish",
         scope,
-        type: "action.started",
+        type: "tool.call.started",
       });
       await runtime.hooks.publish({
         error: publishError,
@@ -2606,10 +2591,12 @@ describe("createAgentOtelInstrumentation", () => {
         idempotencyKey: actionIdempotencyKey(sessionId, scope.turnId, "tool-1"),
         outcome: "failed",
         scope,
-        type: "action.failed",
+        type: "tool.call.failed",
       });
       await runtime.provider.forceFlush();
-      return byName(runtime.exporter.getFinishedSpans(), "agent.action")[0]!;
+      return runtime.exporter
+        .getFinishedSpans()
+        .find((span) => span.attributes["agent.action.call_id"] !== undefined)!;
     };
 
     const recorded = await run(createRuntime(), "recorded");
@@ -2672,7 +2659,7 @@ describe("createAgentOtelInstrumentation", () => {
     await runtime.provider.forceFlush();
 
     const spans = runtime.exporter.getFinishedSpans();
-    for (const name of ["chat claude-test", "agent.action", "execute_tool weather"]) {
+    for (const name of ["chat claude-test", "execute_tool weather"]) {
       const span = byName(spans, name)[0]!;
       expect(span.status).toEqual({ code: SpanStatusCode.ERROR, message: error.message });
       expect(span.attributes["error.type"]).toBe("Error");
@@ -2704,7 +2691,7 @@ describe("createAgentOtelInstrumentation", () => {
     await runtime.provider.forceFlush();
 
     const spans = runtime.exporter.getFinishedSpans();
-    const action = byName(spans, "agent.action")[0];
+    const action = byName(spans, "execute_tool weather")[0];
     expect(action?.attributes).toMatchObject({
       "agent.action.kind": "subagent-call",
       "agent.action.name": "weather",
@@ -2718,9 +2705,8 @@ describe("createAgentOtelInstrumentation", () => {
     expect(
       Object.keys(action?.attributes ?? {}).some((key) => key.startsWith("gen_ai.usage.")),
     ).toBe(false);
-    expect(action?.attributes).not.toHaveProperty("gen_ai.tool.call.arguments");
-    expect(action?.attributes).not.toHaveProperty("gen_ai.tool.call.result");
-    expect(action?.attributes).not.toHaveProperty("gen_ai.operation.name");
+    expect(action?.attributes["gen_ai.tool.call.arguments"]).toContain("secret");
+    expect(action?.attributes["gen_ai.operation.name"]).toBe("execute_tool");
     expect(byName(spans, "invoke_agent weather")).toHaveLength(1);
     expect(byName(spans, "execute_tool weather")).toHaveLength(1);
   });
@@ -2764,10 +2750,6 @@ describe("createAgentOtelInstrumentation", () => {
     );
     expect(tool.attributes["gen_ai.tool.call.arguments"]).toBe('{"secret":"value"}');
     expect(tool.attributes["gen_ai.tool.call.result"]).toBe('{"temperature":72}');
-    // Runtime action spans carry content for dispatches that have no SDK tool boundary.
-    const action = byName(spans, "agent.action")[0]!;
-    expect(action.attributes["gen_ai.tool.call.arguments"]).toContain("secret");
-    expect(action.attributes["gen_ai.tool.call.result"]).toContain("temperature");
   });
 
   it("applies trace content policy only to OTel spans", async () => {
@@ -3090,7 +3072,7 @@ describe("createAgentOtelInstrumentation", () => {
     const replacementSpans = replacementRuntime.exporter.getFinishedSpans();
     const turn = byName(replacementSpans, "invoke_agent weather")[0]!;
     const step = byName(replacementSpans, "agent.step")[0]!;
-    const action = byName(replacementSpans, "agent.action")[0]!;
+    const action = byName(replacementSpans, "execute_tool weather")[0]!;
 
     expect(step.parentSpanContext?.spanId).toBe(turn.spanContext().spanId);
     expect(action.parentSpanContext?.spanId).toBe(step.spanContext().spanId);
@@ -3209,11 +3191,12 @@ describe("createAgentOtelInstrumentation", () => {
     };
     const key = actionIdempotencyKey("parent", "turn_0", "dispatch");
     await runtime.hooks.publish({
-      type: "action.started",
+      type: "tool.call.started",
       idempotencyKey: key,
       scope,
       callId: "dispatch",
-      name: "child",
+      toolName: "child",
+      input: undefined,
       kind: "subagent-call",
     });
     const action = (await store.getAction(key))!;
@@ -3338,7 +3321,7 @@ describe("createAgentOtelInstrumentation", () => {
     await runtime.provider.forceFlush();
 
     const spans = runtime.exporter.getFinishedSpans();
-    const action = byName(spans, "agent.action")[0]!;
+    const action = byName(spans, "execute_tool weather")[0]!;
     expect(action.status.code).toBe(SpanStatusCode.ERROR);
     expect(action.attributes).toMatchObject({
       "agent.action.error.code": "TOOL_CALL_FAILED",

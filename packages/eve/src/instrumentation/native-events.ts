@@ -2,8 +2,8 @@ import type { UnstampedMessageStreamEvent } from "#protocol/message.js";
 import { contextStorage } from "#context/container.js";
 import { instrumentChannelDelivery } from "#instrumentation/channel-delivery.js";
 import type {
-  InstrumentationActionFailedEvent,
-  InstrumentationActionStartedEvent,
+  InstrumentationToolCallFailedEvent,
+  InstrumentationToolCallStartedEvent,
   InstrumentationAttemptScope,
   InstrumentationHooks,
   InstrumentationInputRequestedEvent,
@@ -12,7 +12,6 @@ import type {
   InstrumentationPointEvent,
   InstrumentationTraceContext,
   InstrumentationUsage,
-  InstrumentationToolCallCompletedEvent,
 } from "#instrumentation/lifecycle.js";
 import {
   actionIdempotencyKey,
@@ -241,10 +240,11 @@ async function publishActionStarts(
         input: capturesInputs ? action.input : undefined,
         ...(deferred ? { isWorkflowTool: true } : undefined),
         kind: action.kind === "workflow-tool-call" ? "tool-call" : action.kind,
-        name: actionName(action),
+        toolName: actionName(action),
+        frameworkTool: input.isFrameworkTool?.(actionName(action)) === true,
         scope,
-        type: "action.started",
-      } satisfies InstrumentationActionStartedEvent),
+        type: "tool.call.started",
+      } satisfies InstrumentationToolCallStartedEvent),
     );
   }
 }
@@ -261,24 +261,6 @@ async function publishActionTerminal(
   if (correlation === undefined) return;
   const { idempotencyKey, scope } = correlation;
   const capturesOutputs = hooks.capturesOutputs ?? hooks.capturesContent;
-  if (correlation.toolCall !== undefined) {
-    await hooks.publish(Object.freeze(correlation.toolCall));
-    await hooks.publish(
-      Object.freeze({
-        type: "tool.call.completed",
-        idempotencyKey: correlation.toolCall.idempotencyKey,
-        scope,
-        completedAtMs:
-          contextStorage.getStore()?.get(RuntimeActionSettlementTimesKey)?.[
-            event.data.result.callId
-          ] ?? Date.now(),
-        output:
-          event.data.status === "completed"
-            ? { type: "result", output: capturesOutputs ? event.data.result.output : undefined }
-            : { type: "error", error: capturesOutputs ? event.data.result.output : undefined },
-      } satisfies InstrumentationToolCallCompletedEvent),
-    );
-  }
 
   if (event.data.status === "completed") {
     await hooks.publish(
@@ -294,7 +276,7 @@ async function publishActionTerminal(
             : { type: "result" },
         ),
         scope,
-        type: "action.completed",
+        type: "tool.call.completed",
         usage: actionUsage(event.data.result),
       }),
     );
@@ -316,9 +298,9 @@ async function publishActionTerminal(
       idempotencyKey,
       outcome: event.data.status,
       scope,
-      type: "action.failed",
+      type: "tool.call.failed",
       usage: actionUsage(event.data.result),
-    } satisfies InstrumentationActionFailedEvent),
+    } satisfies InstrumentationToolCallFailedEvent),
   );
 }
 

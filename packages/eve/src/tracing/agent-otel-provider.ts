@@ -24,7 +24,6 @@ import {
   toolResultsContentAttribute,
 } from "#tracing/agent-otel-content.js";
 import type { AgentSpanIdGenerator } from "#tracing/agent-span-id-generator.js";
-import { createAgentActionInstrumentation } from "#tracing/agent-action-instrumentation.js";
 import { createAgentApprovalInstrumentation } from "#tracing/agent-approval-instrumentation.js";
 import { createAgentChannelDeliveryInstrumentation } from "#tracing/agent-channel-delivery-instrumentation.js";
 import { createAgentToolInstrumentation } from "#tracing/agent-tool-instrumentation.js";
@@ -120,7 +119,7 @@ export function createAgentOtelInstrumentation(
   // A lost serverless worker retries the whole turn step from entry.
   const steps = new WeakMap<InstrumentationAttemptScope, SpanState>();
   const modelSpans = new WeakMap<InstrumentationAttemptScope, Map<string, SpanState>>();
-  const actions = createAgentActionInstrumentation({
+  const tools = createAgentToolInstrumentation({
     frameworkVersion: input.frameworkVersion,
     idGenerator: input.idGenerator,
     recordInputs,
@@ -130,20 +129,6 @@ export function createAgentOtelInstrumentation(
       return turn?.context;
     },
     stateStore: input.stateStore,
-    toolStartTimeForAction: (idempotencyKey) => tools.startTimeForAction(idempotencyKey),
-    tracer: input.tracer,
-  });
-  const approvals = createAgentApprovalInstrumentation({
-    actionContextFor: actions.contextFor,
-    frameworkVersion: input.frameworkVersion,
-    idGenerator: input.idGenerator,
-    tracer: input.tracer,
-  });
-  const tools = createAgentToolInstrumentation({
-    actionContextFor: actions.contextFor,
-    idGenerator: input.idGenerator,
-    recordInputs,
-    recordOutputs,
     resolveFallback: (event) => {
       const scope = attemptScopes.get(event.scope.attemptId) ?? event.scope;
       const step = steps.get(scope);
@@ -151,6 +136,12 @@ export function createAgentOtelInstrumentation(
         ? undefined
         : { context: step.context, spanContext: step.span.spanContext() };
     },
+    tracer: input.tracer,
+  });
+  const approvals = createAgentApprovalInstrumentation({
+    actionContextFor: tools.dispatchContextFor,
+    frameworkVersion: input.frameworkVersion,
+    idGenerator: input.idGenerator,
     tracer: input.tracer,
   });
   const memory = createAgentMemoryInstrumentation({ ...input, environment });
@@ -268,7 +259,7 @@ export function createAgentOtelInstrumentation(
       event.type === "step.attempt.failed" ? { error: event.error } : undefined,
     );
     if (event.type === "step.attempt.failed") {
-      await actions.failForAttempt(scope, event.error);
+      await tools.failForAttempt(scope, event.error);
     }
     attemptScopes.delete(event.scope.attemptId);
     const attempt = steps.get(scope);
@@ -361,7 +352,7 @@ export function createAgentOtelInstrumentation(
     // turn that still needs its metadata — so only release session-scoped
     // state on terminal transitions.
     if (event.type === "session.completed" || event.type === "session.failed") {
-      await actions.deleteForSession(event.sessionId);
+      await tools.deleteForSession(event.sessionId);
       await input.stateStore.deleteSession(event.sessionId);
     }
   };
@@ -533,12 +524,6 @@ export function createAgentOtelInstrumentation(
     hook: {
       events: {
         ...channelDeliveries,
-        "action.completed": actions.events["action.completed"],
-        "action.failed": actions.events["action.failed"],
-        async "action.started"(event, ctx) {
-          await actions.events["action.started"]!(event, ctx);
-          await tools.actionStarted(event);
-        },
         ...approvals,
         ...memory.events,
         "step.attempt.completed": onStepTerminal,
@@ -601,16 +586,26 @@ export function createAgentOtelInstrumentation(
         recordInputs: recordInputs && effective?.action === "record" && effective.recordInputs,
         recordOutputs: recordOutputs && effective?.action === "record" && effective.recordOutputs,
       };
-      if (parent === undefined) return execute();
-      const withErrorPolicy = withErrorContent(parent, toolContentPolicy.recordOutputs);
-      const operationContext =
-        operation.type === "tool.call"
-          ? withAgentToolContentPolicy(withErrorPolicy, toolContentPolicy)
-          : withErrorPolicy;
-      return context.with(
-        markAgentTraceContext(withOperationConversation(operationContext, operation.scope)),
-        execute,
-      );
+      const run = (executionParent: Context | undefined) => {
+        const activeParent = executionParent ?? parent;
+        if (activeParent === undefined) return execute();
+        const withErrorPolicy = withErrorContent(activeParent, toolContentPolicy.recordOutputs);
+        const operationContext =
+          operation.type === "tool.call"
+            ? withAgentToolContentPolicy(withErrorPolicy, toolContentPolicy)
+            : withErrorPolicy;
+        return context.with(
+          markAgentTraceContext(withOperationConversation(operationContext, operation.scope)),
+          execute,
+        );
+      };
+      return operation.type === "tool.call"
+        ? tools.runInContext(
+            { ...operation, input: toolContentPolicy.recordInputs ? operation.input : undefined },
+            run,
+            toolContentPolicy.recordOutputs,
+          )
+        : run(undefined);
     },
   };
 
