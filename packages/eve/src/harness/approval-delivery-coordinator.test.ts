@@ -12,7 +12,7 @@ import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import type { SessionAuthContext } from "#channel/types.js";
 import { settleDirectApprovalResponse } from "#harness/approval-candidates.js";
 import { coordinateApprovalDelivery } from "#harness/approval-delivery-coordinator.js";
-import { selectApprovalReplayBatch } from "#harness/input-requests.js";
+import { resolveTypedApproval, selectApprovalReplayBatch } from "#harness/input-requests.js";
 import { appendPendingInputBatch, getPendingInputBatches } from "#harness/pending-input-batches.js";
 import type { HarnessSession } from "#harness/types.js";
 import type { InputRequest } from "#shared/input.js";
@@ -391,7 +391,8 @@ describe("text approval replay preparation", () => {
     session: HarnessSession;
     stepInput?: import("#harness/types.js").StepInput;
   }) {
-    return selectApprovalReplayBatch(input.session, input.stepInput) !== undefined;
+    const stepInput = resolveTypedApproval(input.session, input.stepInput);
+    return selectApprovalReplayBatch(input.session, stepInput) !== undefined;
   }
   function sessionWithRequests(
     requests: InputRequest[] = [request],
@@ -427,24 +428,37 @@ describe("text approval replay preparation", () => {
     ).toBe(false);
   });
 
-  it("does not bypass responder authorization with text", () => {
+  it("answers only the first approval when several are pending", () => {
+    const second = { ...request, requestId: "approval-2" };
+    const session = sessionWithRequests([request, second]);
+    expect(resolveTypedApproval(session, { message: "approve" })?.inputResponses).toEqual([
+      { optionId: "approve", requestId: request.requestId },
+    ]);
     expect(
-      shouldPrepareApprovalReplayTools({
-        session: sessionWithRequests([request], [request.requestId]),
-        stepInput: { message: "approve" },
-      }),
-    ).toBe(false);
+      resolveTypedApproval(session, {
+        inputResponses: [{ optionId: "approve", requestId: request.requestId }],
+        message: "cancel",
+      })?.inputResponses,
+    ).toEqual([
+      { optionId: "approve", requestId: request.requestId },
+      { optionId: "cancel", requestId: second.requestId },
+    ]);
   });
 
-  it("does not interpret text when multiple batches are pending", () => {
-    const session = appendPendingInputBatch({
-      requests: [{ ...request, requestId: "approval-2" }],
-      responseMessages: [],
-      session: sessionWithRequests(),
+  it("skips an approval that already settled on its own", () => {
+    const second = { ...request, requestId: "approval-2" };
+    const session = sessionWithRequests([request, second]);
+    const settled = settleDirectApprovalResponse({
+      actor: responder,
+      outcome: "allowed",
+      requestId: request.requestId,
+      settledAt: 1,
+      state: session.state,
     });
-    expect(shouldPrepareApprovalReplayTools({ session, stepInput: { message: "approve" } })).toBe(
-      false,
-    );
+    expect(
+      resolveTypedApproval({ ...session, state: settled.state }, { message: "cancel" })
+        ?.inputResponses,
+    ).toEqual([{ optionId: "cancel", requestId: second.requestId }]);
   });
 
   it("preserves an explicit cancellation over approval text", () => {

@@ -1,7 +1,7 @@
 import type { ModelMessage } from "ai";
 
 import type { InputRequest, InputResponse } from "#shared/input.js";
-import { resolveTextToResponses } from "#channel/resolve-text.js";
+import { resolveTextToResponse, resolveTextToResponses } from "#channel/resolve-text.js";
 import { hasTailApprovalResponse } from "#harness/current-messages.js";
 import {
   getApprovedTools,
@@ -10,6 +10,7 @@ import {
 } from "#harness/hitl/approval-input-requests.js";
 import type { RejectedActionBatch } from "#harness/hitl/approval-input-requests.js";
 import { isApprovalRequest } from "#harness/input-request-class.js";
+import { firstOpenInputRequest } from "#harness/open-input-request.js";
 import type { PendingInputBatch } from "#harness/pending-input-batches.js";
 import {
   getDeferredStepInput,
@@ -83,9 +84,7 @@ export function selectApprovalReplayBatch(
 ): PendingInputBatch | undefined {
   const batches = getPendingInputBatches(session.state);
   if (batches.some(isSessionLimitInputBatch)) return;
-  const resolved =
-    batches.length === 1 ? resolveTextMessageInput(batches[0]!, stepInput) : stepInput;
-  const responses = canonicalizeInputResponses(resolved?.inputResponses ?? []);
+  const responses = canonicalizeInputResponses(stepInput?.inputResponses ?? []);
   const batch = findAnsweredApprovalBatches(batches, responses)[0];
   return batch?.requests.some(
     (request) =>
@@ -133,12 +132,11 @@ export function resolvePendingInput(input: {
     return { outcome: "continue", messages: baseHistory, session: input.session };
   }
   const deferTurnInput = hasTailApprovalResponse(baseHistory);
-  const textResolutionBatch =
-    route.kind === "session-limit" ? route.batch : batches.length === 1 ? batches[0] : undefined;
+  // A typed approval was already answered by `resolveTypedApproval`.
   const resolvedStepInput =
-    textResolutionBatch === undefined
-      ? input.stepInput
-      : resolveTextMessageInput(textResolutionBatch, input.stepInput);
+    route.kind === "session-limit"
+      ? resolveTextMessageInput(route.batch, input.stepInput)
+      : input.stepInput;
   const responses = canonicalizeInputResponses(resolvedStepInput?.inputResponses ?? []);
 
   if (responses.length === 0 && resolvedStepInput?.message === undefined) {
@@ -218,43 +216,40 @@ function canonicalizeInputResponses(responses: readonly InputResponse[]): readon
 }
 
 /**
- * Turns a typed reply into responses to the only pending batch's
- * response-policy approvals. The approval coordinator then authorizes them
- * like a press by the person who typed. Other requests resolve later, in
- * {@link resolvePendingInput}, which never answers a policy approval from text.
+ * Turns a typed reply into a response to the first open request when that
+ * request is one of this turn's approvals. The approval coordinator then
+ * settles it, or asks its response policy about the person who typed, as it
+ * does for a press. A batch's other approvals stay open for later replies.
  */
-export function resolveTypedPolicyApprovals(
+export function resolveTypedApproval(
   session: HarnessSession,
   stepInput: StepInput | undefined,
-): StepInput | undefined {
-  const batches = getPendingInputBatches(session.state);
-  if (batches.length !== 1 || isSessionLimitInputBatch(batches[0]!)) return stepInput;
-  const batch = batches[0]!;
-  const policyRequestIds = new Set(batch.responseAuthRequiredRequestIds ?? []);
+): ResolvedStepInput | undefined {
   const text = readAnswerText(stepInput);
-  if (stepInput === undefined || text === undefined || policyRequestIds.size === 0) {
-    return stepInput;
-  }
-  if (hasResponseForBatch(batch, stepInput)) return stepInput;
-
-  const responses = resolveTextToResponses(
-    text,
-    batch.requests.filter((request) => policyRequestIds.has(request.requestId)),
-  );
-  if (responses.length === 0) return stepInput;
+  if (stepInput === undefined || text === undefined) return stepInput;
+  const answered = new Set(deliveredResponses(stepInput).map(({ requestId }) => requestId));
+  const first = firstOpenInputRequest(session.state, (requestId) => answered.has(requestId));
+  if (first?.kind !== "parked" || !isApprovalRequest(first.request)) return stepInput;
+  const response = resolveTextToResponse(text, first.request);
+  if (response === undefined) return stepInput;
   return {
     ...stepInput,
-    inputResponses: [...(stepInput.inputResponses ?? []), ...responses],
+    inputResponses: [...(stepInput.inputResponses ?? []), response],
+    messageConsumed: true,
     message: undefined,
   };
 }
 
-function hasResponseForBatch(batch: PendingInputBatch, stepInput: StepInput): boolean {
-  const batchRequestIds = new Set(batch.requests.map((request) => request.requestId));
+function deliveredResponses(stepInput: StepInput): readonly InputResponse[] {
   return [
     ...(stepInput.inputResponses ?? []),
     ...(stepInput.attributedInputResponses ?? []).map(({ response }) => response),
-  ].some((response) => batchRequestIds.has(response.requestId));
+  ];
+}
+
+function hasResponseForBatch(batch: PendingInputBatch, stepInput: StepInput): boolean {
+  const batchRequestIds = new Set(batch.requests.map((request) => request.requestId));
+  return deliveredResponses(stepInput).some((response) => batchRequestIds.has(response.requestId));
 }
 
 function resolveTextMessageInput(
@@ -265,13 +260,7 @@ function resolveTextMessageInput(
   if (stepInput === undefined || text === undefined) return stepInput;
   if (hasResponseForBatch(pendingBatch, stepInput)) return stepInput;
 
-  // Text alone can't satisfy a response policy; resolveTypedPolicyApprovals
-  // hands those to the coordinator with the sender's auth instead.
-  const responseAuthRequired = new Set(pendingBatch.responseAuthRequiredRequestIds ?? []);
-  const textRequests = pendingBatch.requests.filter(
-    (request) => !responseAuthRequired.has(request.requestId),
-  );
-  const responses = resolveTextToResponses(text, textRequests);
+  const responses = resolveTextToResponses(text, pendingBatch.requests);
   if (responses.length === 0) return stepInput;
 
   return compactStepInput({

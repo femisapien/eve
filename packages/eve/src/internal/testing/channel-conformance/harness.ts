@@ -177,10 +177,11 @@ export interface ChannelConversation {
     choose: (prompt: string, options: readonly RenderedOption[]) => RenderedOption,
   ): Promise<void>;
   /**
-   * Waits until the turn holds for `prompt`, whether or not the client shows it
-   * yet. A client may show several pending requests one at a time.
+   * Types the reply `replies` gives for each of its prompts, in the order the
+   * client shows them. Two prompts shown in one message fail the conversation:
+   * a typed reply couldn't say which one it answers.
    */
-  waitForRequest(prompt: string): Promise<void>;
+  replyToEach(replies: Readonly<Record<string, string>>): Promise<void>;
   /** `person`, Alice unless given, presses one rendered choice. */
   press(option: RenderedOption, person?: Person): Promise<void>;
   /** Waits until `tool` returns, as visible in the bot's reply, and returns its output. */
@@ -266,6 +267,8 @@ export interface ClientView {
 export interface ShownQuestion {
   readonly options: readonly RenderedOption[];
   readonly prompt: string;
+  /** Other prompts it was asked for that the same message shows. */
+  readonly alongside?: readonly string[];
 }
 
 /**
@@ -453,7 +456,10 @@ function webhookView(
               // After a prompt is asked, an optionless match is an edit of the answered message.
               if (promptsFrom.has(prompt) && options.length === 0) continue;
               promptsFrom.set(prompt, index + 1);
-              return { options, prompt };
+              const alongside = prompts.filter(
+                (other) => other !== prompt && driver.findOptions(call, other) !== undefined,
+              );
+              return { alongside, options, prompt };
             }
           }
           return undefined;
@@ -747,7 +753,20 @@ async function converse(
           remaining.splice(remaining.indexOf(prompt), 1);
         }
       },
-      waitForRequest: (prompt) => holdForInput(prompt),
+      async replyToEach(replies) {
+        const remaining = Object.keys(replies);
+        while (remaining.length > 0) {
+          const { alongside = [], prompt } = await view.waitForQuestion(remaining);
+          if (alongside.length > 0) {
+            throw new Error(
+              `${JSON.stringify([prompt, ...alongside])} were shown in one message, so a typed reply can't say which it answers.`,
+            );
+          }
+          await holdForInput(prompt);
+          await conversation.say(replies[prompt]!);
+          remaining.splice(remaining.indexOf(prompt), 1);
+        }
+      },
       waitForToolResult: (tool) =>
         replyWait(`${tool} to return`, (reply) => readMockToolReply(reply, tool)),
       waitForReplyTo: (message) =>

@@ -27,7 +27,7 @@ import {
   type AuthorizationChallenge,
 } from "#harness/authorization.js";
 import { isApprovalRequest } from "#harness/input-request-class.js";
-import { resolveTypedPolicyApprovals } from "#harness/input-requests.js";
+import { resolveTypedApproval } from "#harness/input-requests.js";
 import { getPendingInputBatches, pendingInputRequester } from "#harness/pending-input-batches.js";
 import type { HarnessSession, HarnessToolMap, StepInput } from "#harness/types.js";
 import type { InputRequest } from "#shared/input.js";
@@ -117,7 +117,7 @@ export async function coordinateApprovalDelivery(input: {
   }
   if (batches.length === 0) return deliveryResult(session, deduplicatedInput);
 
-  const stepInput = resolveTypedPolicyApprovals(session, deduplicatedInput);
+  const stepInput = resolveTypedApproval(session, deduplicatedInput);
   const authorizationRequiredRequestIds = new Set(
     batches.flatMap((batch) => batch.responseAuthRequiredRequestIds ?? []),
   );

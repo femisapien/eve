@@ -15,6 +15,7 @@ import {
   hasPendingInputBatch,
   hasStepInput,
   resolvePendingInput,
+  resolveTypedApproval,
   appendPendingInputBatch,
 } from "#harness/input-requests.js";
 import { cancelApprovalInputBatches } from "#harness/hitl/approval-input-requests.js";
@@ -376,7 +377,11 @@ describe("resolvePendingInput", () => {
       session: createHarnessSession(),
     });
 
-    const result = resolvePendingInput({ stepInput, session });
+    // The approval coordinator answers typed approvals before input resolves.
+    const result = resolvePendingInput({
+      stepInput: resolveTypedApproval(session, stepInput),
+      session,
+    });
 
     expect(result.outcome).toBe("resolved");
     expect(result.deferredMessage).toBeUndefined();

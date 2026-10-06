@@ -29,6 +29,12 @@ export interface PendingInputBatchEvent {
  * assistant turn's requests plus its withheld model output.
  */
 export interface PendingInputBatch {
+  /**
+   * Set while calls parked in the same step, such as workflow tool runs, still
+   * run. The batch can't resolve before they finish, so its requests are
+   * announced only then; until that point nobody can see or answer them.
+   */
+  readonly awaitsCoordination?: true;
   readonly event?: PendingInputBatchEvent;
   readonly requests: readonly InputRequest[];
   /**
@@ -140,6 +146,7 @@ function setPendingInputBatches(
     delete state[PENDING_INPUT_BATCHES_KEY];
   } else {
     state[PENDING_INPUT_BATCHES_KEY] = batches.map((batch) => ({
+      ...(batch.awaitsCoordination === true && { awaitsCoordination: true }),
       event: batch.event,
       requester: batch.requester,
       responseAuthRequiredRequestIds: batch.responseAuthRequiredRequestIds,
@@ -156,6 +163,7 @@ function setPendingInputBatches(
  * batches stay open and independently answerable.
  */
 export function appendPendingInputBatch(input: {
+  readonly awaitsCoordination?: true;
   readonly event?: PendingInputBatchEvent;
   readonly requests: readonly InputRequest[];
   readonly responseAuthRequiredRequestIds?: readonly string[];
@@ -165,6 +173,7 @@ export function appendPendingInputBatch(input: {
   return setPendingInputBatches(input.session, [
     ...getPendingInputBatches(input.session.state),
     {
+      ...(input.awaitsCoordination === true && { awaitsCoordination: true }),
       event: input.event,
       requester: currentRequester(),
       responseAuthRequiredRequestIds: input.responseAuthRequiredRequestIds,
@@ -172,6 +181,26 @@ export function appendPendingInputBatch(input: {
       responseMessages: input.responseMessages,
     },
   ]);
+}
+
+/**
+ * Clears {@link PendingInputBatch.awaitsCoordination} once the calls it waited
+ * on finish, returning the requests that are now open to announce.
+ */
+export function releaseCoordinatedInputBatches(session: HarnessSession): {
+  readonly batches: readonly PendingInputBatch[];
+  readonly session: HarnessSession;
+} {
+  const batches = getPendingInputBatches(session.state);
+  const released = batches.filter((batch) => batch.awaitsCoordination === true);
+  if (released.length === 0) return { batches: [], session };
+  return {
+    batches: released,
+    session: setPendingInputBatches(
+      session,
+      batches.map(({ awaitsCoordination: _, ...batch }) => batch),
+    ),
+  };
 }
 
 /**

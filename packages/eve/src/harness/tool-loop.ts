@@ -148,6 +148,7 @@ import {
 } from "#harness/input-requests.js";
 import {
   getPendingInputBatches,
+  releaseCoordinatedInputBatches,
   queueDeferredStepInput,
   type PendingInputBatchEvent,
 } from "#harness/pending-input-batches.js";
@@ -669,7 +670,20 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     if (resolvedCoordination.outcome === "unresolved") {
       return { next: null, session: resolvedCoordination.session };
     }
-    session = resolvedCoordination.session;
+    const released = releaseCoordinatedInputBatches(resolvedCoordination.session);
+    session = released.session;
+    if (emit) {
+      for (const batch of released.batches) {
+        await emit(
+          createInputRequestedEvent({
+            requests: batch.requests,
+            sequence: batch.event?.sequence ?? emissionState.sequence,
+            stepIndex: batch.event?.stepIndex ?? emissionState.stepIndex,
+            turnId: batch.event?.turnId ?? emissionState.turnId,
+          }),
+        );
+      }
+    }
 
     // Stale-response handling is two passes: drop what must never reach the
     // model (session-limit continuation answers), then convert what should
@@ -2735,7 +2749,10 @@ async function handleStepResult(input: {
     });
 
     // The coordination batch already owns the shared assistant response.
+    // Its approvals can't settle before the calls finish, so asking for them
+    // waits until then; see `releaseCoordinatedInputBatches`.
     parkedSession = appendPendingInputBatch({
+      awaitsCoordination: true,
       event: {
         sequence: emissionState.sequence,
         stepIndex: emissionState.stepIndex,
@@ -2746,17 +2763,6 @@ async function handleStepResult(input: {
       responseMessages: [],
       session: parkedSession,
     });
-
-    if (emit) {
-      await emit(
-        createInputRequestedEvent({
-          requests: inputRequests,
-          sequence: emissionState.sequence,
-          stepIndex: emissionState.stepIndex,
-          turnId: emissionState.turnId,
-        }),
-      );
-    }
 
     return {
       next: null,
