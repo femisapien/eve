@@ -1,4 +1,4 @@
-import type { ModelMessage, SystemModelMessage } from "ai";
+import type { SystemModelMessage } from "ai";
 import type { HistoryState } from "#context/keys.js";
 import type { Announcement } from "#harness/announcements.js";
 
@@ -112,12 +112,4 @@ export function createCurrentMessages(
       return [...systemMessages];
     },
   };
-}
-
-/** True when the history ends with a tool message carrying a tool-approval-response. */
-export function hasTailApprovalResponse(messages: readonly ModelMessage[]): boolean {
-  const tail = messages.at(-1);
-  return (
-    tail?.role === "tool" && tail.content.some((part) => part.type === "tool-approval-response")
-  );
 }

@@ -1,11 +1,9 @@
-import { HumanInput } from "#harness/hitl/index.js";
-import type { InputRequest } from "#shared/input.js";
 import type { SessionAuthContext } from "#channel/types.js";
 import { runAsCaller } from "#context/caller-scope.js";
 import { contextStorage } from "#context/container.js";
 import { ContextKey } from "#context/key.js";
-import { approverOfRequest } from "#harness/approval-candidates.js";
-import type { ResolvedInputBatch } from "#harness/input-request-resolution.js";
+import { HumanInput } from "#harness/hitl/index.js";
+import type { InputRequest } from "#shared/input.js";
 import type { SessionStateMap } from "#harness/types.js";
 
 /**
@@ -17,26 +15,9 @@ const ApprovedCallCallersKey = new ContextKey<ReadonlyMap<string, SessionAuthCon
 );
 
 /**
- * Records who approved each call in `resolved`, so each approved call runs as
+ * Records who approved each call in `requests`, so each approved call runs as
  * its approver while the rest of the turn keeps the turn's own caller.
  */
-export function setApprovedCallCallers(
-  resolved: readonly ResolvedInputBatch[] | undefined,
-  state: SessionStateMap | undefined,
-): void {
-  const ctx = contextStorage.getStore();
-  if (ctx === undefined) return;
-  const callers = new Map<string, SessionAuthContext>();
-  for (const batch of resolved ?? []) {
-    for (const { outcome, request } of batch.inputs) {
-      if (outcome !== "approved" || request.action === undefined) continue;
-      const approver = approverOfRequest(state, request.requestId);
-      if (approver !== undefined) callers.set(request.action.callId, approver);
-    }
-  }
-  ctx.setVirtualContext(ApprovedCallCallersKey, callers);
-}
-
 export function setApprovedRequests(
   requests: readonly InputRequest[],
   state: SessionStateMap | undefined,

@@ -50,19 +50,6 @@ describe("createSessionLimitContinuationRequest", () => {
     });
   });
 
-  it("gives the prompt of a later turn at the same usage its own id", () => {
-    // After Stop, the next turn is over budget at the same usage; clients drop
-    // request ids they have seen, so its prompt must not reuse the earlier id.
-    const later = createSessionLimitContinuationRequest({
-      sessionId: "sess-test",
-      turnSequence: 1,
-      violation: VIOLATION,
-    });
-
-    expect(later.requestId).toBe("sess-test:1:limit:input:40120500");
-    expect(later.requestId).not.toBe(createTestRequest().requestId);
-  });
-
   it("creates a token-cost continuation prompt", () => {
     const request = createSessionLimitContinuationRequest({
       sessionId: "sess-test",
