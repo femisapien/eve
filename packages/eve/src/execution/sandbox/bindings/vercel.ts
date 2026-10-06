@@ -42,6 +42,10 @@ import {
   isVercelSandboxNameConflictError,
   isVercelSnapshotUnavailableError,
 } from "#execution/sandbox/bindings/vercel-errors.js";
+import {
+  openToolSessionGeneration,
+  withToolSessionRetention,
+} from "#execution/sandbox/bindings/vercel-tool-sessions.js";
 import { isToolSessionId } from "#execution/tool-session/id.js";
 import { withToolSessionSandboxes } from "#execution/tool-session/sandbox.js";
 import { getNamedVercelSandbox } from "#execution/sandbox/bindings/vercel-lookup.js";
@@ -119,10 +123,11 @@ export function createVercelSandbox(
   ) {
     const artifact = requirePreparedVercelTemplate(artifactValue);
     const { mounts, ...runtimeOptions } = options ?? {};
-    const sessionCreateOptions = withToolSessionRetention(context.session.id, {
-      ...createOptions,
-      ...runtimeOptions,
-    });
+    const toolSession = isToolSessionId(context.session.id);
+    const authoredCreateOptions = { ...createOptions, ...runtimeOptions };
+    const sessionCreateOptions = toolSession
+      ? withToolSessionRetention(authoredCreateOptions)
+      : authoredCreateOptions;
     const tags = resolveVercelSandboxTags(sessionCreateOptions.tags, {
       sessionId: context.session.id,
     });
@@ -137,13 +142,22 @@ export function createVercelSandbox(
       tags,
     };
     let session: VercelSandboxSessionCreateResult;
+    let openedName = sandboxName;
     try {
-      session = await ensureSession(ensureSessionInput);
-      session = await ensureUsableSession({
-        input: ensureSessionInput,
-        loadDeleteSandboxModule,
-        session,
-      });
+      if (toolSession) {
+        ({ sandboxName: openedName, session } = await openToolSessionGeneration(
+          { baseName: sandboxName, createOptions: sessionCreateOptions, sandboxModule },
+          async (name) => await ensureSession({ ...ensureSessionInput, sessionKey: name }),
+          ensureVercelSandboxBaseRuntime,
+        ));
+      } else {
+        session = await ensureSession(ensureSessionInput);
+        session = await ensureUsableSession({
+          input: ensureSessionInput,
+          loadDeleteSandboxModule,
+          session,
+        });
+      }
       if (
         session.created &&
         artifact.snapshotId === undefined &&
@@ -185,7 +199,7 @@ export function createVercelSandbox(
       loadDeleteSandboxModule,
       sandbox: session.sandbox,
     });
-    return handle;
+    return { handle, sandboxName: openedName };
   }
 
   const implementation: ReturnType<typeof createVercelSandbox> = {
@@ -240,8 +254,12 @@ export function createVercelSandbox(
       return createHandle({ createOptions, loadDeleteSandboxModule, sandbox });
     },
     async start(context, options, artifact) {
-      const sandboxName = vercelSessionName(context.session.id, options, artifact, createOptions);
-      const handle = await openSession(context, options, artifact, sandboxName);
+      const { handle, sandboxName } = await openSession(
+        context,
+        options,
+        artifact,
+        vercelSessionName(context.session.id, options, artifact, createOptions),
+      );
       return {
         handle,
         state: { sandboxName, version: 3 },
@@ -251,31 +269,6 @@ export function createVercelSandbox(
   // `start` finds a session's sandbox by name, so keyed tool sessions can reuse it.
   // A handle is only an SDK client, so a call that ends has nothing to free.
   return withToolSessionSandboxes(implementation);
-}
-
-/** How long a tool session's saved filesystem outlives its last use. */
-export const VERCEL_TOOL_SESSION_SNAPSHOT_EXPIRATION_MS = 24 * 60 * 60 * 1000;
-
-/*
- * A tool session has no end to delete its sandbox at, so Vercel expires it:
- * the sandbox's snapshots expire a day after their last use (each resume
- * restarts that day), and only the latest is kept. The next call for the key
- * then finds the snapshot gone and starts a fresh sandbox, and Vercel removes
- * a sandbox nobody resumes 14 days after its snapshot expires. An authored
- * expiry shorter than a day is kept. These options apply when the sandbox is
- * created, so they do not change the sandbox name.
- */
-function withToolSessionRetention(
-  sessionId: string,
-  options: VercelCreateOptions,
-): VercelCreateOptions {
-  if (!isToolSessionId(sessionId)) return options;
-  const authored = options.snapshotExpiration;
-  const snapshotExpiration =
-    authored !== undefined && authored > 0
-      ? Math.min(authored, VERCEL_TOOL_SESSION_SNAPSHOT_EXPIRATION_MS)
-      : VERCEL_TOOL_SESSION_SNAPSHOT_EXPIRATION_MS;
-  return { ...options, keepLastSnapshots: { count: 1 }, snapshotExpiration };
 }
 
 interface VercelSandboxTemplateRecord {

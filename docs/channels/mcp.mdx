@@ -287,7 +287,7 @@ In a tool session:
 
 Tool sessions need a sandbox provider that finds the session's sandbox again: Vercel Sandbox or just-bash. On another provider, a call with a key fails with a `Sandbox provider "<name>" cannot keep a sandbox between invokeTool calls` error when the tool opens its sandbox. Tools that never open a sandbox still run. just-bash keeps its sandboxes on the local disk, so on Vercel Functions a just-bash tool session lasts only as long as the function instance.
 
-A tool session has no end, so eve bounds how long its sandbox is kept. On Vercel Sandbox, a tool-session sandbox's saved filesystem expires a day after its last use, and each call that resumes it restarts that day. The next call with the key after that starts a fresh, empty sandbox, and Vercel removes a sandbox nobody resumes within 14 days of its filesystem expiring. Vercel only keeps the latest snapshot of the sandbox. A `snapshotExpiration` shorter than a day in `sandbox.ts` is kept; a longer one, or none, becomes a day for tool sessions. Sessions that conversations start are unaffected.
+A tool session has no end, so eve bounds how long its sandbox is kept. On Vercel Sandbox, a tool-session sandbox's saved filesystem expires a day after its last use, and each call that resumes it restarts that day. The next call with the key after that starts a fresh, empty sandbox, and Vercel removes a sandbox nobody resumes within 14 days of its filesystem expiring. Vercel only keeps the latest snapshot of the sandbox. Tool sessions use this one-day expiry whatever `snapshotExpiration` `sandbox.ts` sets; sessions that conversations start keep the authored setting.
 
 just-bash keeps tool-session sandboxes on the local disk, and nothing removes them.
 
