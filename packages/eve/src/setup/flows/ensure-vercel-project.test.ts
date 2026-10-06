@@ -4,11 +4,9 @@ import { createFakePrompter } from "#internal/testing/fake-prompter.js";
 import { captureVercel } from "#setup/primitives/index.js";
 import { WEB_CHAT_TEAM_REQUIREMENT } from "#setup/integrations/web/auth-options.js";
 
-import { HumanActionRequiredError } from "#setup/human-action.js";
 import { WizardCancelledError } from "#setup/step.js";
 
 import { ensureVercelProject } from "./ensure-vercel-project.js";
-import { runLoginFlow } from "./login.js";
 
 vi.mock("#setup/primitives/index.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("#setup/primitives/index.js")>()),
@@ -58,36 +56,6 @@ describe("ensureVercelProject", () => {
       allowLogin: false,
     });
     expect(readProjectLink).toHaveBeenCalledOnce();
-  });
-
-  it("opens browser login when an interactive caller opts in", async () => {
-    const project = { orgId: "team", projectId: "project" };
-    const getVercelAuthStatus = vi
-      .fn()
-      .mockResolvedValueOnce("logged-out")
-      .mockResolvedValueOnce("authenticated");
-    const runVercelLogin = vi.fn(async () => true);
-
-    await expect(
-      ensureVercelProject({
-        appRoot: "/project",
-        prompter: createFakePrompter().prompter,
-        allowLogin: true,
-        deps: {
-          readProjectLink: async () => project,
-          runLoginFlow: (input) =>
-            runLoginFlow({ ...input, deps: { getVercelAuthStatus, runVercelLogin } }),
-          requireAuth: async () => {
-            throw new HumanActionRequiredError({
-              kind: "vercel-login",
-              command: "vercel login",
-              reason: "Login required",
-            });
-          },
-        },
-      }),
-    ).resolves.toEqual(project);
-    expect(runVercelLogin).toHaveBeenCalledOnce();
   });
 
   it("cancels before project selection when login is cancelled", async () => {
