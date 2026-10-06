@@ -524,9 +524,11 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     // turn's text isn't posted as their reply. A person reads a root session.
     const hidesHeldText = hasDelegatedCaller || store?.get(ScheduleIdKey) !== undefined;
     let activeAttemptScope: InstrumentationAttempt | undefined;
+    let frameworkToolNames = new Set<string>();
     const instrumentedEmit =
       stepInstrumentation?.createHandleEvent({
         getAttemptScope: () => activeAttemptScope,
+        isFrameworkTool: (name) => frameworkToolNames.has(name),
         handleEvent: baseEmit,
         turnId: activeTurnId(emissionState),
       }) ?? baseEmit;
@@ -1469,6 +1471,11 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
           };
       }
 
+      frameworkToolNames = new Set(
+        [...presentationTools]
+          .filter(([, tool]) => tool.frameworkTool === true)
+          .map(([name]) => name),
+      );
       return { effectiveTools, modelTools, presentationTools };
     };
 
@@ -1567,6 +1574,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
 
       const instrumentationTurnId = activeTurnId(emissionState);
       const attempt = stepInstrumentation?.prepareAttempt({
+        isFrameworkTool: (name) => frameworkToolNames.has(name),
         attemptIndex: opts.attemptIndex,
         runtimeContext: telemetryRuntimeContext,
         stepIndex: emissionState.stepIndex,
