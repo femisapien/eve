@@ -1,14 +1,6 @@
-import { createLogger } from "#internal/logging.js";
 import type { RuntimeSandboxRegistry } from "#runtime/sandbox/registry.js";
 import { getSandboxEnvironmentRuntime } from "#shared/sandbox-environment.js";
 import type { SandboxProviderHandle, SandboxProviderRuntime } from "#shared/sandbox-provider.js";
-
-const log = createLogger("tool-session.sandbox");
-
-const DAY_MS = 24 * 60 * 60 * 1000;
-
-/** Idle time after which the sweep deletes a tool-session sandbox. */
-export const TOOL_SESSION_SANDBOX_EXPIRY_MS = 30 * DAY_MS;
 
 /*
  * Keyed tool sessions reuse a provider's own `start`, which must find the
@@ -16,33 +8,6 @@ export const TOOL_SESSION_SANDBOX_EXPIRY_MS = 30 * DAY_MS;
  * do so opt in, and the marker stays internal so the public provider API is
  * unchanged.
  */
-
-/** One tool-session sandbox, as the provider last saw it. */
-export interface ToolSessionSandboxSummary {
-  /** Epoch milliseconds of its most recent use. */
-  readonly lastUsedAt: number;
-  readonly name: string;
-  readonly running: boolean;
-  readonly sessionId: string | undefined;
-}
-
-/**
- * How a provider lists and deletes tool-session sandboxes for the sweep. A
- * sweeper closes over whatever it needs to reach them (credentials, SDK).
- */
-export interface ToolSessionSandboxSweeper {
-  list(): Promise<readonly ToolSessionSandboxSummary[]>;
-  /**
-   * Deletes the named sandbox unless `keep` says otherwise. `keep` is asked
-   * about the provider's last read, immediately before the delete request,
-   * so a sandbox a call resumed since the listing is kept. Returns whether it
-   * deleted the sandbox.
-   */
-  deleteUnless(
-    name: string,
-    keep: (current: ToolSessionSandboxSummary) => boolean,
-  ): Promise<boolean>;
-}
 
 /** What a binding that keeps tool-session sandboxes tells the calls that use them. */
 export interface ToolSessionSandboxSupport {
@@ -53,8 +18,6 @@ export interface ToolSessionSandboxSupport {
    * sandbox.
    */
   releaseHandle?(handle: SandboxProviderHandle): Promise<void>;
-  /** Lists and deletes the session sandboxes for the sweep; absent when there is nothing to sweep. */
-  readonly sweeper?: ToolSessionSandboxSweeper;
 }
 
 const supported = new WeakMap<object, ToolSessionSandboxSupport>();
@@ -103,78 +66,4 @@ function registeredProvider(registry: RuntimeSandboxRegistry): SandboxProviderRu
   const definition = registered?.inheritance?.definition ?? registered?.definition;
   if (definition?.kind !== "independent") return undefined;
   return getSandboxEnvironmentRuntime(definition.environment);
-}
-
-// Tool sessions with a call in flight in this process, with a holder count.
-const leases = new Map<string, number>();
-
-/** Holds a tool session against the sweep until the returned release runs. */
-export function leaseToolSession(sessionId: string): () => void {
-  leases.set(sessionId, (leases.get(sessionId) ?? 0) + 1);
-  let released = false;
-  return () => {
-    if (released) return;
-    released = true;
-    const holders = (leases.get(sessionId) ?? 1) - 1;
-    if (holders <= 0) leases.delete(sessionId);
-    else leases.set(sessionId, holders);
-  };
-}
-
-/** Result of one {@link sweepToolSessionSandboxes} pass. */
-export interface ToolSessionSandboxSweepResult {
-  readonly deleted: readonly string[];
-  readonly failed: readonly string[];
-  /** Why nothing was swept, when the provider cannot list its tool-session sandboxes. */
-  readonly skipped?: string;
-}
-
-/**
- * Deletes tool-session sandboxes unused for longer than `expiryMs`. A tool
- * session has no end to delete its sandbox at, so this bounds retention.
- * Apps run it from a schedule through the public `sweepToolSessionSandboxes`.
- *
- * A sandbox that is running, used since the cutoff, or leased by a call in
- * this process is kept, checked again at the provider's final read. Another
- * instance holds no lease the sweep can see; a call there that resumes a
- * sandbox idle past the expiry between that read and the delete loses it,
- * as it would after expiry.
- */
-export async function sweepToolSessionSandboxes(input: {
-  readonly expiryMs?: number;
-  readonly now?: number;
-  readonly registry: RuntimeSandboxRegistry;
-}): Promise<ToolSessionSandboxSweepResult> {
-  const provider = registeredProvider(input.registry);
-  if (provider === undefined) {
-    return { deleted: [], failed: [], skipped: "The agent has no sandbox of its own." };
-  }
-  const sweeper = supported.get(provider.implementation)?.sweeper;
-  if (sweeper === undefined) {
-    return {
-      deleted: [],
-      failed: [],
-      skipped: `Sandbox provider "${provider.providerName}" cannot list tool-session sandboxes.`,
-    };
-  }
-  const cutoff = (input.now ?? Date.now()) - (input.expiryMs ?? TOOL_SESSION_SANDBOX_EXPIRY_MS);
-  const keep = (sandbox: ToolSessionSandboxSummary) =>
-    sandbox.running ||
-    sandbox.lastUsedAt >= cutoff ||
-    (sandbox.sessionId !== undefined && leases.has(sandbox.sessionId));
-  const deleted: string[] = [];
-  const failed: string[] = [];
-  for (const summary of await sweeper.list()) {
-    if (keep(summary)) continue;
-    try {
-      if (await sweeper.deleteUnless(summary.name, keep)) deleted.push(summary.name);
-    } catch (error) {
-      failed.push(summary.name);
-      log.warn("failed to delete an idle tool-session sandbox", {
-        error: error instanceof Error ? error.message : String(error),
-        sandboxName: summary.name,
-      });
-    }
-  }
-  return { deleted, failed };
 }

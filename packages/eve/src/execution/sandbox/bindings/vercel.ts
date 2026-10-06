@@ -42,10 +42,6 @@ import {
   isVercelSandboxNameConflictError,
   isVercelSnapshotUnavailableError,
 } from "#execution/sandbox/bindings/vercel-errors.js";
-import {
-  createVercelToolSessionSweeper,
-  VERCEL_TOOL_SESSION_NAME_PREFIX,
-} from "#execution/sandbox/bindings/vercel-tool-sessions.js";
 import { isToolSessionId } from "#execution/tool-session/id.js";
 import { withToolSessionSandboxes } from "#execution/tool-session/sandbox.js";
 import { getNamedVercelSandbox } from "#execution/sandbox/bindings/vercel-lookup.js";
@@ -123,7 +119,10 @@ export function createVercelSandbox(
   ) {
     const artifact = requirePreparedVercelTemplate(artifactValue);
     const { mounts, ...runtimeOptions } = options ?? {};
-    const sessionCreateOptions = { ...createOptions, ...runtimeOptions };
+    const sessionCreateOptions = withToolSessionRetention(context.session.id, {
+      ...createOptions,
+      ...runtimeOptions,
+    });
     const tags = resolveVercelSandboxTags(sessionCreateOptions.tags, {
       sessionId: context.session.id,
     });
@@ -251,9 +250,32 @@ export function createVercelSandbox(
   };
   // `start` finds a session's sandbox by name, so keyed tool sessions can reuse it.
   // A handle is only an SDK client, so a call that ends has nothing to free.
-  return withToolSessionSandboxes(implementation, {
-    sweeper: createVercelToolSessionSweeper({ createOptions, loadSandboxModule }),
-  });
+  return withToolSessionSandboxes(implementation);
+}
+
+/** How long a tool session's saved filesystem outlives its last use. */
+export const VERCEL_TOOL_SESSION_SNAPSHOT_EXPIRATION_MS = 24 * 60 * 60 * 1000;
+
+/*
+ * A tool session has no end to delete its sandbox at, so Vercel expires it:
+ * the sandbox's snapshots expire a day after their last use (each resume
+ * restarts that day), and only the latest is kept. The next call for the key
+ * then finds the snapshot gone and starts a fresh sandbox, and Vercel removes
+ * a sandbox nobody resumes 14 days after its snapshot expires. An authored
+ * expiry shorter than a day is kept. These options apply when the sandbox is
+ * created, so they do not change the sandbox name.
+ */
+function withToolSessionRetention(
+  sessionId: string,
+  options: VercelCreateOptions,
+): VercelCreateOptions {
+  if (!isToolSessionId(sessionId)) return options;
+  const authored = options.snapshotExpiration;
+  const snapshotExpiration =
+    authored !== undefined && authored > 0
+      ? Math.min(authored, VERCEL_TOOL_SESSION_SNAPSHOT_EXPIRATION_MS)
+      : VERCEL_TOOL_SESSION_SNAPSHOT_EXPIRATION_MS;
+  return { ...options, keepLastSnapshots: { count: 1 }, snapshotExpiration };
 }
 
 interface VercelSandboxTemplateRecord {
@@ -269,9 +291,7 @@ function vercelSessionName(
   createOptions: VercelCreateOptions,
 ): string {
   const artifact = requirePreparedVercelTemplate(artifactValue);
-  // Tool-session sandboxes keep their own prefix so the sweep can list just them.
-  const prefix = isToolSessionId(sessionId) ? VERCEL_TOOL_SESSION_NAME_PREFIX : "eve-sbx-vercel-";
-  return `${prefix}${createSandboxProviderIdentity({
+  return `eve-sbx-vercel-${createSandboxProviderIdentity({
     artifact,
     createOptions: vercelIdentityOptions(createOptions),
     options: vercelIdentityOptions(options),

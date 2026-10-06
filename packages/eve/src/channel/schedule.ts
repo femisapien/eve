@@ -73,11 +73,8 @@ export class ScheduleDispatcher {
     this.channels = config.channels;
   }
 
-  /** Runs the schedule in `scope`, which the caller may have seeded with what the handler needs. */
-  async trigger(
-    input: ScheduleDispatchInput,
-    scope: ContextContainer = new ContextContainer(),
-  ): Promise<ScheduleDispatchResult> {
+  async trigger(input: ScheduleDispatchInput): Promise<ScheduleDispatchResult> {
+    const scope = new ContextContainer();
     scope.set(ScheduleIdKey, input.scheduleId);
     return await contextStorage.run(scope, () => this.triggerInScope(input));
   }

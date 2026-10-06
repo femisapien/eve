@@ -495,6 +495,99 @@ describe("createVercelSandbox", () => {
     );
   });
 
+  describe("tool-session retention", () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+
+    async function openWith(
+      sessionId: string,
+      createOptions?: NonNullable<
+        Parameters<typeof createVercelImplementation>[0]
+      >["createOptions"],
+    ) {
+      const create = vi.fn(async (options: { name: string }) =>
+        createMockSandbox({ name: options.name }),
+      );
+      const provider = createTestVercelSandbox({
+        createOptions,
+        loadSandboxModule: async () =>
+          ({ Sandbox: { create, get: vi.fn().mockResolvedValue(null) } }) as never,
+      });
+      await provider.openSession({
+        appRoot: "/tmp/test-app-root",
+        prepared: { snapshotId: "prepared-snapshot" },
+        sandboxName: sessionId,
+      });
+      return create.mock.calls[0]?.[0] as Record<string, unknown>;
+    }
+
+    it("expires a tool session's snapshots a day after last use and keeps only the latest", async () => {
+      expect(await openWith("tool_session_abc")).toMatchObject({
+        keepLastSnapshots: { count: 1 },
+        snapshotExpiration: DAY_MS,
+      });
+    });
+
+    it("leaves a conversation session's snapshot retention to the author", async () => {
+      const params = await openWith("session-key");
+      expect(params).not.toHaveProperty("keepLastSnapshots");
+      expect(params).not.toHaveProperty("snapshotExpiration");
+      expect(await openWith("session-key", { snapshotExpiration: 0 })).toMatchObject({
+        snapshotExpiration: 0,
+      });
+    });
+
+    it("keeps an authored tool-session expiry only when it is shorter than a day", async () => {
+      const hour = 60 * 60 * 1000;
+      for (const [authored, expected] of [
+        [hour, hour],
+        [7 * DAY_MS, DAY_MS],
+        [0, DAY_MS],
+      ] as const) {
+        expect(await openWith("tool_session_abc", { snapshotExpiration: authored })).toMatchObject({
+          snapshotExpiration: expected,
+        });
+      }
+    });
+
+    it("starts a fresh tool-session sandbox once Vercel has expired its snapshot", async () => {
+      const gone = Object.assign(new Error("Vercel sandbox resume returned 410"), {
+        response: { status: 410 },
+      });
+      const expired = createMockSandbox({ name: "expired", status: "stopped" });
+      expired.runCommand.mockRejectedValue(gone);
+      const fresh = createMockSandbox({ name: "fresh" });
+      const create = vi.fn().mockResolvedValue(fresh);
+      const get = vi
+        .fn()
+        .mockResolvedValueOnce(expired) // the session lookup finds the expired sandbox
+        .mockResolvedValueOnce(expired) // the delete re-reads it by name
+        .mockResolvedValue(null); // the replacement lookup finds the name free
+      const sandboxModule = { Sandbox: { create, get } };
+      const provider = createTestVercelSandbox({
+        loadDeleteSandboxModule: async () => sandboxModule as never,
+        loadSandboxModule: async () => sandboxModule as never,
+      });
+
+      await provider.openSession({
+        appRoot: "/tmp/test-app-root",
+        prepared: { snapshotId: "prepared-snapshot" },
+        sandboxName: "tool_session_abc",
+      });
+
+      expect(expired.delete).toHaveBeenCalledWith(
+        expect.objectContaining({ deleteOrphanSnapshots: true }),
+      );
+      expect(create).toHaveBeenCalledTimes(1);
+      expect(create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          keepLastSnapshots: { count: 1 },
+          snapshotExpiration: DAY_MS,
+          source: { snapshotId: "prepared-snapshot", type: "snapshot" },
+        }),
+      );
+    });
+  });
+
   it("forwards author source to template create as the base layer", async () => {
     /*
      * The real Vercel SDK pre-populates `currentSnapshotId` on a

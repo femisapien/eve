@@ -5,10 +5,7 @@ import type { SessionAuthContext } from "#channel/types.js";
 import { shutdownActiveSandboxHandles } from "#execution/sandbox/active-handles.js";
 import { invokeTool, type InvokeToolRuntime } from "#execution/invoke-tool.js";
 import { createToolExecuteWithAuth } from "#execution/tool-auth.js";
-import {
-  sweepToolSessionSandboxes,
-  withToolSessionSandboxes,
-} from "#execution/tool-session/sandbox.js";
+import { withToolSessionSandboxes } from "#execution/tool-session/sandbox.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import { mockSandbox } from "#internal/testing/mocks/mock-sandbox.js";
 import { defineSandbox } from "#public/definitions/sandbox.js";
@@ -98,16 +95,13 @@ function sandboxes(options: { readonly startGate?: Promise<void> } = {}) {
 
 /**
  * A provider whose `start` reopens a session's sandbox by session id, as
- * Vercel Sandbox and just-bash do, opted into tool sessions with a sweeper.
+ * Vercel Sandbox and just-bash do, opted into tool sessions.
  * Each open hands out its own handle over the shared sandbox, as just-bash
  * runs one interpreter per handle; `released` records which handles a call
  * let go of, and `stopped` which were stopped through the sandbox API.
  */
 function keyedSandboxes(options: { readonly failSelector?: () => boolean } = {}) {
-  const live = new Map<
-    string,
-    { lastUsedAt: number; running: boolean; sandbox: ReturnType<typeof mockSandbox> }
-  >();
+  const live = new Map<string, { sandbox: ReturnType<typeof mockSandbox> }>();
   const starts: string[] = [];
   const handles: object[] = [];
   const released: object[] = [];
@@ -117,7 +111,7 @@ function keyedSandboxes(options: { readonly failSelector?: () => boolean } = {})
     let entry = live.get(sessionId);
     if (entry === undefined) {
       starts.push(sessionId);
-      entry = { lastUsedAt: Date.now(), running: false, sandbox: mockSandbox() };
+      entry = { sandbox: mockSandbox() };
       live.set(sessionId, entry);
     }
     const handle = {
@@ -129,7 +123,6 @@ function keyedSandboxes(options: { readonly failSelector?: () => boolean } = {})
     handles.push(handle);
     return handle;
   };
-  const summary = (sessionId: string) => ({ ...live.get(sessionId)!, name: sessionId, sessionId });
   const environment = defineSandboxProvider({
     name: "keyed",
     environment: () =>
@@ -145,14 +138,6 @@ function keyedSandboxes(options: { readonly failSelector?: () => boolean } = {})
         },
         {
           releaseHandle: async (handle) => void released.push(handle),
-          sweeper: {
-            list: async () => [...live.keys()].map(summary),
-            deleteUnless: async (name, keep) => {
-              if (!live.has(name) || keep(summary(name))) return false;
-              deleted(name);
-              return true;
-            },
-          },
         },
       ),
   }).environment();
@@ -460,34 +445,6 @@ describe("invokeTool", () => {
     expect(await holding).toMatchObject({ output: "a", status: "completed" });
     expect(deleted).not.toHaveBeenCalled();
   });
-
-  it("sweeps only idle tool-session sandboxes no call holds", async () => {
-    const { live, registry } = keyedSandboxes();
-    let openGate!: () => void;
-    const held = runtimeWith(
-      [noteTool(new Promise<void>((resolve) => (openGate = resolve)))],
-      registry,
-    );
-    const idle = runtimeWith([noteTool()], registry);
-    await invokeTool(idle, "note", { text: "a" }, { auth: alice, key: "idle" });
-    await invokeTool(idle, "note", { text: "a" }, { auth: alice, key: "recent" });
-    await invokeTool(idle, "note", { text: "a" }, { auth: alice, key: "running" });
-    const holding = invokeTool(held, "note", { text: "a" }, { auth: alice, key: "leased" });
-    await vi.waitFor(() => expect(live.size).toBe(4));
-
-    const now = Date.now();
-    const [idleId, recentId, runningId, leasedId] = [...live.keys()];
-    for (const id of [idleId, runningId, leasedId]) live.get(id!)!.lastUsedAt = now - 31 * DAY_MS;
-    live.get(runningId!)!.running = true;
-    live.get(recentId!)!.lastUsedAt = now - DAY_MS;
-
-    const swept = await sweepToolSessionSandboxes({ now, registry });
-    expect(swept).toEqual({ deleted: [idleId], failed: [] });
-    openGate();
-    await holding;
-  });
 });
-
-const DAY_MS = 24 * 60 * 60 * 1000;
 
 const bob: SessionAuthContext = { ...alice, principalId: "bob" };

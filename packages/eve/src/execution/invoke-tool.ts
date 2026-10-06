@@ -18,7 +18,6 @@ import { ensureSandboxAccess } from "#execution/sandbox/ensure.js";
 import { deriveToolSessionId, validateToolSessionKey } from "#execution/tool-session/id.js";
 import {
   assertToolSessionSandboxSupport,
-  leaseToolSession,
   releaseToolSessionHandle,
   ToolSessionSandboxUnsupportedError,
 } from "#execution/tool-session/sandbox.js";
@@ -215,7 +214,6 @@ interface CallSandbox {
  * own.
  */
 async function keyedSandbox(runtime: InvokeToolRuntime, sessionId: string): Promise<CallSandbox> {
-  const release = leaseToolSession(sessionId);
   const inner = await ensureSandboxAccess({
     compiledArtifactsSource: runtime.compiledArtifactsSource,
     nodeId: runtime.nodeId,
@@ -223,9 +221,6 @@ async function keyedSandbox(runtime: InvokeToolRuntime, sessionId: string): Prom
     registry: runtime.sandboxRegistry,
     sessionId,
     state: null,
-  }).catch((error: unknown) => {
-    release();
-    throw error;
   });
   return {
     access: {
@@ -236,12 +231,8 @@ async function keyedSandbox(runtime: InvokeToolRuntime, sessionId: string): Prom
       },
     },
     async release() {
-      try {
-        const handle = await inner.detach();
-        if (handle !== undefined) await releaseToolSessionHandle(runtime.sandboxRegistry, handle);
-      } finally {
-        release();
-      }
+      const handle = await inner.detach();
+      if (handle !== undefined) await releaseToolSessionHandle(runtime.sandboxRegistry, handle);
     },
   };
 }
