@@ -151,4 +151,19 @@ describe("HumanInput", () => {
     expect(humanInput.next()).toEqual({ run: "approved" });
     expect(humanInput.approverOfRequest("deploy")?.principalId).toBe("alice");
   });
+
+  it("a repeated press on an approval a person already settled is new input, not an answer", () => {
+    // Alice approved deploy and the host ran it; her second press reaches the settled card.
+    const { humanInput } = waitingOnApprovals("deploy").input(answer("approve", "deploy")).stored();
+
+    const { displayMessage, input } = humanInput.acceptInput({
+      inputResponses: [{ optionId: "approve", requestId: "deploy" }],
+    });
+
+    expect(input?.inputResponses).toBeUndefined();
+    expect(input?.message).toEqual(
+      expect.stringContaining("This does not authorize an earlier action"),
+    );
+    expect(displayMessage).toBe("approve");
+  });
 });
