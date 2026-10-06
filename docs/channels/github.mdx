@@ -4,7 +4,9 @@ description: "Reach your agent from GitHub App webhooks, with comment invocation
 type: integration
 ---
 
-The GitHub channel lets the agent work directly on a repository. Add its invocation token, such as `@my-agent`, to a new issue, PR, or review comment and the agent answers in that thread, with the PR diff already in context and the repo checked out into the sandbox. The token is an eve convention: GitHub may not autocomplete it or render it as a linked mention. The channel takes GitHub App webhooks at `/eve/v1/github`, checks the signature, derives auth from whoever triggered the event, and replies on the native surface. Credentials can run through [Vercel Connect](../guides/auth-and-route-protection), which manages the GitHub App, the installation token, and inbound webhook verification, so there's no app private key or webhook secret for you to hold. See [Channels](./overview) for the contract this builds on.
+The GitHub channel lets the agent respond to new issue, PR, and review comments containing its invocation token, such as `@my-agent`. Replies stay in the thread. On a PR, the agent gets the diff in context and a sandbox checkout of the repository. The token is an eve convention; GitHub may not autocomplete or link it.
+
+The channel receives GitHub App webhooks at `/eve/v1/github`, verifies the signature, derives auth from the event actor, and replies through GitHub. [Vercel Connect](../guides/auth-and-route-protection) can manage the App, installation token, and inbound webhook verification so you do not need to hold an app private key or webhook secret. See [Channels](./overview) for the channel contract.
 
 ## Guided Connect setup
 
@@ -16,7 +18,7 @@ eve add channel/github
 
 The flow signs you in to Vercel when needed, creates or links a Vercel project, provisions an app-scoped GitHub Connect client, and registers `/eve/v1/github` as a trigger destination. It then installs `@vercel/connect` and writes `agent/channels/github.ts` with the connector UID.
 
-Vercel Connect creates the GitHub App, receives and verifies its webhooks, and forwards them to the deployed agent. After deploying, open the GitHub App in the Connect dashboard and install it in the organization or account where you want to use it. Add the generated invocation token (for example, `@my-agent`) to a new issue, pull request, or review comment to start a conversation. GitHub may not autocomplete the token or render it as a linked mention.
+After deploying, open the GitHub App in the Connect dashboard and install it in the account or organization where you want to use it. Include the generated token, such as `@my-agent`, in a new issue, PR, or review comment to start a conversation.
 
 The generated channel uses Connect-managed credentials:
 
@@ -60,7 +62,7 @@ GITHUB_APP_SLUG=...          # supplies botName when it is not set in config
 
 `appId`/`privateKey`/`webhookSecret` also take a lazy resolver function if you'd rather fetch them on demand, and so does `botName`: it resolves on first use inside request handling, caches on success, and retries on the next event after a failure, so a resolver that depends on request-scoped credentials works in production. When `botName` is not configured, the channel falls back to the credentials' `appSlug`, then to `GITHUB_APP_SLUG`.
 
-Point the GitHub App webhook URL at `https://<deployment>/eve/v1/github`. For comment-invoked turns, subscribe to `issue_comment` and `pull_request_review_comment`; add `issues`, `pull_request`, `check_suite`, `check_run`, or `workflow_run` if you wire up their opt-in hooks. After installing the App for the repository, a new comment that includes `@botName` starts a turn. This is a text invocation token, not a GitHub-native mention: GitHub may display the App as `botName[bot]`, but it may not autocomplete or link `@botName`.
+Point the GitHub App webhook URL at `https://<deployment>/eve/v1/github`. For comment-invoked turns, subscribe to `issue_comment` and `pull_request_review_comment`; add `issues`, `pull_request`, `check_suite`, `check_run`, or `workflow_run` if you wire up their opt-in hooks. After installing the App, a new comment containing `@botName` starts a turn. GitHub may display the App as `botName[bot]`; `@botName` remains a text token, not a native mention.
 
 ## How the channel handles messages
 
@@ -109,17 +111,13 @@ Start a session without an inbound comment invocation through `to(github, target
 
 To post without invoking the model, use `channel.thread.post(...)` inside a GitHub event handler. For application-managed retries and deduplication across providers, see [Durable cross-channel notifications](../patterns/durable-cross-channel-notifications).
 
-### Attachments
-
-Inbound file attachments are not supported on this channel today. Repository contents reach the agent through the sandbox checkout below, not as message attachments.
-
 ### PR context
 
 Summon the agent on a PR and it always sees the diff. PR metadata and the changed-file patch land in `context`. Large generated files still appear in the list, but their patch body is dropped; add more paths to the skip list with `pullRequestContext.excludedFiles`.
 
 ### Sandbox checkout
 
-Before the first model call, every triggered turn checks out the relevant ref into the sandbox, so `read_file`/`glob`/`grep`/`bash` all run against the real tree. The installation token never enters the sandbox. `git` fetches a token-free URL, and the platform injects auth on egress at the firewall. That requires a firewall-capable backend (Vercel); the local backend skips checkout. Within a session, checkout is incremental across turns.
+On Vercel, each triggered turn checks out the relevant ref into the sandbox before the first model call. Sandbox tools then read the repository. The installation token stays outside the sandbox: `git` fetches a token-free URL, and the firewall injects auth on egress. Local backends without that firewall skip checkout. Within a session, later turns update the checkout incrementally. Inbound file attachments are not supported; repository files are available through the checkout.
 
 ### Arbitrary API calls
 

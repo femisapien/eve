@@ -4,12 +4,7 @@ description: "Give an agent context that outlives a session: eve owns the memory
 url: /memory
 ---
 
-Memory gives an agent context that outlives a session. You declare a memory
-slot as a file, choose who the memory belongs to, and pick a provider. Before
-each turn eve asks the provider to recall relevant context, after each turn it
-lets the provider capture what happened, and it exposes any tools the provider
-offers the model. Which facts to keep, how to store them, and how to find them
-again is the provider's job.
+Memory carries context across sessions. Define a slot, choose its scope and provider, and eve calls the provider to recall context before turns and capture after them. The provider owns storage, retrieval, and any model-facing tools.
 
 ```ts title="agent/memory/profile.ts"
 import { defineMemory } from "eve/memory";
@@ -23,14 +18,7 @@ export default defineMemory({
 });
 ```
 
-That file declares a `profile` slot that remembers facts per authenticated
-caller using the built-in file provider. Swap `provider` for
-[Supermemory](#supermemory), [Upstash AgentKit](#upstash-agentkit), or your own
-implementation and the rest of the definition stays the same.
-
-For an application with multiple tenants, follow the
-[Multi-tenant memory](/docs/patterns/multi-tenant-memory) guide to scope memory
-by authenticated tenant and caller.
+The file defines a `profile` slot per authenticated caller with the built-in file provider. For tenant isolation, see [Multi-tenant memory](/docs/patterns/multi-tenant-memory).
 
 ## How a memory slot works
 
@@ -63,16 +51,9 @@ eve and the provider split responsibilities along a fixed boundary:
 | Attribution and supersession of recalled messages   | Retention and deletion                |
 | Qualifying provider tools as `<slot>__<tool>`       | Which model-facing tools to offer     |
 
-Because the boundary is fixed, a bounded text document, a hosted semantic
-memory service, and a query against your own database all participate in the
-same agent lifecycle. Recalled content enters model context as user-role
-messages attributed to the slot, never as system instructions.
+Recalled content enters model context as slot-attributed user-role messages, never system instructions.
 
 ## Choose a provider
-
-Every slot needs a provider. The provider decides how memory is stored, how
-relevant context is retrieved, and whether the agent captures conversation
-automatically or only through explicit tool calls.
 
 | Provider                                | Ships as                | Recall                                                 | Capture                                              |
 | --------------------------------------- | ----------------------- | ------------------------------------------------------ | ---------------------------------------------------- |
@@ -217,17 +198,11 @@ Each file exports one `defineMemory()` value with these fields:
 | `namespace`   | No       | The application domain the scope lives in; see [Namespace](#namespace)                   |
 | `visibility`  | No       | What the model sees after the scope changes mid-session; see [Visibility](#visibility)   |
 
-Slots are independent. Two slots can use the same provider without merging
-their recalled context or tools, and the default namespace includes the slot
-name, so `profile` and `workspace` stay separate even when both resolve to the
-same scope value. A subagent declares its own slots under its directory;
-extensions cannot contribute slots because scope and lifecycle ownership stay
-with the consuming agent.
+Slots stay separate even when they use the same provider and scope: the default namespace includes the slot name. Subagents declare their own slots; extensions cannot contribute them.
 
 ## Scope
 
-`scope` decides who or what shares a slot's memory. It is the field you will
-change most often, and the one that carries tenant isolation.
+`scope` decides who shares a slot's memory and provides the tenant-isolation boundary.
 
 Set it to a string, `null`, or a resolver that receives the session's
 authentication and channel context and returns a string, a tuple of strings, or

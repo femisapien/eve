@@ -3,17 +3,7 @@ title: "Overview"
 description: "How users reach your agent: the channel contract, the base eve HTTP channel, and authoring custom channels."
 ---
 
-A channel connects a platform to your agent. For conversations, it:
-
-- Converts incoming messages into agent input.
-- Maps each platform conversation to an eve session.
-- Decides how, where, and whether to deliver replies.
-
-A channel can also receive events and pass them to another channel, without starting a conversation of its own.
-
-eve ships a base HTTP channel plus first-class platform channels, and you can author your own. Browse the full set in the [Integrations](/integrations) gallery and choose the Channels filter.
-
-After a channel dispatches a message, eve runs the same agent runtime regardless of where the event came from. Tools and instructions do not need channel-specific logic.
+A channel receives messages from a platform, maps conversations to eve sessions, and delivers replies. It can also hand an event to another channel without starting its own conversation. eve provides an HTTP channel and platform channels; you can [author a custom channel](./custom) or browse the [Integrations gallery](/integrations).
 
 ## Choose where the conversation lives
 
@@ -74,19 +64,9 @@ agent/
 
 Install a channel from the registry with `eve add channel/<name>`, such as `eve add channel/slack` or `eve add channel/web`. You can also author the file by hand.
 
-## The eve HTTP channel (default)
-
-The eve channel is the framework's default HTTP session API, the routes the terminal UI, [`useEveAgent`](../guides/frontend/overview), and `curl` all talk to. Its selected `channels/eve.ts` source owns health, inspection, callbacks, task input, and the session protocol as one replaceable surface. eve supplies the source when no `agent/channels/eve.ts` file exists; author that file to replace it, most often to change route auth. See [HTTP channel](./eve) for routes, auth, replacement, and disablement.
-
-## Custom channels
-
-Build a channel with `defineChannel` from `eve/channels` when you need your own HTTP or WebSocket endpoint. Its routes can start conversations on that channel or hand work to another one. See [Custom channels](./custom) for examples and the authoring API.
-
 ## Relationship to the Chat SDK
 
-eve uses the [Chat SDK's card-builder components](https://chat-sdk.dev/docs/api/cards) (Cards, Buttons, Actions, etc.) for composing rich Slack messages. When you build a card with the [Slack channel](./slack), the underlying primitives come from the Chat SDK and get converted to Slack Block Kit at post time.
-
-eve's first-class channels use eve-owned runtimes for webhook handling, verification, event parsing, and thread management. The optional [Chat SDK channel](./chat-sdk) is the exception: it accepts a Chat SDK adapter and exposes its `Chat` and `Thread` primitives. Use `slackChannel` for eve's first-class Slack integration, `defineChannel(...)` for an eve-native custom channel, or `chatSdkChannel` when you intentionally want a Chat SDK adapter and runtime.
+The first-class [Slack channel](./slack) uses eve's own webhook and thread handling, although its cards use [Chat SDK components](https://chat-sdk.dev/docs/api/cards). The [Chat SDK channel](./chat-sdk) instead uses an adapter's `Chat` and `Thread` APIs. Use `defineChannel(...)` for an eve-native custom HTTP or WebSocket channel.
 
 ## Which channel?
 
@@ -105,7 +85,7 @@ eve's first-class channels use eve-owned runtimes for webhook handling, verifica
 | GitHub @mentions, PR review with checkout   | [GitHub](./github)                                         |
 | Linear issue delegation and Agent Sessions  | [Linear](./linear)                                         |
 | Another Chat SDK-supported service          | [Chat SDK adapters](./chat-sdk)                            |
-| Anything else (internal webhook, WebSocket) | [Custom channel](./custom) (`defineChannel`, above)        |
+| Anything else (internal webhook, WebSocket) | [Custom channel](./custom) (`defineChannel`)               |
 
 ## Disclaimer
 

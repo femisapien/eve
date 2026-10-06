@@ -3,9 +3,7 @@ title: "CLI Telemetry"
 description: "Learn what eve CLI telemetry collects and how to control it."
 ---
 
-# CLI telemetry
-
-eve collects usage data from its CLI to help improve its commands and development experience. You can turn telemetry off at any time.
+The eve CLI sends usage data to Vercel by default. You can disable it for a command or for your machine.
 
 ## What eve collects
 
@@ -16,7 +14,7 @@ eve sends the following information to Vercel:
 - For `eve dev`, whether you connected to a local or remote agent and whether the UI was interactive or headless.
 - Random identifiers for the CLI session, installation, and project, plus whether the installation and project identifiers are ephemeral or persistent.
 
-The project identifier lets eve group usage from the same project without sending its name or location. eve derives it from the Git remote when available, otherwise `REPOSITORY_URL` or the working directory, and transforms that value before sending it.
+eve derives the project identifier from the Git remote, `REPOSITORY_URL`, or working directory, then transforms it before sending. It does not send the project name or path.
 
 ## What eve does not collect
 

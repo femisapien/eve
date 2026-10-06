@@ -4,7 +4,7 @@ description: "Reach your agent from Microsoft Teams via the Bot Framework Activi
 type: integration
 ---
 
-The Teams channel runs your agent inside Microsoft Teams as a bot. It takes Bot Framework Activity POSTs, checks the Bot Connector bearer JWT on each one, and routes message activities to your agent. Human-in-the-loop (HITL) prompts come back as Adaptive Cards, and replies go out over the Bot Framework Connector REST API. See [Channels](./overview) for the contract this builds on.
+The Teams channel receives Bot Framework Activities, verifies each request's Bot Connector JWT, and routes messages to your agent. It sends replies through the Bot Framework Connector API and presents human-in-the-loop requests as Adaptive Cards.
 
 ## Add the channel
 
@@ -73,15 +73,13 @@ export default teamsChannel({
 });
 ```
 
-`isSubscribed()` checks whether the conversation has previously involved the agent.
-
 ### Delivery
 
 Replies post as Markdown (`textFormat: "markdown"`), with oversized text split across messages and a typing indicator sent on turn start and action requests.
 
 ### Human-in-the-loop (HITL)
 
-A human-in-the-loop (HITL) `input.requested` event renders as an Adaptive Card. Approval cards show the tool input in the card and fallback text. Buttons and options map to `Action.Submit`, selects to `Input.ChoiceSet`, and freeform to `Input.Text`. Teams may return a submission as a message or invoke; eve handles both before the normal message mention gate and resumes the thread recorded in the card.
+An `input.requested` event renders as an Adaptive Card. Approval cards include the tool input and fallback text. Buttons use `Action.Submit`, selects use `Input.ChoiceSet`, and freeform input uses `Input.Text`. eve accepts submissions sent as messages or invokes before the normal mention gate and resumes the thread recorded in the card.
 
 By default, submissions use the Teams identity of the user who clicked the card. If you customize `onMessage` for an allowlist, configure the same policy in `onInputResponse`; eve otherwise rejects HITL submissions rather than bypassing the message gate.
 
@@ -91,7 +89,7 @@ For invokes that aren't HITL, handle them in `onInvoke(ctx, activity)`.
 
 ### Proactive sessions
 
-Proactive sessions need an existing conversation reference, because the Bot Framework v1 surface cannot create new chats by Azure Active Directory (AAD) user id. Pass `serviceUrl`, `conversationId`, and the other reference fields to `receive(teams, { target })`.
+Proactive sessions need an existing conversation reference: Bot Framework v1 cannot create a chat from an Azure Active Directory (AAD) user ID. Pass `serviceUrl`, `conversationId`, and the other reference fields as the target of `to(teams, target).send(message, { auth })` from a schedule, or `ctx.to(teams, target).send(message, { auth })` from another channel.
 
 ### Attachments
 

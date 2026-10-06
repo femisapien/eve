@@ -3,7 +3,7 @@ title: "Agent Files"
 description: "Look up agent directory slots, path-derived names, subagent files, and filesystem discovery rules."
 ---
 
-eve builds an agent from files under its agent directory. Each supported path determines how eve loads the file. For recommended project layouts and when to split agents, read [Project Structure](/docs/concepts/project-structure).
+eve discovers an agent's capabilities from its files and paths. See [Project Structure](/docs/concepts/project-structure) for when to use one agent, subagents, or a workspace.
 
 ## Agent directory layout
 
@@ -27,7 +27,7 @@ agent/
 └── subagents/
 ```
 
-Add only the files you need. Framework defaults use the same slots, so a file at the same path replaces the default when eve compiles the agent. Evals live beside `agent/`, not inside it.
+Add only the files you need. An authored file replaces a framework default at the same path. Evals live beside `agent/`, not inside it.
 
 ## Naming from paths
 
@@ -96,7 +96,7 @@ agent/subagents/researcher/
 └── subagents/
 ```
 
-It uses the same `defineAgent` helper as the root and supports the slots marked **Yes** above. Channels, schedules, and instrumentation are root-only. A declared subagent does not inherit its parent's authored slots; see [Subagents](/docs/subagents#the-isolation-boundary) for defaults and isolation behavior.
+It uses `defineAgent` and the slots marked **Yes** above, but does not inherit its parent's authored files. See [Subagents](/docs/subagents#the-isolation-boundary) for isolation and defaults.
 
 ## Flat layout
 

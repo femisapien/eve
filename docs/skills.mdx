@@ -3,21 +3,23 @@ title: "Skills"
 description: "Author load-on-demand procedures the model pulls into context with load_skill."
 ---
 
-A skill is a model-loadable procedure that follows the `SKILL.md` convention. It is a markdown document, optionally a packaged directory with supporting files, that the model pulls into context on demand rather than carrying on every turn. eve advertises each skill's description, and the model loads the full body only when a turn calls for it. This is progressive disclosure, the same model the broader Agent Skills standard uses, so a skill authored against that standard ports over as-is.
+A skill is a markdown procedure that follows the `SKILL.md` convention, optionally packaged with supporting files. eve shows the model its description and loads the full instructions only when a turn calls for them, rather than on every turn.
 
 ## How loading works
 
 eve scans the files under `agent/skills/` and exposes each one's description to the model alongside a framework-owned `load_skill` tool. When a request matches a skill's description (or you name the skill outright), the model calls `load_skill`, and eve appends that skill's markdown to the active turn's context.
 
-Listing skills and loading their instructions do not require a sandbox: `load_skill` returns static instructions from the compiled agent and dynamic instructions from session state. Only access to supporting package files requires a sandbox. Builds may also prewarm sandbox templates that contain static package files. Supporting files are available under `$HOME/.agents/skills/<skill>/`, with `/workspace/skills/<skill>/` as the fallback when `$HOME` is unavailable. Sibling references inside `SKILL.md`, such as `references/checklist.md`, are relative to the directory containing that specific `SKILL.md`.
+Listing skills and loading instructions do not require a sandbox: `load_skill` returns static instructions from the compiled agent or dynamic instructions from session state. Accessing supporting package files does require a sandbox. Builds may prewarm sandbox templates with static package files.
 
-The description is a routing hint, not a label. Write it as the task that should trigger activation:
+Supporting files live under `$HOME/.agents/skills/<skill>/`, or `/workspace/skills/<skill>/` if `$HOME` is unavailable. Resolve sibling paths in `SKILL.md`, such as `references/checklist.md`, relative to that `SKILL.md` file's directory.
+
+Write the description for the task that should load the skill:
 
 ```md
 Use when the user needs a release checklist or changelog workflow.
 ```
 
-Loading a skill adds instructions, never a new execution surface. Tools stay visible whether a skill is loaded or not. If you need typed runtime behavior, reach for a [tool](./tools) instead.
+Loading a skill adds instructions, not tools or other execution capabilities. Tools remain visible whether a skill is loaded or not. Use a [tool](./tools) for typed runtime behavior.
 
 ## Markdown vs `defineSkill`
 
@@ -57,7 +59,7 @@ export default defineSkill({
 });
 ```
 
-eve generates `SKILL.md` from `markdown`, and each `files` entry becomes a package-relative sibling. Start with plain markdown and move to `defineSkill` only when you hit its limits.
+eve generates `SKILL.md` from `markdown` and writes each `files` entry beside it.
 
 A static `defineSkill` module is evaluated during compilation and its resolved definition is stored in the manifest; a dynamic skill module is also retained as a runtime entry. See [Authored module lifecycle](./reference/typescript-api#authored-module-lifecycle).
 
@@ -70,7 +72,7 @@ eve registry search react --registry @skills
 eve add @skills/vercel-labs/agent-skills/vercel-react-best-practices
 ```
 
-skills.sh skills are community-authored project files. Review their source and the resulting diff before running the agent. See [Install integrations](./install-integrations#add-a-skill) for registry configuration and install behavior.
+These are community-authored files; review their source and the installed diff before running the agent. See [Install integrations](./install-integrations#add-a-skill).
 
 ## Skills are scoped per agent
 

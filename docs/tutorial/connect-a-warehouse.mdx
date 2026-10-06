@@ -3,9 +3,7 @@ title: "Connect a Warehouse (Optional)"
 description: "Optional follow-up to the Build an Agent tutorial. Let each user connect their own warehouse over an OAuth MCP via Vercel Connect."
 ---
 
-Complete [the tutorial with sample data](./first-agent) first. When you have a warehouse with an MCP server, you can connect it to the analytics assistant and let each user sign in through their browser. That's what a connection is for. It's an MCP server the model reaches through tools, with auth that eve drives for you.
-
-[Vercel Connect is generally available](https://vercel.com/changelog/vercel-connect-secure-access-to-external-services-for-your-agents). You can complete the tutorial with the [sample dataset](./query-sample-data); Connect is only needed for the OAuth integration shown on this page.
+After completing [the tutorial with sample data](./first-agent), you can connect the analytics assistant to a warehouse that exposes an MCP server. Each user signs in through their browser; eve handles connection authorization and exposes the server's tools to the model.
 
 ## Before you start
 
@@ -15,8 +13,6 @@ This integration needs:
 - Permission to authorize that server, with read-only access to the data you want the agent to query.
 - A Vercel account and a linked project for Connect.
 - An authenticated user on the eve session. Complete the route-auth setup in [Ship it](./ship-it#replace-placeholderauth) before trying per-user OAuth from a web app.
-
-If you are working through the tutorial for the first time, keep `run_sql` and [continue to Run analysis](./run-analysis). You can add this integration later.
 
 ## Register the connector
 
@@ -52,7 +48,7 @@ export default defineMcpClientConnection({
 });
 ```
 
-The filename registers the eve connection as `"warehouse"`, with tools named `warehouse__<tool>`. This eve name is independent of the Connect connector UID. The remote server determines which tools exist; check its tool inventory and read-only permissions before using it.
+The filename registers `warehouse` and qualifies its tools as `warehouse__<tool>`. Check the remote server's tool inventory and read-only permissions before using it.
 
 `connect("...")` is user-scoped by default. Each end-user authorizes in their own browser, and eve resolves that user's token before a tool call. The eve channel's route auth must map the signed-in app user to `principalType: "user"`. `localDev()`, a runtime token, or a placeholder guard cannot supply that identity; those sessions fail with `reason: "principal_required"` before OAuth starts. For a shared app credential, see [app vs. user auth](../connections#choose-app-vs-user-auth).
 
@@ -74,8 +70,4 @@ If the user has not authorized the connector, the turn parks and the channel sho
 
 Right before each request to the MCP server, eve resolves the bearer and sends it as `Authorization: Bearer <token>`. The model sees tool names, descriptions, and results. The credential stays in the app runtime.
 
-Gate the connection behind approval (`approval: once()`) or narrow which tools the model sees (`tools.allow`) when needed. See [MCP connections](../connections/mcp).
-
-→ Return to the tutorial: [Run analysis](./run-analysis)
-
-Learn more: [MCP connections](../connections/mcp) · [Authentication](../guides/auth-and-route-protection)
+Use `tools.allow` to narrow the available operations or `approval: once()` to require sign-off. See [MCP connections](../connections/mcp).

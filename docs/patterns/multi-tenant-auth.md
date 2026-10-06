@@ -3,13 +3,7 @@ title: "Multi-Tenant Outbound Auth"
 description: "Select tenant-scoped credentials inside authored tools, OpenAPI connections, and MCP connections from the active turn context."
 ---
 
-eve carries verified inbound identity into every turn. Authored tools and connections can use that context to select outbound credentials for the current tenant:
-
-- tool executors receive `ctx` directly;
-- OpenAPI and MCP `auth` may be async functions of `ctx`;
-- connection headers may be an async map or async individual values.
-
-That is the entire pattern. Your application still owns tenant membership and credential storage; eve ensures the model never needs to see or choose those credentials.
+Select tenant credentials in tool executors and connection auth or header resolvers using the verified caller in `ctx`. Your application owns membership checks and credential storage; never let model input select the tenant.
 
 ## Establish the tenant scope
 
@@ -33,7 +27,7 @@ export function requireTenantCaller(ctx: SessionContext): {
 }
 ```
 
-The tenant comes from verified route auth, never a prompt, tool argument, or remote API response. See [Auth & route protection](../guides/auth-and-route-protection) for custom session and OIDC examples.
+See [Authentication](../guides/auth-and-route-protection) for route-auth examples.
 
 ## Authenticate with your own API key or JWT
 
@@ -80,9 +74,6 @@ If one user can switch between orgs, authenticate the selected org on every
 session create or continue request and stamp that selected `tenantId` onto the
 current turn.
 
-This is not connection OAuth. The user is already authenticated to your app;
-eve uses that verified principal to pick the correct outbound credential.
-
 ## Build tenant connection auth
 
 For Bearer tokens or tenant-scoped JWTs, write one non-interactive auth helper
@@ -123,11 +114,7 @@ export function tenantBearerAuth(service: TenantService): ConnectionAuthProvider
 }
 ```
 
-The model never supplies `tenantId` or sees the returned token. If the remote
-service uses tenant-level credentials shared by multiple users, keep the
-credential lookup keyed by `tenantId` in your provider; user-scoped connection
-auth is still useful because it rejects unauthenticated sessions and keeps
-eve's token cache from crossing caller identities.
+For shared tenant credentials, key the provider lookup by `tenantId`. User-scoped connection auth still rejects unauthenticated sessions and separates per-user token caches.
 
 ## Authenticate an authored tool call
 
@@ -283,14 +270,4 @@ out-of-band OAuth flow you own. eve does not prescribe that choice.
 
 The provider must fail closed for unknown tenants, avoid returning secrets in logs or errors, and rotate or refresh credentials before `expiresAt`. Prefer credentials that are themselves restricted to one remote tenant; treat workspace headers as routing, not authorization.
 
-## What the model can and cannot see
-
-1. Route auth stamps the verified tenant onto the session.
-2. Tool code reads `ctx.session.auth.current`, and connection auth receives the projected `principal`.
-3. The application provider resolves the corresponding credential.
-4. eve sends the resulting token and headers directly to the remote service.
-5. Neither becomes a model message or tool result.
-
-Also enforce tenant ownership for session create, continue, and stream routes. Route authentication identifies the caller, but your application owns the ACL that decides which session ids that caller may access.
-
-No framework-native tenant object is involved. The implementation is the composition of route auth, `ctx.session`, tool execution, and async connection auth/header resolvers.
+Route auth identifies the caller but does not enforce session ownership. Check that caller's tenant may create, continue, and stream the requested session ID.

@@ -4,14 +4,7 @@ description: "Move workflow tools, agent calls, clients, hooks, and evals from b
 url: /tools/tasks-upgrade
 ---
 
-This release replaces background tasks with [tasks](/docs/tools/tasks). Every change below breaks
-the previous API. Work through the sections that apply to your agent. A workflow tool that uses
-none of `execution: "background"`, `dismissible`, or `ctx.agent` keeps its code: `execute(input,
-ctx)` keeps its signature, and `ctx.abortSignal` and `ctx.callId` are where they were. One behavior
-changes for every `execute` tool: a steering message now aborts its `ctx.abortSignal`. See
-[Drop `dismissible`](#drop-dismissible-a-new-message-stops-an-execute-call).
-Type-checking flags most of the code changes, such as the removed `execution` and `dismissible`
-options and the old `ctx.agent` call.
+Background tasks have been replaced by [tasks](/docs/tools/tasks). Update the APIs your agent uses below. Workflow tools without `execution: "background"`, `dismissible`, or `ctx.agent` retain their `execute(input, ctx)` signature, but steering now aborts `ctx.abortSignal`. Type-checking flags removed options and the old `ctx.agent` call.
 
 ## Replace `execution: "background"` with `task(input, ctx)`
 
@@ -30,11 +23,7 @@ Rename `execute` to `task` and remove `execution`. The body doesn't change:
  });
 ```
 
-`defineWorkflowTool` rejects `execution` with
-`"execution" was replaced by task(). Define task(input, ctx) to run each call as a task.` A
-`task` body gets the same `WorkflowToolContext` as an `execute` body, and steering never aborts a
-task's `abortSignal`. An `execute` tool is an ordinary tool call: the turn waits for its result. See
-[Choose how a call runs](/docs/tools/tasks#choose-how-a-call-runs).
+`task` receives the same `WorkflowToolContext` as `execute`, but steering does not abort its `abortSignal`. An `execute` call holds the turn until it settles; see [Choose how a call runs](/docs/tools/tasks#choose-how-a-call-runs).
 
 A tool that the model should be able to send more input while it works, such as a plan it revises
 on request, defines [`serve(receive, ctx)`](/docs/tools/workflows#resumable-tasks-serve) instead.
@@ -91,10 +80,7 @@ An agent call returns a receipt at once, and the agent's reply arrives later in 
 message. Update instructions, prompts, and evals that mention `agentId` or expect the reply as
 the tool result. `agentRouter()` and the `workflow` tool now run each call as a task too.
 
-The removed codes `AGENT_BUSY`, `AGENT_MISMATCH`, `AGENT_UNREACHABLE`, and
-`AGENT_INVOCATION_NOT_ADMITTED` have no replacement. A `taskId` that names no unfinished task of
-that tool fails with `UNKNOWN_TASK`, and a call past the limit of 32 working tasks fails with
-`TOO_MANY_TASKS`.
+An unknown or finished `taskId` fails with `UNKNOWN_TASK`; starting work beyond 32 concurrent tasks fails with `TOO_MANY_TASKS`.
 
 ## Remove background delivery options
 
@@ -159,16 +145,15 @@ reports each wait with the new `turn.waiting` event, which carries the open turn
   It now emits `input.requested` or `authorization.required`, then `turn.waiting`, and the turn
   resumes under the same `turnId` after the answer. The session you answer on emits
   `input.resolved` for every question it routes an answer to. A tool approval the turn itself
-  requests still ends the turn with `turn.completed` and `session.waiting`.
+  requests also holds the turn open with `turn.waiting` until it is answered.
 - **`turn.completed` comes only when the turn really ends,** and `session.waiting` always means
   the turn has ended.
 
 The TypeScript client's `send(...).result()` reads past `turn.waiting` and returns the final reply
-of a held turn, not the text written before the wait. It stops at `turn.waiting` only while a
-question is pending, and returns `status: "waiting"` with that question; `respond()` then reads the
-same turn to its end. A custom client that ends a response at `turn.completed` or
-`session.waiting` mid-turn, or that shows the first completed message as the reply, should follow
-the same rule. See [Aggregate a turn](/docs/guides/client/streaming#aggregate-a-turn).
+of a held turn, not the text written before the wait. It stops at `turn.waiting` when a question
+or approval needs an answer and returns `status: "waiting"`; `respond()` then reads the same turn
+to its end. A sign-in keeps the response attached until authorization resolves. A custom client
+that stops reading at an earlier message instead of the turn boundary should follow the same rule. See [Aggregate a turn](/docs/guides/client/streaming#aggregate-a-turn).
 
 Task results aren't stream events. Background task results used to appear as `message.received`
 with `data.kind: "execution.background_task"`; `message.received` no longer has `kind`, and a task
@@ -194,8 +179,6 @@ Two things differ from a remote agent on the caller's own release:
 - The caller's channel doesn't show the remote agent's live tool activity nested under the call.
 - `ctx.ask()` in the remote agent returns `unavailable`, because protocol-1 callers don't grant the
   remote agent input. That's unchanged from 0.66–0.68.
-
-Each protocol-1 create logs `serving a remote agent protocol 1 caller` with the caller's origin.
 
 Upgrade a caller after every remote agent it calls. A caller on this release fails a call at start,
 with an error that names both versions, when the remote agent's deployment speaks protocol 1.

@@ -50,7 +50,7 @@ export const environment = DefaultSandbox.environment();
 export default defineSandbox(() => environment.open());
 ```
 
-`environment.open()` starts the persistent sandbox owned by the current eve session. The `defineSandbox()` selector runs until initialization succeeds, then eve checkpoints the selected provider and its state. Later workflow steps and process restarts call the provider's `resume()` directly without rerunning the selector or `environment.open()`.
+`environment.open()` starts the session-owned sandbox. Once initialization succeeds, eve checkpoints its provider and state; later steps and process restarts use `resume()` rather than rerunning the selector.
 
 Pass options for the live sandbox to `open()`, then configure the returned sandbox before returning it. This initialization runs once for a successfully started durable sandbox:
 
@@ -67,7 +67,7 @@ export default defineSandbox(async ({ session }) => {
 });
 ```
 
-The environment export is required because `eve build` prepares immutable environment inputs before a session exists.
+Export the environment so `eve build` can prepare it before a session exists.
 
 ### Prepare a reusable environment
 
@@ -213,11 +213,11 @@ export const AcmeSandbox = defineSandboxProvider<
 });
 ```
 
-`prepare()` returns the complete JSON-serializable artifact. Core calls `start()` once for a new durable sandbox session and persists its minimal JSON-compatible state. Process restarts call `resume()` with only the current context, that state, and the target deployment's exact artifact. Provider handles implement `onSessionStop()`, `onRuntimeShutdown()`, and `onSessionDelete()`.
+`prepare()` returns a JSON-serializable artifact. eve calls `start()` for a new session and persists its minimal JSON state. After a process restart, `resume()` receives that state and the deployment's prepared artifact. Provider handles implement `onSessionStop()`, `onRuntimeShutdown()`, and `onSessionDelete()`.
 
 Open options belong to `start()` and are not serialized or passed to `resume()`. A provider must put any immutable option-derived data needed for reconnection in its session state. With the current immutable-state contract, `resume()` reconnects existing native state and fails if it is gone rather than recreating callback side effects. A custom provider may define start-only callback fields, but built-in providers initialize the sandbox in `defineSandbox()` after `open()`.
 
-Preparation discovers authored files through `ctx.files`; core keeps project layout and artifact storage keys private. Keep provider SDK values behind the provider. `environment.open()` preserves the provider's sandbox capability type, while the heterogeneous runtime registry erases it to eve's common session surface.
+Preparation reads authored files through `ctx.files`. Keep provider SDK values inside the provider; `environment.open()` preserves its capability type for authored code.
 
 ## Providers
 

@@ -3,7 +3,7 @@ title: "Built-in Tools"
 description: "The default and opt-in tools eve provides, including glob, grep, and sleep."
 ---
 
-eve provides a default tool set for every agent and additional tools you can add with one file. Each default occupies the same `agent/tools/<name>.ts` slot you would author yourself, so an authored definition replaces it and `disableTool()` removes it. Use this page to review what the model can call, opt into more capabilities, or override and disable defaults. For custom tools, see [Tools](../tools).
+eve supplies default tools and offers others you can add with `eve add tool/<name>`. Each default uses the same `agent/tools/<name>.ts` slot as an authored tool: defining a tool there replaces the default, and exporting `disableTool()` removes it. To write your own tool, see [Tools](../tools).
 
 ## Default tools
 
@@ -301,9 +301,7 @@ eve adds `task_wait` and `task_cancel` when the agent has a tool that runs its c
 - `task_wait({ timeoutSeconds? })` parks the turn until any task has a result, a new message arrives, or `timeoutSeconds` pass, and returns at once when a result is already waiting. While it waits, the stream reports `turn.waiting` for the open turn. Results arrive in a `<task_result>` message right after it returns. Waiting never stops a task.
 - `task_cancel({ taskId })` stops a task's current work and says so, or says the task had no work to stop when it already finished or is an idle [resumable task](/docs/tools/workflows#resumable-tasks-serve). An id that names no task fails with `UNKNOWN_TASK`. A resumable task stays available after a cancel.
 
-Review these tools before production use. Disable, wrap, restrict, or require approval for any tool that can access the filesystem, network, shell, or sensitive data.
-
-You can also add the opt-in framework tools described below.
+Before production use, restrict or require approval for tools that can access sensitive data, the filesystem, the network, or a shell.
 
 ## Opt-in framework tools
 
@@ -323,7 +321,9 @@ import { askQuestion } from "eve/tools/ask_question";
 export default askQuestion();
 ```
 
-`ask_question` is a [workflow tool](/docs/tools/workflows) that calls `ctx.ask()`. The model receives `{ status: "answered", answer }`, where `answer` is the chosen option's label or the user's own words. A plain follow-up message answers the question too when it is the only pending question. When other questions are also pending, a message does not answer any of them: `ask_question` withdraws its question, resolves as `{ interrupted: true }`, which the model reads as `Stopped early because a new message arrived.`, and the model reads the message next. In a session that cannot request input, such as a scheduled run, the result is `{ status: "unavailable" }` and the model continues on its own judgment. Remove the file to remove the tool.
+`ask_question` is a [workflow tool](/docs/tools/workflows) that calls `ctx.ask()`. It returns `{ status: "answered", answer }` to the model, with the selected option's label or the user's own words. A plain follow-up answers the question when it is the only one pending. If other questions are pending, a message answers none of them: `ask_question` withdraws its question and returns `{ interrupted: true }`, shown to the model as `Stopped early because a new message arrived.` The model then reads the message.
+
+In a session that cannot request input, such as a scheduled run, the tool returns `{ status: "unavailable" }` and the model continues on its own judgment. Remove the file to remove the tool.
 
 ### `glob`
 
@@ -349,7 +349,7 @@ export default defineTool({
 });
 ```
 
-Remove the file to remove the tool. `disableTool()` is unnecessary because `glob` is not added by default.
+Remove the file to remove `glob`; it is not enabled by default.
 
 ### `grep`
 
@@ -375,7 +375,7 @@ export default defineTool({
 });
 ```
 
-Remove the file to remove the tool. `disableTool()` is unnecessary because `grep` is not added by default.
+Remove the file to remove `grep`; it is not enabled by default.
 
 ### `no_reply`
 
@@ -419,7 +419,7 @@ export default defineWorkflowTool({
 });
 ```
 
-Remove the file to remove the tool. `disableTool()` is unnecessary because `sleep` is not added by default.
+Remove the file to remove `sleep`; it is not enabled by default.
 
 ## What to read next
 

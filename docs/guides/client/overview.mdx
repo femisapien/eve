@@ -3,9 +3,9 @@ title: "Client SDK"
 description: "Call an eve agent from TypeScript with Client, sessions, auth, and health checks."
 ---
 
-The `eve/client` entrypoint is the typed client for eve's default HTTP API. Use it from scripts, server-to-server integrations, tests, evals, backend jobs, or custom UIs that want the session protocol without hand-writing the POST and NDJSON (newline-delimited JSON) stream loop.
+`eve/client` is the typed client for eve's HTTP API. Use it from scripts, backend services, tests, or custom UIs instead of implementing the POST and newline-delimited JSON (NDJSON) stream loop yourself.
 
-For browser chat UIs, start with [`useEveAgent`](../frontend/overview). For wire-level details, read [Sessions, runs & streaming](../../concepts/sessions-runs-and-streaming). The client sits between those two: lower level than the frontend hooks, higher level than raw HTTP.
+For browser chat UIs, start with [`useEveAgent`](../frontend/overview). For the wire protocol, see [Sessions, runs, and streaming](../../concepts/sessions-runs-and-streaming).
 
 ## Create a client
 
@@ -19,7 +19,7 @@ const client = new Client({
 });
 ```
 
-`host` is the URL where the eve routes are mounted. In a same-origin browser integration this is often `""`; scripts and backend services usually name the full URL. Any query parameters on `host` are included on every request, including session POSTs and event streams. Request-specific parameters, such as a stream cursor, take precedence when names overlap.
+`host` is the URL where eve routes are mounted; use `""` for same-origin requests. Query parameters on `host` apply to every request unless a request-specific parameter overrides them.
 
 ## Check health
 
@@ -41,9 +41,7 @@ const info = await client.info();
 console.log(info.agent.name, info.agent.model.id);
 ```
 
-Pass `info({ signal })` to cancel the HTTP request. The signal is checked only after custom header and credential callbacks resolve; it does not limit how long those callbacks or the complete `info()` call can take.
-
-Version 4 separates active static definitions from dynamic resolvers, includes binding-backed source ownership and composition history, reports first-class memory slots and their provider-tool wrapper dependencies, reports local and remote agents separately, and returns the exact compiled channel route order. A non-success response throws `ClientError`; invalid JSON, an earlier schema version, duplicate identities, inconsistent totals, or mismatched source provenance throws `AgentInfoResponseError`.
+Pass `info({ signal })` to cancel the HTTP request; it does not time out custom credential or header callbacks. A non-success response throws `ClientError`. Malformed JSON or an unsupported agent-info schema throws `AgentInfoResponseError`.
 
 ## Authentication
 
@@ -146,7 +144,7 @@ If you already know the durable ID, attach a fixed handle without performing I/O
 const session = client.sessions.attach("wrun_A");
 ```
 
-The fixed client handle exposes the full lifecycle around that ID. The calls below show the available shapes independently:
+The fixed handle supports messages, controls, and streams for that ID:
 
 ```ts
 const response = await session.send("Continue the analysis.");
@@ -163,7 +161,7 @@ for await (const event of session.stream({ follow: false })) {
 await session.reset({ reason: "User requested a fresh session" });
 ```
 
-`client.sessions` stores only the session ID and stream cursor. Every method calls an ID-addressed `/eve/v1/session/:sessionId/...` route. Sending through a handle for an unknown or terminal ID fails instead of creating a replacement, and reset leaves the handle pinned to the retired ID.
+The client stores a session ID and stream cursor. An unknown or terminal ID fails instead of creating a replacement; `reset()` leaves the handle pinned to the retired ID.
 
 A client can own many independent fixed sessions at once:
 
@@ -178,15 +176,10 @@ const { session: bob, response: bobResponse } = await client.sessions.create({
 await Promise.all([aliceResponse.result(), bobResponse.result()]);
 ```
 
-The next pages cover the session lifecycle:
+## What to read next
 
 - [Messages](./messages): send turns and collect results
 - [Continuations](./continuations): persist and resume sessions
 - [Streaming](./streaming): render events as they arrive
 - [Output schema](./output-schema): request structured results
-
-## What to read next
-
-- [eve channel](../../channels/eve): the HTTP API this client calls
-- [Sessions, runs & streaming](../../concepts/sessions-runs-and-streaming): the raw HTTP contract
-- [Frontend](../frontend/overview): browser UI with `useEveAgent`
+- [eve channel](../../channels/eve): the HTTP routes this client calls

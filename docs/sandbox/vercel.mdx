@@ -31,7 +31,7 @@ export default defineSandbox(() =>
 
 eve creates a temporary persistent Vercel Sandbox during build, installs the base runtime, writes managed workspace and skill files, runs the authored `prepare` callback, and captures a snapshot. The build artifact records the snapshot ID.
 
-When a live session sandbox does not exist, eve creates it directly from that snapshot ID. Runtime does not need to look up the temporary template Sandbox.
+New session sandboxes start directly from the recorded snapshot.
 
 ## Initialize after open
 
@@ -53,7 +53,7 @@ export default defineSandbox(async ({ session }) => {
 });
 ```
 
-The selector runs until initialization succeeds. Later workflow steps and process restarts resume the same provider state without rerunning the selector, so the file is not rewritten at each boundary.
+The selector retries until initialization succeeds; subsequent steps and restarts resume that state without rewriting the file.
 
 You can also configure the live sandbox and run setup commands before returning it:
 
@@ -100,7 +100,5 @@ return sandbox;
 `open()` also accepts Vercel compute resources, timeout, and Drive mounts. Configure project credentials and custom fetch behavior on the environment, not in `open()`, because resume does not reconstruct start-only options.
 
 Initialize the returned sandbox directly in `defineSandbox()`. If initialization fails, eve deletes the newly started sandbox and retries the selector on the next access. After initialization succeeds, the provider persists only immutable JSON-compatible state. If the named Vercel Sandbox later disappears, resume fails rather than recreating initialization side effects.
-
-eve owns the persistent sandbox identity and prepared snapshot source.
 
 See the [sandbox overview](/docs/sandbox) for managed workspace, skills, parent inheritance, and custom providers.

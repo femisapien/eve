@@ -3,13 +3,7 @@ title: "Multi-Tenant Memory"
 description: "Bind an eve memory provider to an authenticated tenant and caller scope."
 ---
 
-Multi-tenant memory is a scope decision, not a storage implementation. Bind any
-[memory provider](../memory) to a trusted tenant and caller tuple, and eve
-passes the resulting locked scope key to every provider operation.
-
-The example below uses the built-in `fileMemory()` provider. Replace it with
-Supermemory or a custom provider without changing the scope resolver; tenant
-isolation stays in the definition, not the store.
+Scope a [memory provider](../memory) by verified tenant and caller. eve locks the resulting key for provider reads, writes, and tools. The example uses `fileMemory()`, but the same resolver works with another provider.
 
 ## Derive scope from authenticated context
 
@@ -56,10 +50,7 @@ eve validates the namespace and scope tuple, then derives an opaque
 `memory.scope.key`. `fileMemory()` uses that key for its document. A hosted or
 custom provider receives the same key in every recall, capture, and tools call.
 
-The model never supplies or changes the key. Provider tools close over the
-locked scope for the active operation, so a tool cannot redirect itself to a
-different tenant or caller. A provider must preserve that boundary by using
-`memory.scope.key` in every downstream read and write.
+Provider tools cannot change the locked scope. Preserve that boundary by using `memory.scope.key` in every downstream read and write.
 
 For semantic retrieval, include the locked scope in the database or service
 query itself, not as a filter after a global search. For custom capture, use
@@ -83,5 +74,4 @@ for an instructions snippet. A custom provider can also set `approval` on its
 tools when product policy calls for explicit confirmation before saving or
 deleting memory.
 
-Do not use `defineState` for cross-session data. State belongs to one durable
-session; memory providers bridge sessions through provider-owned storage.
+`defineState` belongs to one session; use memory for cross-session data.

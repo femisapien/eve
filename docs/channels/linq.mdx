@@ -5,7 +5,7 @@ description: Connect an eve agent to iMessage and SMS through Linq.
 
 Use `linqChannel` to receive and reply to iMessage and SMS conversations through Linq.
 
-Run `eve add channel/linq` to choose Vercel Connect or portable credentials. With Vercel Connect, eve signs you in and creates or links a Vercel project when needed. Then choose whether to create a managed Linq account and line or connect an existing account with its partner API token. eve fetches the phone numbers assigned to that account, and you select the numbers for the agent. eve configures the connector and webhook through Connect:
+Run `eve add channel/linq` to choose Vercel Connect or portable credentials. With Connect, eve signs you in and creates or links a Vercel project if needed. Create a managed Linq account and line, or use an existing account with its partner API token. Select the phone numbers to assign; eve configures the connector and webhook:
 
 ```ts title="agent/channels/linq.ts"
 import { connectLinqCredentials } from "@vercel/connect/eve";
@@ -16,9 +16,9 @@ export default linqChannel({
 });
 ```
 
-The default webhook route is `/eve/v1/linq`. The channel verifies forwarded webhooks with same-project Vercel OIDC by default, derives user auth from each message author, marks accepted messages as read, and continues the same eve session for every message in a Linq conversation. A new accepted message steers the active turn. Before answer output or local tool execution begins, steering can interrupt pending model generation. Executing tools finish first; after answer output starts, steering waits for the next committed workflow boundary. See [Overlapping messages](./overview#overlapping-messages).
+The default webhook route is `/eve/v1/linq`. The channel verifies forwarded webhooks with same-project Vercel OIDC by default, derives auth from each message author, marks accepted messages as read, and continues the same eve session throughout a Linq conversation.
 
-Set `turnPolicy: "queue"` when every response should finish before Linq starts the next message.
+New accepted messages steer the active turn by default. Set `turnPolicy: "queue"` to finish each turn before handling the next message. See [Overlapping messages](./overview#overlapping-messages) for when steering takes effect.
 
 Customize inbound dispatch with `onMessage`. Return `null` to ignore a message, or return `title` alongside `auth` to set the title when the dispatch starts a run:
 

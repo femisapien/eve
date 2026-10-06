@@ -3,13 +3,11 @@ title: "Run Analysis"
 description: "Part 4 of the Build an Agent tutorial. Seed the sample database schema into the sandbox workspace, then compute and chart beyond SQL."
 ---
 
-SQL tells the analytics assistant the numbers, but a cohort curve, a forecast, or a chart needs real computation. That's what the sandbox is for. It's an isolated bash environment with a `/workspace` filesystem, and every agent gets exactly one.
-
-This takes two pieces. First seed reference files the model can read, then compute against them.
+Generate charts in the agent's sandbox, an isolated shell environment rooted at `/workspace`. Seed the schema, install chart dependencies, and add a plotting tool.
 
 ## Seed the schema into the workspace
 
-Mount the sample database schema into the sandbox so the model isn't guessing at table shapes. Seeding uses the folder sandbox layout, where anything under `agent/sandbox/workspace/` lands in the live `/workspace` cwd at session bootstrap.
+Place schema files under `agent/sandbox/workspace/`; eve seeds them into `/workspace` when the sandbox starts.
 
 ```text
 agent/sandbox/
@@ -25,7 +23,7 @@ CREATE TABLE orders     (id INTEGER, customer_id INTEGER, amount_cents INTEGER, 
 CREATE TABLE customers  (id INTEGER, name TEXT, plan TEXT);
 ```
 
-Top-level workspace entries get advertised to the model automatically, so it knows `schema.sql` is there to read. A `workspace/` folder seeds your files without requiring a sandbox definition. Add one next to install the chart dependencies.
+eve advertises top-level workspace entries to the model. Seeding files alone does not require a sandbox definition; the next step adds one for dependencies.
 
 ## Install the chart dependencies
 
@@ -135,8 +133,6 @@ export default defineTool({
 });
 ```
 
-The tool uses the Python environment installed in bootstrap. `matplotlib.use('Agg')` selects a renderer that writes PNGs without a desktop display.
-
 `sandbox.run()` returns an exit code even when the command fails. Check `exitCode` before returning a chart path. Throwing an error gives the model the failed command's output, including a missing Python executable or matplotlib import, so it can report the failure instead of claiming a chart exists.
 
 Ask for a chart using the sample data from Step 3:
@@ -145,7 +141,7 @@ Ask for a chart using the sample data from Step 3:
 Plot daily order revenue in dollars for May 2026.
 ```
 
-The model queries `run_sql` for daily totals, divides `amount_cents` by 100, and passes date/value points to `chart_series`. The sample data has four dates with revenue of $42, $15, $99, and $8. The chart uses the same data you queried in Step 3.
+The model queries `run_sql` for daily totals, divides `amount_cents` by 100, and passes date/value points to `chart_series`. The sample data has four dates with revenue of $42, $15, $99, and $8.
 
 ## Save the chart to your computer
 
@@ -211,7 +207,7 @@ Open the saved `chart.png` in your image viewer. This creates a separate session
 
 This step does not require approvals. If you return after adding the approval gate in [Guard the spend](./guard-the-spend), the script reports any pending request with its session ID. [Respond through the client](../guides/client/messages#answer-human-input-requests) before collecting that session's chart result.
 
-The same client can save a chart from a hosted agent: pass the deployment URL and configure [client authentication](../guides/client/overview#authentication) for that deployment. The file is saved on the computer running the script. In a web UI, consume the same `action.result` output to build an image preview or download control. Returning bytes from a tool does not add that UI automatically.
+For a hosted agent, pass its URL and configure [client authentication](../guides/client/overview#authentication). The file is saved on the machine running the script. A web UI must implement its own preview or download control using `action.result`.
 
 This example caps charts at 1 MiB because tool outputs are persisted with session events. For larger files, copy the bytes to your application's file storage and return an authorized download URL instead. Sandbox files themselves are not permanent artifact storage.
 
@@ -219,8 +215,4 @@ This example caps charts at 1 MiB because tool outputs are persisted with sessio
 
 The sandbox has no `process.env` and no access to your app's secrets. The `run_sql` tool and sample database run in your app. You pass only the query results to the chart tool; the sandbox does not need database credentials.
 
-The local backend runs the sandbox on your laptop during `eve dev`; on Vercel it runs on Vercel Sandbox. Lifecycle, backends, and network policy are in [Sandbox](../sandbox).
-
-→ Next: [Remember definitions](./remember-definitions)
-
-Learn more: [Sandbox](../sandbox)
+During `eve dev`, the sandbox runs locally; on Vercel, it runs in Vercel Sandbox. See [Sandbox](../sandbox) for lifecycle and network policy. Next, [remember metric definitions](./remember-definitions).

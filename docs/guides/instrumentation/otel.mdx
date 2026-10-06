@@ -9,12 +9,7 @@ settings and `otelIntegration()` for third-party destinations.
 
 ## Configure OpenTelemetry
 
-`otel()` and `otelIntegration()` are optional:
-
-- Use `otel()` only when you need process-wide settings such as the resource,
-  sampler, propagators, or trace capture policy. Declare it at most once.
-- Use `otelIntegration()` only when adding a third-party OpenTelemetry
-  destination. Declare one file per exporter or processor chain.
+Declare `otel()` at most once for process-wide resources, sampling, propagation, and capture policy. Add one `otelIntegration()` file per third-party exporter or processor chain. Neither is required for default local traces.
 
 Add `agent/instrumentation/otel.ts` when you need process-wide settings or
 want to control the content eve writes to OpenTelemetry spans:
@@ -70,8 +65,7 @@ export default defineAgent({
 
 ## Add an OpenTelemetry destination
 
-Use this section when sending traces to a third-party destination. Install
-`@vercel/otel` before using its exporters:
+Install `@vercel/otel` for its exporters:
 
 ```bash
 pnpm add @vercel/otel
@@ -157,12 +151,7 @@ across traces. eve adds this ID to spans created during model, tool, and memory
 execution. This includes spans from third-party instrumentation. `agent.run.id`
 identifies one agent session, not the full conversation.
 
-The shared conversation ID does not give access to message history, agent state,
-or credentials. It does not give authorization or require the same worker for
-each turn. Remote requests carry the conversation ID in W3C Baggage.
-`trustedForwarders` controls whether the receiver accepts parent session data
-and the trace-content policy. See
-[Remote agents](../guides/remote-agents#preserving-trace-content).
+A conversation ID correlates traces; it grants no access to history, state, or credentials. Remote requests carry it in W3C Baggage. The receiver's `trustedForwarders` policy controls whether it accepts parent session data and trace-content constraints. See [Remote agents](../guides/remote-agents#preserving-trace-content).
 
 ## Local traces
 
@@ -178,8 +167,7 @@ export default disableInstrumentation();
 
 ## Enable tracing on Vercel
 
-For Agent Runs sampling defaults and existing-deployment setup, see
-[Enable tracing on Vercel](./agent-runs#enable-tracing-on-vercel).
+See [Enable tracing on Vercel](./agent-runs#enable-tracing-on-vercel) for sampling defaults and setup.
 
 ## Filter a destination
 

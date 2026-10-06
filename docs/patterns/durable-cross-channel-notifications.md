@@ -3,9 +3,7 @@ title: "Durable cross-channel notifications"
 description: "Send a notification to another platform without starting an agent turn, using an application-owned outbox for retries and deduplication."
 ---
 
-`ctx.to(channel, target).send(...)` hands a message to another channel and starts or resumes an agent session there. eve does not currently provide a direct cross-channel message queue or provider outbox. To post a notification without a model call, use the destination platform's API instead. When the notification must survive a crash, record the intent in an application-owned outbox before attempting delivery.
-
-An application-owned outbox is the current pattern for durable provider notifications. It provides at-least-once processing. It does not by itself guarantee exactly-once delivery: if the provider accepts a request but the response is lost, the dispatcher cannot know whether to retry. Use a provider idempotency key when one is available. Otherwise, make duplicates harmless or reconcile the destination before retrying an ambiguous request.
+`ctx.to(channel, target).send(...)` starts or resumes an agent session; it is not a direct notification. To post without a model call and survive crashes, record the intent in your own outbox, then send through the destination platform's API. An outbox provides at-least-once processing, not exactly-once delivery. If the provider accepts a request but its response is lost, use a provider idempotency key or make retries safe.
 
 This example posts to Slack and requires `SLACK_REVIEW_CHANNEL_ID` and `SLACK_BOT_TOKEN`. If your channel uses Vercel Connect, pass the connector's `botToken` resolver to `callSlackApi` instead.
 
@@ -35,7 +33,7 @@ export default githubChannel({
 });
 ```
 
-`enqueue` must enforce a unique constraint on `key`, for example with `INSERT ... ON CONFLICT DO NOTHING`. A durable step can re-run after an interruption, and channel event handlers are at least once. The stable key prevents those attempts from creating multiple outbox rows.
+Enforce a unique constraint on `key`, for example with `INSERT ... ON CONFLICT DO NOTHING`. Channel event handlers can run more than once after an interruption; the key prevents duplicate outbox rows.
 
 A channel's `events` handlers run only for sessions owned by that channel. On built-in channels, an authored handler replaces the built-in handler for the same event key; use an event without a built-in handler or reproduce behavior you intend to replace. See [Hooks](../guides/hooks#scope-side-effects-to-a-channel) for the channel-scoping rules.
 

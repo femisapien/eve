@@ -3,18 +3,14 @@ title: "Overview"
 description: "Choose a deployment strategy and prepare an eve agent for production."
 ---
 
-Deploy eve to Vercel or run it as a Node service on your own infrastructure. Your deployment strategy determines the build output, workflow storage, sandbox provider, and routing. The agent’s filesystem-based configuration remains portable across these strategies.
+Deploy eve to Vercel or self-host its Node service. The agent files stay the same; build output, workflow storage, sandbox provider, and routing differ.
 
 ## Choose a deployment strategy
-
-Choose where the eve runtime will run:
 
 | Strategy                       | Build output           | Workflows                      | Sandbox                         | Choose it when                                        |
 | ------------------------------ | ---------------------- | ------------------------------ | ------------------------------- | ----------------------------------------------------- |
 | [Vercel](./vercel)             | `.vercel/output`       | Vercel Workflow                | Vercel Sandbox                  | You want Vercel to operate the runtime services       |
 | [Self-hosting](./self-hosting) | `.output/` Node server | Local or custom Workflow world | Docker, microsandbox, or custom | You operate your own Node or container infrastructure |
-
-eve is frontend agnostic and can be deployed within Next.js, Nuxt, or SvelteKit applications. See [Frontend integrations](../frontend/overview) for more details.
 
 ## Prepare for production
 
@@ -53,8 +49,6 @@ eve remote connect --url https://your_agent.example.com
 Set `VERCEL_AUTOMATION_BYPASS_SECRET` locally first if a Vercel deployment uses Deployment Protection.
 
 ## Continue with a platform guide
-
-Follow the guide for your deployment platform or application topology:
 
 - [Deploy to Vercel](./vercel): use Vercel Build Output, Workflow, Sandbox, Cron, and observability
 - [Self-host eve](./self-hosting): run the Nitro Node server with infrastructure you manage

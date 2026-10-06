@@ -14,17 +14,7 @@ upgrading from `eve < 0.62.0`.
 
 ## Add instrumentation
 
-The filename identifies the instrumentation slot. A lifecycle-event file must
-default-export `defineInstrumentation(...)` or `disableInstrumentation()`.
-See [OpenTelemetry](./otel) for the supported OTel declarations.
-
-```text
-agent/instrumentation/
-  audit.ts  lifecycle instrumentation
-```
-
-This instrumentation records action timing and identity without receiving tool
-arguments or results:
+The filename identifies the instrumentation slot. Default-export `defineInstrumentation(...)` or `disableInstrumentation()` from each lifecycle-event file. This example records action timing without capturing tool arguments or results:
 
 ```ts title="agent/instrumentation/audit.ts"
 import { defineInstrumentation } from "eve/instrumentation";
@@ -83,10 +73,7 @@ export default defineInstrumentation({
 });
 ```
 
-The function receives `agentName`, `channel`, `audience`, `environment`, and
-`principalType`. `audience` is `"public"`, `"private"`, or
-`"unknown"`; `environment` is `"development"`, `"preview"`, or
-`"production"`.
+The policy receives `agentName`, `channel`, `audience` (`"public"`, `"private"`, or `"unknown"`), `environment` (`"development"`, `"preview"`, or `"production"`), and `principalType`.
 
 Without a policy, or when it returns `true`, eve sends metadata for every
 trace. It includes input and output content in these cases:
@@ -169,7 +156,7 @@ operation key when upserting records across replays.
 
 An ordinary tool emits both `action.*` and `tool.call.*` events. Use `action.*` for eve's durable dispatch lifecycle, including tools, skills, subagents, and remote agents. Use `tool.call.*` only when you need the AI SDK's in-process tool execution boundary.
 
-For local and remote subagents, `action.completed` and `action.failed` include the child turn's `usage` directly. Token counts are always present when the child reports usage; `usage.costUsd` is present only when the model provider reports a price. Without the action-level usage, consumers would have to correlate child model events through trace lineage and sum their provider metadata, which is harder to do reliably across retries and parked turns.
+For local and remote subagents, `action.completed` and `action.failed` include the child's token usage when reported and `usage.costUsd` when the provider reports a price.
 
 Handlers from different files run concurrently and are failure-isolated. Do
 not depend on execution order. Use `flush` to drain buffered records and

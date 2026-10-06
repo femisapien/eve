@@ -23,9 +23,6 @@ the session's channel, `ctx.agents` for effective callable-agent descriptions, a
 progress and `await` on a workflow operation to wait durably. Values needed after a durable wait
 stay in local variables in the workflow body.
 
-A workflow tool runs code you wrote and appears to the model under its path-derived tool name, such
-as `deploy`.
-
 ## Define a workflow tool
 
 ```ts title="agent/tools/deploy.ts"
@@ -66,8 +63,7 @@ async function applyDeploy(plan: DeployPlan) {
 }
 ```
 
-The model calls `deploy`. The turn parks while the human reads the plan. When they answer, minutes
-or days later, the run resumes, deploys, and returns. The model sees one tool result.
+The turn parks while someone reviews the plan. After approval, the run resumes and the model receives the tool result.
 
 ### Rules
 
@@ -95,11 +91,6 @@ or days later, the run resumes, deploys, and returns. The model sees one tool re
   `getSandbox` remains unavailable.
 - The tool's input must be a JSON object. Workflow bodies are for static tools under `agent/tools/`,
   not tools returned from `defineDynamic` resolvers.
-
-`ctx.agent`, `ctx.agents`, and `ctx.ask` are available only on `WorkflowToolContext` and
-`WorkflowServeContext` in the workflow body.
-Ordinary tools, channel handlers, schedule handlers, and workflow steps do not receive these methods. Type
-step helpers with `WorkflowStepToolContext` from `eve/tools` when they need step-safe context capabilities.
 
 Workflow executors require `defineWorkflowTool`. Adding `"use workflow"` to `defineTool`, a bare
 tool object, a channel handler, or a schedule handler fails the build. To start a session from a
@@ -204,9 +195,6 @@ A call to an `execute` tool works like any other tool call from the model's poin
   the body returns. See [Stop early for a new message](#stop-early-for-a-new-message).
 
 To keep the conversation going while a call works, [define `task` instead](#run-calls-as-tasks-task).
-
-`defineWorkflowTool` does not accept an `execution` option. Passing one throws
-`"execution" was replaced by task(). Define task(input, ctx) to run each call as a task.`
 
 ### How suspension works
 
@@ -402,12 +390,7 @@ async function readRepository(ctx: WorkflowStepToolContext, repository: string) 
 }
 ```
 
-Connection tools called through `connection_execute`, ordinary tools, and workflow steps use the same
-authorization machinery for requester identity, token caching, callback completion, and rejection
-after sign-in. The execution runtime owns the wait: an agent returns to its model after authorization,
-while a workflow retries the interrupted step and continues the authored body.
-
-The workflow body calls `await readRepository(ctx, repository)`.
+Call `await readRepository(ctx, repository)` from the workflow body. When sign-in is needed, the workflow retries the interrupted step after authorization.
 
 <Callout type="warning" title="Keep tokens out of step results">
   Step results enter the workflow's durable history, so do not return the token from the helper.
@@ -451,8 +434,6 @@ const answer = await ctx.ask(
 
 `ctx.ask` publishes an `input.requested` event on the session — rendered the way channels render
 tool approvals — and returns an awaitable answer. Awaiting it suspends the run until a response arrives.
-The `ask_question` tool is a workflow tool built on `ctx.ask`.
-
 The answer's `status` tells the body what happened:
 
 - `answered`: the person picked an option (`optionId`) or typed a reply (`text`).
@@ -852,9 +833,6 @@ The turn parks while the approval card stays on the channel. When it is answered
 and the agent receives the outcome as the tool result.
 
 ## Semantics
-
-One call, one result. A workflow tool call resolves once, with the return value, the error, or a
-cancellation.
 
 While an `execute` call runs, the turn is parked. A `queue` message waits for it. A `steer` message
 that answers no pending question aborts the call's `ctx.abortSignal` and reaches the model once the

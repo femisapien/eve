@@ -3,11 +3,9 @@ title: "Responsible Use"
 description: "Deployer responsibility and safeguards to review before using eve with sensitive, regulated, or production data."
 ---
 
-As the deployer, it is your responsibility to ensure your agent complies with applicable laws.
+As the deployer, you are responsible for legal compliance and for configuring safeguards appropriate to your use case: approval policies, tool and connection scopes, route and session authorization, sandbox controls, and telemetry exports.
 
-You are responsible for configuring approval policies, tool restrictions, connection scopes, route/session authorization, sandbox controls, telemetry exports, and other safeguards appropriate for your use case.
-
-Before using eve with non-public, sensitive, regulated, or production data, review which default tools, custom tools, MCP tools, shell/file/web tools, connected services, subagents, schedules, and external actions are available to the agent.
+Before handling sensitive, regulated, or production data, review every action available to the agent, including default and custom tools, connections, shell and web access, subagents, and schedules.
 
 Require human approval or other safeguards for sensitive, irreversible, regulated, financial, healthcare, employment, housing, legal, safety-impacting, user-impacting, or external side-effecting actions.
 

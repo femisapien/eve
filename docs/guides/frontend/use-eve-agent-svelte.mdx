@@ -3,9 +3,7 @@ title: "useEveAgent (Svelte)"
 description: "Use the eve Svelte binding and its Svelte-specific reactive interface."
 ---
 
-`useEveAgent()` from `eve/svelte` exposes the shared eve frontend client through Svelte 5 reactive getters and methods. Read the [frontend overview](./overview) for session behavior, messages, human input, authorization, callbacks, reducers, and persistence. This page covers the Svelte-specific interface.
-
-On SvelteKit, register the [`eveSvelteKit` Vite plugin](./sveltekit) to mount the agent routes on the application origin.
+`useEveAgent()` from `eve/svelte` exposes the frontend client through Svelte 5 reactive getters and methods. On SvelteKit, register [`eveSvelteKit`](./sveltekit) to mount agent routes. For shared session and streaming behavior, see the [frontend overview](./overview).
 
 ## Basic usage
 
@@ -54,11 +52,7 @@ The state fields are reactive getters; the commands are ordinary methods:
 | `session`                                                 | `ClientSessionState \| undefined` |
 | `send`, `respond`, `prewarm`, `resume`, `cancel`, `reset` | Methods                           |
 
-Read the getters directly in templates, `$derived`, or `$effect`. The [shared returned-state reference](./overview#returned-state) describes what each value and command does.
-
-## Send a message
-
-Call `agent.send(text)` for text or pass content parts for attachments. The API and transport behavior match the [shared sending guide](./overview#sending-and-streaming); only reactive access differs in Svelte.
+Read getters in templates, `$derived`, or `$effect`. See [Returned state](./overview#returned-state) for field and command behavior.
 
 ## Human-in-the-loop prompts
 
@@ -101,12 +95,11 @@ See [Human-in-the-loop prompts](./overview#human-in-the-loop-prompts) for reques
 
 ## Cancel, reset, and resume
 
-Pass `prewarm: true` to prepare an owned workflow on mount and after reset. It defaults
-to `false`, so the first send creates the session. The binding waits for create acceptance,
-retries while the inbox starts, and keeps the session stream open across turns. See [Prewarming and returned state](./overview#returned-state) for creation, failure, and
-connection behavior.
+Pass `prewarm: true` to create a session on mount and after reset; by default, the first send creates it. See [Returned state](./overview#returned-state) for startup retries and failure behavior.
 
-Call `agent.cancel()` to stop the durable server-side turn while the binding remains attached through settlement. Destroying the component only disconnects its local stream; it does not cancel server execution. Call `agent.reset()` to clear local state and start a new session. Pass `initialSession`, `initialEvents`, and `resume: true` to restore a saved conversation and follow an in-flight turn. During bounded catch-up, `agent.status` is `"resuming"`; keep the hydrated conversation visible, disable submission, and wait for `"ready"`, `"error"`, or `"streaming"`. Use `agent.resume()` directly when restoration is controlled imperatively. See [Resumable sessions](./overview#resumable-sessions) for the persistence contract and [Sending and streaming](./overview#sending-and-streaming) for cancellation behavior.
+Call `agent.cancel()` to stop a durable server-side turn; the binding stays attached until it settles. Destroying the component disconnects only the local stream and does not cancel server execution. Call `agent.reset()` to clear local state and start a new session.
+
+To restore a saved conversation and follow an in-flight turn, pass `initialSession`, `initialEvents`, and `resume: true`. During catch-up, `agent.status` is `"resuming"`; show the hydrated conversation but disable submission until the status changes to `"ready"`, `"error"`, or `"streaming"`. Use `agent.resume()` when you control restoration imperatively. See [Resumable sessions](./overview#resumable-sessions) for persistence and [Sending and streaming](./overview#sending-and-streaming) for cancellation.
 
 ## Custom host and credentials
 

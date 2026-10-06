@@ -4,25 +4,17 @@ description: "Reach your agent from Discord HTTP Interactions, including slash c
 type: integration
 ---
 
-The Discord channel wires your agent into Discord's HTTP Interactions, including slash and application commands, message components, and modal submissions. Discord enforces a three-second ACK deadline, so the channel acknowledges the command right away and runs the eve work in the background. Credentials and inbound request verification run through [Vercel Connect](../guides/auth-and-route-protection), so Discord's bot token stays out of your environment and Connect verifies Discord's signature before forwarding an interaction to eve. See [Channels](./overview) for the contract this builds on.
+The Discord channel handles HTTP Interactions, including application commands, message components, and modal submissions. It acknowledges commands within Discord's three-second deadline while the agent works in the background. [Vercel Connect](../guides/auth-and-route-protection) manages credentials and verifies Discord's signature before forwarding interactions to eve, so you do not need the bot token in your environment. See [Channels](./overview) for the channel contract.
 
 ## Set up Discord
 
 Run the guided setup from your eve project:
 
 ```bash
-pnpm eve add channel/discord
+eve add channel/discord
 ```
 
-The setup guides you through creating a Discord application and bot, then:
-
-- signs you in to Vercel and creates or links a project when needed;
-- validates the bot token;
-- creates a Vercel Connect client and attaches `/eve/v1/discord` as its trigger destination;
-- registers an application command with a required `message` option;
-- configures the Discord application's Interactions Endpoint URL;
-- scaffolds the channel with Connect-managed credentials; and
-- prints the bot installation URL.
+The setup helps you create a Discord application and bot, validates its token, and signs you in to Vercel when needed. It creates or links a project, attaches `/eve/v1/discord` as a Connect trigger, registers a command with a required `message` option, configures the Interactions Endpoint URL, writes the channel, and prints the bot installation URL.
 
 The command defaults to `/ask` with the description **Ask the eve agent**. You can edit both during setup. Discord global commands can take up to an hour to appear after registration.
 
@@ -91,7 +83,7 @@ Typing fires on `turn.started` and `actions.requested`, but only when a bot toke
 
 ### Human-in-the-loop (HITL)
 
-HITL renders as Discord components. Confirmations and options become buttons, `display: "select"` becomes a string select, and freeform input becomes a button that opens a modal. When the user responds, the parked session (paused awaiting input) resumes.
+Human-in-the-loop requests render as Discord components: buttons for confirmations and options, a string select for `display: "select"`, and a modal for freeform input. The response resumes the parked session.
 
 ### Proactive sessions
 

@@ -3,7 +3,7 @@ title: "Deploy to Vercel"
 description: "Deploy an eve agent with Vercel Workflow, Sandbox, Cron, and project credentials."
 ---
 
-Deploy eve to Vercel when you want the framework’s managed build and runtime integrations. Vercel runs the web service, workflows, sandboxes, schedules, and deployment observability.
+Vercel runs eve's HTTP service, workflows, sandboxes, schedules, and observability.
 
 ## Prepare the Vercel project
 
@@ -19,7 +19,7 @@ The command links an existing project or creates one, then pulls its environment
 eve link --project your_project_name --non-interactive
 ```
 
-Use `--team` as well when the account has access to more than one team. `eve link` creates the project if it doesn't exist yet.
+Pass `--team` to select the Vercel team when needed.
 
 ## Configure credentials and auth
 
@@ -79,11 +79,13 @@ export default await withEve({
 });
 ```
 
-Vercel evaluates `vercel.ts` before resolving the service graph. `withEve` adds the root agent, or every direct workspace member, as an independently built service and returns a plain Vercel configuration. Named workspace agents mount at `/eve/<name>/v1/*`; a root agent mounts at `/eve/v1/*`. Vercel then builds the frontend and each eve agent separately. The frontend does not need `withEve` in its framework configuration or a build script that builds the agents.
+`withEve` adds the root agent or each workspace member as a separate service. A root agent mounts at `/eve/v1/*`; named members mount at `/eve/<name>/v1/*`. Vercel builds the frontend and agents separately, so the frontend does not need `withEve` in its framework config.
 
-The Web Chat installer can generate this composition for a standalone agent or a selected workspace agent. Configure authentication for every exposed agent. To self-host the same source layout, replace Vercel composition with your own [process and proxy configuration](./self-hosting#run-workspace-members).
+The Web Chat installer can generate this composition. Configure authentication for every exposed agent. For self-hosting, use your own [process and proxy configuration](./self-hosting#run-workspace-members).
 
-Run Vercel CLI 59.16.0 or newer with `vercel dev --local` to start the complete service graph locally without linking a Vercel project. A generated Vercel Web Chat project exposes this as `pnpm dev:all`. When the directory is linked, Vercel also loads its development environment and settings. Use `pnpm dev` or `pnpm dev:eve` when you want one agent and the eve terminal UI, or `pnpm dev:web` when you want the frontend without its agent services. Named agents use the same `/eve/<name>/v1/*` routes in development, and default `defineWorkspaceAgent` transports can call peers without deployment credentials.
+Use Vercel CLI 59.16.0 or newer and run `vercel dev --local` to start the full service graph without linking a Vercel project. A generated Vercel Web Chat project provides `pnpm dev:all` for this. Once linked, Vercel also loads the project's development environment and settings.
+
+Run `pnpm dev` or `pnpm dev:eve` for one agent and the eve terminal UI, or `pnpm dev:web` for the frontend without agent services. Named agents keep their `/eve/<name>/v1/*` routes in development; default `defineWorkspaceAgent` transports can call peers without deployment credentials.
 
 Generated transport routes are inserted before a filesystem handler or, when no filesystem handler exists, before authored routes. `withEve` throws instead of overwriting an authored service key or exact transport route that belongs to a generated agent. Remove the authored route, and remove or rename the authored service; `withEve` adds both automatically. Names in the array form of `services` must also be unique. Other service names, routes, bindings, and Cron Jobs remain authored in `vercel.ts`.
 
@@ -163,8 +165,6 @@ inspect conversation traces. See [Agent Runs](../../observability/agent-runs)
 for beta access, pricing, retention, and tracing setup.
 
 ## Continue configuring production
-
-Use these guides to secure and observe the deployed agent:
 
 - [Authentication](../auth-and-route-protection): configure who can call the deployed agent
 - [Instrumentation](../../observability/instrumentation): export traces and diagnose runtime failures

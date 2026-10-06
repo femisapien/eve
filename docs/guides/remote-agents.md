@@ -3,9 +3,9 @@ title: "Remote Agents"
 description: "Call another eve deployment as a subagent with defineRemoteAgent: the same tool call as a local subagent, with outbound auth and durable callbacks."
 ---
 
-`defineRemoteAgent` calls a separately deployed eve agent as if it were a local subagent. Reach for it when the specialist you delegate to is a separately owned agent behind its own URL rather than a directory in your repo.
+`defineRemoteAgent` delegates to a separately deployed eve agent through its URL, rather than to a local subagent directory.
 
-The file lives under `agent/subagents/`, so its tool name is derived from the path. There's no `name` field.
+Place the file under `agent/subagents/`; its path determines the tool name.
 
 ```ts title="agent/subagents/weather.ts"
 import { defineRemoteAgent } from "eve";
@@ -83,7 +83,7 @@ export default defineRemoteAgent({
 });
 ```
 
-The function may be async and must return a non-empty string. `auth` and `headers` are resolved at runtime the same way.
+The function may be async and must return a non-empty string.
 
 ## Calling a remote agent
 
@@ -154,10 +154,7 @@ trace context is available, the first turn links to the dispatch span with
 Later turns start new traces without the original dispatch link. The first turn
 of a local child can use the remote agent's trace as a nested span.
 
-Use `gen_ai.conversation.id` to find all turns and child sessions for one
-conversation. The child has its own session ID, message history, and agent
-state. Trace context identifies related work. It does not give authorization.
-See [OpenTelemetry](../observability/otel#trace-topology) for the trace structure.
+Use `gen_ai.conversation.id` to find related turns and child sessions. The child retains its own session, history, and state; trace context does not grant authorization. See [OpenTelemetry](../observability/otel#trace-topology).
 
 eve carries parent session lineage separately. The receiver accepts it only
 when `trustedForwarders` approves the authenticated caller; otherwise, trace
@@ -201,11 +198,7 @@ widen capture and use metadata-only tracing.
 
 ## How remote dispatch and callbacks work
 
-A remote subagent call runs a child session in the remote deployment as a task:
-
-1. The parent starts a persistent conversation session on the remote's `POST /eve/v1/session`, passing a framework callback URL.
-2. The remote accepts the child and runs its turn while the task works.
-3. The callback delivers the child's reply, which becomes the task's result.
+The parent opens a persistent child session with `POST /eve/v1/session` and supplies a callback URL. The remote runs its turn as a task and sends the reply to that callback.
 
 The parent stream carries the same `task.started`, `agent.started`, and `task.settled` events as local delegation. For a remote child, `agent.started.data.remote.url` records the target.
 
@@ -215,7 +208,9 @@ Cancelling the parent turn or the agent task with `task_cancel` also cancels the
 
 When the workflow run that opened a remote child finishes, eve sends an authenticated `POST /eve/v1/session/:childSessionId/reset` for it. An agent task's run finishes when the parent session ends. Reset retires the parked remote session and recursively cleans up its descendants. The request uses freshly resolved `headers` and `auth`; failures are logged so an unreachable remote cannot block parent finalization.
 
-The parent names its eve remote agent protocol version when it creates the child, and the remote answers with the version it serves. A remote also serves parents on protocol 1 (eve 0.66 through 0.68), including their approvals and sign-in requests, so upgrade remote agents before their callers; see [Upgrade remote agents before their callers](../tools/tasks-upgrade#upgrade-remote-agents-before-their-callers). Any other mismatch fails the call at start with an error naming both versions. A failed _start_ fails the call immediately. After a remote starts, a terminal failure callback fails the call with the remote's error. Terminal callback delivery runs as a durable step on the underlying workflow engine (see [Execution model & durability](../concepts/execution-model-and-durability)). A failed callback POST is rethrown rather than completing the call, so the engine retries it.
+The parent specifies its eve remote agent protocol version when creating the child; the remote responds with its own version. A remote also serves protocol-1 parents (eve 0.66–0.68), including approvals and sign-in requests. Upgrade remote agents before their callers; see [Upgrade remote agents before their callers](../tools/tasks-upgrade#upgrade-remote-agents-before-their-callers). Other version mismatches fail at start with an error naming both versions.
+
+A failed start fails the call immediately. After the remote starts, a terminal failure callback fails the call with the remote's error. Terminal callbacks run as durable steps in the workflow engine (see [Execution model and durability](../concepts/execution-model-and-durability)). A failed callback POST is rethrown so the engine retries it.
 
 ## What to read next
 

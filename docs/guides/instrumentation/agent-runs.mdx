@@ -11,9 +11,7 @@ url: "/observability/agent-runs"
   plans.
 </Callout>
 
-Use Vercel Agent Runs to browse eve sessions and inspect conversation traces
-in the project's **Observability** view. The tab requires enablement for your
-Vercel team; contact your Vercel representative if it does not appear.
+Browse eve sessions and conversation traces under **Observability → Agent Runs**. If the tab is absent, ask your Vercel representative to enable it for your team.
 
 Agent Runs usage is billed at
 [Always-on Tracing rates](https://vercel.com/docs/tracing/always-on-tracing#usage-and-pricing)
@@ -36,9 +34,7 @@ your team and project, then open
 Vercel applies the first matching rule. If an existing rule matches these
 requests, update it to use a 100% rate; a later rule will not override it.
 
-Tracing starts as soon as you save the rule. You can also manage sampling
-rules with [`vercel traces config`](https://vercel.com/docs/cli/traces#manage-trace-sampling-rules).
-The CLI accepts rates from 1 to 100%; add a 0% rule from the dashboard.
+You can also manage sampling with [`vercel traces config`](https://vercel.com/docs/cli/traces#manage-trace-sampling-rules). The CLI accepts rates from 1 to 100%; use the dashboard for 0%.
 
 ## Configure Agent Runs
 

@@ -11,11 +11,7 @@ eve dev
 
 The footer shows the active model, reasoning level when set, speed indicator, and connection separated by dots, such as `gpt-6-luna · high · ⚡︎`. The model label omits the provider prefix and removes `-fast` only at the end. A single `⚡︎` marks a model with that suffix or explicit **Fast** mode; terminals without Unicode support use an ASCII marker.
 
-Vercel account connections show the team slug once it resolves; the local server port is omitted.
-
-The transcript remains in your terminal scrollback after you exit. Run `/help` in the UI to see the commands available in the current session.
-
-Before your first message, the empty composer may suggest asking your local agent to edit its instructions or add a tool or channel. The suggestion depends on the agent's current capabilities; typing replaces it without sending a message or changing files.
+The transcript remains in your terminal scrollback after you exit. Run `/help` for available commands.
 
 ## Commands
 
@@ -41,7 +37,7 @@ Before your first message, the empty composer may suggest asking your local agen
 
 After interactive `eve init`, the TUI opens directly. eve keeps the project's selected connection. For a new connection, it checks explicit environment credentials, the saved machine default, and then the Vercel CLI's current team. Existing project OIDC connections remain supported. Automatic Vercel reuse validates account access without creating or linking a project.
 
-During startup, the composer stays visible while a progress indicator names the connection being checked and shows when eve is preparing your chat. Type a message and press `Enter` to queue it for when the agent is ready. A picker temporarily takes over input when a choice or API key is needed; your draft returns afterward. If setup is cancelled or fails, queued messages return to the draft.
+You can type while eve connects. Press `Enter` to queue the message until the agent is ready. If a picker opens, your draft returns when it closes; failed or cancelled setup restores queued messages to the draft.
 
 If no connection is ready, `/login` offers:
 
@@ -71,9 +67,7 @@ Local discovery runs only in development. Deployments need explicitly provisione
 
 The picker highlights your current settings when they are compatible with the selected model and skips settings that cannot be changed. Use `↑` and `↓` to move, then `Enter` to advance or apply the final choice. `Esc` or `←` returns to the previous step; at the model list, either key cancels. `Ctrl+C` cancels from any step.
 
-Changes apply together after the final choice, then the picker returns to chat. Cancelling leaves your model and settings unchanged.
-
-A successful login or model change takes effect on the next prompt.
+Changes apply together after the final choice and take effect on the next prompt. Cancelling leaves settings unchanged.
 
 Gateway connections default to `openai/gpt-6-luna-fast`; OpenAI and ChatGPT default to `gpt-6-luna-fast`; Anthropic defaults to `claude-sonnet-5`. An explicitly authored compatible model stays selected. If a new default is unavailable, eve offers the connection's available models. Dynamic or custom model expressions must be edited in `agent.ts`.
 
@@ -100,7 +94,11 @@ The activity line shows **Thinking** while the model reasons or waits to respond
 
 A tool call shows the tool's own `label`, or eve's copy for built-in tools such as `Read README.md`. Any other call shows a readable tool name without its extension or connection prefix, such as `List issues` for `linear__list_issues`. Approval prompts show the exact tool name unless the tool provides a title.
 
-A task, such as a call to a subagent, writes one line to the transcript when it starts and one when it finishes, fails, or is stopped. The finished line names how long the task took and, for a subagent, what it did, such as `Read 3 files, Ran 2 commands`. Task starts use the same tool-call styling as synchronous calls. While tasks work, an activity drawer above the prompt shows each task's name, current activity, and elapsed time without repeating its launch prompt. Subagents use readable labels, such as `subagent(stock price)` for a `stock-price` subagent or `subagent(worker)` for the `code__worker` subagent of the code extension, with elapsed time beside the name and the latest observed tool grouped beneath an elbow. The tool remains visible between calls rather than switching to a starting placeholder. During questions and approvals, activity stays visible above the request with a shared divider when screen space permits; the request takes priority on small terminals. Background work started by a followed subagent appears beneath that subagent; deeper work uses an ownership path instead of further indentation. The panel caps its height and prioritizes tasks needing approval when work overflows. The UI does not show the model's own `task_wait` and `task_cancel` calls; their effect appears as the **Waiting** header and a stopped task's line.
+A task, such as a subagent call, writes a transcript line when it starts and another when it finishes, fails, or stops. The finished line includes elapsed time and, for a subagent, a summary such as `Read 3 files, Ran 2 commands`. Task starts use the same styling as synchronous tool calls.
+
+While tasks work, the activity drawer above the prompt shows each task's name, activity, and elapsed time without repeating its launch prompt. Subagents have readable labels, such as `subagent(stock price)` for `stock-price` or `subagent(worker)` for the code extension's `code__worker`. The latest observed tool stays visible beneath each subagent between calls. Background work started by a followed subagent appears beneath it; deeper work uses an ownership path rather than further indentation.
+
+During questions and approvals, activity stays visible above the request when space permits; the request takes priority on small terminals. The drawer caps its height and prioritizes tasks needing approval when work overflows. It does not show the model's own `task_wait` and `task_cancel` calls; their effects appear as the **Waiting** header and a stopped task's transcript line.
 
 The prompt stays open while the agent works, including turns started elsewhere, such as a scheduled run. While a turn is running, `Enter` sends your message immediately as steering. Before assistant output begins, the runtime interrupts pending model generation and continues the same turn with your correction. Executing tools finish safely. After output begins, steering applies at the next workflow boundary and preserves streamed text.
 
@@ -146,7 +144,7 @@ Pass a URL to use the terminal UI with an existing eve server instead of startin
 eve remote connect --url https://your-app.vercel.app
 ```
 
-Use `eve remote connect` for an existing agent. To send credentials or custom request headers, use a URL with HTTP Basic credentials or repeat `-H, --header`:
+For Basic auth, include credentials in the URL. For other schemes, pass `-H, --header` (repeatable):
 
 ```bash
 eve remote connect --url https://user:pass@your-app.example.com

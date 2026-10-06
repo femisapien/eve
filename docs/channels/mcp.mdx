@@ -20,7 +20,7 @@ export default mcpChannel({
 });
 ```
 
-This accepts a synthetic local principal under `eve dev` or `vercel dev` and rejects all requests in production. Before deploying, replace it with one of the production authentication modes below. `localDev()` checks the running environment, not the request hostname: accessing an `eve start` production process through localhost does not activate it.
+`localDev()` accepts requests during `eve dev` or `vercel dev` and rejects production requests, including requests to an `eve start` process on localhost. Replace it with production auth before deploying.
 
 ### Routes
 
@@ -63,9 +63,7 @@ export default mcpChannel({
 });
 ```
 
-The authorization server identified by `issuer` must issue tokens accepted by the wrapped verifier. `scopes` advertises what clients should request; the verifier remains responsible for signature, expiration, audience/resource, and scope enforcement.
-
-`oauthResource()` does not issue tokens or run an authorization server. It decorates an ordinary inbound `AuthFn` with OAuth protected-resource metadata so `mcpChannel()` can publish discovery and add `resource_metadata` to Bearer challenges. Client registration, consent, token issuance, and authorization-server metadata remain the identity provider's responsibility.
+The `issuer` must issue tokens accepted by the wrapped verifier. `scopes` advertises what clients should request; the verifier enforces signature, expiration, audience, and scopes. `oauthResource()` publishes protected-resource metadata and adds `resource_metadata` to Bearer challenges. It does not register clients, collect consent, issue tokens, or serve authorization-server metadata; your identity provider must do those things.
 
 Most hosted MCP clients (Claude, ChatGPT, Grok, and similar) register themselves with the authorization server through Dynamic Client Registration ([RFC 7591](https://www.rfc-editor.org/rfc/rfc7591)) the first time a user connects. Choose an issuer that supports it, or pre-register each client with the issuer before the demo. If registration fails, the client stops before it ever reaches eve.
 
@@ -173,10 +171,6 @@ MCP clients receive four tools:
 | `agent_update` | `{ invocationId, responses }` | Answer the complete pending human-input batch.              |
 | `agent_cancel` | `{ invocationId }`            | Request cooperative cancellation of non-terminal work.      |
 
-The server also returns `instructions` from `initialize` and `server/discover` that summarize this
-protocol for the connecting model, so a hosted client does not have to infer it from the tool
-schemas alone.
-
 `agent_start` creates one eve session and returns after durable acceptance without
 waiting for the session continuation hook to become readable. Keep its `invocationId`, then call
 `agent_get` until the invocation reaches a terminal state. While the status is `working`, wait at
@@ -200,8 +194,6 @@ A tool result with `isError: true` means the call itself was rejected. A `failed
 | `conflict`      | The invocation is not in the expected state; read it with `agent_get` first. | `true`      |
 | `internal`      | eve failed; `errorId` correlates with server logs. No details are exposed.   | `false`     |
 
-Cancellation is cooperative, so call `agent_get` after `agent_cancel` until the state becomes terminal.
-
 Requests are bounded: the whole MCP request body is limited to 1 MiB, `message` to 64 KiB, each input-response `text` to 16 KiB (both measured as UTF-8 bytes, not characters), and one `agent_update` to 64 responses. Oversized bodies receive a JSON-RPC `413`; oversized fields fail input validation before any work starts.
 
 ### Durability guarantees
@@ -215,7 +207,7 @@ Requests are bounded: the whole MCP request body is limited to 1 MiB, `message` 
 
 Every MCP operation reruns the configured auth policy. With authenticated policies, an invocation belongs to the principal that started it; knowing its ID is not sufficient. Bearer tokens are not stored with the invocation or forwarded to the agent's tools.
 
-With `none()`, every caller shares the anonymous principal, so the random invocation ID becomes a bearer capability. Keep it out of logs and URLs and treat it as usable until workflow retention expires. Responses include `expiresAt` when the workflow backend reports a retention deadline.
+With `none()`, the invocation ID is a bearer capability: keep it out of logs and URLs until workflow retention expires. Responses include `expiresAt` when the backend reports a retention deadline.
 
 ## What to read next
 

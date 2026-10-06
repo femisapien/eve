@@ -3,7 +3,7 @@ title: "Cases"
 description: "Author single-turn and multi-turn evals with test(t), and fan one file out over a dataset."
 ---
 
-Each eval file is one graded case by default, and a single file can fan out over a dataset by default-exporting an array (covered below). The runner executes each `test(t)` function against the target, captures every event, and computes a verdict from the [assertions](./assertions) you recorded. Every eval shares one shape, whether single-turn, multi-turn, human-in-the-loop (HITL), or dataset-driven: one `async test(t)` function that drives the agent and asserts inline.
+Each eval file defines one graded case by default. To run cases from a dataset, default-export an array (see [Datasets](#datasets-exporting-an-array)). The runner executes each `async test(t)` against the target, captures events, and computes a verdict from recorded [assertions](./assertions). Use the same test shape for single-turn, multi-turn, human-in-the-loop (HITL), and dataset cases.
 
 Before adding a case, create the required config at the root of `evals/`. An empty config is enough when you do not need shared judge, reporter, concurrency, or timeout settings:
 
@@ -15,7 +15,7 @@ export default defineEvalConfig({});
 
 ## Single-turn evals
 
-The common case sends one turn and asserts on the reply. `t.send(input)` resolves once the turn settles, and the returned turn’s `.message` is the assistant reply:
+`t.send(input)` waits for a turn to settle and returns its assistant reply in `.message`:
 
 ```ts title="evals/weather/brooklyn-forecast.eval.ts"
 import { defineEval } from "eve/evals";
@@ -30,7 +30,7 @@ export default defineEval({
 });
 ```
 
-Some evals only care about behavior, not text. Assert on the run and skip the content check entirely:
+To check behavior without grading text:
 
 ```ts title="evals/weather/no-tools-for-greetings.eval.ts"
 import { defineEval } from "eve/evals";
@@ -60,7 +60,7 @@ evals/
 
 ## Multi-turn evals
 
-Drive several turns in sequence for branching, HITL approvals, structured output, attachments, or multiple sessions. Because assertions live in the function, an intermediate value is a local variable. Keep each turn in a local variable and continue through its `.session`.
+For multi-turn evals, keep each response and send follow-ups through its `.session`:
 
 ```ts title="evals/draft-then-send.eval.ts"
 import { defineEval } from "eve/evals";
@@ -118,9 +118,7 @@ Every `t.session()` or `t.send()` creates a new independent conversation. Contin
 - `session.respondAll(optionId)` answers every pending input request with the same option and sends the responses as the next turn.
 - `session.events` contains the events captured for that session. `session.transcript` formats its observed user and assistant messages in turn order.
 
-The transcript uses `User:` and `Assistant:` labels separated by blank lines. It excludes reasoning, tool calls, tool results, and messages from other sessions. It updates after each turn settles, so read it after `await session.send(...)`, `await session.respond(...)`, or `await live.result()`.
-
-Each `send` (and `respond`/`respondAll`) resolves to a turn with `.message`, `.data`, `.events`, `.inputRequests`, `.toolCalls`, `.session`, `.sessionId`, `.status`, and `.expectOk()`. Turn results retain their captured output and events; `.session` references the live conversation handle. `expectOk()` throws only when the turn ended failed; a session left open for a next message is the normal end state of a successful turn.
+`session.transcript` contains observed user and assistant messages with `User:` and `Assistant:` labels. Read it after a turn settles; it excludes reasoning, tool calls, and other sessions. Each `send` or `respond` returns a turn with captured output and events. Its `.session` is the live handle; `.expectOk()` throws when the turn fails, not when the session remains open for another message.
 
 ## Prewarming a session
 
@@ -217,8 +215,6 @@ export default rows.map((row) =>
   }),
 );
 ```
-
-The loaders are meant for fixtures, not runtime agent code.
 
 ## What to read next
 

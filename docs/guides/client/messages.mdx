@@ -3,7 +3,7 @@ title: "Messages"
 description: "Send text, full turn payloads, client context, attachments, and HITL responses with eve/client."
 ---
 
-Create a session with its first turn, then use the returned `ClientSession` for follow-ups. Each handle targets one durable session ID.
+Create a session with its first message, then send follow-ups through the returned `ClientSession`.
 
 ## Send text
 
@@ -63,23 +63,7 @@ await response.result();
 
 ## Send attachments
 
-`send()` accepts AI SDK `UserContent`, so a message can mix text and file parts:
-
-```ts
-const response = await session.send([
-  { type: "text", text: "Summarize this report." },
-  {
-    type: "file",
-    data: reportDataUrl,
-    mediaType: "application/pdf",
-    filename: "report.pdf",
-  },
-]);
-
-await response.result();
-```
-
-For local files, read the file and send a base64 `data:` URL:
+`send()` accepts AI SDK `UserContent` with text and file parts. For a local file, read it and send a base64 `data:` URL:
 
 ```ts
 import { readFile } from "node:fs/promises";
@@ -100,11 +84,7 @@ const response = await session.send([
 await response.result();
 ```
 
-The stream confirms the turn with `message.received`. Its `data.message` remains the flattened
-summary for compatibility, and `data.parts` contains structured text and file metadata for clients
-that render attachments. File parts never include raw bytes or internal sandbox paths. See [Inbound
-attachments](../../sandbox#inbound-attachments) for how eve stages byte-backed files in the session
-sandbox and prepares them for each model call.
+`message.received.data.parts` contains text and file metadata, never raw file bytes or internal sandbox paths. See [Inbound attachments](../../sandbox#inbound-attachments) for file staging and model input behavior.
 
 ## Answer human input requests
 
@@ -134,8 +114,6 @@ await resumed.result();
 ```
 
 After eve accepts the reply, the durable stream emits `input.resolved`. Its `resolutions` array includes each request's `requestId`, `kind`, terminal `outcome`, and the accepted `response` when the client provided one. Persist this authoritative event instead of relying on the submitting client's optimistic state when rebuilding message history.
-
-`send(message, options)` and `respond(inputResponses, options)` are separate operations. Put `clientContext`, `outputSchema`, headers, or stream options in the second argument to either method.
 
 ## Single-use responses
 

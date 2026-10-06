@@ -3,13 +3,11 @@ title: "Team Playbooks"
 description: "Part 6 of the Build an Agent tutorial. Load the caller's team playbook with a dynamic skill keyed on the principal."
 ---
 
-The glossary from [Step 5](./remember-definitions) is per-session. But your teams have standing analysis conventions for the analytics assistant (Growth groups revenue by date, Finance reconciles customer totals), and those shouldn't bleed across tenants. Load the right team's playbook for whoever is asking.
-
-A skill is an on-demand procedure. The model pulls it in with `load_skill` only when a turn needs it. Make it dynamic and the skill gets decided at runtime instead of baked in. A `defineDynamic` resolver reads the session and returns a `defineSkill` (or nothing). Here you key that decision on the caller's identity in `ctx.session.auth`.
+Unlike the per-session [glossary](./remember-definitions), team playbooks are standing procedures. Use a dynamic skill to select one from the authenticated caller's team. The model loads it with `load_skill` when needed.
 
 ## A playbook per principal
 
-`ctx.session.auth.current` holds the most recent caller, or `null` if there isn't one. Its `attributes` are the claims your auth layer stamped on, including the team. Read the team, look up that team's playbook, and emit a skill for it:
+Read the team from `ctx.session.auth.current?.attributes` and return its playbook, or `null` when no team matches:
 
 ```ts title="agent/skills/team-playbook.ts"
 import { defineDynamic, defineSkill } from "eve/skills";
@@ -48,7 +46,7 @@ export default defineDynamic({
 });
 ```
 
-`session.started` fires once per session. The resolver reads the team once, and the resulting skill stays available for every turn that follows. Returning `null` produces no skill, so a caller with no team gets no playbook.
+The skill selected at `session.started` stays available throughout that session; changing teams requires a new session.
 
 ## See it route
 
@@ -77,10 +75,4 @@ export default eveChannel({
 
 Restart with `npm run dev` and ask "Summarize May 2026 revenue using our team's playbook." The model calls `load_skill`, queries the sample data, and applies Growth's daily and plan groupings. Switch `team` to `"finance"`, restart, and start a new session before asking again. The resolver runs at `session.started`, so changing the team does not replace the playbook in an existing session. The same question in the new session uses Finance's reconciliation rules.
 
-Because the team comes from authenticated claims, not from the message, one tenant can't borrow another's playbook through the message content.
-
-The same `defineDynamic` resolver drives dynamic tools and instructions too. For the full mechanism, see [Dynamic capabilities](../guides/dynamic-capabilities).
-
-→ Next: [Guard the spend](./guard-the-spend)
-
-Learn more: [Skills](../skills) · [Dynamic capabilities](../guides/dynamic-capabilities)
+Use authenticated claims, not message text, to select a team's playbook. See [Dynamic capabilities](../guides/dynamic-capabilities) for other resolver types. Next, [gate expensive queries](./guard-the-spend).

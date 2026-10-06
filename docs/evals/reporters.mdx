@@ -3,11 +3,7 @@ title: "Reporters"
 description: "Ship eval results to Braintrust, Datadog, or JUnit XML. eve runs and scores everything itself."
 ---
 
-eve runs and grades everything itself; reporters ship the results out. The CLI prints a console summary by default (one line per eval, with failed assertions and their messages), and reporters from `eve/evals/reporters` add destinations on top.
-
-You are responsible for ensuring any observability or eval provider is approved for the data exported to it.
-
-Reporters attach in two places. Declare them in `evals.config.ts` to observe **every** eval in the run, the usual choice for a shared destination like one Braintrust experiment, so you don't repeat the reporter in each file. Or list them on an individual eval's `reporters` to scope a destination to that eval (or to a group of evals that share one instance).
+`eve eval` prints a console summary by default. To export results, add a reporter from `eve/evals/reporters` to `evals.config.ts` for the whole run or to individual evals for selected cases. Confirm that each destination is approved to receive the data you export.
 
 ## Braintrust
 
@@ -23,7 +19,7 @@ export default defineEvalConfig({
 });
 ```
 
-Need a destination for only some evals? Attach it per eval instead:
+To report only selected evals, attach the reporter to each eval:
 
 ```ts title="evals/brooklyn-forecast.eval.ts"
 import { defineEval } from "eve/evals";
@@ -57,13 +53,17 @@ export default defineEvalConfig({
 });
 ```
 
-The reporter creates one Datadog Experiment, submits one synthetic experiment span per completed eve eval, associates that eval's assertion scores as experiment metrics, and prints the Datadog Experiment URL after the run completes. Without input recording, the external Experiment uses a placeholder dataset and spans are submitted as evals finish. With `recordInputs` (the default), the reporter instead syncs a versioned Datadog dataset after the evals finish, starts the Experiment against that dataset version, passes each dataset record id to its corresponding experiment span, and prints both Dataset and Experiment URLs. Buffering is necessary because an imperative eval's first `t.send(...)` input is only known after that eval executes. `dd-trace` generates dataset record, experiment trace, and experiment span identifiers; the reporter does not mutate or link the agent runtime's OpenTelemetry spans.
+The reporter creates one Datadog Experiment with an assertion-score span per completed eval. By default, `recordInputs` syncs a versioned dataset after the evals finish, links each span to its dataset record, and prints both URLs. With `recordInputs: false`, it uses a placeholder dataset, submits spans as evals finish, and prints the Experiment URL. These spans are separate from the agent runtime's OpenTelemetry spans.
 
 Every run reuses the dataset named by `datasetName` (default `<projectName> evals`), so Datadog can compare experiments across runs. Records are matched by eval description, with `#2`, `#3` suffixes for duplicates, so give each case a unique description.
 
-Assertion metrics use descriptive assertion names by default: characters outside letters, numbers, underscores, and hyphens are normalized to underscores, gate labels receive a `gate_` prefix, assertions that share a label report one metric with the lowest score, and labels that collide with built-in metrics receive a numeric suffix. For example, `succeeded` becomes `gate_succeeded` and `calledTool(get_stock_quote)` becomes `gate_calledTool_get_stock_quote`. Authors can use `.label("stable name")` on an assertion handle to choose a stable metric name. Because assertion names can contain authored expectations, review them before exporting sensitive evals. Each assertion's name and score are kept in row metadata under `eveAssertionScores`; pass `recordAssertionDetails: false` to omit them and failed assertion messages.
+By default, Datadog metrics use assertion names. Characters other than letters, numbers, underscores, and hyphens become underscores; gate labels get a `gate_` prefix. Assertions sharing a label report one metric with the lowest score, and labels colliding with built-in metrics get a numeric suffix. For example, `succeeded` becomes `gate_succeeded` and `calledTool(get_stock_quote)` becomes `gate_calledTool_get_stock_quote`. Use `.label("stable name")` on an assertion handle to choose a stable name.
 
-Datadog needs `dd-trace` installed in the app and Datadog credentials in the environment. The reporter is tested against `dd-trace@6.13.0`; install it with `npm install dd-trace@6.13.0` and set `DD_API_KEY`, `DD_APP_KEY`, and `DD_SITE` as appropriate; without credentials, reporting is skipped. Like the Braintrust reporter, it records eval prompts, outputs, authored expectations, and execution error messages by default. Pass `recordInputs: false`, `recordOutputs: false`, `recordExpectedOutputs: false`, or `recordErrors: false` if your destination is not approved for that content. `recordInputs` stores the eval input in both the linked dataset record and experiment span. Input is read from the eval's first `t.send(...)` message, falling back to the eval description when no message event is available. When `recordExpectedOutputs` is enabled, expected output is read from eval `metadata.expectedOutput`, `metadata.expected`, or `metadata.expected_output` and stored in both the dataset record and experiment span; when no expected output is authored, the input-only dataset record is still valid. Those expected-output keys are excluded from the general metadata payload. Target URL credentials, paths, query parameters, and fragments are never reported.
+Assertion names can contain authored expectations; review them before exporting sensitive evals. Row metadata stores each name and score under `eveAssertionScores`. Pass `recordAssertionDetails: false` to omit those details and failed assertion messages.
+
+Install `dd-trace` in the app (`npm install dd-trace@6.13.0`, the tested version) and set `DD_API_KEY`, `DD_APP_KEY`, and `DD_SITE` as appropriate. Reporting is skipped without credentials. By default, the reporter records eval prompts, outputs, authored expectations, and execution error messages. If the destination is not approved for that content, pass `recordInputs: false`, `recordOutputs: false`, `recordExpectedOutputs: false`, or `recordErrors: false`.
+
+With `recordInputs`, the reporter stores the first `t.send(...)` input in the linked dataset record and experiment span; it falls back to the eval description when no message event is available. With `recordExpectedOutputs`, it stores eval `metadata.expectedOutput`, `metadata.expected`, or `metadata.expected_output` in both places. A dataset record without an authored expected output is still valid. Those keys are excluded from the general metadata payload. Target URL credentials, paths, query parameters, and fragments are never reported.
 
 ## JUnit
 
@@ -101,7 +101,7 @@ An eval can create several sessions, and a long session can produce several trac
 
 `derived.usage` is the token usage and cost from each session's latest `session.waiting`, `turn.waiting`, `session.failed`, or `session.completed`, including what its delegated agents spent; on a turn, it is the session's total so far. The eval's `usage` counts each captured session once, by its latest usage, and leaves out sessions another captured session opened, because that session already counts their spend. It is absent when a counted session reported no usage. It leaves out compaction calls, the turns an eval sends directly to a child session it attached, and delegated spend counted after a session's last such event.
 
-Reporter callbacks for an eval stay ordered—eval start, traced session starts, then completion—even when several evals run concurrently. Reach for a custom reporter only when a destination isn't covered. The per-run artifacts under `.eve/evals/` retain the trace contexts alongside the result for ad-hoc inspection.
+Reporter callbacks for an eval stay ordered—start, traced sessions, completion—even when evals run concurrently. Per-run artifacts under `.eve/evals/` retain trace contexts for inspection.
 
 ## What to read next
 

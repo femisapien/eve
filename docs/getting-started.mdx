@@ -6,31 +6,19 @@ contentType: "How-to"
 
 ## Prerequisites
 
-You need:
-
-- Node.js 24 or newer
-- npm, which Node.js includes
-- A credential for the model your agent uses
-
-Connect a ChatGPT subscription, a Vercel account, or an AI Gateway, OpenAI, or Anthropic API key in the terminal UI. You do not need a Vercel project to start chatting.
+Install Node.js 24 or newer (including npm). You'll connect a ChatGPT subscription, Vercel account, or model API key in the terminal UI; you do not need a Vercel project to start.
 
 Choose a model, provider, and channel that meet your data-processing and compliance requirements.
 
 ## Create a project
 
-Start with one agent in `agent/`.
-
-Run `eve init` with a project name:
+Create a project with one agent in `agent/`:
 
 ```bash
 npx eve@latest init my-agent
 ```
 
-The command creates the project, installs dependencies, initializes Git, and opens the terminal UI. eve reuses an available model connection or opens `/login`. Once connected, type your first message. Channel and integration setup is optional; use `/add` when you need it.
-
-In `/add`, search by name or capability, such as `iMessage` or `SMS`. The picker matches item names, addresses, titles, and descriptions. Select an item to install it and complete its required setup.
-
-During startup, the status line shows what eve is waiting for. If you choose a Vercel account, finish signing in in your browser and select a team when prompted. eve checks that team's AI Gateway access and applies the connection before returning to the composer. Changing only the account, team, or key does not rebuild your agent. Once connected, you can send your first message while the agent information refreshes in the background; no restart is required.
+The command creates the project, installs dependencies, initializes Git, and opens the terminal UI. eve reuses an available model connection or opens `/login`. If you choose a Vercel account, complete browser sign-in and select a team. Once connected, send your first message. You can add channels and integrations later with `/add`.
 
 To add eve to a project that already has a `package.json`, run this command from its root before you create any `agent/` files:
 
@@ -57,7 +45,7 @@ cd my-agent
 npm run dev
 ```
 
-This starts an interactive session where you can send messages to your agent. Edit `agent/instructions.md` to change its behavior and `agent/agent.ts` to configure its model. eve reloads your changes as you work. You can also ask the agent to update its own instructions, tools, or skills; see [Self-Modification](./guides/self-modification).
+Edit `agent/instructions.md` to change the agent's behavior and `agent/agent.ts` to configure its model. eve reloads those changes during development. You can also ask the agent to edit its own files; see [Self-Modification](./guides/self-modification).
 
 <span id="project-layout" />
 <span id="agent-directory-layout" />
@@ -86,7 +74,7 @@ Declare Node.js 24 in `package.json`, then create `agent/instructions.md` and, w
 
 ## Continue with the tutorial
 
-The [Tutorial](/docs/tutorial/first-agent) builds a data analytics agent step by step. It adds tools, state, sandboxed analysis, reusable skills, and human approval before deploying the result.
+The [tutorial](/docs/tutorial/first-agent) builds and deploys an analytics agent with tools, state, sandboxed analysis, skills, and approvals.
 
 After the tutorial, continue with the task you need:
 

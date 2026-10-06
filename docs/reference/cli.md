@@ -26,11 +26,7 @@ Relevant `eve` commands can run from the application root or any directory benea
 | `eve extension <command>`                      | Create and build extension packages                    |
 | `eve telemetry <command>`                      | Manage CLI telemetry collection                        |
 
-When `eve build` fails on discovery errors, it prints the full diagnostics report (severity, message, source path) and the diagnostics artifact path.
-
-## CLI telemetry
-
-eve collects CLI telemetry by default to improve the command-line interface. Run `eve telemetry disable` to disable it for this machine, or set `EVE_TELEMETRY_DISABLED=1` for one command. See [CLI telemetry](./telemetry) for the current data fields, exclusions, debug mode, notice, and local preference storage.
+To opt out of CLI telemetry, run `eve telemetry disable` or set `EVE_TELEMETRY_DISABLED=1` for a single command. See [CLI telemetry](./telemetry) for collected fields and preferences.
 
 ## `eve init`
 
@@ -47,8 +43,6 @@ Creates a new agent app or adds an agent to an existing app. Always installs dep
 | `eve init` or `eve init .` in a directory with files other than environment metadata and no `package.json` | Refuses to overwrite the directory. Pass a new directory name, such as `eve init my-agent`                             |
 | `eve init` or `eve init .` in an existing project                                                          | Adds `agent/` plus missing `eve`, `ai`, and `zod` dependencies. Requires `package.json` and no existing `agent/` files |
 | `eve init path/to/app`                                                                                     | Adds an agent to the existing package at `path/to/app`                                                                 |
-
-Existing packages do not need a target-selection prompt: run `eve init` from the project directory or `eve init path/to/app`. New projects in non-interactive environments need a new directory name, such as `eve init my-agent`.
 
 After scaffolding in an interactive human terminal, eve opens the TUI directly. Pass `-n` or `--non-interactive` to return after scaffolding instead. It still installs dependencies and follows the normal Git setup behavior. Noninteractive and coding-agent invocations return without starting an interactive session. Fresh projects use the parent workspace's package manager when there is one; otherwise they use the manager that launched `eve init`.
 
@@ -134,7 +128,7 @@ Coding agents should use `eve add <item> --non-interactive`, adding `--yes` to a
 
 When setup is skipped, cancelled, or needs more input after installation, eve prints or returns the matching `eve add <item> --skip-install` continuation. It reruns the item's declared flows without reinstalling registry files.
 
-`eve registry add` records configured sources in `package.json#registries`. `eve registry list` aggregates the official catalog and all configured sources by default. `eve registry search` also includes [skills.sh](https://skills.sh), available without configuration at `@skills`, and groups results by source with each source's available result count. Search returns up to 10 matches per source by default; pass `--limit <count>` to request between 1 and 100. Either command can browse one supplied URL or namespace. Official and other universal items with explicit file targets do not require shadcn project configuration.
+`eve registry add` records sources in `package.json#registries`. `list` includes the official and configured catalogs; `search` also includes [skills.sh](https://skills.sh) as `@skills`. Search returns up to 10 matches per source by default; `--limit <count>` accepts 1–100.
 
 ## `eve info`
 
@@ -146,7 +140,7 @@ eve info [--json]
 | -------- | ---- | ------- | ------------ |
 | `--json` | flag | off     | Emit as JSON |
 
-Run this first when something behaves unexpectedly. It confirms a file was discovered, lists the active surface, and surfaces discovery diagnostics, all faster than booting the dev server. Static instructions appear in source order with their `system` or `user` role. Dynamic instruction results are runtime-only and do not appear here.
+Use `eve info` to check discovered files, active capabilities, and build diagnostics without starting the server. It lists static instructions in source order; dynamic results are runtime-only.
 
 ### JSON output
 
@@ -170,7 +164,9 @@ Run this first when something behaves unexpectedly. It confirms a file was disco
 | `messaging`        | object           | Session route patterns: `{ create, messages, stream }`                                    |
 | `artifacts`        | object or `null` | Paths to the compiled manifest, discovery manifest, diagnostics, module map, and metadata |
 
-`toolInputSchemas.root` maps each root agent tool name to its JSON Schema, including tools from mounted extensions under their namespaced names. `toolInputSchemas.subagents` has one entry for each declared subagent, including nested subagents, and each value is the same kind of map for that subagent's own tools. Each key is the subagent's path of names from the root agent: `forecaster` for a subagent the root agent declares, and `forecaster/reviewer` for a `reviewer` subagent that `forecaster` declares. Subagents that share a name under different parents get separate entries. Each schema is the form eve sends to the model: schemas from a validation library such as Zod have `additionalProperties: false` on objects that allow no other keys, plain JSON Schema is kept as written, and tools whose calls run as `serve` tasks, including agent tools, include the optional `taskId` input eve adds.
+`toolInputSchemas.root` maps root tool names to JSON Schemas, including mounted extension tools under their namespaced names. `toolInputSchemas.subagents` has a corresponding map for each declared subagent, including nested ones. Its keys are paths from the root: `forecaster` for a direct child, or `forecaster/reviewer` for its `reviewer` child. Subagents with the same name under different parents get separate entries.
+
+Schemas match what eve sends to the model. For schemas from validation libraries such as Zod, objects that disallow other keys have `additionalProperties: false`. Plain JSON Schema is kept as written. Tools that run as `serve` tasks, including agent tools, include eve's optional `taskId` input.
 
 ```json
 {
@@ -286,7 +282,9 @@ A fresh `eve init` opens the TUI and reuses an available model connection or ope
 
 Local dev records the last ready URL per resolved app root in `.eve/dev-server-state.v1.json`. A second interactive `eve dev` reconnects only when that URL is loopback and healthy; each terminal UI creates a fresh client session while sharing the server process. A stale or malformed record is replaced when eve starts a new server. Passing `--host`, `--port`, or a `PORT` environment value skips reconnection and reports a healthy recorded server instead.
 
-Local dev keeps immutable runtime generations under `.eve/dev-runtime/snapshots/` so in-flight turns hold a consistent code revision while new turns pick up rebuilds. Each generation contains the compiled authored module graph and runtime resources rather than a recursive copy of the app or workspace. The terminal REPL keeps its logical session across successful rebuilds, so the next turn continues the conversation on the latest generation; `/new` terminally retires that session before clearing the transcript, and the next prompt starts a fresh session with a new session-scoped sandbox on first sandbox use. After a generation is superseded, `eve dev` retains it for at least 30 minutes and also retains the five most recently superseded generations, regardless of the configured Workflow World. The active generation is never pruned. Old runtime snapshots and local sandbox templates are pruned in the background. For manual cleanup, stop `eve dev` before deleting `.eve/dev-runtime/snapshots/` or `.eve/sandbox-cache/local/templates/`. A turn that remains unfinished beyond the automatic retention window can no longer resume after its generation is pruned.
+Local dev keeps immutable runtime generations under `.eve/dev-runtime/snapshots/`. In-flight turns hold a consistent code revision while new turns pick up rebuilds. A generation contains the compiled authored module graph and runtime resources, not a recursive copy of the app or workspace. The terminal REPL retains its logical session across successful rebuilds, so the next turn continues on the latest generation. `/new` retires that session and clears the transcript; the next prompt starts a fresh session and opens a new session-scoped sandbox on first use.
+
+After a generation is superseded, `eve dev` keeps it for at least 30 minutes and also keeps the five most recently superseded generations, regardless of the configured Workflow World. It never prunes the active generation. Old snapshots and local sandbox templates are pruned in the background. For manual cleanup, stop `eve dev` before deleting `.eve/dev-runtime/snapshots/` or `.eve/sandbox-cache/local/templates/`. A turn still unfinished when its generation is pruned can no longer resume.
 
 Local development records traces under `.eve/traces/` by default and bounds that store by age, size, and a keep-newest floor. Configure it with `EVE_TRACES*` in `.env.local`, or disable the destination with `agent/instrumentation/local.ts`; see [`eve traces`](#retention) for the rules and defaults.
 
@@ -464,16 +462,6 @@ Runs all discovered evals when no eval ids are given; ids match exactly or by di
 | `--verbose`              | flag   | off     | Stream per-eval logs and workflow run IDs to stdout           |
 
 See [Evals](../evals/overview) for authoring evals.
-
-## Recommended loop
-
-1. Edit files under `agent/`.
-2. `eve info` to confirm discovery or read diagnostics.
-3. `eve dev` while iterating locally.
-4. `eve build` before shipping.
-5. `eve start` to smoke-test the built output locally.
-
-Related: [Agent Files](/docs/reference/agent-files) · [Instrumentation](../observability/instrumentation).
 
 ## What to read next
 

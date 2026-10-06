@@ -23,7 +23,7 @@ eve eval --skip-report         # skip config and eval-defined reporters (e.g. Br
 
 Positional ids match exactly or by directory prefix: `eve eval weather` runs `evals/weather.eval.ts`, every eval under `evals/weather/`, and every entry of an array-exported `weather.eval.ts`.
 
-Tag filters compose: `--tag` keeps evals carrying at least one listed tag, then `--exclude-tag` drops any eval carrying an excluded tag. A `--tag` filter that matches nothing is a configuration error (exit `2`), but a run where `--exclude-tag` removes every match succeeds with nothing executed — exclusion expresses "this suite does not apply here."
+`--tag` keeps evals with at least one listed tag; `--exclude-tag` then removes evals with an excluded tag. An unmatched `--tag` exits `2`. If exclusions remove every match, the command succeeds without running evals.
 
 ## Exit codes
 
@@ -35,17 +35,15 @@ Tag filters compose: `--tag` keeps evals carrying at least one listed tag, then 
 
 An eval that calls `t.skip(reason)` is reported as skipped, does not count as passed or failed, and never changes the exit code.
 
-`eve eval --json` flushes the complete report before exiting, including when stdout is piped to another process or redirected to a file.
-
 With `--verbose`, eve prefixes each line with its eval ID. It streams authored `t.log()` lines as they occur, then prints the workflow run ID for every captured primary and secondary session. Use those `wrun_...` IDs to find the corresponding runs in your workflow provider.
 
 ## Artifacts
 
-Each run drops artifacts under `.eve/evals/<timestamp>/`: a run `summary.json`, a `results.jsonl` index, and per-eval assertion results, verdicts, captured event streams, and `t.log` lines under `evals/`. The console output stays tight on purpose; when an eval fails, the artifact has the full story.
+Each run writes `.eve/evals/<timestamp>/summary.json`, `results.jsonl`, and per-eval assertions, verdicts, event streams, and `t.log` output under `evals/`. Inspect these artifacts when a console summary does not explain a failure.
 
 ## CI
 
-A solid CI invocation is strict and machine-reportable:
+For CI, fail on soft threshold misses and write JUnit results:
 
 ```bash
 eve eval --strict --junit .eve/junit.xml

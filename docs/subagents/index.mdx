@@ -28,9 +28,9 @@ The root session receives `agent` by default. The model calls it to delegate a t
 }
 ```
 
-The copy uses the root's instructions, connections, auth, and sandbox. It receives the same tools except for the root-only `agent`, and starts with fresh conversation history and fresh state. Its file writes are immediately visible to the root. The built-in `agent` needs no configuration. Each call starts or continues a task whose result is the child's reply, so several children can work at once, whether the model starts them in one response or across several. Give parallel children non-overlapping write scopes.
+The copy uses the root's instructions, connections, auth, and sandbox. It receives the same tools except for the root-only `agent`, and starts with fresh conversation history and fresh state. Its file writes are immediately visible to the root. Several children can work concurrently. Give them non-overlapping write scopes.
 
-`agent` is intentionally root-only. Copies created by it cannot call `agent`, and declared subagents never receive the built-in tool. If a stale or forced recursive call reaches execution, eve rejects it instead of starting another child session.
+Only the root gets the built-in `agent` tool. Copies and declared subagents cannot use it; eve rejects forced recursive calls.
 
 The parent transfers data to the child through the `message` input it gives the subagent. Do not include sensitive data in a subagent request unless that child and its inherited tools, connections, sandbox, and telemetry path are appropriate for that data.
 
@@ -49,7 +49,7 @@ You can also export `disableTool()` from `agent/tools/agent.ts`. Any authored to
 
 ## Declared subagents
 
-A declared subagent lives under `agent/subagents/<id>/` and uses the same `defineAgent` helper as the root. Its location under `subagents/` is the only thing that marks it as a subagent. Declare one when the child needs a clearly different prompt, role, or tool surface.
+Declare a subagent under `agent/subagents/<id>/` with `defineAgent` when it needs its own prompt or capabilities.
 
 ```ts title="agent/subagents/researcher/agent.ts"
 import { defineAgent } from "eve";
@@ -73,8 +73,6 @@ export default defineAgent({
 ```
 
 The parent can alternatively export `disableTool()` from a same-named tool path, such as `agent/tools/researcher.ts`. This suppresses the derived model tool without removing `researcher` from the workflow invocation registry. A same-named authored tool replaces the model-facing surface while the workflow can still call the underlying subagent with `ctx.agent("researcher", ...)`.
-
-A declared local or remote subagent call returns a receipt, and the child's reply arrives as the task's result. Human input requests from the child surface on the parent session while the task works. `task_cancel` with the task's `taskId` cancels the child's current turn, and so does cancelling the calling turn.
 
 A mounted extension can also contribute declared subagents from `extension/subagents/`. The mount namespace prefixes the subagent visible to the consuming agent node: mounting an extension as `crm` exposes its `reviewer` subagent as `crm__reviewer`. The contributed subagent keeps its own isolated tools, connections, skills, hooks, instructions, sandbox, and nested subagents, and its modules can read configuration from the extension handle. See [Extensions](./extensions#add-a-subagent) for the authoring and override behavior.
 
@@ -202,10 +200,6 @@ A declared subagent inherits nothing from the root's authored slots. Discovery t
 
 For a declared subagent this means authoring or mounting anything the child needs. When two subagents need the same procedure, package the skill in a [workspace extension](./extensions#use-an-extension-in-a-workspace) and mount that extension in each subagent. Share typed helpers through `lib/`. The sandbox does not inherit from the parent; eve selects the default sandbox source unless the subagent authors `subagents/<id>/sandbox.ts` or seeds files via `subagents/<id>/sandbox/workspace/`.
 
-The root built-in `agent` tool is the exception. Its children reuse the root's sandbox and tools because they are copies of the same agent working on the same files.
-
-`defineState` is never shared, for either kind. Each child starts with fresh durable state.
-
 ## What the parent sees
 
 eve lowers every tool-enabled subagent visible to the current agent (the root built-in copy, declared, or [remote](./guides/remote-agents)) into a model-visible tool with the same `{ message, taskId? }` shape. The parent packs `message` with everything the child needs, since the child never sees the parent's history. To require structured output from a child, open a session with it from an authored workflow tool with [`ctx.agent(name)`](./tools/workflows#delegate-work-ctxagent) and pass `outputSchema` to `send()`; the schema applies to that turn, and the session accepts follow-up messages until the workflow run finishes.
@@ -229,13 +223,17 @@ By default, a subagent named `researcher` collides with an authored tool named `
 
 Do not rely on subagent delegation by itself as an approval boundary. Put sensitive tools behind `approval`, connection approval, route/session authorization, or other controls wherever those tools can be called.
 
-Each delegated subagent spins up its own child session and stream. The parent stream carries the call's `task.started` and `task.settled` events, `agent.started` when the child session opens, plus interactive `input.requested`, `authorization.required`, and `authorization.completed` events proxied from descendants so the root channel can prompt the user. The parent emits `input.resolved` when it routes an answer back down to the descendant that asked. `task.settled` carries the child's reply as `output` when the call completes, or `error.message` when it fails, along with the same tool `name` and `kind: "agent"` as the call's `task.started`. To follow the child's other progress, pass the `agent.started` event to [`session.agent()`](./guides/client/streaming#follow-a-subagent) on a client session attached to the parent and follow the child with `stream()`. It reads `agent.started.data.streamPath`: the child's own session stream for a local child, or a parent-origin proxy for a remote child, which the parent authenticates to the remote deployment.
+Each delegated subagent has its own child session and stream. The parent stream records the call's `task.started` and `task.settled` events and emits `agent.started` when the child session opens. It also proxies interactive `input.requested`, `authorization.required`, and `authorization.completed` events from descendants so the root channel can prompt the user. When the parent routes an answer to a descendant, it emits `input.resolved`.
+
+`task.settled` carries the child's reply as `output` or its failure as `error.message`, with the same tool `name` and `kind: "agent"` as `task.started`. To follow other child progress, pass `agent.started` to [`session.agent()`](./guides/client/streaming#follow-a-subagent) on a client session attached to the parent, then call `stream()`. The client reads `agent.started.data.streamPath`: a local child's session stream or a parent-origin proxy for a remote child, which the parent authenticates to the remote deployment.
 
 `agent.started` carries the `callId` and `turnId` of the call that opened the session, the call's `taskId`, the agent `name`, and the child's `sessionId`. Later calls with the same `taskId` reach the same session and do not announce it again, so match a child to its calls by `taskId`. A session an authored workflow tool opens with `ctx.agent` is announced the same way, with its `taskId` only when the workflow tool call runs as a task.
 
 Channels with activity reporting show a subagent's tool activity beneath that subagent's progress item. Activity reporting is best-effort and does not change execution or result delivery.
 
-Subagent model calls automatically retry classified transient provider failures, including overload errors delivered after a stream starts. eve makes at most three fresh model-call attempts, repeating only the current uncommitted call by default so completed earlier Workflow steps, tool results, and sandbox work remain available to the child. A declared subagent that opts into [Workflow checkpoint batching](./agent-config#workflow-checkpoint-batching) can instead repeat the uncommitted calls and inline tool executions in its current batch. Other recoverable errors fall back to Workflow's durable step retry from the last committed session snapshot. Exhausting the transient model-call attempts or the dedicated empty-response reissue returns one failed result instead of stacking both retry budgets; terminal errors fail immediately.
+Subagent model calls retry classified transient provider failures, including overload errors after streaming begins. eve makes at most three fresh attempts. By default, it repeats only the current uncommitted model call; completed earlier Workflow steps, tool results, and sandbox work remain available to the child. A declared subagent using [Workflow checkpoint batching](./agent-config#workflow-checkpoint-batching) can repeat earlier uncommitted calls and inline tool executions in the current batch.
+
+Other recoverable errors use Workflow's durable step retry from the last committed session snapshot. Exhausting transient model-call attempts or the dedicated empty-response reissue returns one failed result without stacking retry budgets. Terminal errors fail immediately.
 
 ## Agent messaging
 
@@ -246,10 +244,6 @@ A call with the `taskId` of a child that is still working joins the child's curr
 eve adds a framework-injected `[Tasks]` note to the conversation that lists the working and idle tasks by `taskId` and tool, so the model can find a child to continue. See [Tasks](./tools/tasks) for how the model waits for, corrects, and cancels agent tasks.
 
 The parent holds each child for the life of the task's run, which lasts until the parent session ends. Then eve resets local children and sends authenticated reset requests for remote children. Remote reset is best-effort: an unreachable deployment may retain the parked child until its own session deadline. For [remote agents](./guides/remote-agents), upgrade both deployments before relying on continuation or reset behavior introduced by a newer eve version.
-
-## When to split
-
-Split out a subagent when the task needs a different prompt or specialist role, a narrower tool surface, or its own runtime context. Don't reach for one when a [skill](./skills) would do. If the agent can keep its identity and needs only an optional procedure, a skill is the lighter choice.
 
 ## What to read next
 

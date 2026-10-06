@@ -4,10 +4,7 @@ description: "Move a single instrumentation.ts configuration into lifecycle inst
 url: "/observability/instrumentation-migration"
 ---
 
-Replace `agent/instrumentation.ts` with path-named files under
-`agent/instrumentation/`. Remove
-`experimental.instrumentationProviders` from `agent.ts`; instrumentation
-discovery is now always enabled.
+Move `agent/instrumentation.ts` into path-named files under `agent/instrumentation/` and remove `experimental.instrumentationProviders` from `agent.ts`.
 
 ## Preserve metadata-only capture
 
@@ -62,9 +59,7 @@ export default otelIntegration({
 });
 ```
 
-The destination policy preserves metadata-only export even if the shared
-OpenTelemetry policy is widened later. Add another file for each additional
-destination; eve combines them into one pipeline.
+This destination policy keeps export metadata-only if the shared policy changes later. Add a file for each additional destination.
 
 ## Move runtime context and lifecycle events
 
@@ -86,8 +81,7 @@ see
 
 ## Verify the migration
 
-Run `eve build`. A remaining `agent/instrumentation.ts` fails the build with a
-message directing you to the instrumentation directory.
+Run `eve build`; a leftover `agent/instrumentation.ts` causes a build error.
 
 New eve deployments automatically sample 100% of requests. Existing Vercel
 deployments need project sampling configured before you verify them. See

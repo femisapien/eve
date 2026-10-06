@@ -7,9 +7,7 @@ Build a custom channel to connect an HTTP or WebSocket endpoint to your agent. I
 
 ## File location and identity
 
-Custom channels live in `agent/channels/` at the root agent or in an [extension](../extensions) mounted there. Local subagents do not declare channels today.
-
-The channel file stem becomes the channel id, so `agent/channels/internal-webhook.ts` is addressed as `internal-webhook`. Export the channel definition as the module's default export.
+Custom channels live in the root agent's `agent/channels/` or a mounted [extension](../extensions); local subagents cannot declare channels. The file stem is the channel ID: `agent/channels/internal-webhook.ts` is `internal-webhook`. Default-export the definition.
 
 ## Define a channel
 
@@ -58,7 +56,7 @@ export default defineChannel({
 });
 ```
 
-A route's `path` is its app URL; the channel filename does not prefix it. The route above answers at `POST /threads/:threadId/messages`, not `/support/threads/:threadId/messages`. Use a unique method-and-path pair for each route, and do not use the framework-owned `/eve/v1/*` namespace.
+The channel filename does not prefix route paths: the example serves `POST /threads/:threadId/messages`. Use a unique method-and-path pair and avoid the framework-owned `/eve/v1/*` namespace.
 
 Each route receives these operation surfaces:
 
@@ -84,10 +82,6 @@ with `ctx.agent`, also resolves as `cancelled` when that run ends before anyone
 answers. Every request relayed from a task, workflow tool call, or subagent does
 the same when the turn is cancelled. Each resolution carries the `requestId` and
 an `outcome` such as `answered`, `approved`, or `cancelled`.
-
-`channel.continuation.token` is always the channel-local address accepted by
-`from()`, `resolveSession()`, and `alias()`. Framework namespace prefixes are not
-part of the authored channel API.
 
 ## Channel operations and session handles
 
@@ -162,11 +156,7 @@ export default defineChannel({
 });
 ```
 
-The same override is available on fixed `Session.send(...)` and cross-channel `to(...).send(...)`. `respond(...)` never steers: it delivers only addressed input responses. Use `cancel()` when you need to stop work without a replacement message.
-
-Attaching does no lookup. The first operation reports whether the ID is active.
-Call `resolveSession(address)` only when you explicitly need to snapshot an
-address's current owner as a fixed handle.
+Fixed `Session.send(...)` and cross-channel `to(...).send(...)` accept the same override. `respond(...)` answers addressed requests without steering; use `cancel()` to stop work without replacing it. `attachSession()` does no lookup; its first operation reports whether the ID is active. Use `resolveSession(address)` when you need a fixed handle to the address's current owner.
 
 ## Wrap an existing channel's routes
 
@@ -440,7 +430,7 @@ When another identity should address a session, add it with `channel.continuatio
 
 Aliasing adds an address to the current session. Earlier addresses continue to resolve to the same session and accept the same payloads. `reset` terminally retires the current session and makes all its addresses available to later `send()` calls. `cancel` stops only the active turn and leaves the session, history, and continuation-token ownership intact.
 
-The `context(state, session)` config option builds the per-step `channel` argument handed to every event handler. It receives the channel's live adapter `state` and a `SessionHandle`, and returns the channel-owned context (thread handles, API clients, late-bound callbacks). The framework injects [`ChannelContinuationOps`](#define-a-channel) and passes the result as the second positional argument to each handler. Closing over `session` lets the factory register callbacks that add an alias later. State mutations made through the returned context are written back to adapter state.
+The `context(state, session)` option builds the per-step `channel` argument passed to event handlers. It receives live adapter `state` and a `SessionHandle`, then returns channel-owned context such as thread handles, API clients, or callbacks. The framework adds [`ChannelContinuationOps`](#define-a-channel) and passes the result as each handler's second argument. Close over `session` to register callbacks that add an alias later. Mutations through the returned context are written back to adapter state.
 
 ```ts
 import { defineChannel } from "eve/channels";
@@ -467,7 +457,7 @@ defineChannel<{ ref: string | null }>({
 });
 ```
 
-At the next workflow boundary, the runtime adds the new address to the session's merged inbox. If another active session already owns the new token, the aliasing session fails instead of taking it over. Every address claimed by the session remains active until the session ends or resets. Sessions with continuation addresses remain on their current deployment until Workflow supports atomic ownership transfer.
+At the next workflow boundary, the runtime adds the new address to the session's merged inbox. If another active session already owns the token, the aliasing session fails instead of taking it over. Claimed addresses stay active until the session ends or resets. An idle session can [handoff to a newer Vercel production deployment](../concepts/execution-model-and-durability#sessions-turns-and-steps) without changing its addresses.
 
 Tokens must be nonempty. A session supports up to 256 addresses, including its stable inbox; repeating an existing alias does not consume another address.
 
@@ -523,7 +513,7 @@ If `fetchFile` throws, eve replaces that attachment with a model-visible error n
 
 The `URL` object survives the queue boundary as a string and is reconstituted inside the workflow step. The staging pipeline calls `fetchFile` with the URL serialized as a string (the URL's `href`), which is why the example matches on `url.startsWith(...)`. Return bytes to stage the file to the sandbox, or `null` to let the URL pass through to the model provider.
 
-The framework handles staging bytes to the sandbox, enforcing upload policy, hydrating files for the model call, and reconstituting `URL` objects after queue serialization. See [Inbound attachments](../sandbox#inbound-attachments) for the shared storage, size, and provider-input behavior.
+See [Inbound attachments](../sandbox#inbound-attachments) for staging, upload limits, and model input behavior.
 
 ## What to read next
 

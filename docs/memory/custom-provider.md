@@ -3,12 +3,7 @@ title: "Build a Memory Provider"
 description: "Implement the recall, capture, and tools contract so any store or memory service can back an eve memory slot."
 ---
 
-A memory provider is an object with a `recall` handler and optional `capture`
-and `tools` handlers. eve calls those handlers at fixed points in the agent
-lifecycle and passes each one a locked scope key, the projected conversation,
-and a stable operation ID. Anything that can read and write under that key can
-be a provider. Package one as a library that exports a provider factory, or
-write one directly inside an agent.
+Implement `recall` and, optionally, `capture` and `tools` to back a memory slot with your own store. eve invokes handlers at fixed lifecycle points with a locked scope key, projected history, and stable operation ID. The provider can live in an agent or a library.
 
 ```ts title="agent/lib/notes-memory.ts"
 import { defineMemoryProvider } from "eve/memory";
@@ -69,14 +64,9 @@ export default defineMemory({
 });
 ```
 
-The model sees the tool as `notes__forget`, and the slot description is
-prepended to its description.
-
 ## The provider contract
 
-`defineMemoryProvider()` accepts three surfaces. Omit any handler the provider
-does not need; `fileMemory()`, for example, implements recall and tools but no
-capture.
+`defineMemoryProvider()` accepts three surfaces. Implement only the optional handlers you need:
 
 | Surface   | Handlers                                              | Responsibility                                           |
 | --------- | ----------------------------------------------------- | -------------------------------------------------------- |
@@ -124,8 +114,7 @@ return {
 };
 ```
 
-eve adds each message to model context as a user-role message attributed to the
-slot. Provider content is never promoted to system instructions.
+eve adds recalled content as slot-attributed user-role messages, not system instructions.
 
 Use a stable `id` for replaceable facts. A later message with the same ID in
 the same slot, namespace, and scope supersedes the earlier one; identical

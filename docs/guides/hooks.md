@@ -3,7 +3,7 @@ title: "Hooks"
 description: "Subscribe to runtime stream events from agent/hooks/."
 ---
 
-Hooks are eve's authored extension points for the runtime event stream. A hook subscribes to stream events and runs side effects after each event is durably recorded, such as audit logging, metrics and alerting, or persisting every session and message to your own database for analytics. Reach for one to observe what the agent does without writing a tool, a context provider (a value made available across a step), or a channel adapter handler (a handler defined on a channel's adapter; see [Channels](../channels/overview)).
+A hook subscribes to durable stream events and runs side effects such as audit logging, metrics, or event persistence. Use a channel event handler instead when the behavior belongs to one platform.
 
 ## Define a hook
 
@@ -23,8 +23,6 @@ export default defineHook({
 ```
 
 The slug is the path-relative basename. `agent/hooks/audit.ts` becomes `"audit"`, and `agent/hooks/auth/load-profile.ts` becomes `"auth/load-profile"`.
-
-`defineHook`, `HookDefinition`, and `HookContext` live on `eve/hooks`.
 
 A hook file declares stream-event subscribers under the `events` map, keyed by event type, with `*` matching every event. Subscribe to any event in the runtime stream vocabulary documented in [Sessions, runs and streaming](../concepts/sessions-runs-and-streaming), including the lifecycle events `session.started`, `turn.completed`, `message.completed`, `action.partial`, and `action.result`. Handlers are observe-only. They cannot inject model context. To contribute runtime model messages, use `defineDynamic` and `defineInstructions` in `agent/instructions/`.
 
@@ -48,7 +46,7 @@ export default githubChannel({
 });
 ```
 
-A GitHub channel event handler cannot fire for a Slack-owned session, so platform-specific side effects do not depend on an early-return guard. On a built-in channel, an authored handler replaces that channel's default handler for the same event key. Check the channel page before overriding events that deliver replies, progress, errors, or human-input prompts. The [Slack channel](/docs/channels/slack#customize-rendering) takes renderers instead: a renderer's handler keeps Slack's default by calling `next()` and replaces it by skipping `next`.
+A channel handler runs only for sessions owned by that channel. On built-in channels, it replaces the default handler for the same event; check the channel page before overriding replies or prompts. [Slack renderers](/docs/channels/slack#customize-rendering) can preserve the default by calling `next()`.
 
 Use `ctx.channel.kind` inside a global hook only when the operation is otherwise agent-wide and conditional handling is intentional. For typed channel metadata in dynamic resolvers or instrumentation, import the channel definition and narrow with `isChannel`; see [OpenTelemetry runtime context](../observability/otel#add-runtime-context).
 
@@ -171,9 +169,7 @@ What to key on instead depends on what you are protecting:
 - **A side effect that must happen once per turn or step** — a charge, an email, a ticket — keys well on the coordinates in `event.data` (`turnId`, `stepIndex`, `sequence`). A retry restores those from the step's input, so the second attempt computes the same key and your gate holds.
 - **Stored content should not key on those coordinates.** The retry re-invokes the model, so one coordinate can carry different text on each attempt. `on conflict (turn_id, step_index, sequence) do nothing` would keep the abandoned attempt and drop the one that finished. Key on `meta.id`, and accept that an interrupted turn leaves both attempts in the table.
 
-Behind that split is an asymmetry worth knowing: durable history keeps only the attempt that completed, while the event stream keeps every attempt, and no field marks which is which. Hooks are at-least-once, and no key collapses a retry.
-
-See [the event envelope](../concepts/sessions-runs-and-streaming#the-event-envelope) for the full contract.
+Durable history keeps only the completed attempt; the event stream keeps every attempt without marking which completed. Hooks are at-least-once. See [The event envelope](../concepts/sessions-runs-and-streaming#the-event-envelope).
 
 ## Execution order
 
@@ -183,8 +179,6 @@ When a session publishes a stream event while it runs, the step that owns the se
 2. Write. The event is stamped with its `meta` envelope, then written to the durable stream.
 3. Hooks. Stream-event hooks fire (typed handlers first, then the `*` wildcard). Return values are ignored.
 4. Model preparation, for model lifecycle events. Dynamic resolvers subscribed to those events update the model context. Subagent notifications do not run model preparation.
-
-Hooks always run after the event is durably recorded, so if a hook throws, the stream stays consistent. The persisted event and every hook observe the same `meta.id`.
 
 ## What happens when a hook throws
 
@@ -227,18 +221,9 @@ The remaining subscribers for the event still run. Then eve cancels the turn the
 
 Subagents may carry their own `agent/hooks/` directory. Subagent hooks fire only inside the subagent scope. Parent-agent hooks do not fire for subagent turns, and subagent hooks see only the subagent's own context.
 
-Interactive events such as `input.requested` and `authorization.required` are also published on the parent stream. Parent hooks observe these events after the parent channel handler and stream write, with the parent's session, agent, and channel context. The event retains the child's turn coordinates, so `event.data.turnId` can differ from `ctx.session.turn.id`. The parent follows a proxied `input.requested` or `authorization.required` with `turn.waiting` for its own open turn, which stays open until the running call finishes. A proxied `authorization.completed` is not followed by a parent turn event. These parent events also invoke parent hooks; they do not resolve pending input requests.
+Interactive events such as `input.requested` and `authorization.required` also appear on the parent stream. Parent hooks observe them after the parent channel handler and stream write, with the parent's session, agent, and channel context. The event retains the child's turn coordinates, so `event.data.turnId` can differ from `ctx.session.turn.id`.
 
-## Hook vs tool vs provider
-
-| Need                                              | Use                                            |
-| ------------------------------------------------- | ---------------------------------------------- |
-| Observe runtime events (audit, metrics, alerting) | `events.<type>` (or a channel adapter handler) |
-| Provide structured input to the model on demand   | a tool                                         |
-| Make a value available across the entire step     | a context provider                             |
-| Subscribe to platform-specific events             | a channel adapter handler                      |
-
-Stream-event hooks and channel adapter event handlers are structurally identical. Choose the channel adapter handler when you are authoring adapter-specific behavior, and choose `events.*` when you are authoring agent-level behavior that should fire across every channel. Both fire when both are registered.
+After a proxied `input.requested` or `authorization.required`, the parent emits `turn.waiting` for its own open turn until the call finishes. A proxied `authorization.completed` has no following parent turn event. These events invoke parent hooks but do not resolve pending input requests.
 
 ## What to read next
 

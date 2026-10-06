@@ -4,7 +4,7 @@ description: "Reach your agent through Linear Agent Sessions, with native Agent 
 type: integration
 ---
 
-The Linear channel uses Linear's Agent Session surface rather than ordinary comments. Users delegate work to the agent from Linear, eve receives `AgentSessionEvent` webhooks at `/eve/v1/linear`, and the channel replies with native Agent Activities, including `thought`, `action`, `elicitation`, `response`, and `error`. Credentials can run through [Vercel Connect](../guides/auth-and-route-protection), which manages the Linear app, its access token, and inbound webhook verification, so there's no API key or webhook secret for you to hold. See [Channels](./overview) for the contract this builds on.
+The Linear channel lets users delegate work through Linear Agent Sessions rather than ordinary comments. eve receives `AgentSessionEvent` webhooks at `/eve/v1/linear` and replies with native Agent Activities: `thought`, `action`, `elicitation`, `response`, and `error`. [Vercel Connect](../guides/auth-and-route-protection) can manage the Linear app, access token, and inbound webhook verification, removing the need to hold an API key or webhook secret. See [Channels](./overview) for the channel contract.
 
 ## Guided Connect setup
 
@@ -14,15 +14,7 @@ Run the registry setup from the agent directory:
 eve add channel/linear
 ```
 
-To let the agent search and update Linear through MCP, install the separate Linear connection:
-
-```bash
-eve add connection/linear
-```
-
-The channel setup flow signs you in to Vercel when needed, creates or links a Vercel project, reuses a compatible existing connector when available or provisions an app-scoped Linear Connect client, and registers `/eve/v1/linear` as a trigger destination. It then installs `@vercel/connect` and writes `agent/channels/linear.ts` with the connector UID.
-
-Vercel Connect creates the Linear app with the `app:assignable` and `app:mentionable` scopes required for Agent Sessions, receives and verifies `AgentSessionEvent` webhooks, and forwards them to the deployed agent. After deploying, open the Linear app in the Connect dashboard and install it in the workspace where you want to delegate work. Then delegate an issue or mention the agent in a Linear Agent Session.
+Setup signs you in to Vercel if needed, creates or links a project, provisions or reuses a Linear connector, registers `/eve/v1/linear`, installs `@vercel/connect`, and writes `agent/channels/linear.ts`. Connect creates the Linear app with the `app:assignable` and `app:mentionable` scopes required for Agent Sessions and verifies incoming webhooks. After deploying, install the app in your Linear workspace from the Connect dashboard. Delegate an issue or mention the agent in an Agent Session to start a turn.
 
 The generated channel uses Connect-managed credentials:
 
@@ -88,10 +80,6 @@ Human-in-the-loop (HITL) input requests render as Linear `elicitation` activitie
 ### Connection authorization
 
 When a user-scoped connection needs authorization, the default channel posts Linear's native `auth` elicitation with the provider's sign-in URL, targeted to the Linear user who started the session. URL-less device flows render their instructions and user code as a plain elicitation. After authorization finishes, the channel posts a thought with the outcome; successful authorization indicates that the parked turn is resuming.
-
-### Proactive sessions
-
-Start a session without an inbound webhook with `receive(linear, { target })`. See [Proactive sessions](#proactive-sessions) below for the target shape and examples.
 
 ### Attachments
 
@@ -192,5 +180,5 @@ For issue or comment targets, the channel calls Linear's proactive Agent Session
 
 ## What to read next
 
-- [Channels overview](./overview): the channel contract and every built-in channel
-- [MCP connections](../connections/mcp): use the Linear MCP connection when the agent needs to inspect or edit Linear data from another channel
+- [Channels overview](./overview): the channel contract and other platforms
+- [Linear MCP connection](../connections/mcp): install `eve add connection/linear` when the agent needs to search or update Linear data

@@ -3,7 +3,7 @@ title: "Streaming"
 description: "Consume eve client stream events live, reconnect by event index, and aggregate turn results."
 ---
 
-Every `ClientSession.send()` call posts the turn, then reads the session's NDJSON (newline-delimited JSON) event stream. `MessageResponse` gives you two ways to consume that stream, aggregating it with `result()` or iterating it live.
+`ClientSession.send()` returns a `MessageResponse` you can aggregate with `result()` or iterate for live newline-delimited JSON (NDJSON) events.
 
 Once `send()` is accepted, `response.cancel()` requests cooperative cancellation of that exact turn. Start consuming the response first; cancellation waits for the stream to identify the turn, guards the request with its ID, and never targets a later turn. The result status is `accepted` when the live session durably queues the command. A response that settles before a turn starts returns `no_active_turn`:
 
@@ -18,9 +18,6 @@ if (cancellation.status === "accepted") {
 
 const result = await resultPromise;
 ```
-
-The cancellation result is discriminated by `status`: only `accepted` includes
-`sessionId`; `no_active_turn` has no session identity field.
 
 Cancellation does not replace stream consumption. Continue reading the response to observe its terminal `turn.cancelled` and `session.waiting` boundary and to advance the client session cursor normally. Use `session.cancel({ turnId })` instead when you have only a fixed session handle and an observed turn ID.
 
@@ -68,14 +65,7 @@ runs asks a question, such as a workflow tool's `ctx.ask()`, `result()` returns
 its `input.resolved`, which the session you answer on also emits for a
 subagent's or workflow tool's question.
 
-A turn that waits on its [tasks](/docs/tools/workflows#run-calls-as-tasks-task)
-emits `turn.waiting` with `on: "tasks"`. The text the model wrote
-before the wait is not the reply: `result()` resolves with the final reply
-after the tasks finish.
-
-`result()` closes that HTTP stream, including when fetch instrumentation clones
-the response for tracing. The durable session remains available for follow-up
-turns after `session.waiting`.
+`result()` closes the HTTP stream; the durable session remains available for follow-ups after `session.waiting`.
 
 ## Stream events live
 
@@ -96,18 +86,6 @@ for await (const event of response) {
 ```
 
 `message.appended`, `reasoning.appended`, and `action.input.appended` are incremental delta events. Each carries only its new text and existing stream coordinates. eve may combine adjacent deltas for the same event type, stream coordinates, and tool `callId` while a durable stream write is in flight, but preserves their text and event ordering. The completed text forms, `message.completed` and `reasoning.completed`, carry the authoritative value for each finalized block and remain the compatibility path for clients that don't render deltas. A streamed tool input is complete when the matching validated call arrives in `actions.requested`.
-
-The default message reducer accumulates these events for you. A raw stream consumer can apply the same rule directly:
-
-```ts
-let message = "";
-
-for await (const event of response) {
-  if (event.type !== "message.appended") continue;
-
-  message += event.data.messageDelta;
-}
-```
 
 After reconnecting without local state, replay the earlier events or wait for the completed event instead of appending a later delta to an empty value. Apply the same rule to `reasoningDelta` and `inputTextDelta`. If a model provider fails after partial output and eve retries the call, the durable stream keeps events from both attempts. A later completed event replaces provisional text only when the failed attempt did not already complete that block; the protocol has no attempt identity with which to retract earlier completed blocks.
 
@@ -188,8 +166,6 @@ for await (const event of response) {
   console.log(event.type);
 }
 ```
-
-The same option is available on manual attachments as `session.stream({ streamReconnectPolicy: { reconnect: false } })`.
 
 ## Open a stream manually
 

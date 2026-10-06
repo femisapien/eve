@@ -3,7 +3,7 @@ title: "Self-Host eve"
 description: "Run an eve agent as a Node service with your own workflow storage, sandbox provider, and routing."
 ---
 
-Self-host eve when you operate a Node service, container platform, or reverse proxy. You run eve’s Nitro server and choose the infrastructure that stores workflows and executes sandbox sessions.
+Self-host eve by running its Nitro Node server and providing persistent workflow storage, sandbox compute, and routing.
 
 ## Build and start the Node service
 
@@ -16,7 +16,7 @@ PORT=3000 eve start --host 0.0.0.0
 
 The build writes the Nitro server under `.output/`. `eve start` serves that output and accepts either `PORT` or the `--port` flag.
 
-Run this process under the same process manager or container platform you use for other Node web services. Configure Transport Layer Security (TLS), scaling, restarts, and log collection in that platform.
+Use your process manager or container platform for TLS, restarts, scaling, and logs.
 
 ## Configure model access and route auth
 
@@ -44,7 +44,7 @@ export default defineAgent({
 
 The package must export a default factory or `createWorld()` function. Read credentials and host options from runtime environment variables. Install a world built against the same `@workflow/*` line as your eve release. The current line is `5.0.0-beta`, and the runtime rejects incompatible protocol versions.
 
-See [Workflow Worlds](https://workflow-sdk.dev/worlds) for the underlying Workflow software development kit (SDK) abstraction.
+See [Workflow Worlds](https://workflow-sdk.dev/worlds) for available backends.
 
 ## Select a sandbox provider
 
@@ -63,7 +63,7 @@ A proxy restricted to `/eve/` lets a session start, but the run stalls when its 
 
 ## Run workspace members
 
-An [agent workspace](../../concepts/project-structure#several-root-agents) does not require Vercel or a frontend at runtime. Build each member from its own directory: root `eve build` produces a Vercel workspace deployment, not a group of self-hosted Node servers.
+For self-hosted [agent workspaces](../../concepts/project-structure#several-root-agents), build and run each member separately. Running `eve build` at the workspace root produces Vercel workspace output, not multiple Node servers.
 
 For a workspace containing `support` and `research`, run these from the workspace root, outside a Vercel build environment:
 
@@ -99,7 +99,7 @@ A frontend under `apps/web/` is another service managed by your host, not by `ev
 
 For path-based mounts, strip the public prefix before forwarding requests to the agent and set `EVE_PUBLIC_ROUTE_PREFIX` in that agent's build and runtime environments. Forward its workflow callback routes as well as its eve routes. Keep the browser client, callback URLs, and peer transports consistent with the public mounts.
 
-You can instead use [`eve/next`](../frontend/nextjs#dev-vs-deploy-topology) if you want Next.js to start built agent processes and provide the browser-facing proxy routes. That integration is optional; `eve/vercel` configuration is not used by a self-hosted process manager.
+Alternatively, [`eve/next`](../frontend/nextjs#dev-vs-deploy-topology) can start built agents and proxy browser requests through Next.js.
 
 ## Run schedules
 
@@ -120,8 +120,6 @@ eve remote connect --url https://your_agent.example.com
 ```
 
 ## Continue configuring production
-
-Use these guides to secure and observe the deployed agent:
 
 - [Authentication](../auth-and-route-protection): configure the host’s route policy
 - [Instrumentation](../../observability/instrumentation): export traces and diagnose runtime failures

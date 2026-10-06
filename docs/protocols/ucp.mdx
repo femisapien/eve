@@ -3,13 +3,7 @@ title: "Serve a UCP Profile"
 description: "Serve a UCP profile at /.well-known/ucp from a custom eve channel."
 ---
 
-The [Universal Commerce Protocol](https://ucp.dev/) (UCP) is an open standard for agentic commerce. A business declares its UCP support by serving a JSON **profile** from the `/.well-known/ucp` path. This is a document listing the spec versions it supports, its services and capabilities, its payment handlers, and the public keys agents use to verify signed responses.
-
-With eve, you can support UCP in three steps:
-
-1. [Author the profile](#author-the-profile)
-2. [Serve it from a channel](#serve-it-from-a-channel)
-3. [Add your commerce endpoints](#add-your-commerce-endpoints)
+To declare [Universal Commerce Protocol](https://ucp.dev/) (UCP) support, serve a JSON profile at `/.well-known/ucp`. It lists your supported versions, services, capabilities, payment handlers, and public signing keys. Use a custom eve channel for the profile and the commerce endpoints it advertises.
 
 ## Author the profile
 
@@ -90,7 +84,7 @@ export const profile = {
 
 ## Serve it from a channel
 
-Use a custom channel to serve the profile from the `/.well-known/ucp` endpoint.
+Serve the profile from `/.well-known/ucp` with a custom channel:
 
 ```ts
 // agent/channels/ucp.ts
@@ -179,7 +173,7 @@ cache-control: public, max-age=300
 
 Commerce operation semantics are author-owned: the checkout, cart, and order state machines; payment-handler execution; and request signing and verification.
 
-## Read next
+## What to read next
 
 - [Channels overview](../channels/overview): The channel contract this builds on.
 - [Custom channels](../channels/custom): The route helpers, CORS, and metadata this page uses.

@@ -3,18 +3,13 @@ title: "Multi-Tenant Approvals"
 description: "Resolve tenant policy asynchronously for authored tools, OpenAPI operations, and MCP tools."
 ---
 
-eve's `approval` field is an async policy hook. It receives the active session, qualified tool name, tool input, and previously approved tools. That is enough to ask your application whether this tenant should allow, deny, or require human confirmation for any authored or connection tool.
+Use an async `approval` policy to ask your application whether a tenant may run a tool automatically, must get human approval, or cannot run it. The policy receives session identity, the qualified tool name, input, and previously approved tools.
 
 Use this with [multi-tenant outbound auth](./multi-tenant-auth) when your own
 API key, JWT, or app session establishes the tenant and the connection
 credential is selected from your credential store rather than OAuth.
 
-The pattern has two pieces:
-
-1. one adapter translates eve's approval context into an application policy request;
-2. tools, OpenAPI connections, and MCP connections reuse that adapter.
-
-Tenant policy storage remains yours. It might be a few columns in PostgreSQL, a policy service, an authorization engine, or configuration in a durable KV store.
+Write one adapter for your tenant policy and reuse it in authored tools, OpenAPI connections, and MCP connections. Your application owns policy storage.
 
 ## Adapt tenant policy to eve approval
 
@@ -68,7 +63,7 @@ export async function decideTenantApproval(
 
 For authored tools, `ctx.toolName` is the path-derived name such as `transfer_funds`. For connection tools, it is qualified, such as `billing__updateSubscription` or `support__add_internal_note`. Your policy service can match exact names, connection-wide patterns, roles, amounts, environments, or any other tenant-owned rule.
 
-The callback deliberately does not treat `approvedTools` as a session-wide grant. Every call is evaluated. If your policy supports approve-once behavior, consult `ctx.approvedTools` explicitly after pinning the session tenant.
+This policy evaluates every call. For approve-once behavior, check `ctx.approvedTools` explicitly after verifying the tenant.
 
 ## Apply it to an authored tool
 
@@ -179,9 +174,7 @@ export interface ApprovalPolicyProvider {
 export { approvalPolicies } from "../../lib/approval-policies";
 ```
 
-Your provider decides the policy model. A common implementation checks active tenant membership, finds an exact resource rule before a connection-wide fallback, evaluates role and input thresholds, and defaults to deny. Keep those choices in application code rather than encoding a database design into the agent.
-
-Policy lookup failures should throw or deny, never silently allow. Recheck authorization inside side-effecting executors because membership or policy can change while a run is parked.
+Implement membership, resource rules, roles, and thresholds in your application. Deny or throw on lookup failure, and recheck authorization inside side-effecting executors: membership or policy can change while a run is parked.
 
 ## Protect the approval response
 
@@ -191,5 +184,3 @@ An approval durably pauses the session and a later request resumes it. Your HTTP
 - `GET /eve/v1/session/:sessionId/stream`.
 
 Built-in approval confirms that a human with access to the session approved the call. To restrict who may respond, add an [approval response policy](/docs/human-in-the-loop#authorizing-approval-responses): it receives who responded as `response.principal` and who asked for the call as `request.principal`, and runs for both Approve and Cancel. For a four-eyes workflow, where a different person or role must approve, branch on `response.decision`: allow `cancel` so the requester can still withdraw the call, and for `approve` reject a `response.principal` that matches `request.principal` and check the responder's role.
-
-The complete eve integration is one async adapter reused by tools and both connection protocols. The tenant's rule storage and governance model remain application concerns.

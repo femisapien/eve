@@ -3,11 +3,7 @@ title: "Extensions"
 description: "Package reusable eve capabilities and mount them from npm or a monorepo workspace."
 ---
 
-Extensions package eve tools, channels, connections, skills, schedules, subagents, instruction fragments, and hooks. An author builds an extension package; each agent that uses it declares the package as a dependency and mounts it. The package can be published to a package registry or kept private inside a monorepo workspace.
-
-Ready-made extensions can also be distributed through an eve integration registry. See [Add Integrations](./install-integrations) to discover and add one with `eve add`; this page explains how extension packages are authored, mounted, configured, and overridden.
-
-This enables sharing many different capability sets. A browser extension might include several tools for navigating a site. A self-improving extension could pair hooks with dynamic instructions.
+An extension packages reusable tools, channels, connections, skills, schedules, subagents, instructions, and hooks. Publish it or keep it in a workspace; each agent installs and mounts the package. To install an existing extension from a registry, see [Add Integrations](./install-integrations).
 
 ## Author: create an extension
 
@@ -170,11 +166,9 @@ Put runtime packages such as `zod` or an SDK in `dependencies`. Most dependencie
 
 When a package must keep normal Node.js package layout at runtime, add it to `eve.extension.externalDependencies`. Common cases include native addons and SDKs that load package-relative assets. `eve extension build` requires each listed package to also appear in `dependencies`, `optionalDependencies`, or `peerDependencies`, and records the requirement in the generated compatibility manifest. The consuming eve keeps the package external and preserves its complete package tree; consumers do not need to edit `agent.ts` or install the transitive package directly.
 
-Consumers can now add the built package to an agent. A workspace-only extension uses the same package contract but does not need to be published; see [Use an extension in a workspace](#use-an-extension-in-a-workspace).
-
 ## Consumer: install and mount an extension
 
-A mount gives the extension's contributions a namespace. Updating the package updates the mounted extension; nothing is copied into the consumer's agent.
+A mount namespaces the extension's contributions. Updates to the package update the mounted capabilities without copying files into the agent.
 
 ### Install the package
 
@@ -220,9 +214,7 @@ Deployments before eve 0.69 stored extension state under package-prefixed keys, 
 
 ### Use an extension in a workspace
 
-A workspace extension is a regular extension package kept in the same monorepo as its consumers. It is useful when several agents need the same capabilities, or when a private capability should evolve alongside the agents that use it.
-
-For example, a pnpm workspace can keep one extension next to two independently deployable agents:
+A workspace extension uses the same package contract without publishing it. This pnpm workspace shares one extension between two separately deployable agents:
 
 ```text
 acme-agents/

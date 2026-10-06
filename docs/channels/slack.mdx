@@ -4,7 +4,7 @@ description: "Reach your agent from Slack app mentions, DMs, slash commands, and
 type: integration
 ---
 
-The Slack channel puts your agent inside a workspace. It handles `@mentions`, DMs, slash commands, shortcuts, and interactive callbacks; replies in threads; shows typing indicators; and turns human-in-the-loop (HITL) prompts into buttons. [Vercel Connect](https://vercel.com/kb/guide/vercel-connect) is the recommended setup: it manages the Slack bot token, verifies inbound requests, supports token rotation and multiple workspace installations, and forwards events to your agent without copying Slack secrets into your project environment. If you cannot use Vercel Connect, you can provide the bot token and signing secret through environment variables. See [Channels](./overview) for the contract this builds on.
+The Slack channel handles mentions, DMs, slash commands, shortcuts, and interactive callbacks. It replies in threads, shows progress, and renders human-in-the-loop requests as Slack controls. [Vercel Connect](https://vercel.com/kb/guide/vercel-connect) manages credentials and webhook verification; for other hosts, supply a bot token and signing secret. See [Channels](./overview) for the channel contract.
 
 ## Add the channel
 
@@ -14,7 +14,7 @@ Run the guided setup from your agent project:
 eve add channel/slack
 ```
 
-The command recommends Vercel Connect, then scaffolds `agent/channels/slack.ts` and installs any required dependency. Choose the environment-variable option only when you need to manage the Slack bot token and signing secret yourself.
+The command scaffolds `agent/channels/slack.ts` and installs its dependencies. It recommends Vercel Connect; choose portable credentials when you need to manage the bot token and signing secret yourself.
 
 ### Recommended: use Vercel Connect
 
@@ -31,7 +31,7 @@ export default slackChannel({
 });
 ```
 
-`connectSlackCredentials` returns `{ botToken, webhookVerifier }`, keeping token rotation, multi-workspace tenancy, and request verification inside Connect rather than your code.
+Connect handles token rotation, multiple workspace installations, and request verification through the `{ botToken, webhookVerifier }` returned by `connectSlackCredentials`.
 
 Function-form bot tokens receive `{ teamId }` when Slack supplies the app installation workspace. Use it to select an installation in a self-managed multi-workspace app. The id can differ from the actor or content workspace for Slack Connect events:
 
@@ -257,7 +257,9 @@ export default slackChannel({
 });
 ```
 
-`isDMOrPrivateChannel()` returns `true` for DMs, group DMs, and private channels. Slack message events identify public channels as `channel` and private channels as `group`, so those events do not require an API lookup. Events such as `app_mention` omit the conversation type; for those, the helper calls Slack's `conversations.info` API and checks `is_private`. Missing scopes, API errors, and ambiguous responses return `true` so privacy-sensitive behavior fails closed. `isBotMentioned()` identifies an explicit mention. `isSubscribed()` checks whether the message belongs to a thread with an active eve session. For Vercel Connect, open **Advanced** when creating the connector and add `message.channels` under **Trigger Event Types** and `channels:history` under **Bot Scopes**. Private channels additionally need `message.groups` and `groups:history`.
+`isDMOrPrivateChannel()` returns `true` for DMs, group DMs, and private channels. Slack message events identify public channels as `channel` and private ones as `group`, so they need no API lookup. Events such as `app_mention` omit the conversation type; the helper then calls `conversations.info` to check `is_private`. Missing scopes, API errors, and ambiguous responses return `true` so privacy-sensitive behavior fails closed. `isBotMentioned()` checks for an explicit mention; `isSubscribed()` checks for a thread with an active eve session.
+
+For Vercel Connect, open **Advanced** when creating the connector. Add `message.channels` under **Trigger Event Types** and `channels:history` under **Bot Scopes**. Private channels also need `message.groups` and `groups:history`.
 
 Use `ctx.thread.listParticipants()` when routing depends on who has joined the thread. It fetches the current thread and returns unique human Slack user ids in first-appearance order, so the first id is the starting author for a human-started thread. Bot and system messages are excluded:
 
@@ -471,8 +473,6 @@ eve shows an agent's progress in two places. Short work, such as thinking or a t
 | The turn waits on its tasks                       | `Waiting on researcher...`, or `Waiting on 3 tasks...`                                                                             |
 | The turn waits on an approval, answer, or sign-in | Cleared until the turn resumes, then the status it had                                                                             |
 | A reply posts                                     | Cleared by Slack                                                                                                                   |
-
-A model step never resets the status to a generic line. The status keeps naming the latest work until something newer replaces it, so a user watching the thread sees `Checking recent deploys`, then `Found 4 failed deploys`, then `Reading build logs`, without `Thinking...` in between.
 
 Slack removes a thread status after two minutes without a message from the app, and clears it whenever the app posts in the thread. eve sets the current status again at each model step, after it posts a new task card, and as a tool reports progress. A tool that runs longer than two minutes without reporting progress loses its status. Report progress with [`label.delta`](/docs/tools#label-tool-activity), or run the work as a [task](/docs/tools/tasks), whose card shows it is still going.
 
@@ -750,7 +750,9 @@ deriveHitlResponse({ actionId: button.action_id, value: button.value });
 
 Use them to test a custom renderer against eve's wire format, or to post eve's controls from your own renderer. A click on these controls in the session's Slack thread resumes the session through `onInputResponse`, the same as eve's own controls. eve does not track controls you post yourself, so update or remove those messages from your renderer's `approval.settled` and `input.resolved` handlers. To pass `response` to `respond()` yourself, validate it first with `parseInputResponses` from `eve/client`.
 
-Authorization prompts split public status from private credentials. A sign-in challenge (OAuth URL, device code) is a credential. Anyone who completes it binds their identity to the session's connection. The default `authorization.required` handler posts a public, link-free status in the thread, delivers the actual challenge ephemerally to the Slack user behind the event's `principalId`, device code included, and then updates that public status when `authorization.completed` fires. A renderer's `authorization.required` handler receives a private-delivery context with `postEphemeral`, `postDirectMessage` (needs the `im:write` scope), and `state`. There is, intentionally, no public `post` and no raw API access. Its `next()` reaches eve's default, which posts the public status; skip `next` to deliver the challenge yourself, as this handler does by direct message. `state.slackUsersByPrincipal` maps each principal eve has seen in the thread, through a message or an input response, to its Slack user ID. If the principal has no entry, the challenge is not sent privately.
+Keep sign-in challenges private: an OAuth URL or device code lets whoever completes it bind their identity to the session's connection. The default `authorization.required` handler posts a link-free status in the thread and delivers the challenge, including any device code, ephemerally to the Slack user behind `principalId`. It updates the public status when `authorization.completed` fires.
+
+A renderer's `authorization.required` handler receives a private-delivery context with `postEphemeral`, `postDirectMessage` (requires `im:write`), and `state`. It has no public `post` or raw API access. Calling `next()` runs eve's default handler, which posts the public status; skip it to deliver the challenge yourself, as the direct-message example below does. `state.slackUsersByPrincipal` maps principals seen through messages or input responses in the thread to Slack user IDs. If a principal has no entry, the challenge is not sent privately.
 
 The default private prompt names the service, says the agent is paused, and pairs a **Connect** button with **Cancel**. Cancel ends the held turn and removes the prompt; the public status, "Paused: waiting for @user to connect Linear…", then reads "Linear sign-in cancelled". Approval cards say the agent is paused until someone approves or cancels.
 
@@ -770,8 +772,6 @@ renderers: [
   },
 ],
 ```
-
-The private authorization button uses the label **Sign in**, so long connection display names do not make the button invalid. The public status identifies the connection.
 
 ### Proactive sessions
 

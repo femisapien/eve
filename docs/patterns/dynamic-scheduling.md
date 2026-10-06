@@ -3,14 +3,12 @@ title: "Dynamic Scheduling"
 description: "Compose one minute-level eve schedule, proactive channel handoff, and CRUD tools into application-managed schedules."
 ---
 
-Authored eve schedules are static files discovered at build time. You can build dynamic scheduling today by putting schedule rows in your application store and using one authored schedule as a dispatcher:
+Authored eve schedules are static files discovered at build time. To run application-managed schedules, store schedule rows in your own database and use one authored schedule as a dispatcher:
 
 1. CRUD tools let the agent create and manage rows for the current tenant;
 2. `defineSchedule({ cron: "* * * * *" })` wakes once a minute;
 3. the handler atomically claims due rows;
-4. `receive(...)` starts a normal durable agent session for each row.
-
-PostgreSQL or a durable KV store can back the adapter. The important storage capability is an atomic lease, not a particular schema.
+4. `to(...).send(...)` starts or resumes a durable agent session for each row.
 
 ```text
 agent/
@@ -79,9 +77,7 @@ export default defineSchedule({
 });
 ```
 
-`waitUntil` keeps the cron invocation alive until claiming and handoff settle. `to(...).send(...)` starts the same durable runtime used by inbound channel messages.
-
-This example uses Slack because it has a proactive target of `{ channelId }`. Any channel that implements `receive` can replace it.
+`waitUntil` keeps the cron invocation alive until claiming and handoff settle. Replace Slack with any channel that accepts proactive sends.
 
 Configure Slack normally:
 
@@ -244,7 +240,7 @@ Implement that adapter with whichever durable store already belongs to your appl
 - `complete` disables one-time rows or computes the next recurring run;
 - expired leases are recoverable.
 
-Delivery is at least once. A crash after `receive` succeeds but before `complete` can dispatch again, so side-effecting tasks need application-level idempotency. When the destination should receive a provider message without another agent turn, use the outbox pattern in [Durable cross-channel notifications](./durable-cross-channel-notifications) instead of `to(...).send(...)`.
+Delivery is at least once. A crash after `to(...).send(...)` succeeds but before `complete` can dispatch again, so side-effecting tasks need application-level idempotency. When the destination should receive a provider message without another agent turn, use the outbox pattern in [Durable cross-channel notifications](./durable-cross-channel-notifications) instead of `to(...).send(...)`.
 
 ## Scheduling instructions
 
@@ -254,5 +250,3 @@ Convert the first run to ISO 8601 with an explicit offset. Use everyMinutes only
 for repeating work and null for a one-time run. List schedules before changing
 an ambiguous one.
 ```
-
-The eve-specific core is small: four tools, one one-minute `defineSchedule`, and proactive `receive`. Storage and recurrence policy stay behind the application's adapter.

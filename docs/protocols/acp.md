@@ -3,7 +3,7 @@ title: "Editor Integration (ACP)"
 description: "Use local or deployed eve agents from Agent Client Protocol clients."
 ---
 
-Agent Client Protocol (ACP) clients can launch an authored eve application as a local subprocess. eve serves stable ACP v1 over stdio while its normal development server remains the execution runtime.
+Run `eve acp` to serve an authored eve agent to Agent Client Protocol (ACP) clients over stdio. The local development server still runs the agent.
 
 ```sh
 eve acp
@@ -15,7 +15,7 @@ Without a URL, the client starts one process from the eve application root. It s
 eve acp --url https://agent.example.com
 ```
 
-For a recognized Vercel deployment, eve verifies the exact origin and resolves a short-lived project-scoped OIDC token from the local Vercel session. Remote access requires an existing authorized Vercel session; account login runs during local deployment. Configure required Trusted Sources access in the target project before launching ACP. `VERCEL_AUTOMATION_BYPASS_SECRET` remains available for deployments configured with a Protection Bypass for Automation token.
+For a recognized Vercel deployment, eve verifies the origin and uses a project-scoped OIDC token from your existing authorized Vercel session. Configure Trusted Sources on the target project before connecting. For Protection Bypass for Automation, set `VERCEL_AUTOMATION_BYPASS_SECRET`.
 
 ## Configure Zed
 
@@ -50,8 +50,6 @@ ACP clients receive:
 - independent concurrent ACP sessions;
 - session closure and process cleanup.
 
-Development rebuilds retain normal eve semantics. In-flight work stays pinned to its generation, and the next turn uses the newest successful generation.
-
 ## Security and capability limits
 
 ACP mode does not give the agent access to the editor's host filesystem or terminal. `session/new.cwd` identifies the eve application being launched; it is not mounted into the agent sandbox.
@@ -67,7 +65,7 @@ The initial adapter does not support:
 - session loading, listing, resumption, or durable ACP IDs across process restarts;
 - ACP model or mode configuration.
 
-The agent continues to use the connections, tools, credentials, and sandbox policy authored in the eve application. Prompt text and ACP metadata never establish an authenticated end-user principal.
+ACP uses the agent's authored tools, connections, and sandbox policy. Prompt text and ACP metadata do not authenticate an end user.
 
 ## Diagnose a connection
 

@@ -11,8 +11,6 @@ eve passes a runtime `ctx` to tool executors, hook handlers, channel event handl
 | `ctx.getSandbox()`           | The current agent's live sandbox handle                   | [Sandbox](../sandbox)      |
 | `defineState(name, initial)` | Durable typed state shared by runtime code in one session | [State](../concepts/state) |
 
-These APIs work only during eve-managed runtime execution. Calling them during module evaluation, discovery, or a build throws.
-
 ## `ctx.session`
 
 `ctx.session` describes the durable session and active turn:
@@ -37,15 +35,6 @@ export default defineTool({
   },
 });
 ```
-
-Public fields include:
-
-- `id`: the durable session ID.
-- `turn.id`: the current turn ID.
-- `turn.sequence`: the turn's position in the session.
-- `auth.current`: the caller for the active inbound turn.
-- `auth.initiator`: the caller that started the session.
-- `parent`: the parent call, session, root session, and turn for a child subagent session.
 
 Unprotected agents expose `auth.current` and `auth.initiator` as `null`. Top-level schedule sessions use the framework app principal (`principalId: "eve:app"`, `principalType: "runtime"`). See [Authentication](./auth-and-route-protection#what-reaches-ctxsessionauth) for how inbound identity becomes session auth.
 
@@ -85,10 +74,6 @@ Runtime context is available:
 - after asynchronous boundaries within the same authored execution chain.
 
 Runtime context is not available during top-level module evaluation, build scripts, or discovery. Declare reusable definitions and state handles at module scope, but call their context-dependent methods only from an eve-managed callback.
-
-## How it works
-
-eve establishes the managed context before invoking authored runtime code and keeps it available across asynchronous work in that execution chain. The framework binds durable session data and step-local resources, then commits mutable state at the step boundary. Authored code uses the public accessors rather than managing this lifecycle.
 
 ## What to read next
 

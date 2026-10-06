@@ -3,7 +3,7 @@ title: "How It Runs"
 description: "Part 2 of the Build an Agent tutorial. Session, turn, and durable steps, and why a turn survives a crash."
 ---
 
-The analytics assistant sent one message and got one answer. Three terms describe the model behind that.
+The first exchange with your analytics assistant starts a session and runs a turn. eve checkpoints its work in steps:
 
 | Term        | Meaning                                           |
 | ----------- | ------------------------------------------------- |
@@ -11,15 +11,6 @@ The analytics assistant sent one message and got one answer. Three terms describ
 | **turn**    | One message you send and the work it triggers.    |
 | **step**    | A durable checkpoint within the turn.             |
 
-The session runs as one durable workflow, and eve saves each turn's progress at every step. Completed steps never re-run; eve replays the recorded result. A step interrupted mid-execution re-runs, so make non-idempotent side effects like charges or emails idempotent, or gate them with approval. A turn that's waiting on you (an approval, a question) resumes whenever you answer, even if that's much later.
+eve saves progress at step boundaries. Completed steps replay their recorded result, while a step interrupted mid-execution runs again. Give non-idempotent side effects such as charges and emails an idempotency key. A turn parked for approval or a question resumes when you answer.
 
-That's why the features in the rest of this tutorial work the way they do:
-
-- The metric glossary in Step 5 survives across turns. State is checkpointed at step boundaries, so it sticks.
-- The spend approval in Step 7 pauses the turn on your yes/no, then picks up exactly where it left off.
-
-You author capabilities, including tools, instructions, channels, and skills. eve drives the model-to-tool loop and decides when a turn continues, waits, or ends. You never write that loop yourself.
-
-→ Next: [Step 3: Query sample data](./query-sample-data)
-
-Depth: [Execution model & durability](../concepts/execution-model-and-durability)
+The [metric glossary](./remember-definitions) uses durable state across turns; [spend approval](./guard-the-spend) parks until you answer. Continue with [querying sample data](./query-sample-data), or read the full [execution model](../concepts/execution-model-and-durability).

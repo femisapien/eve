@@ -3,7 +3,7 @@ title: "Assertions"
 description: "Scoped methods, value assertions, the matcher mini-language, and gate vs soft severity."
 ---
 
-Assertions are how an eval grades what its `test(t)` function produced. Each one records a result and returns a chainable handle. The runner reads every recorded result to compute the verdict, so a single run reports every failing assertion rather than dying on the first. There are two deterministic surfaces: scoped methods and `t.check` for grading a specific value. For model-graded assertions, see [Judge](./judge).
+Assertions grade the work in `test(t)`. The runner records every result and reports all failures instead of stopping at the first. Use scoped methods for run, session, or turn behavior; `t.check` for a specific value; and [Judge](./judge) for model-graded criteria.
 
 ## Scoped assertions
 
@@ -35,7 +35,7 @@ t.succeeded();
 t.calledTool("get_weather");
 ```
 
-The same vocabulary narrows naturally in multi-turn and externally-created session evals:
+Assert on a specific turn or attached session:
 
 ```ts
 const first = await t.send("Call get_weather for Brooklyn");
@@ -79,7 +79,7 @@ For example, a failed labeled equality check prints:
 ✗ equals [status] (0% < 100%): expected {"status":"active"}; received {"status":"disabled"}
 ```
 
-Pick the cheapest builder that captures what "correct" means. When exact match is too strict but a judge model is overkill, `similarity` is the middle ground. For nuanced grading, reach for the [judge](./judge).
+Use a deterministic builder when it captures the expected result. If exact matching is too strict, use `similarity` for text similarity or a [judge](./judge) for criteria that need model grading.
 
 ## The matcher mini-language
 
@@ -118,9 +118,7 @@ const request = session.requireInputRequest({
 
 ## Run state and derived facts
 
-Beyond the raw `session.events` stream, the runner derives typed facts the assertions read: tool calls (name, input, output, lifecycle status), subagent calls, and HITL input requests. A turn that leaves the session open for a next message is the normal end state of a successful turn; parking on unanswered HITL input is tracked separately.
-
-Typed event matching covers presence, absence, numeric or predicate counts, partial event data, and ordering:
+The runner derives tool calls, subagent calls, and HITL input requests from `session.events`. Event assertions match presence, absence, counts, partial data, and order:
 
 ```ts
 turn.notEvent("result.completed");
@@ -159,14 +157,14 @@ const request = session.requireInputRequest({ toolName: "guarded" });
 
 ## Severity
 
-Every assertion returns a chainable handle. Severity rides on the assertion, so there is no separate thresholds map to keep in sync.
+Set severity on the assertion's chainable handle:
 
 - `.gate(threshold?)` is hard. A miss marks the eval `failed` and `eve eval` exits non-zero.
 - `.soft(threshold?)` is tracked data. A below-threshold miss marks the eval `scored`, fatal only under `--strict`. With no threshold, it is tracked-only and never fails.
 - `.atLeast(threshold)` is soft with a bar (equivalent to `.soft(threshold)`).
 - `.label(name)` adds a stable name when an eval records several assertions from the same family.
 
-The defaults are chosen so you rarely set severity. Run-level methods and `includes`/`equals`/`matches` are gates; `similarity` and every `t.judge(...)` assertion are soft. Annotate only when you deviate:
+Run-level methods and `includes`/`equals`/`matches` gate by default; `similarity` and `t.judge(...)` are soft. Override when needed:
 
 ```ts
 t.calledTool("get_weather").soft(); // record the tool call as a metric, don't gate

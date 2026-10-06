@@ -3,11 +3,9 @@ title: "TypeScript API Reference"
 description: "The define* helpers, the runtime ctx, and where each one is imported from."
 ---
 
-This is the public surface of the `eve` package: the `define*` helpers you author with, the `ctx` they receive at runtime, and the import path for each. The package's export map defines the full contract; source files that are not reachable through an exported package subpath are framework internals.
+This reference lists eve's public `define*` helpers, their runtime `ctx`, and their import paths. The package export map defines the public surface; source files without an exported package subpath are framework internals.
 
-Identity comes from the filesystem, not a field you set. A tool at `agent/tools/get_weather.ts` is `get_weather`, and a connection at `agent/connections/linear.ts` is `linear`, so no definition carries a `name` or `id`.
-
-Most files look the same: import a helper, default-export the result.
+Import the helper for the capability and default-export its result:
 
 ```ts title="agent/agent.ts"
 import { defineAgent } from "eve";
@@ -57,7 +55,9 @@ export default defineTool({
 | `mockModel`                                           | `eve/evals`                                                             | Deterministic fixture agent models                                                     | [Evals](../evals/overview)                             |
 | `useEveAgent`                                         | `eve/react`, `eve/vue`, `eve/svelte`                                    | frontend                                                                               | [Frontend](../guides/frontend/overview)                |
 
-Tool-wide authoring helpers and types such as `defineTool`, `defineWorkflowTool`, `defineDurableCallback`, `defineDurableSchema`, `defineDynamic`, `disableTool`, and `ToolLabelDefinition` come from `eve/tools`. Capability-specific definitions and helpers use their own subpaths (see [Built-in tools](../concepts/built-in-tools)): reusable definitions such as `bash` and `glob` come from `eve/tools/<name>`, `webSearch` comes from `eve/tools/web_search`, `agentRouter` comes from `eve/tools/agent-router`, `sleep` comes from `eve/tools/sleep`, `noReply` comes from `eve/tools/no_reply`, and approval policies and types come from `eve/tools/approval`. The route verbs `GET`/`HEAD`/`POST`/`PUT`/`PATCH`/`DELETE`/`OPTIONS`/`WS` plus `disableRoute` come from `eve/channels`, and the channel auth helpers `localDev`/`vercelOidc`/`placeholderAuth` come from `eve/channels/auth`.
+Tool-wide helpers and types, including `defineTool`, `defineWorkflowTool`, `defineDurableCallback`, `defineDurableSchema`, `defineDynamic`, `disableTool`, and `ToolLabelDefinition`, come from `eve/tools`. [Built-in tools](../concepts/built-in-tools) use dedicated subpaths: `eve/tools/<name>` for reusable definitions such as `bash` and `glob`; `eve/tools/web_search` for `webSearch`; `eve/tools/agent-router` for `agentRouter`; `eve/tools/sleep` for `sleep`; and `eve/tools/no_reply` for `noReply`. Approval policies and types come from `eve/tools/approval`.
+
+The route verbs `GET`/`HEAD`/`POST`/`PUT`/`PATCH`/`DELETE`/`OPTIONS`/`WS` and `disableRoute` come from `eve/channels`. Channel auth helpers such as `localDev`, `vercelOidc`, and `placeholderAuth` come from `eve/channels/auth`.
 
 `AgentReasoningDefinition` is exported from `eve` for the top-level `defineAgent({ reasoning })` setting. `AgentLimitsDefinition` is exported for `defineAgent({ limits })`. `AgentWorkflowDefinition`, `AgentWorkflowRetentionDefinition`, and `AgentWorkflowWorldDefinition` are exported from `eve` for the `defineAgent({ experimental: { workflow } })` config shape. `WebSearchToolInput` and `WebSearchProvider` are exported from `eve/tools/web_search`.
 
@@ -84,7 +84,7 @@ eve evaluates TypeScript definition modules during compilation so it can validat
 
 A compile-only module is not imported when the deployed runtime starts. For example, eve stores the resolved content from a static `instructions.ts` in the compiled manifest. A compile-and-runtime module is evaluated during compilation and imported again when a runtime process loads the module map. Keep module-top-level work deterministic, and put request- or session-specific work in the definition's runtime callbacks.
 
-The runtime bundler follows the normal ESM graph from every runtime entry. A helper remains runtime code when a tool or other runtime entry imports it, even if static instructions also import that helper. Lifecycle selection applies to definition entries, not as tree-shaking permission for their ordinary dependencies.
+Runtime entries retain their imported helpers even when those helpers are also used by compile-only definitions.
 
 ### Asset imports
 
@@ -108,7 +108,9 @@ import template from "../../prompts/template.txt?raw";
 | `ctx.getToken(provider)`    | Resolve a bearer token for an inline auth provider such as `connect("...")`  |
 | `ctx.requireAuth(provider)` | Evict and re-authorize an inline provider, commonly after a downstream `401` |
 
-Tool definitions accept `availableInSubagents: false` to restrict the tool to top-level root sessions. `defineTool` definitions accept `endsTurn: true`, or a function that receives the `execute` output, to end the turn without a reply after a successful call; see [Tools](../tools#end-the-turn-after-a-tool-call). Authored workflow bodies also receive `ctx.agents`, a replay-stable map of callable-agent metadata, and `ctx.agent(name)`, which returns an `AgentSession` whose `send(message, options?)` resolves to a response with `result()`. A `"use step"` helper that receives the context directly should type it as `WorkflowStepToolContext`, which excludes `agents`, `agent`, and `ask`. The root-copy `agent` entry has an empty description when the root omits `description`. See [Workflows as tools](../tools/workflows#delegate-work-ctxagent) for the workflow-only context.
+Tool definitions accept `availableInSubagents: false` to restrict them to top-level root sessions. `defineTool` also accepts `endsTurn: true` or a function receiving the `execute` output, to end a turn without a reply after a successful call. See [End the turn after a tool call](../tools#end-the-turn-after-a-tool-call).
+
+Authored workflow bodies receive `ctx.agents`, a replay-stable map of callable-agent metadata, and `ctx.agent(name)`. The latter returns an `AgentSession`; its `send(message, options?)` returns a response with `result()`. A `"use step"` helper that takes context directly should type it as `WorkflowStepToolContext`, which excludes `agents`, `agent`, and `ask`. The root-copy `agent` entry has an empty description when the root omits `description`. See [Delegate work](../tools/workflows#delegate-work-ctxagent) for workflow context.
 
 ## Imports at a glance
 
@@ -177,7 +179,7 @@ export default defineAgent({
 
 Pass another bare OpenAI model slug to override the default. `experimental_chatgpt()` remains as a deprecated alias.
 
-`chatgpt()` uses stateless requests (`store: false`). eve retains reasoning summaries and encrypted reasoning in session history and replays them after tool calls and on later turns. You do not need to configure `reasoning.encrypted_content` explicitly.
+`chatgpt()` uses stateless requests (`store: false`); eve retains reasoning summaries and encrypted reasoning for later turns and tool calls.
 
 eve uses one local authentication path with two credential owners:
 
@@ -185,7 +187,7 @@ eve uses one local authentication path with two credential owners:
 2. If `codex` is on `PATH`, eve uses `codex app-server` and launches `codex login` when sign-in is needed. Codex owns credential storage and refresh.
 3. If the Codex binary is not found, eve falls back to direct browser sign-in and owns the saved session and refresh. If the browser does not open, use the URL printed in the terminal.
 
-When Codex is available, eve asks app-server for tokens and does not read or write Codex login files. App-server errors other than a missing binary are reported instead of silently switching credential owners.
+With Codex available, eve asks app-server for tokens without reading Codex login files. App-server failures do not silently switch to eve-owned credentials.
 
 For the eve-owned fallback, eve stores your refresh token and account details in your operating system's credential store through [just-secrets](https://github.com/vercel-labs/just-secrets): the login Keychain on macOS, Credential Manager on Windows, or Secret Service on Linux. Access tokens stay in process memory; a new eve process refreshes the saved session when it first needs a token. The fallback login is separate from Codex and is never written to your project.
 

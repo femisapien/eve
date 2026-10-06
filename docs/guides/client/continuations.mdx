@@ -21,7 +21,7 @@ await response.result();
 await saveSessionState(session.state);
 ```
 
-The state is deliberately small:
+`session.state` contains only:
 
 ```ts
 interface ClientSessionState {
@@ -49,8 +49,7 @@ const response = await session.send("Now shorten it.");
 console.log((await response.result()).message);
 ```
 
-`attach()` performs no request. Every later operation targets exactly
-`saved.sessionId`; it never follows or creates a replacement.
+`attach()` performs no request and pins all later operations to `saved.sessionId`.
 
 `send()` correlates its response with the message accepted by the server. If the
 saved cursor is behind, it skips earlier turns and advances past them before
@@ -92,9 +91,6 @@ await Promise.all([researchResponse.result(), supportResponse.result()]);
 await save("research", research.state);
 await save("support", support.state);
 ```
-
-The shared `Client` owns host, auth, headers, and redirect policy. Each
-`ClientSession` owns its fixed ID and stream cursor.
 
 ## Reconnect an existing stream
 

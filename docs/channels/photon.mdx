@@ -21,16 +21,9 @@ export default photonIMessageChannel({
 });
 ```
 
-The default webhook route is `/eve/v1/photon`. The channel verifies forwarded
-webhooks with same-project Vercel OIDC by default, derives user auth from each
-message author, marks accepted messages as read, and continues the same eve
-session for every message in an iMessage conversation. A new accepted message
-steers the active turn. Steering can interrupt pending model generation before
-answer output or local tool execution begins. Executing tools finish first;
-after answer output starts, steering waits for the next committed workflow
-boundary. See [Overlapping messages](./overview#overlapping-messages).
+The default webhook route is `/eve/v1/photon`. The channel verifies forwarded webhooks with same-project Vercel OIDC by default, derives auth from each message author, marks accepted messages as read, and continues the same eve session throughout an iMessage conversation.
 
-Set `turnPolicy: "queue"` when every response should finish before Photon starts the next message.
+New accepted messages steer the active turn by default. Set `turnPolicy: "queue"` to finish each turn before handling the next message. See [Overlapping messages](./overview#overlapping-messages) for when steering takes effect.
 
 Customize inbound dispatch with `onMessage`. Return `null` to ignore a message, or return `title` alongside `auth` to set the title when the dispatch starts a run:
 
@@ -79,6 +72,9 @@ export default photonIMessageChannel({
 });
 ```
 
-For direct Photon webhooks, pass `webhookSecret` or set
-`IMESSAGE_WEBHOOK_SECRET`; the signing secret takes precedence over the default
-OIDC verifier.
+For direct Photon webhooks, pass `webhookSecret` or set `IMESSAGE_WEBHOOK_SECRET`; the signing secret takes precedence over the default OIDC verifier.
+
+## What to read next
+
+- [Channels overview](./overview): compare other messaging channels.
+- [Authentication](../guides/auth-and-route-protection): understand inbound identity and route protection.

@@ -3,14 +3,7 @@ title: Automatic Model Selection
 description: "Choose agent models automatically or evaluate typed questions in your tools and application code."
 ---
 
-Use `auto` from `eve/models` to choose an agent model from an allowlist before
-inference begins. It uses the [AI SDK evaluation API](https://ai-sdk.dev/docs/ai-sdk-core/evaluation),
-so the evaluator can be a Vercel AI Gateway model ID or an evaluation model from
-an installed provider. Use `evaluate` from `eve/ai` to ask typed questions in
-your own tools or application code.
-
-The AI SDK evaluation model specification is experimental and can change in
-patch releases.
+Use `auto` from `eve/models` to choose a model from an allowlist before inference. Use `evaluate` from `eve/ai` for typed questions in tools or application code. Both use the [AI SDK evaluation API](https://ai-sdk.dev/docs/ai-sdk-core/evaluation), which is experimental and may change in patch releases.
 
 ## Choose from Gateway models
 
@@ -91,9 +84,6 @@ export default defineAgent({
 });
 ```
 
-Any provider that implements the AI SDK `Experimental_EvaluationModel` contract
-works here.
-
 ## Route to provider models and set reasoning
 
 An option's key is the value shown to the evaluator. A string value describes a
@@ -120,10 +110,7 @@ export default defineAgent({
 });
 ```
 
-The evaluator sees option keys, descriptions, and recent text messages. It never
-receives provider credentials or serialized language model instances. When it
-selects `my_secret_model`, eve resolves the key back to the authored Anthropic
-model.
+The evaluator sees option keys, descriptions, and recent text, not provider credentials or model instances. eve maps the selected key back to its authored model.
 
 Supported reasoning values are `"provider-default"`, `"none"`, `"minimal"`,
 `"low"`, `"medium"`, `"high"`, and `"xhigh"`. An omitted value inherits the
@@ -169,13 +156,7 @@ The choice above is typed as `"billing" | "support"`. Each question appears unde
 its authored key in `result.answers`. Results also include token usage, warnings,
 provider metadata, and response metadata. To use that choice to delegate while keeping specialist subagents out of the parent model's tools, see [Route to a hidden subagent with Jev](/docs/tools/workflows#route-to-a-hidden-subagent-with-jev).
 
-`evaluate` accepts AI SDK evaluation options, including `maxRetries`, `headers`,
-and `providerOptions`. Pass an `abortSignal` to cancel the request. Input and
-answer validation, retries, and provider errors follow AI SDK semantics.
-
-You can also call `evaluate` outside a tool; it does not require an active eve
-session. Each call performs its own evaluation. `auto` uses this function
-and adds the per-turn routing behavior described below.
+`evaluate` also works outside eve sessions. It accepts AI SDK options such as `maxRetries`, `headers`, and `providerOptions`; pass `abortSignal` to cancel the request.
 
 ## Judge eval results
 

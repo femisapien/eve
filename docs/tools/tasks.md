@@ -10,13 +10,9 @@ continues. Every call to an agent is a task, and so is every call to a
 A task's result reaches the model later, in a `task.result` message, and a turn can't end while
 tasks are still working.
 
-This page covers when to use a task, how to order work that depends on a result, the signals a
-workflow tool body receives, and what the model and the stream see.
-
 ## Choose how a call runs
 
-A workflow tool defines exactly one entry point, and the entry point answers one question: should
-the conversation continue while the call works?
+A workflow tool defines exactly one entry point, which determines whether the conversation continues while it works:
 
 ```ts
 defineWorkflowTool({ /* … */ async execute(input, ctx) {} }); // the turn waits until the call settles
@@ -40,10 +36,7 @@ model should keep talking while the work runs, such as a twenty-minute deploy or
 may not need right away, or when a question should stay open through new messages. A long
 `execute` tool holds the conversation until it settles or a new message stops it.
 
-Agents have no choice to make: every agent tool is a `serve` tool, so every agent call is a
-resumable task, because only the model can tell from the conversation whether it needs an agent's
-answer now. The [turn rule](#turns-wait-for-their-tasks) guarantees the answer reaches the model
-before the turn ends.
+Every agent tool is a resumable `serve` task. The [turn rule](#turns-wait-for-their-tasks) ensures its result reaches the model before the turn ends.
 
 See [Run calls as tasks](/docs/tools/workflows#run-calls-as-tasks-task) for writing a `task` body
 and [Resumable tasks](/docs/tools/workflows#resumable-tasks-serve) for `serve` bodies,
@@ -161,10 +154,7 @@ text is cut and marked `[truncated]`.
 <task_result id="deploy-4hd8sa" tool="deploy" status="completed">{"url":"https://…"}</task_result>
 ```
 
-**`task_wait({ timeoutSeconds? })`** controls when the model replies. The model should call it
-sparingly, only when it deliberately wants to withhold a message from the user while waiting for
-a task result. Tasks keep running and their results reach the model without this call; the model
-can reply now if the user should hear from it.
+**`task_wait({ timeoutSeconds? })`** parks the turn when the model should wait for a task result before replying. Tasks run and return results without this call too.
 
 The call parks the turn until any task has a result, a new message arrives, or `timeoutSeconds`
 pass. `timeoutSeconds` is a whole number of at least 1, in seconds like `sleep`. It returns at once
@@ -230,14 +220,9 @@ A question or sign-in from a task, such as an agent's question, parks the turn t
 stream emits `input.requested` or `authorization.required`, then `turn.waiting`, and the turn
 continues once the person answers or signs in.
 
-In every session, `turn.completed` comes only when the turn really ends. The TypeScript client's
-`send(...).result()` and the MCP channel's `agent_get` read past `turn.waiting` and report the
-final reply rather than the text written before the wait. `result()` stops at `turn.waiting` only
-while a question is pending or the turn waits on a sign-in or approval, and returns
-`status: "waiting"`; `respond()` then reads the same turn to its end. See [Aggregate a turn](/docs/guides/client/streaming#aggregate-a-turn).
-Channels such as [Slack](/docs/channels/slack) post a root session's text before the wait as an
-ordinary reply, then post the reply after the results as another message. Slack also shows each
-turn's tasks in a live [task card](/docs/channels/slack#task-card).
+In every session, `turn.completed` fires only when the turn ends. The TypeScript client's `send(...).result()` and the MCP channel's `agent_get` read past `turn.waiting` to report the final reply, not the text before the wait. `result()` stops at `turn.waiting` while a question, sign-in, or approval is pending and returns `status: "waiting"`; `respond()` then reads the same turn to its end. See [Aggregate a turn](/docs/guides/client/streaming#aggregate-a-turn).
+
+Channels such as [Slack](/docs/channels/slack) post a root session's text before the wait as one reply and the text after the results as another. Slack also shows tasks in a live [task card](/docs/channels/slack#task-card).
 
 A steering message from the turn's own caller, one sent with `turnPolicy: "steer"`, the default,
 ends a `task_wait` and aborts the `abortSignal` of any `execute` call the turn waits on, but it
@@ -270,26 +255,13 @@ same `taskId` continues where it left off. A `serve` body that doesn't return to
 | `agent.started` | A workflow run, including an agent tool's, opens a session with an agent              | `callId`, `turnId`, `taskId`, `name`, `sessionId`, `streamPath`                            |
 | `turn.waiting`  | An open turn parks on its tasks, a `task_wait`, a question, a sign-in, or an approval | `turnId`, `sequence`, and `on`: `"input"` when a person must act, otherwise `"tasks"`      |
 
-`task.started` and `task.settled` come once each per call, and `(taskId, callId)` identifies the
-call. Both carry that call's `turnId`, which for a resumable task's later call can be a later turn
-than the one that started the task, and the task's tool `name` and `kind`. `kind` is `"agent"` for
-an agent tool's call and `"tool"` otherwise. Events recorded by earlier eve versions omit `name`
-and `kind` on `task.settled`; match those to their `task.started` by `callId`. `status` is `"completed"`, `"failed"`, or `"cancelled"`. A completed call carries
-`output`, a failed call carries `error`, and a cancelled call carries `cancel.reason`:
-`"task_cancel"` when the model called `task_cancel`, `"turn_cancelled"` when someone cancelled
-the turn, or the working tasks between turns, or `"turn_ended"` when the turn ended, such as by
-failing, while the task still worked. `cancel` is absent when the task's run stopped on its own, and on events recorded by
-earlier eve versions.
-`agent.started` names the call and turn whose run opened the session, and its `taskId` is absent
-when an `execute` call opened it. Results reach the model as a message in its history, not as a
-stream event, so read outcomes from `task.settled`. An `input.requested`,
-`authorization.required`, or `authorization.completed` event from a task's run carries its
-`taskId`. Hooks subscribe to the same events. The stream also carries the model's `task_wait` and
-`task_cancel` calls as ordinary `actions.requested` tool calls, so evals can assert on them. The
-`eve dev` terminal UI and Slack typing indicators leave those calls out; the terminal UI shows each
-task's start and end instead. See
-[Sessions, runs, and streaming](/docs/concepts/sessions-runs-and-streaming#task-events) and
-[Follow a subagent](/docs/guides/client/streaming#follow-a-subagent).
+`task.started` and `task.settled` fire once each per call. Together, `(taskId, callId)` identifies the call. Both events carry its `turnId`, tool `name`, and `kind` (`"agent"` for an agent tool, `"tool"` otherwise). A later call to a resumable task may have a different `turnId` from the call that started it. Earlier eve versions omit `name` and `kind` from `task.settled`; match those events to `task.started` by `callId`.
+
+`status` is `"completed"`, `"failed"`, or `"cancelled"`. Completed calls carry `output`; failed calls carry `error`. Cancelled calls carry `cancel.reason`: `"task_cancel"` for a model-initiated stop, `"turn_cancelled"` for a cancelled turn or tasks between turns, and `"turn_ended"` when a turn ends while its task still works (for example, on failure). `cancel` is absent if the task's run stopped on its own or the event was written by an earlier eve version.
+
+`agent.started` names the call and turn whose run opened the session. Its `taskId` is absent when an `execute` call opened it. Task results enter model history as messages rather than stream events; read outcomes from `task.settled`. An `input.requested`, `authorization.required`, or `authorization.completed` event from a task's run carries its `taskId`. Hooks receive these events too.
+
+The model's `task_wait` and `task_cancel` calls also appear as ordinary `actions.requested` tool calls, so evals can assert on them. The `eve dev` terminal UI and Slack typing indicators omit these calls; the terminal UI shows each task's start and end instead. See [Sessions, runs, and streaming](/docs/concepts/sessions-runs-and-streaming#task-events) and [Follow a subagent](/docs/guides/client/streaming#follow-a-subagent).
 
 ## Ownership and limits
 
@@ -309,7 +281,7 @@ task's start and end instead. See
   `limits.sessionTimeoutMs` (30 days by default), bounds all work in a session. A body that needs a
   deadline races `sleep` against its work.
 
-## Upgrade from background tasks
+## What to read next
 
-Tasks replace background tasks, `execution: "background"`, and `agentId` continuation. See
-[Upgrade to Tasks](/docs/tools/tasks-upgrade) for every breaking change.
+- [Workflow tools](/docs/tools/workflows): author `task` and `serve` bodies.
+- [Upgrade to Tasks](/docs/tools/tasks-upgrade): migrate background tasks and `agentId` continuation.

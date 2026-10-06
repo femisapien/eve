@@ -3,15 +3,9 @@ title: "State"
 description: "Durable per-session memory with defineState: get() and update(), persisted across step boundaries."
 ---
 
-`defineState` is a typed, named slot of durable per-session memory for an agent. Use it when the agent has to remember something between conversation turns (a running budget, a glossary, a checklist) and you don't want to stand up an external store for it. The values survive workflow step boundaries, so they outlast crashes, redeploys, and days-long sessions.
+`defineState` keeps typed values such as a budget or checklist within one durable session. Values survive turns, process restarts, and redeploys. Use a [memory provider](../memory) instead when data must outlive a session.
 
-```ts
-import { defineState } from "eve/context";
-
-const budget = defineState("my-agent.budget", () => ({ count: 0, cap: 25 }));
-```
-
-Pass `defineState(name, initial)` a stable string `name` (namespace it to your agent) and an `initial` function that produces the starting value the first time the slot is read. You get back a `StateHandle<T>`:
+Pass a stable, agent-namespaced `name` and an `initial` function. The returned `StateHandle<T>` has:
 
 - `get()`: read the current value. Returns `initial()` on first access within a context.
 - `update(fn)`: replace the value with `fn(current)`.
@@ -61,23 +55,13 @@ export default defineHook({
 });
 ```
 
-The hook imports the same module-scope `budget` handle as the tool, so both read and write the same slot.
-
 ## State is never shared with subagents
 
 Every [subagent](../subagents) starts with its own fresh state, whether it's a built-in `agent` copy or a declared specialist. `defineState` values never cross the parent/child boundary, even when the child is a copy of the same agent.
 
 ## State vs. connection-side storage
 
-`defineState` holds conversation-scoped working memory that lives and dies with
-the session, including counters, the current plan, and what the user has told
-you this conversation. It is the agent's short-term memory, persisted durably
-for the life of the session. For context that must outlive a session, configure
-a first-class [memory provider](../memory). Use the built-in file provider, a
-third-party provider, or a custom provider for application-specific storage and
-retrieval. Use a general [connection](../connections) instead when the data
-should be queried only through explicit model tool calls rather than recalled
-automatically.
+A [memory provider](../memory) stores and recalls context across sessions. Use a [connection](../connections) when the model should query external data explicitly rather than receiving it through automatic recall.
 
 ## What to read next
 

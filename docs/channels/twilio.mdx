@@ -4,7 +4,7 @@ description: "Reach your agent over SMS and speech-transcribed phone calls with 
 type: integration
 ---
 
-The Twilio channel puts your agent on a phone number, so people can text it or call it. Inbound SMS arrives as a webhook. Inbound calls are answered with TwiML `<Gather input="speech">`, and the resulting transcript feeds the same eve session that SMS uses, so a caller and a texter look identical downstream. Every request is checked against `X-Twilio-Signature` before anything else runs. The raw continuation token is `From:To`. See [Channels](./overview) for the contract this builds on.
+The Twilio channel receives SMS and speech-transcribed calls on a phone number. It handles inbound SMS through a webhook and calls through TwiML `<Gather input="speech">`; both use the same eve session. It verifies `X-Twilio-Signature` on every request and uses `From:To` as the continuation token.
 
 ## Add the channel
 
@@ -62,7 +62,7 @@ The default `message.completed` handler sends the reply as SMS through Twilio's 
 
 ### Human-in-the-loop (HITL)
 
-SMS has no buttons or cards, so the default `input.requested` handler sends each question and tool approval as an SMS with its options numbered. A reply with an option's number or label answers the pending request, so `1` or `approve` runs an approval-gated tool and `2` or `cancel` stops it. If the question allows a custom answer, any other text is taken as that answer. Callers on a voice call get the question by SMS too. To render questions differently, declare your own `events["input.requested"]` handler.
+The default `input.requested` handler sends numbered options by SMS for questions and approvals, including during voice calls. A reply with an option's number or label answers the request (`1` or `approve` approves, `2` or `cancel` declines). If the question allows a custom answer, other text becomes that answer. Override `events["input.requested"]` to change the prompt.
 
 ### Proactive sessions
 

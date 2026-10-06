@@ -3,7 +3,7 @@ title: "Agent Configuration"
 description: "Configure an eve agent's model, reasoning effort, compaction, limits, and runtime behavior in agent.ts."
 ---
 
-An eve app has one root agent assembled from the files under `agent/`. Its optional `agent.ts` calls `defineAgent` (from `eve`) when you need to configure the model or other runtime behavior. Declared [subagents](./subagents) have their own `agent.ts` and capabilities; this page covers the configuration shared by root agents and subagents.
+Use `defineAgent` in `agent/agent.ts` to configure the model and runtime behavior. The root agent can omit this file and use eve's default configuration. Declared [subagents](./subagents) have their own `agent.ts`; this page covers settings for both.
 
 ## Set the model
 
@@ -17,12 +17,9 @@ export default defineAgent({
 });
 ```
 
-For a static AI Gateway model ID, you can make the same source change from the
-project root with `eve set model anthropic/claude-opus-5.5` or from the local
-dev TUI with `/model anthropic/claude-opus-5.5`.
+To change a static AI Gateway model ID without editing the file, run `eve set model anthropic/claude-opus-5.5` from the project root or `/model anthropic/claude-opus-5.5` in the local dev TUI.
 
-The root `agent.ts` can be omitted when no runtime config is needed. eve then selects its default `agent.ts` source at the same slot, configured with `openai/gpt-6-luna-fast` and `reasoning: "high"`; authoring the file replaces that source.
-When `agent.ts` is present, `model` is required.
+Without a root `agent.ts`, eve selects its default source: `openai/gpt-6-luna-fast` with `reasoning: "high"`. An authored file replaces that source and must specify `model`.
 
 A config that selects a static Gateway model is compile-only. A config that contains a dynamic model or a direct-provider `LanguageModel` remains a runtime entry because eve must resolve that authored value while the agent runs. See [Authored module lifecycle](./reference/typescript-api#authored-module-lifecycle).
 
@@ -47,18 +44,9 @@ For a local ChatGPT subscription, use `chatgpt()` from `eve/models/openai` and s
 
 Model use is subject to the terms, data-processing commitments, retention behavior, and available controls of the selected provider and routing path. Review the [AI Gateway model catalog](https://vercel.com/ai-gateway/models) for gateway-routed models, and review the provider's terms when you configure a direct `LanguageModel`.
 
-For every OpenAI or Anthropic model call, eve fills the provider's end-user
-safety identifier from the active turn's
-[`auth.current`](./guides/auth-and-route-protection#what-reaches-ctxsessionauth)
-principal when you have not configured it. For OpenAI, the option is
-`providerOptions.openai.safetyIdentifier`; for Anthropic, it is
-`providerOptions.anthropic.metadata.userId`. The default value is a SHA-256
-fingerprint of the principal's authenticator, issuer, type, id, and subject;
-eve does not send the raw principal fields or attributes. The fingerprint
-follows the current caller when a later turn changes users. An authored value
-at either provider path takes precedence and is forwarded unchanged. When
-`auth.current` is `null`, eve does not add an identifier. The same rules apply
-to compaction calls.
+For OpenAI and Anthropic model calls, eve fills the provider's end-user safety identifier from the active turn's [`auth.current`](./guides/auth-and-route-protection#what-reaches-ctxsessionauth) principal unless you set one. The paths are `providerOptions.openai.safetyIdentifier` and `providerOptions.anthropic.metadata.userId` respectively.
+
+The default identifier is a SHA-256 fingerprint of the principal's authenticator, issuer, type, ID, and subject. eve does not send raw principal fields or attributes. If a later turn has a different caller, the fingerprint changes with that caller. An authored value takes precedence and is forwarded unchanged. eve adds no identifier when `auth.current` is `null`. These rules also apply to compaction calls.
 
 For AI Gateway model calls, eve sets `providerOptions.gateway.sessionId` to the
 `gen_ai.conversation.id` used by Agent Runs. By default, all turns in a
@@ -142,11 +130,11 @@ A dynamic model selection can return `reasoning` alongside `model` to override
 the agent-level setting for that selection. Omitting it inherits the agent setting;
 `"provider-default"` explicitly uses the provider's default.
 
-Run `eve set model --reasoning high` to update this field from the command line.
+Run `eve set model --reasoning high` to change only the reasoning level.
 
 ## Compaction
 
-Compaction summarizes older turns as you approach the context window. It's on by default, so you only tune when it kicks in. eve adds the estimated fixed checkpoint-prompt envelope to the trigger count, so compaction starts sooner than the conversation-only estimate. Lower `thresholdPercent` to compact sooner:
+Compaction summarizes older turns as the conversation approaches the context window. It is on by default; configure when it starts if needed. eve adds the estimated fixed checkpoint-prompt envelope to the trigger count, so compaction starts sooner than the conversation-only estimate. Lower `thresholdPercent` to compact sooner:
 
 ```ts title="agent/agent.ts"
 export default defineAgent({
@@ -186,19 +174,9 @@ then emits `session.completed` and releases every continuation address; the next
 qualifying channel message starts fresh. Set it to `false` to disable the
 timeout. Expiration does not delete stored session data.
 
-Input tokens, output tokens, and model token cost are checked independently.
-The model call that crosses a limit is allowed to finish because exact usage
-arrives after the call completes. Before the next model call, eve pauses the
-session and sends a deterministic continuation prompt with two options:
-**Approve** grants a fresh window of each configured size, and **Stop**
-cancels the in-flight turn through the standard cancellation path
-(`turn.cancelled` → `session.waiting`) — a user decision, not an error. The session stays resumable; because it is
-still over budget, the next message re-raises the prompt. Declining a
-delegated child's prompt cancels the root turn, which cascades to the whole
-delegation tree — the delegating parent never receives an error result it
-could retry against a fresh quota share. A reply that answers neither option
-is queued while the existing prompt stays pending; eve does not raise another
-copy. The reply is processed once the budget is granted.
+eve checks input tokens, output tokens, and model token cost independently. The call that crosses a limit finishes because exact usage arrives afterward. Before the next model call, eve pauses the session and prompts for a decision. **Approve** grants a fresh window of each configured size; **Stop** cancels the in-flight turn through `turn.cancelled` → `session.waiting`. Stopping is a user decision, not an error. The session remains resumable, but the next message raises the prompt again while it is over budget.
+
+Declining a delegated child's prompt cancels the root turn and the entire delegation tree. The parent does not receive an error result it could retry against a fresh quota share. A reply that answers neither option is queued until the budget is granted; eve does not create another prompt.
 
 Sessions that cannot request input from a human, such as markdown schedules and
 delegated runs without input proxying, skip the prompt and fail the next model
@@ -226,20 +204,9 @@ including turns that later calls with `taskId` start. Remote agent tasks count
 toward the split but receive no grant: they run under their own deployment's
 limits.
 
-A child's usage, including what the child's own subagents spent, counts
-against the parent's quota. An agent task's usage counts with each reply it
-sends. A turn it doesn't reply to, such as one a cancel stopped, counts with
-the next reply, or when the turn ends if no call waits for a reply. Sessions
-that any other `serve` workflow tool opens with `ctx.agent` count the same
-way; those of an `execute` or `task` tool count when the tool finishes. Remote
-agents' reported usage counts the same way. Later children draw from what
-remains, and the parent's own limit and continuation prompt include delegated
-spend. Token-cost budgets follow the same rules, including splitting the
-remaining US-dollar budget and adding child cost back to the parent. Approving
-a continuation opens a fresh parent window for later child grants without
-erasing lifetime usage. An authored child limit applies only when it is
-tighter than the parent's grant; an uncapped parent delegates uncapped
-children.
+A child's usage, including its own subagents' usage, counts against the parent's quota. An agent task's usage counts with each reply. A turn without a reply, such as one stopped by cancellation, counts with the next reply or, if no call waits for one, when the turn ends. Sessions other `serve` workflow tools open with `ctx.agent` follow the same rule; those opened by `execute` or `task` tools count when the tool finishes. Remote agents' reported usage counts the same way.
+
+Later children draw from the parent's remaining quota. The parent's own limit and continuation prompt include delegated spend. Token-cost budgets also split the remaining US-dollar budget and add child cost back to the parent. Approving a continuation opens a fresh parent window for later grants without erasing lifetime usage. An authored child limit applies only when tighter than the parent's grant; an uncapped parent delegates uncapped children.
 
 Some delegated usage doesn't count against the parent: a `ctx.agent` turn
 still running when its workflow tool finishes or is cancelled; the `ctx.agent`
@@ -349,10 +316,9 @@ timeouts and [workflow tools](./tools/workflows).
 The value applies per agent. A [subagent](./subagents) that runs its own session
 uses its own value, unlike `experimental.workflow.world`, which is root-only.
 
-Custom Worlds used with eve might not support this feature, in which case
-it falls back to the World's default retention period.
+A custom Workflow world that does not support this setting uses its default retention period.
 
-> ⚠️ **At `0`, a finished session's output is usually gone before you can read it.** Since data is deleted immediately before it can be read back, results and transcripts become unreadable and a client polling for a finished session's output can see it disappear.
+> ⚠️ **At `0`, a finished session's output is usually gone before you can read it.** Results and transcripts become unreadable, and a client polling for the output may see it disappear.
 
 ## Other defineAgent fields
 

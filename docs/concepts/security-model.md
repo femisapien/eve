@@ -3,7 +3,7 @@ title: "Security Model"
 description: "eve's trust boundaries, where secrets live, how credentials reach hosts, and what fails closed by default."
 ---
 
-Your eve agent runs across two contexts, with a trust boundary between them and every secret kept on the trusted side. Use this mental model when deciding what an agent (and the model driving it) is allowed to reach.
+eve runs trusted application code separately from model-controlled sandbox work. Keep credentials in the app runtime and expose only the operations the agent needs.
 
 ## Trust boundaries
 
@@ -16,9 +16,9 @@ Your eve agent runs across two contexts, with a trust boundary between them and 
 
 The app runtime is the trusted side. Your tool implementations, model calls, connections, state, and durable execution all run here, with `process.env` and full Node.js available. (On Vercel, this is a Vercel Function.)
 
-The sandbox is the isolated side. The model runs shell commands and accesses files there through the default `bash`, `read_file`, and `write_file` tools and any opt-in sandbox tools such as `glob` and `grep`. It gets its own `/workspace` filesystem, but no `process.env`, no secrets, and no path back into the app runtime. (On Vercel, each sandbox is a [Vercel Sandbox](https://vercel.com/docs/sandbox) microVM with hardware-level isolation.) Only shell commands execute in the sandbox. Even the built-in `bash`/`read_file`/`write_file` tools live in the app runtime and _proxy_ into the sandbox. The model sees tool definitions and results, never your secrets.
+The sandbox provides an isolated `/workspace` without app secrets or `process.env`. Built-in tools such as `bash`, `read_file`, and `write_file` run in the app runtime and proxy commands or file access into it. On Vercel, the sandbox is a [Vercel Sandbox](https://vercel.com/docs/sandbox) microVM. The model sees tool definitions and returned results, not credentials.
 
-A concrete trace makes the boundary clear. When the model calls a custom `charge_card` tool, its `execute` runs in the app runtime, reads `process.env.STRIPE_KEY`, calls Stripe, and returns `{ ok: true }`. The model sees only `{ ok: true }`: the key never leaves the app runtime, and nothing about the call touches the sandbox. The built-in `write_file` is the mirror image, running in the app runtime and proxying the write into the sandbox `/workspace`. Either way the model drives the work through tool calls and their results, never by holding a credential or reaching the runtime directly.
+For example, a custom `charge_card` tool can read `process.env.STRIPE_KEY` in the app runtime and return `{ ok: true }` to the model without sending the key to the sandbox. The built-in `write_file` instead proxies a write into `/workspace`.
 
 See [Agent loop and sandbox](./execution-model-and-durability#agent-loop-and-sandbox) for how eve connects these contexts while keeping their state and lifetimes separate.
 
@@ -70,8 +70,6 @@ A [channel](../channels/overview) is your agent's front door, so authenticating 
   signature or token, never from a `principalId` (or similar) the request body
   claims. A body field is attacker-controlled; treating it as identity is
   cross-user impersonation.
-
-A custom channel that accepts dashboard-style webhooks should follow the same shape: authenticate the raw body with an HMAC, compare signatures in constant time, and trust any body-supplied principal only after the signature verifies.
 
 ## Authored markdown is data
 

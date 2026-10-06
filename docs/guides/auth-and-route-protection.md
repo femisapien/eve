@@ -8,8 +8,6 @@ eve has two independent auth systems:
 - **Route auth** (inbound) decides who can reach your agent's HTTP routes. It runs at the channel layer, gating the request before any model work runs.
 - **Tool and connection auth** (outbound) is how your agent signs in to an external service it calls, like an OAuth MCP server. It happens later, when a tool or connection actually reaches out.
 
-Start with route auth.
-
 ## Route auth
 
 The route-auth policy lives on the HTTP channel factory (`agent/channels/eve.ts`) and guards these route groups:
@@ -19,7 +17,7 @@ The route-auth policy lives on the HTTP channel factory (`agent/channels/eve.ts`
 - `POST /eve/v1/session/:sessionId/{cancel,compact,clear,reset}`
 - `GET /eve/v1/session/:sessionId/stream`
 
-These routes are protected by the channel's auth policy. eve fails closed by default: production traffic is rejected unless you configure an authenticator that accepts it, and anonymous access requires an explicit `none()`.
+Production requests are rejected unless an authenticator accepts them; anonymous access requires an explicit `none()`.
 
 The health route created by `eveChannel()` is public and skips the walk entirely, so load balancers and uptime monitors can probe it without credentials. Replacing `agent/channels/eve.ts` with a custom `defineChannel(...)` or disabling that slot also replaces or removes the health route.
 
@@ -99,19 +97,17 @@ Any other thrown error follows the normal channel failure path. When building a 
 
 `httpBasic(credentials, { realm })` accepts an optional `realm`, rendered on the `WWW-Authenticate: Basic` challenge (e.g. `Basic realm="agent", charset="UTF-8"`) so browsers label their native login prompt. It defaults to `"eve"`, ensuring every Basic challenge includes the required realm. Usernames and passwords are normalized to Unicode NFC before comparison, matching the advertised UTF-8 credential encoding.
 
-Exercise caution for agents that process non-public, sensitive, regulated, or production data unless you have implemented other access controls.
-
 ### `localDev()`
 
 Authenticates a synthetic `local-dev` principal, but only while the process is a local development server: `eve dev` (which sets `EVE_DEV=1`) or `vercel dev` (detected by `VERCEL=1` and `VERCEL_ENV=development` together). This is a property of the deployment, not the request, so no request header can flip it. A production deployment (`eve start`, a Vercel deployment, or any container host) sets neither flag, so `localDev()` authenticates nothing there and every request falls through to the next entry.
 
-Because it never opens a production deployment, `localDev()` is safe to leave in the walk. Still put a real authenticator ahead of it so production traffic has something to match.
+Keep a production authenticator ahead of `localDev()` in the walk.
 
 ### `vercelOidc()`
 
 Verifies a bearer JWT against the [Vercel OIDC issuer](https://vercel.com/docs/oidc). Tokens minted for the current `VERCEL_PROJECT_ID` are always accepted, which is why internal subagent and runtime callers authenticate with zero configuration. Tokens carrying an `external_sub` authenticate as user callers, but only when their `project_id` matches `VERCEL_PROJECT_ID` and their environment matches `VERCEL_TARGET_ENV` / `VERCEL_ENV`. In that case `external_sub` becomes the session subject, and the profile claims (`name`, `picture`, `email`) show up in `ctx.session.auth.current.attributes`. To admit tokens minted by other Vercel projects, pass `subjects: [...]` (AWS IAM-style `*` wildcards).
 
-Auth fails closed: routes reject unauthenticated traffic by default, and the OIDC user branch verifies `external_sub` against `VERCEL_PROJECT_ID` and the deployment environment, returning `false` when either is unset. An external-subject token cannot authenticate on a deployment that hasn't pinned its project.
+The OIDC user branch rejects an `external_sub` token when `VERCEL_PROJECT_ID` or the deployment environment is unset.
 
 #### `subjects` patterns and `vercelSubject(...)`
 
@@ -269,7 +265,9 @@ export default eveChannel({
 });
 ```
 
-`assertion.principal` holds the `current` and `initiator` contexts the forwarder asserts, already stamped with `eve:forwarded-by`. `initiator` equals `current` when the sender omits it. `initiator` takes effect only on session creation; on continuation the predicate still sees the asserted `initiator`, but the session keeps its original initiator, so checking it does not constrain that pinned value. Attributes are asserted too, so check any attribute your tools trust. `assertion.principal` is absent when the predicate decides parent session lineage for a request that forwards no principal; a predicate that requires it accepts that forwarder's lineage only alongside a principal it accepts. The `ForwardedAssertion` and `TrustedForwarders` types are exported from `eve/channels/eve` for named predicates.
+`assertion.principal` contains the `current` and `initiator` contexts asserted by the forwarder, stamped with `eve:forwarded-by`. When the sender omits `initiator`, it equals `current`. An asserted `initiator` takes effect only on session creation. On continuation, the predicate can inspect it, but the session retains its original initiator; checking the asserted value does not constrain the pinned one. Check any asserted attributes your tools trust.
+
+`assertion.principal` is absent when a request forwards parent session lineage without a principal. A predicate requiring a principal then accepts lineage only alongside an accepted principal. Import `ForwardedAssertion` and `TrustedForwarders` from `eve/channels/eve` to type named predicates.
 
 When the predicate accepts a create request, `ctx.session.auth.current` and `.initiator` carry the forwarded user exactly as if they had called your deployment directly. On continuation, only `auth.current` is replaced; `auth.initiator` remains the session creator. User-scoped connections, local subagents, and further `forwardPrincipal` hops therefore see the active turn's caller.
 
@@ -294,9 +292,7 @@ Inside runtime code, `ctx.session.auth` carries the result of the channel's rout
 - A follow-up message updates `auth.current` but leaves `auth.initiator` alone. When a different caller follows up on the same session, `auth.current` tracks the new caller for that turn while `auth.initiator` stays pinned to whoever started it.
 - `auth.current` is whatever the channel passed as `auth` when it dispatched the message. Route auth either accepts the request or returns `401`, but a route handler or channel hook can still dispatch with `auth: null`, such as `source.send(message, { auth: null })` or a Slack `onMessage` hook that returns `{ auth: null }`. On a new session, both values are then `null`. On a continuation, `auth.current` is `null` while `auth.initiator` stays pinned to the session's original caller. Internal runtime paths, such as subagents, can also have no caller auth.
 
-Use the principal on `auth.current` (or `auth.initiator`) to scope tools, resolve [dynamic capabilities](./dynamic-capabilities) per principal, or enforce tenant boundaries. There's no second per-session ownership ACL stacked on top of route auth. Access is decided at the HTTP boundary, and the durable session carries the caller snapshot forward into your runtime code.
-
-Route auth does not enforce session ownership. If multiple users or tenants can reach the same route, you must implement the per-user, per-tenant, or per-session authorization your application requires.
+Use `auth.current` or `auth.initiator` to scope tools and [dynamic capabilities](./dynamic-capabilities). **Route auth does not enforce session ownership.** If multiple users or tenants share a route, your application must check which session IDs each caller may access.
 
 ## Tool and connection auth
 
@@ -425,8 +421,6 @@ The tool's `ctx` exposes provider-scoped auth accessors:
 
 - `ctx.getToken(provider, options?)` resolves an inline provider such as `connect("github/myagent")`. It uses the same cache, callback, and sign-in machinery as connection auth, scoped to that provider's tool-qualified auth key.
 - `ctx.requireAuth(provider, options?)` evicts the cached token for that inline provider and starts a fresh authorization challenge. Use it after a downstream `401` rejects a token returned by `ctx.getToken(provider)`.
-
-Throw `ConnectionAuthorizationRequiredError` from an inline provider's `getToken` to trigger the consent flow for that provider. If a downstream request later rejects an already-resolved token, call `ctx.requireAuth(provider)` to evict and re-authorize it.
 
 Vercel Connect providers usually supply their own display name in the authorization challenge. Set `displayName` in the inline options only when you need to override what users see, for example `ctx.getToken(customAuth, { displayName: "Salesforce" })`. It is presentation-only.
 

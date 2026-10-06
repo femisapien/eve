@@ -3,7 +3,7 @@ title: "Query Sample Data"
 description: "Part 3 of the Build an Agent tutorial. Add a run_sql tool over a local sample dataset and watch the tool loop."
 ---
 
-The analytics assistant can hold a conversation, but it can't see a single row of data. Give it a tool. A tool is the action primitive. Typed input goes in, your code runs, structured output comes back. The name the model sees is the filename, so `agent/tools/run_sql.ts` becomes the tool `run_sql`.
+The analytics assistant cannot query data yet. Add a tool that accepts typed SQL input and returns structured rows. The model sees the filename as the tool name: `agent/tools/run_sql.ts` becomes `run_sql`.
 
 ## Install the sample database
 
@@ -24,9 +24,9 @@ build: {
 
 Restart the dev server after changing `externalDependencies`. eve reads this setting when the server starts.
 
-## A tiny sample dataset
+## Create a sample dataset
 
-Create `agent/lib/sample-db.ts` with the dataset below. These four orders and three customers supply the data for every remaining tutorial step. No database server, account, or connection string is needed. The dataset is recreated when the app restarts.
+Create `agent/lib/sample-db.ts`. It seeds four orders and three customers in memory when the app starts; no database server is needed.
 
 ```ts title="agent/lib/sample-db.ts"
 import initSqlJs from "sql.js";
@@ -71,7 +71,7 @@ export async function runReadOnlySql(sql: string) {
 }
 ```
 
-The outer `SELECT` lets SQLite accept queries, including `WITH` queries, while rejecting writes and configuration statements. The helper prepares one statement, rejects trailing SQL, and reads at most 501 rows. The extra row lets the tool report that its 500-row output was truncated. It frees the statement even when a query fails.
+The outer `SELECT` accepts read queries, including `WITH`, and rejects writes. The helper rejects trailing statements and reads one extra row to detect when the 500-row output is truncated.
 
 This is an in-memory tutorial database. A row limit does not bound the work needed to compute a query; use database-enforced read-only permissions and query timeouts when adapting the tool to a production database.
 
@@ -107,10 +107,6 @@ Restart the dev server with `npm run dev` and ask:
 Which customer has spent the most, and how much?
 ```
 
-Watch the loop play out in the TUI. The model emits a `run_sql` call, eve runs your `execute`, and the rows come back as a tool result. The model reads them and answers with a real number. The result is Globex with 9,900 cents ($99.00). The amounts are stored in cents, so divide by 100 when reporting dollars. eve drove the whole loop; you supplied the tool.
+In the TUI, watch the model call `run_sql`. eve runs `execute` and returns the rows to the model. Globex has spent the most: 9,900 cents ($99.00). Amounts are stored in cents, so divide by 100 when reporting dollars.
 
-Keep `run_sql` and the sample database for the rest of the tutorial. When you have your own data service, [Connect a warehouse](./connect-a-warehouse) explains the optional integration.
-
-→ Next: [Run analysis](./run-analysis)
-
-Learn more: [Tools](../tools)
+Keep `run_sql` and the sample database for the next step: [run analysis](./run-analysis). To replace the sample data later, [connect a warehouse](./connect-a-warehouse).

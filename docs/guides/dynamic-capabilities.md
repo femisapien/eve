@@ -3,7 +3,7 @@ title: "Dynamic Capabilities"
 description: "Resolve models, subagents, connections, tools, skills, and instructions at runtime with defineDynamic resolver events."
 ---
 
-`defineDynamic` resolves the model, subagents, connections, tools, skills, and instructions at runtime from a session event instead of declaring them up front. Reach for it when the right capability isn't known until the session starts, because it hinges on who the caller is, what tenant they belong to, feature flags, or external data. The [subagents](../subagents), [connections](../connections), [tools](../tools), [skills](../skills), and [instructions](../instructions) guides each point here for their dynamic form.
+Use `defineDynamic` to resolve models, subagents, connections, tools, skills, or instructions based on the caller, tenant, feature flags, or external data.
 
 eve evaluates a dynamic definition module once during compilation to classify and validate it, then retains that module as a runtime entry so its event handlers can run. Its top-level code therefore runs in both phases; keep caller-specific work inside the handlers. See [Authored module lifecycle](../reference/typescript-api#authored-module-lifecycle).
 
@@ -92,7 +92,7 @@ export default defineDynamic({
 
 `ctx.model` is the parent's effective model when the resolver runs. In this
 example, this dynamic subagent uses the parent's effective model when it is
-available falls back to `openai/gpt-5.5-mini` if the parent has not selected
+available and falls back to `openai/gpt-5.5-mini` if the parent has not selected
 one yet. The returned child config snapshots the model ID; a later parent
 model change does not retarget the child.
 
@@ -107,8 +107,7 @@ Runtime-selected models must use string model IDs. Put build configuration on
 the outer `defineDynamic` definition; build and Workflow-world configuration
 cannot be selected in a handler result.
 
-A single-file remote subagent uses the same lifecycle. Return
-`defineRemoteAgent(...)` to expose the selected deployment, or `null` to omit it:
+For a remote subagent, return `defineRemoteAgent(...)` to expose a deployment or `null` to omit it:
 
 ```ts title="agent/subagents/finance.ts"
 import { defineDynamic, defineRemoteAgent } from "eve";
@@ -190,12 +189,7 @@ export default defineDynamic({
 });
 ```
 
-The returned definitions use the same auth, headers, filtering, provided
-arguments, and approval options as static [MCP](../connections/mcp) and
-[OpenAPI](../connections/openapi) connections. Each resolved connection joins
-the per-step connection registry. eve announces it to the model in an
-append-only context message, and the model reaches its tools through
-`connection_search` and `connection_execute`, so the tool list never changes.
+Dynamic connections accept the same auth, headers, filters, provided arguments, and approvals as static [MCP](../connections/mcp) and [OpenAPI](../connections/openapi) connections. eve announces their names and descriptions in context; the model reaches their tools through `connection_search` and `connection_execute` without changing its tool list.
 
 Set `instanceKey` on every authenticated dynamic connection. Use a stable,
 non-secret account or tenant identifier, and change it whenever the endpoint,
@@ -372,8 +366,6 @@ When a stream event fires, three things happen in order.
 2. Stream-event [hooks](./hooks) fire.
 3. Dynamic tool resolvers subscribed to that event run and update the tool set.
 
-The tool loop reads the current set right before each model call, so a mid-turn update is visible on the next call.
-
 A single file can declare handlers for several events, and the most recently fired one owns that file's tool set. Re-resolve on `turn.started` to replace what `session.started` returned:
 
 ```ts title="agent/tools/catalog.ts"
@@ -422,8 +414,6 @@ export default defineDynamic({
   },
 });
 ```
-
-The caller's team gets its own playbook advertised as a loadable skill; everyone else gets nothing.
 
 Skills follow the same naming rule as tools: a single `defineSkill(...)` is named after the file slug, while a map names each entry by its bare key (namespace the key yourself if it might collide). A dynamic skill overrides a same-named authored one; two dynamic resolvers emitting the same name throws.
 

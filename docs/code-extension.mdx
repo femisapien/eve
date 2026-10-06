@@ -14,15 +14,7 @@ These results show baseline performance. Each harness uses its standard setup wi
 <details>
 <summary>How the benchmark works</summary>
 
-The benchmark uses eve-bench and the DeepSWE-lean dataset. DeepSWE-lean has 12 feature and bug-fix tasks from DeepSWE v1.1.
-
-- All harnesses use the same model and the same tasks.
-- Each harness does each task 3 times.
-- Each attempt runs in a new Vercel Sandbox.
-- Each attempt has a limit of 20 minutes.
-- The DeepSWE verifier examines the files that the agent leaves.
-- An attempt passes only when the verifier passes.
-- A crash or a timeout is a failure.
+eve-bench runs each of DeepSWE-lean's 12 feature and bug-fix tasks three times per harness with the same model. Each attempt gets a fresh Vercel Sandbox and a 20-minute limit. The DeepSWE verifier checks the resulting files; failed verification, crashes, and timeouts count as failures.
 
 The line on each correctness row shows the 95% interval. When the lines of two harnesses overlap, the benchmark does not show a difference between them.
 
@@ -31,12 +23,7 @@ The line on each correctness row shows the 95% interval. When the lines of two h
 <details>
 <summary>How the results update</summary>
 
-1. A maintainer runs the `eve-code` workflow on `main` with the `deepswe-lean` dataset.
-2. The workflow runs eve-code, opencode, and pi. It saves each complete result in the eve-bench result store.
-3. The workflow writes a summary of the result to `apps/docs/lib/evals/eve-code-benchmark.json`. Then it commits the file to `main`.
-4. The next docs deployment shows the new results.
-
-The workflow does not publish incomplete runs, single-task runs, or pull request runs. Results can be older than `main`, because a maintainer starts each run. Select a harness name to open the GitHub Actions run for that result.
+A maintainer runs the `eve-code` workflow on `main`. After eve-code, opencode, and pi complete the full dataset, the workflow commits a summary to `apps/docs/lib/evals/eve-code-benchmark.json`. The next docs deployment displays it. Incomplete, single-task, and PR runs are not published. Results may be older than `main`; select a harness name to inspect its GitHub Actions run.
 
 </details>
 

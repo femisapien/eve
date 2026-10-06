@@ -4,12 +4,12 @@ description: "Pause a run for a person — gate a tool on approval or have the a
 url: /human-in-the-loop
 ---
 
-Human-in-the-loop (HITL) is any point where the agent durably pauses and waits for a person. Two things trigger it, and both ride the same pause-and-resume protocol:
+Human-in-the-loop (HITL) input pauses a turn until someone answers. Two cases use the same protocol:
 
 - **Approvals** — a tool policy allows, denies, or pauses a call for a person to review. The agent decides to call the tool; the policy decides whether it runs automatically or needs a human decision.
 - **Questions** — the agent itself asks the user a clarifying question or a choice mid-turn, and parks until they answer.
 
-Both keep the turn open, and the stream reports `turn.waiting`. The run waits durably, for as long as it takes — seconds or days — and picks back up exactly where it left off once the answer arrives. Channels render the request for you.
+Both keep the turn open and emit `turn.waiting`. The run can survive restarts while waiting; channels render the request.
 
 ## Approvals
 
@@ -39,7 +39,7 @@ export default defineTool({
 | `always()` | Require approval before every call.                                                |
 | `auto()`   | Ask an evaluation model whether to run the exact call or require user approval.    |
 
-By default, omitted `approval` behaves like `never()`, so tool calls may execute without human approval. Require human approval or other safeguards for sensitive, irreversible, regulated, financial, healthcare, employment, housing, legal, safety-impacting, user-impacting, or external side-effecting actions.
+Omitting `approval` allows a tool to run without human review. Require approval or other safeguards for sensitive or irreversible actions.
 
 `auto()` uses an [AI SDK evaluation model](/docs/guides/evaluate) to classify each call as `clear` or `caution`. It defaults to `typesafe-ai/jev`, TypeSafe AI's [Jev evaluation model](https://vercel.com/i/what-is-jev). Like `evaluate`, a model string uses Vercel AI Gateway unless the application configures a global AI SDK default provider:
 
@@ -64,7 +64,9 @@ approval: auto({
 
 A reusable approval grant applies only after every matching request that is already pending has been resolved. If several calls to a `once()`-gated tool have each produced an approval prompt, approving one does not authorize the others; each visible prompt remains an independent decision. After those pending requests are resolved, later calls in the session are allowed automatically.
 
-When the decision depends on the input, pass your own policy instead of a helper. It receives the same session context as tool execution, plus `{ toolName, toolInput, approvedTools, callId, abortSignal }`, and returns an AI SDK 7 approval status synchronously or as a promise. Use `abortSignal` for asynchronous policy work so cancellation stops it with the turn. Use `ctx.session.auth.current` to guard by the caller of the current turn and `ctx.session.auth.initiator` to guard by the caller that created the session. Return `"user-approval"` to pause for a person or `"not-applicable"` to continue without a prompt. `toolInput` can be undefined, so guard the access. This policy denies cross-tenant calls, then requires approval only when an amount crosses a threshold:
+When the decision depends on the input, write a policy instead of using a helper. It receives the same session context as tool execution, plus `{ toolName, toolInput, approvedTools, callId, abortSignal }`, and returns an AI SDK 7 approval status or a promise of one. Pass `abortSignal` to asynchronous work so cancellation stops it with the turn.
+
+Use `ctx.session.auth.current` for the current caller or `ctx.session.auth.initiator` for the session's original caller. Return `"user-approval"` to pause or `"not-applicable"` to proceed. Guard access to `toolInput`, which can be undefined. This policy denies cross-tenant calls, then requires approval above an amount threshold:
 
 ```ts
 approval: ({ session, toolInput }) => {
@@ -80,7 +82,7 @@ For compatibility with the previous predicate shape, policies may return boolean
 
 Policies can also return `"approved"` or `"denied"` to decide automatically. Use `{ type: "approved" | "denied", reason }` when the model should receive a reason. The `Approval`, `ApprovalContext`, and `ApprovalStatus` types are exported from `eve/tools/approval`.
 
-Gating a side effect on approval is also how you make non-idempotent work safe across replays: a charge or email that sits behind `always()` can't fire from a re-run step without a fresh human decision.
+Approval controls whether a call may run; it does not deduplicate side effects after an ambiguous upstream result or an interrupted step. Give charges, emails, and other non-idempotent writes a stable application idempotency key in addition to any approval policy. See [When a tool throws](/docs/tools#when-a-tool-throws).
 
 ### Authorizing approval responses
 
@@ -222,19 +224,15 @@ Each request includes a `kind` discriminator: `tool-approval`, `question`, or
 `requestId` identifies the request to answer, and `action.callId` identifies the
 tool call that raised it; neither encodes the request's semantics.
 
-The run picks back up exactly where it parked. Because the pause is durable, nothing is held in memory while it waits — the process can restart and the parked turn survives.
-
 When a subagent requests input, eve emits the same `input.requested` event on its parent session. Answering through that parent session routes the response directly to the blocked child without invoking the parent model.
 
 If a tool is approved by another user, only the approved call runs with that user's auth. Subsequent tool calls in the turn stay with the original owner.
 
 For approval requests, a follow-up message that doesn't match an option steers the turn instead of answering it. eve cancels the turn's pending approval, so the call doesn't run and `input.resolved` reports `outcome: "ignored"`, and the model reads the message next. This happens even when the message is sent with `turnPolicy: "queue"`, because a turn held on a person can't end until they act. Calls the person already approved in the same batch still run. A message from someone other than the person the turn serves waits until the turn ends. Cancelling the turn withdraws its approval: the call doesn't run, `input.resolved` reports `outcome: "cancelled"`, and a later answer to it approves nothing.
 
-See [Sessions, runs & streaming](/docs/concepts/sessions-runs-and-streaming) for the full event and resume contract that this builds on.
-
 ## Answering from a client or channel
 
-Channels turn requests into native UI: the Slack adapter renders approvals as buttons and questions as select menus, and writes the user's choice back as the answer. You get this for free on every [channel](/docs/channels/overview).
+Channels turn requests into native UI: the Slack adapter renders approvals as buttons and questions as select menus, and writes the user's choice back as the answer. See [Channels](/docs/channels/overview) for how each integration handles requests.
 
 From your own frontend, scan all messages for pending requests and answer through the same session — see [Building a frontend](/docs/guides/frontend/overview#human-in-the-loop-prompts) for the client-side reducer and `inputResponses` shape.
 

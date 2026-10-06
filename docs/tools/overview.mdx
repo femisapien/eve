@@ -4,7 +4,7 @@ description: "Define typed actions the agent can call, and gate sensitive ones o
 url: /tools
 ---
 
-A tool is a typed action the agent can call, such as hitting an API, running a query, or writing a file. Define a tool when you implement the action in code you control. To give the model tools published by an external MCP or OpenAPI service, use a [connection](/docs/connections) instead. Authored tools run in your app runtime with full access to `process.env`, not in the [sandbox](/docs/sandbox).
+A tool is a typed action your agent can call. Author one for code you control; use a [connection](/docs/connections) for tools published by an MCP or OpenAPI service. Authored tools run in the app runtime with access to `process.env`, not inside the [sandbox](/docs/sandbox).
 
 ## Define a tool
 
@@ -23,12 +23,7 @@ export default defineTool({
 });
 ```
 
-A tool definition needs:
-
-- a filename slug under `agent/tools/`, the model-facing name.
-- a `description`: what the tool does, written for the model.
-- an `inputSchema`: a Zod schema (or any Standard Schema, or a plain JSON Schema object). Required. For no input, pass `z.object({})`. Zod and Standard Schema infer the `input` type in `execute`. Plain JSON Schema types it as `Record<string, unknown>`.
-- an `execute(input, ctx)`: the implementation. May be sync, async, or an async generator.
+The filename sets the model-facing name. Supply a model-facing `description`, a required `inputSchema` (Zod, Standard Schema, or JSON Schema), and an `execute(input, ctx)` implementation. Use `z.object({})` for no input. Standard Schema infers the executor's input type; plain JSON Schema types it as `Record<string, unknown>`. The executor can be synchronous, asynchronous, or an async generator.
 
 When a tool returns structured data, add an optional `outputSchema`. With Zod or Standard Schema it also types the `execute` return.
 
@@ -57,8 +52,6 @@ export default defineTool({
 ```
 
 The option defaults to `true` and works with `defineTool` and `defineWorkflowTool`. A root copy does not receive a tool with this option, and a tool authored inside a declared subagent is unavailable because that agent runs in a delegated session. This controls tool availability only; it does not add or remove entries from a workflow's `ctx.agents` registry.
-
-Compiled tools preserve Zod schema composition, including input and output schemas imported from helper modules. Durable replay metadata stays separate from the original schema, so adding it does not mutate shared schema objects.
 
 ### End the turn after a tool call
 
@@ -191,11 +184,7 @@ the call returns a receipt at once, and the workflow's output reaches the model 
 [resumable task](/docs/tools/workflows#resumable-tasks-serve), which the model can send more calls
 by its `taskId`.
 
-The `TaskExec` argument and `task.postMessage` have been removed. Return the result. In a workflow
-body, keep values needed after a wait in local variables; workflow replay reconstructs them across
-durable waits. Use [`ctx.ask`](/docs/tools/workflows#ask-a-human-ctxask) when the body needs an
-answer from the human. Built-in, declared local, and remote subagent calls also block: each call
-returns the child's reply as its tool result.
+In a workflow body, keep values needed after a wait in local variables and use [`ctx.ask`](/docs/tools/workflows#ask-a-human-ctxask) for human input. Subagent calls run as tasks: they return a receipt immediately, then deliver the reply in `task.result`.
 
 ### Yield and return
 
@@ -228,8 +217,6 @@ examples.
 - `ctx.messages`: the model input for the step that requested this call, the same messages a `step.started` [dynamic resolver](/docs/guides/dynamic-capabilities) reads.
 - `ctx.abortSignal`: aborts when the active turn is cancelled. Pass it to cancellation-aware work; sandbox sessions from `ctx.getSandbox()` are already bound to it.
 - `ctx.getSandbox()`: the live [sandbox](/docs/sandbox) handle.
-
-Running in the app runtime is what lets a tool import shared code from `lib/`, read `process.env`, and take part in eve’s durable pause/resume model.
 
 eve never runs authored tools during discovery. The model sees descriptors first, and only what it actually calls gets executed. Completed steps never re-run; eve replays the recorded result. A step interrupted mid-execution re-runs, so make non-idempotent side effects like charges or emails idempotent, or gate them with approval.
 

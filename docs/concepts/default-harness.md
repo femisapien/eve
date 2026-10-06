@@ -3,11 +3,13 @@ title: "Default Harness"
 description: "How eve manages model context and compaction during an agent turn."
 ---
 
-The default harness is eve's built-in agent loop. It manages model calls, compaction, and tool execution. Review the model-facing defaults and available opt-ins in [Built-in tools](./built-in-tools). To see how turns checkpoint and resume, read [Execution model and durability](./execution-model-and-durability).
+The default harness runs model calls, tool calls, and context compaction. See [Built-in tools](./built-in-tools) for its model-facing tools and [Execution model and durability](./execution-model-and-durability) for checkpointing.
 
 ## Compaction
 
-The harness keeps a long session from overflowing the model's context window. Before comparing the conversation with `thresholdPercent` (`0.9` by default), it adds the estimated fixed envelope of the checkpoint prompt used for compaction. It then summarizes the older turns and keeps going. The prompt asks the compaction model to distinguish completed progress and decisions from remaining work and to retain the constraints, preferences, data, and references needed to continue. When eve compacts again, it passes the previous checkpoint separately and without the transcript's per-message truncation, then replaces it with the updated checkpoint. The summary uses the active turn model unless you override it. Tune when and how it kicks in under [`compaction`](../agent-config#compaction) in `agent.ts`:
+The harness compacts long sessions before they overflow the model's context window. It adds the estimated fixed envelope of the compaction checkpoint prompt before comparing the conversation with `thresholdPercent` (`0.9` by default). If the threshold is reached, eve summarizes older turns and continues.
+
+The summary retains completed work, decisions, remaining work, and context needed to continue. On later compactions, eve passes the previous checkpoint separately without per-message truncation and replaces it with the new one. Compaction uses the active turn model unless you override it under [`compaction`](../agent-config#compaction) in `agent.ts`:
 
 ```ts title="agent/agent.ts"
 export default defineAgent({
@@ -18,11 +20,7 @@ export default defineAgent({
 });
 ```
 
-Before summarizing, eve tries to shorten oversized tool results in older history.
-It checks whether that reduction is sufficient using the last provider-reported
-input token count plus an estimate of new messages. A smaller character estimate
-alone cannot satisfy compaction triggered by a higher provider count. If trimming
-cannot free enough space, eve summarizes the older history.
+Before summarizing, eve trims oversized older tool results. It checks whether that freed enough space against the last provider-reported input token count plus estimated new messages; if not, it summarizes older history.
 
 First-class [memory](../memory) participates in a separate lifecycle. eve asks
 providers to capture before compaction, excludes attributed recalled records
@@ -36,9 +34,7 @@ if a turn is running, eve queues it until that turn settles. A successful manual
 compaction emits the same `compaction.requested` and `compaction.completed`
 events as automatic compaction, followed by `session.waiting`.
 
-After either kind of compaction, eve moves the idle session to a fresh workflow
-run on the same deployment, so a long session's run history does not keep
-growing. See [Execution model and durability](./execution-model-and-durability#compaction-handoff).
+After compaction, eve moves the idle session to a fresh workflow run on the same deployment to bound run history. See [Compaction handoff](./execution-model-and-durability#compaction-handoff).
 
 To discard model-message history instead of summarizing it, call the corresponding
 `clear()` method on any of those handles. Clearing preserves the session identity,

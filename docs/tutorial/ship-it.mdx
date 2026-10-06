@@ -3,11 +3,11 @@ title: "Ship It"
 description: "Part 8 of the Build an Agent tutorial. Put a web dashboard on the agent with useEveAgent, replace placeholderAuth, and deploy to Vercel."
 ---
 
-The analytics assistant runs in the TUI. Now add a web dashboard and deploy a private, single-user version on Vercel. This example protects the sample app with a username and password. It does not require another authentication service.
+Add Web Chat to the analytics assistant and deploy a private, single-user version on Vercel. This example uses HTTP Basic auth with a username and password.
 
 ## Add the Web Chat app
 
-Step 1 scaffolded the agent without a web frontend. Add one now with `eve add channel/web`, run from the `analytics-assistant/` directory:
+From `analytics-assistant/`, install Web Chat:
 
 ```bash
 npx eve add channel/web
@@ -26,9 +26,7 @@ export default withEve(nextConfig);
 
 ## Use the generated chat
 
-Keep the generated `app/_components/agent-chat.tsx` and `agent-message.tsx` components. `app/page.tsx` already renders the chat, and `useEveAgent` handles session creation and streaming.
-
-The generated UI displays tool results and errors, authorization links, approval buttons, and question forms. The spend approval from [Guard the spend](./guard-the-spend) needs those controls to resume a waiting turn. A component that renders only text messages leaves those interactions unavailable.
+The generated `app/page.tsx` renders a chat backed by `useEveAgent`, including controls for approvals and questions. Keep those controls so the [spend approval](./guard-the-spend) can resume the turn.
 
 Run `npm run dev`, open the local web URL printed by the server, and ask for an unfiltered revenue query. Confirm that the approval appears and that approving it lets the query finish. You can customize the UI after this flow works; see [Frontend](../guides/frontend/overview).
 
@@ -75,7 +73,7 @@ export default eveChannel({
 });
 ```
 
-The verified username becomes the user principal. The `growth` team selects the sample playbook from [Team playbooks](./team-playbooks). Keep these credentials private to one person. A shared password does not give each person a separate identity or isolated sessions. For a multi-user app, use a real session provider and enforce [session ownership](../guides/auth-and-route-protection#what-reaches-ctxsessionauth).
+The verified username becomes the user principal, and `growth` selects the sample [team playbook](./team-playbooks). Keep this credential private to one person: a shared password does not isolate users or sessions. For multiple users, use individual accounts and enforce [session ownership](../guides/auth-and-route-protection#what-reaches-ctxsessionauth).
 
 Add `proxy.ts` at the project root so opening the dashboard triggers the browser's native username/password prompt. It protects the generated UI routes; eve API routes keep their channel auth, so an OIDC-authenticated CLI request does not encounter a browser-only gate:
 
@@ -113,7 +111,7 @@ npx vercel@latest deploy
 
 Open the HTTPS preview URL and enter the configured username and password. Create a session and ask a sample-data question. In a private browser window, cancel the login prompt and verify the dashboard is denied. A `POST /eve/v1/session` request without credentials must also return `401`.
 
-The authenticated web app and eve runtime share the same origin, and the sandbox runs on Vercel Sandbox. You can also smoke-test the deployment through the authenticated CLI:
+To test the deployment from the terminal, connect with the authenticated CLI:
 
 ```bash
 npx eve remote connect --url https://your-analytics-app.vercel.app
@@ -121,26 +119,8 @@ npx eve remote connect --url https://your-analytics-app.vercel.app
 
 For a production deployment, add the username, password, and model credential to the Production environment too, then run `npx vercel@latest deploy --prod`. Missing Basic credentials keep browser access closed.
 
-The private assistant queries the sample data, runs analysis in a sandbox, charts the results, remembers definitions, loads the Growth playbook, and asks before an expensive query.
-
-## What you learned
-
-Across the eight steps you built and shipped one agent, and along the way you used:
-
-- **Tools** to give the model typed actions (`run_sql`, `chart_series`, `define_metric`).
-- **The sandbox** to compute and chart beyond SQL in an isolated `/workspace`.
-- **State** (`defineState`) to remember the team's glossary across turns.
-- **Dynamic skills** (`defineDynamic`) to load the right team playbook per caller.
-- **Human-in-the-loop** approval (`approval`) to gate expensive queries.
-- **Channel auth** to turn a request into an authenticated principal.
-- **Deployment** to Vercel, with the runtime behind your web app.
-
 ## Next steps
 
-- [Connect a warehouse](./connect-a-warehouse) when you have a data service to use in place of the sample dataset.
-- [MCP connections](../connections/mcp) for tool allowlists and per-connection approval.
-- [Sandbox](../sandbox) for backends, lifecycle, and network policy.
-- [Dynamic capabilities](../guides/dynamic-capabilities) for schema-derived dynamic tools, a read-only analyst subagent, and model-authored report workflows on this same example.
-- [Authentication](../guides/auth-and-route-protection) for production auth patterns.
-
-Learn more: [Frontend](../guides/frontend/overview) · [Authentication](../guides/auth-and-route-protection) · [Deployment](../guides/deployment/overview)
+- [Connect a warehouse](./connect-a-warehouse) to replace the sample dataset.
+- [Authentication](../guides/auth-and-route-protection) to replace the shared password and enforce per-session access in a multi-user app.
+- [Frontend](../guides/frontend/overview) to customize the chat UI.

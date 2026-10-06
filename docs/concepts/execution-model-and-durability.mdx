@@ -3,17 +3,17 @@ title: "Execution Model and Durability"
 description: "How an eve session runs. Durable conversations, turns that checkpoint at steps, and parked work that resumes later."
 ---
 
-An eve session is a durable conversation. It can run for days and survives process restarts and redeploys without any work on your part. You write the capabilities (tools, instructions, channels) and eve runs the loop.
+An eve session is a durable conversation that can span days and survive process restarts and redeploys. You define tools, instructions, and channels; eve runs the agent loop.
 
 ## Sessions, turns, and steps
 
 Work nests in three levels:
 
-- **session**: the whole durable conversation or task. It's long-lived and can span many requests over days or weeks without losing context.
+- **session**: the durable conversation, which can span many requests.
 - **turn**: one user message and all the work it triggers (model calls, tool calls, reasoning) until the agent produces its response.
 - **step**: a durable checkpoint inside a turn. By default, it contains one model call and the inline tool calls that follow it.
 
-Every session runs as one durable workflow, built on the open-source [Workflow SDK](https://workflow-sdk.dev/) (Vercel Workflow when you deploy on Vercel). The session workflow executes each turn and checkpoints progress at step boundaries. Your code runs inside a managed step, so tools, the sandbox, and subagents feel synchronous even though the session underneath them is durable.
+Each session runs as a durable [Workflow SDK](https://workflow-sdk.dev/) workflow (Vercel Workflow on Vercel). It executes turns and checkpoints progress at step boundaries.
 
 The experimental
 [`workflow.modelCallsPerStep`](../agent-config#workflow-checkpoint-batching)
@@ -21,11 +21,15 @@ agent setting can group several sequential model-and-tool cycles into one
 Workflow step. This reduces checkpoint overhead but makes the entire group one
 replay unit.
 
-The Workflow SDK is not inherently tied to Vercel. In local development and in a self-deployed `eve start` process, eve uses the SDK's local world by default; that world persists workflow runs on disk under `.eve/.workflow-data` and dispatches through the same Nitro-hosted workflow routes. On Vercel, the same workflow code runs against Vercel Workflow instead, which adds deployment-aware routing and dashboard run metadata.
+During local development and self-hosted `eve start`, eve uses the SDK's local world by default, persisting runs under `.eve/.workflow-data`. On Vercel, the same workflow code uses Vercel Workflow, with deployment-aware routing and dashboard run metadata.
 
-When a Vercel production deployment changes, a new delivery to an idle session hands the session's settled state to the exact deployment that accepted the request. This applies whether the delivery arrives through the session ID or through any channel continuation address the session has claimed. The session keeps its original ID and event stream, while the next model turn uses that deployment's current system-role instructions, model, and tools. Static user-role instructions stay pinned in the durable conversation history and are not seeded again. A successful handoff restarts the session's original configured [`sessionTimeoutMs`](../agent-config#runtime-limits) duration; disabled timeouts stay disabled. Failed or skipped handoffs keep the existing deadline.
+When a Vercel production deployment changes, a new delivery to an idle session hands its settled state to the deployment that accepted the request. This applies to deliveries through either the session ID or a claimed channel continuation address. The session keeps its ID and event stream; the next model turn uses the new deployment's system-role instructions, model, and tools. Static user-role instructions remain in the durable conversation history and are not seeded again.
 
-Before taking ownership, the target deployment upgrades the checkpoint when an older eve release wrote it, then checks that no pending work remains. A deployment accepts checkpoints from eve 0.66.0 and later, so upgrading eve does not leave long-lived sessions, such as a Slack thread, on their old deployment. An older release cannot read a newer checkpoint: after a rollback, a session that already moved to the newer deployment stays there. Extension state saved before eve 0.69 moves to its mount when exactly one mount of that extension package defines that state. State that the target deployment no longer defines, such as a removed `defineState` key, is dropped, and the target deployment's runtime logs show a `dropping unknown context key during deserialization` warning. When two or more mounts of one extension package define that state, eve cannot choose an owner, and the session stays on its current deployment. Idle subagent sessions that eve 0.66–0.68 kept for later reuse are stopped after the handoff. Authored session state remains opaque to this validation.
+A successful handoff restarts the session's original configured [`sessionTimeoutMs`](../agent-config#runtime-limits) duration; disabled timeouts stay disabled. Failed or skipped handoffs keep the existing deadline.
+
+Before taking ownership, the target deployment upgrades checkpoints written by older eve releases and checks that no work remains pending. It accepts checkpoints from eve 0.66.0 onward, so long-lived sessions such as Slack threads can move to the new deployment. An older release cannot read a newer checkpoint: after a rollback, a session that already moved stays on the newer deployment.
+
+Extension state saved before eve 0.69 moves to its mount when exactly one mount of that package defines the state. If multiple mounts define it, eve cannot choose an owner, and the session stays on its current deployment. State the target no longer defines, such as a removed `defineState` key, is dropped with a `dropping unknown context key during deserialization` warning in the target's runtime logs. Idle subagent sessions retained for reuse by eve 0.66–0.68 stop after handoff. Authored session state remains opaque to this validation.
 
 If the target deployment rejects the session, the previous owner keeps it and processes the triggering delivery. When the target deployment cannot read the checkpoint, its Vercel runtime logs show a `session handoff refused` warning with the checkpoint version and the reason. Owners on this release or later also write a `session handoff failed` warning to their own runtime logs, with the target deployment and the reason.
 
@@ -35,7 +39,9 @@ eve does not move live work between deployments. A session with a running turn, 
 
 Every workflow run records each step it executes, so a session that ran on one run for weeks would carry its whole history in that run. To bound this, eve moves a session to a fresh run on its current deployment after [compaction](./default-harness#compaction) rewrites the conversation history. This applies to automatic compaction during a turn and to a client or channel compaction request.
 
-The move happens once the turn settles and nothing else is waiting: no queued messages, running tasks or subagents, or pending human input. The new run receives the compacted history and settled state, then waits for the next message. If a single message reaches an otherwise idle session before the move completes, eve moves the session with that message, and the message's turn runs on the new run. If work is still pending, eve tries again after a later turn settles. The session keeps its ID, event stream, continuation addresses, and deadline; compaction never extends [`sessionTimeoutMs`](../agent-config#runtime-limits). If the new run cannot take ownership, the current run keeps the session, writes a `session handoff failed` warning to its runtime logs, and tries again later.
+The move happens after the turn settles, when there are no queued messages, running tasks or subagents, or pending human input. The new run receives compacted history and settled state, then waits for the next message. If one message reaches an otherwise idle session before the move completes, the session moves with it, and the turn runs on the new run. If work is still pending, eve tries again after a later turn settles.
+
+The session keeps its ID, event stream, continuation addresses, and deadline; compaction never extends [`sessionTimeoutMs`](../agent-config#runtime-limits). If the new run cannot take ownership, the current run keeps the session, logs `session handoff failed`, and tries again later.
 
 ### Upgrading sessions from the former execution model
 
@@ -95,9 +101,7 @@ App-side code reaches the sandbox through `ctx.getSandbox()`. The default `bash`
 
 The [sandbox](../sandbox) owns the per-session filesystem and processes. Authored skills are materialized under `$HOME/.agents/skills`, and `agent/sandbox/workspace/**` seeds `/workspace`. The loop and sandbox have decoupled lifetimes: the durable workflow can park or restart independently, while the app runtime opens or reuses sandbox compute only when code needs it.
 
-This split gives the agent a real filesystem and process environment without putting credentials or trusted integration code in model-controlled compute. The workflow can park without holding sandbox compute, while sandbox capacity and backends can change independently of durable orchestration. Because access flows through app-side tools, sandbox work gets the same approval and instrumentation path as any other tool call.
-
-Provider keys, tool secrets, and MCP, OpenAPI, and connection credentials stay in the app runtime. When a sandbox process needs authenticated network access, [credential brokering](./security-model#credential-brokering) handles the request without exposing the credential to the process.
+The workflow can park without holding sandbox compute. Sandbox access flows through app-side tools and follows their approval and instrumentation rules. Provider keys and connection credentials stay in the app runtime. When a sandbox process needs authenticated network access, [credential brokering](./security-model#credential-brokering) handles the request without exposing the credential to the process.
 
 ## Resuming after a crash
 
@@ -111,10 +115,6 @@ boundaries still force a checkpoint before eve waits.
 Steering can interrupt pending model generation before assistant output begins.
 An executing tool finishes safely, then the batch yields before another model
 call so the owner can apply accepted steering within the same turn.
-
-Durability itself needs no configuration. eve owns the workflow lifecycle, and
-sessions are durable by default; checkpoint batching is an explicit
-experimental opt-in.
 
 For ordinary tools, eve manages the workflow around your executor. Use [`defineWorkflowTool`](../tools/workflows) when your own tool body needs durable waits, such as a timer, webhook, or human answer. Two surfaces give your own code session data: tools read the current session's metadata (id, turn, auth, parent lineage) via `ctx.session`, and [`defineState`](./state) reads or writes session-scoped durable state. See [State](./state) for the read/write model.
 
@@ -168,10 +168,6 @@ Once eve publishes an input request or begins publishing turn completion or fail
 `turnPolicy: "queue"` preserves the message until the active turn settles. If several deliveries are ready when the owner checks, eve may fold adjacent messages into the next turn while preserving their arrival order. Pure `inputResponses` deliveries do not steer; they remain available to the pending request they address.
 
 Every built-in and custom channel accepts a default `turnPolicy`, and imperative message sends can override it. The policy is part of the same durable delivery command as the message, so concurrent senders cannot separate replacement ownership from cancellation intent. Separate sessions still run independently.
-
-## Subagents
-
-A turn can hand work off to a [subagent](../subagents). Each subagent gets its own context and its own durable session; a declared subagent also gets its own sandbox, skills, and state. Nothing crosses the boundary implicitly.
 
 ## How eve orders session history
 

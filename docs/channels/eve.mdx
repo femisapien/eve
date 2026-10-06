@@ -3,11 +3,7 @@ title: "eve"
 description: "The default HTTP API for an agent, covering session routes, auth, and customization."
 ---
 
-The eve channel is the framework's default HTTP API. It's what the terminal UI, [`useEveAgent`](../guides/frontend/overview), `curl`, and any SDK client talk to when they start sessions, send messages, and stream events. The selected `channels/eve.ts` source owns the complete `/eve/v1` surface, including health, inspection, callbacks, task input, and session routes. eve supplies that source when `agent/channels/eve.ts` does not exist.
-
-Every running eve app exposes its own API. `eve.dev` publishes framework documentation; it is not a shared API, authorization server, MCP server, or A2A server. Each deployment supplies its own host and authentication policy.
-
-Reach for it when something needs HTTP access to your agent, including local tooling, a browser frontend, the terminal UI, or another API client. Most apps never write this file. Add `agent/channels/eve.ts` only to override the defaults, usually the route auth policy.
+The eve channel is the default HTTP API for sessions, controls, streams, health, inspection, callbacks, and task input. The terminal UI, [`useEveAgent`](../guides/frontend/overview), and SDK clients use its `/eve/v1` routes. Each app serves its own API and sets its own authentication policy; `eve.dev` hosts documentation, not your agent. eve supplies the channel when `agent/channels/eve.ts` is absent. Author that file only to override defaults such as route auth.
 
 ```ts title="agent/channels/eve.ts"
 import { eveChannel } from "eve/channels/eve";
@@ -44,9 +40,6 @@ Create a conversation session before its first message with a bodyless request:
 curl -X POST https://<deployment>/eve/v1/session
 # {"ok":true,"sessionId":"wrun_A","status":"accepted"}
 ```
-
-See [Start a session](../concepts/sessions-runs-and-streaming#start-a-session) for the
-initialization boundary, first-turn identity, readiness response, and retry behavior.
 
 The create request still requires route auth. Session audience and the timeout are selected
 at creation; they do not change when the first message arrives. Turn-scoped fields such as
@@ -236,12 +229,6 @@ export default eveChannel({
 ```
 
 `onMessage` must return an auth result. Return `title` alongside `auth` to set the title when the dispatch creates a session or sends the first message to a prewarmed session. A successful canonical eve HTTP message always dispatches and therefore always produces or continues a session.
-
-## Clients
-
-The browser side of this API lives in the [Frontend](../guides/frontend/overview) docs, where `useEveAgent` drives the eve channel from React UI.
-
-For scripts, server-to-server calls, evals, tests, and custom clients, use the [Client SDK](../guides/client/overview). It wraps the ID-addressed session routes, stream cursor, and reconnect loop.
 
 ## What to read next
 

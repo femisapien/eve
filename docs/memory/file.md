@@ -3,12 +3,7 @@ title: "File Memory"
 description: "Configure the built-in fileMemory() provider: a bounded, model-maintained document per scope with save and remove tools."
 ---
 
-`fileMemory()` from `eve/memory/file` is the memory provider built into eve.
-It keeps one small document per resolved scope, recalls that document before
-each turn and after compaction, and gives the model two tools to maintain it.
-Use it when a short list of durable facts and preferences is enough; use
-[another provider](/docs/memory#choose-a-provider) when you need semantic
-retrieval or automatic capture.
+`fileMemory()` keeps one bounded document per scope, recalls it before turns and after compaction, and gives the model tools to save and remove entries. For semantic retrieval or automatic capture, use [another provider](/docs/memory#choose-a-provider).
 
 Add and provision file memory from an eve project:
 
@@ -39,10 +34,7 @@ export default defineMemory({
 
 ## How it behaves
 
-The provider implements recall and tools but no automatic capture. The model
-decides when to call `file__save_memory` and `file__remove_memory`, where
-`file` is the slot name. The slot `description` is prepended to both tool
-descriptions.
+The model decides when to call `file__save_memory` or `file__remove_memory`; file memory does not capture automatically. `file` is the slot name, and its `description` prefixes the tool descriptions.
 
 Each saved entry receives a permanent numeric index that the model uses to
 remove it later. The provider recalls the whole document as one message with a
@@ -99,8 +91,7 @@ provider: fileMemory({ backend: inMemory() });
 Provisioned bindings use the `EVE_MEMORY_BLOB_*` namespace so file memory does
 not take over an application's own Blob store. Vercel supplies the OIDC token;
 the Blob SDK resolves the current token for each operation and handles refresh.
-File-memory reads and writes need the store ID. The webhook public key is for upload callbacks
-and is not used by file memory.
+File-memory reads and writes need the store ID, not the webhook public key.
 
 `fileMemory()` checks Vercel configuration in this order:
 
@@ -176,6 +167,4 @@ export function kvBackend(store: KvStore): MemoryDocumentBackend {
 `MemoryDocumentConflictError` when `expectedVersion` no longer matches. An
 `expectedVersion` of `null` means the document must not exist yet.
 
-A backend changes only where the document is stored. It does not change file
-memory's recall format or tools. When you need different retrieval, capture, or
-tools, [build a memory provider](./custom-provider) instead.
+A custom backend changes storage, not recall or tools. To change those behaviors, [build a memory provider](./custom-provider).

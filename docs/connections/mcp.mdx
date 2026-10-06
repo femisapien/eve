@@ -3,9 +3,7 @@ title: "MCP Connections"
 description: "Connect an eve agent to a remote MCP server, authorize it with Vercel Connect or static credentials, and control which tools the model can discover."
 ---
 
-MCP connections point eve at a remote MCP server you do not author. The server publishes its tools and schemas, and the model finds and calls them through `connection_search` and `connection_execute`.
-
-Use MCP when the service already has an MCP server, when the server owns tool schemas dynamically, or when one connection should expose a family of related remote tools. Use an [OpenAPI connection](./openapi) instead when the service publishes an HTTP API contract and you want eve to generate one tool per operation.
+An MCP connection exposes a remote server's tools to the model through `connection_search` and `connection_execute`. Use one when the service provides an MCP server; use an [OpenAPI connection](./openapi) to derive tools from an HTTP API specification instead.
 
 ## Define an MCP connection
 
@@ -22,7 +20,7 @@ export default defineMcpClientConnection({
 });
 ```
 
-The `url` must speak Streamable HTTP or SSE. Write the `description` for the model, not for yourself: eve lists it next to the connection name, and it is the main signal the model uses to decide which connection to search.
+The `url` must serve Streamable HTTP or SSE. The model uses `description` to decide which connection to search; describe the server's available work.
 
 ## Configure protocol discovery
 
@@ -36,13 +34,13 @@ export default defineMcpClientConnection({
 });
 ```
 
-With `protocolVersionDiscovery: false`, the client skips `server/discover` and starts with `initialize`, proposing `2025-11-25` and negotiating a supported handshake-based version. This is a per-connection setting; omitting it or setting it to `true` keeps discovery enabled. Remove the override when the server supports discovery. The setting also applies to connections returned by dynamic resolvers.
+With `protocolVersionDiscovery: false`, the client skips `server/discover` and starts with `initialize`, proposing `2025-11-25` and negotiating a supported version. Discovery stays enabled when the option is omitted or `true`, including for dynamic connections.
 
 ## Use Vercel Connect for OAuth
 
 For OAuth-backed MCP servers, use the shared [Vercel Connect flow](../connections#interactive-oauth-via-vercel-connect), then pass the returned connector UID to `connect()`. Keep the MCP runtime URL and Connect service identifier distinct. For example, Linear uses `https://mcp.linear.app/mcp` as the MCP endpoint and `mcp.linear.app` when creating the connector.
 
-`connect("...")` is user-scoped by default and requires an authenticated user on the active eve session. Use `connect({ connector, principalType: "app" })` when the server should act as the agent instead. The connections overview covers connector setup, session requirements, app and user scope, callback behavior, and troubleshooting.
+`connect("...")` is user-scoped by default and requires an authenticated user on the active eve session. Use `connect({ connector, principalType: "app" })` when the server should act as the agent instead. See [Connections](../connections#interactive-oauth-via-vercel-connect) for connector setup and callback behavior.
 
 ## Static tokens and headers
 
@@ -75,10 +73,6 @@ export default defineMcpClientConnection({
 Values may be JSON values, promises, or callbacks. Callbacks receive the active session context, the bare remote `toolName`, and a replay-stable `callId` that is unique to the tool call. Use `callId` when the remote server needs an idempotency key.
 
 eve treats configured keys as application-owned: it removes them from every remote tool's model-facing input schema and adds their resolved values immediately before execution. They apply to every tool call on the connection and replace any conflicting model value. Approval policies continue to receive only the model-authored input.
-
-## No auth
-
-Omit `auth` and `headers` only for an intentionally public or loopback MCP server. See [No auth](../connections#no-auth) for the shared connection behavior and security boundary.
 
 ## Tool filters
 
@@ -145,8 +139,6 @@ Two details are specific to connection tools:
 - **`toolInput` is the raw input the model produced**, typed as `Record<string, unknown> | undefined`. With an authored tool you define the `inputSchema`, so its approval policy gets input typed and checked against your schema; a connection tool's schema is published by the remote MCP server, not you, so the shape is one you neither own nor can rely on. It is also `undefined` whenever the model's input isn't an object. Read nested fields defensively — as `publishesNow` does — instead of trusting the shape.
 
 Return `"user-approval"` (or `true`) to pause for a person and `"not-applicable"` (or `false`) to run without a prompt; return `"approved"` or `"denied"` to decide automatically without involving anyone.
-
-[Human-in-the-loop](/docs/human-in-the-loop#approvals) covers the full set of statuses, how `approvedTools` and `session.auth` factor in, and how a gated call pauses and resumes durably.
 
 ## Control result size
 
