@@ -116,7 +116,11 @@ export function resolvePendingInput(input: {
   const route = routePendingInput(batches);
   // Finish already-approved work before another batch or user message can hide
   // the approval response from the SDK. Session-limit prompts still take priority.
-  if (route.kind === "approvals" && hasTailApprovalResponse(baseHistory)) {
+  if (
+    route.kind === "approvals" &&
+    hasTailApprovalResponse(baseHistory) &&
+    (batches.length > 0 || hasApprovedTailResponse(baseHistory))
+  ) {
     return finishResolvedInput({
       deferTurnInput: true,
       leftoverResponses: input.stepInput?.inputResponses ?? [],
@@ -167,6 +171,20 @@ export function resolvePendingInput(input: {
   }
 }
 
+/**
+ * Answers an open budget prompt from new input's text before that input joins
+ * a message deferred behind the prompt. Joined, the text no longer matches an
+ * option, so the answer would queue behind the message it should release.
+ */
+export function answerSessionLimitFromText(
+  session: HarnessSession,
+  stepInput: StepInput | undefined,
+): StepInput | undefined {
+  if (stepInput === undefined || getDeferredStepInput(session) === undefined) return stepInput;
+  const limitBatch = getPendingInputBatches(session.state).find(isSessionLimitInputBatch);
+  return limitBatch === undefined ? stepInput : resolveTextMessageInput(limitBatch, stepInput);
+}
+
 type PendingInputRoute =
   | { readonly batch: PendingInputBatch; readonly kind: "session-limit" }
   | { readonly kind: "approvals" };
@@ -183,6 +201,14 @@ function routePendingInput(batches: readonly PendingInputBatch[]): PendingInputR
     }
   }
   return { kind: "approvals" };
+}
+
+function hasApprovedTailResponse(messages: readonly ModelMessage[]): boolean {
+  const tail = messages.at(-1);
+  return (
+    tail?.role === "tool" &&
+    tail.content.some((part) => part.type === "tool-approval-response" && part.approved)
+  );
 }
 
 function canonicalizeInputResponses(responses: readonly InputResponse[]): readonly InputResponse[] {
