@@ -59,8 +59,7 @@ import { createOrderedStreamEmitter } from "#harness/ordered-stream-emitter.js";
 import { interruptStreamOnFailure } from "#harness/interruptible-stream.js";
 import { isInlineAuthorizationToolResult } from "#harness/inline-tool-authorization.js";
 import type { HarnessEmissionState } from "#harness/emission-state.js";
-import { emitNestedToolActions } from "#harness/nested-actions.js";
-import type { HarnessEmitFn, HarnessToolMap, StepInput } from "#harness/types.js";
+import type { HarnessEmitFn, HarnessToolLookup, StepInput } from "#harness/types.js";
 import { normalizeAssistantStepFinishReason } from "#harness/finish-reason.js";
 
 export {
@@ -269,7 +268,7 @@ interface StreamActionEmissionOptions {
    * as the reply.
    */
   readonly hidesHeldText?: boolean;
-  readonly tools: HarnessToolMap;
+  readonly tools: HarnessToolLookup;
 }
 
 /**
@@ -424,7 +423,6 @@ async function consumeStreamContent(
   const emitActionResult = async (result: RuntimeToolResultActionResult): Promise<void> => {
     if (emittedActionResultCallIds.has(result.callId)) return;
     emittedActionResultCallIds.add(result.callId);
-    await emitNestedToolActions(emitFn, state, result.callId);
     const resultPresentation =
       result.isError === true
         ? undefined

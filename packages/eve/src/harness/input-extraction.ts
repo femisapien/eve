@@ -1,9 +1,11 @@
 import type { ContentPart, ModelMessage, ToolSet } from "ai";
 import { z } from "#compiled/zod/index.js";
 
-import { toolCallDisplayName } from "#execution/tools/connection-target.js";
+import { projectToolStartLabel } from "#harness/action-presentation.js";
 import type { InputRequest } from "#shared/input.js";
 import { createRuntimeToolCallActionFromToolCall } from "#harness/tool-call-action.js";
+import type { HarnessToolLookup } from "#harness/types.js";
+import { displayTitle } from "#shared/display-name.js";
 
 // Persisted history parts lose AI SDK typing on the storage round trip. The
 // schemas are the single source for the runtime narrowing and the static
@@ -33,11 +35,13 @@ const ToolApprovalRequestSchema = z.object({
 
 /**
  * Extracts tool approval input requests from AI SDK content parts that
- * contain `tool-approval-request` entries.
+ * contain `tool-approval-request` entries. Each prompt names the call by the
+ * label its entry in `tools` gives it.
  */
 export function extractToolApprovalInputRequests(input: {
   readonly content: readonly ContentPart<ToolSet>[];
   readonly excludedCallIds?: ReadonlySet<string>;
+  readonly tools: HarnessToolLookup;
 }): InputRequest[] {
   return extractApprovalRequests(input);
 }
@@ -49,6 +53,8 @@ function extractApprovalRequests(input: {
   readonly content: readonly unknown[];
   readonly excludedCallIds?: ReadonlySet<string>;
   readonly includedRequestIds?: ReadonlySet<string>;
+  /** Recovered history has no step catalog, so its prompts use the tool's name. */
+  readonly tools?: HarnessToolLookup;
 }): InputRequest[] {
   const requests: InputRequest[] = [];
   const toolCallsById = new Map<string, ToolCallDescriptor>();
@@ -91,8 +97,12 @@ function extractApprovalRequests(input: {
       continue;
     }
 
+    const action = createRuntimeToolCallActionFromToolCall({ toolCall });
+    const label =
+      projectToolStartLabel(input.tools?.get(action.toolName), action.input) ??
+      displayTitle(action.toolName);
     requests.push({
-      action: createRuntimeToolCallActionFromToolCall({ toolCall }),
+      action,
       allowFreeform: false,
       display: "confirmation",
       kind: "tool-approval",
@@ -100,7 +110,7 @@ function extractApprovalRequests(input: {
         { id: "approve", label: "Approve" },
         { id: "cancel", label: "Cancel" },
       ],
-      prompt: `Approve ${toolCallDisplayName(toolCall.toolName, toolCall.input)}?`,
+      prompt: `Approve ${label}?`,
       requestId: approval.approvalId,
     });
   }

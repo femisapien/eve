@@ -502,8 +502,6 @@ export interface InstrumentationActionStartedEvent {
   readonly type: "action.started";
   /** Time the request was observed, before durable event acceptance. */
   readonly startedAtMs?: number;
-  /** The calling action, when this is a nested tool call. */
-  readonly parentCallId?: string;
   readonly callId: string;
   readonly idempotencyKey: string;
   /** Content. Absent unless this provider's trace policy records this direction. */

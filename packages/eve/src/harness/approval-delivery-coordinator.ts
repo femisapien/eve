@@ -28,7 +28,7 @@ import {
 } from "#harness/authorization.js";
 import { isApprovalRequest } from "#harness/input-request-class.js";
 import { getPendingInputBatches, pendingInputRequester } from "#harness/pending-input-batches.js";
-import type { HarnessSession, HarnessToolMap, StepInput } from "#harness/types.js";
+import type { HarnessSession, HarnessToolLookup, StepInput } from "#harness/types.js";
 import type { InputRequest } from "#shared/input.js";
 
 const UNAUTHENTICATED_APPROVAL_FEEDBACK = "Authentication is required to respond to this approval.";
@@ -69,8 +69,8 @@ export async function coordinateApprovalDelivery(input: {
   readonly now?: number;
   readonly session: HarnessSession;
   readonly stepInput?: StepInput;
-  readonly tools: HarnessToolMap;
-  readonly prepareTools?: (request: InputRequest) => Promise<HarnessToolMap>;
+  readonly tools: HarnessToolLookup;
+  readonly prepareTools?: (request: InputRequest) => Promise<HarnessToolLookup>;
 }): Promise<ApprovalDeliveryResult> {
   const now = input.now ?? Date.now();
   const expiredCandidates = getApprovalAuditState(input.session.state).activeCandidates.filter(
@@ -272,7 +272,7 @@ async function authorizeCandidate(input: {
   readonly request: InputRequest;
   readonly responder: ActiveApprovalCandidate["responder"];
   readonly session: HarnessSession;
-  readonly tools: HarnessToolMap;
+  readonly tools: HarnessToolLookup;
 }): Promise<{
   readonly challenges: readonly AuthorizationChallenge[];
   readonly didCommit: boolean;

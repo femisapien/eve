@@ -9,7 +9,7 @@ import {
 import { hasTailApprovalResponse } from "#harness/current-messages.js";
 import type { ResolvedInputBatch } from "#harness/input-request-resolution.js";
 import { validateHarnessModelMessages } from "#harness/messages.js";
-import type { HarnessSession, HarnessToolMap } from "#harness/types.js";
+import type { HarnessSession, HarnessToolLookup } from "#harness/types.js";
 import type { RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
 
 /**
@@ -21,7 +21,7 @@ export function dispatchApprovedWorkflowCalls(input: {
   readonly messages: readonly ModelMessage[];
   readonly resolvedInputs: readonly ResolvedInputBatch[] | undefined;
   readonly session: HarnessSession;
-  readonly tools: HarnessToolMap;
+  readonly tools: HarnessToolLookup;
 }): HarnessSession | undefined {
   for (const batch of input.resolvedInputs ?? []) {
     const approved = batch.inputs.filter(
@@ -33,7 +33,7 @@ export function dispatchApprovedWorkflowCalls(input: {
     if (!hasTailApprovalResponse(input.messages)) {
       throw new Error("Approved workflow calls must follow their approval tool message.");
     }
-    const deferred = collectDeferredCalls({
+    const dispatched = collectWorkflowCalls({
       session: input.session,
       toolCalls: approved.map(({ request }) => ({
         input: request.action.input,
@@ -44,11 +44,11 @@ export function dispatchApprovedWorkflowCalls(input: {
       turnId: batch.event.turnId,
     });
     return setPendingCoordinationBatch({
-      tasks: deferred.workflowRequests,
+      tasks: dispatched.workflowRequests,
       event: batch.event,
       responseMessages: input.messages.slice(-1),
       session: {
-        ...deferred.session,
+        ...dispatched.session,
         history: validateHarnessModelMessages(input.messages.slice(0, -1)),
       },
     });
@@ -57,14 +57,14 @@ export function dispatchApprovedWorkflowCalls(input: {
 }
 
 /**
- * Turns a step's deferred calls into workflow runs, committing a task record
- * for each call that starts a task. Task tool calls stay in the response
- * alone: the session reads them from there.
+ * Turns a step's workflow tool calls into workflow runs, committing a task
+ * record for each call that starts a task. Task tool calls stay in the
+ * response alone: the session reads them from there.
  */
-export function collectDeferredCalls(input: {
+export function collectWorkflowCalls(input: {
   readonly session: HarnessSession;
   readonly toolCalls: readonly CoordinationToolCall[];
-  readonly tools: HarnessToolMap;
+  readonly tools: HarnessToolLookup;
   readonly turnId: string;
 }): {
   readonly session: HarnessSession;

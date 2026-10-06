@@ -19,7 +19,7 @@ import type { JsonObject } from "#shared/json.js";
 import { isAsyncIterable } from "#shared/async-iterable.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import { buildToolApproval, buildToolSet, buildToolSetWithProviderTools } from "#harness/tools.js";
-import type { HarnessToolMap } from "#harness/types.js";
+import type { HarnessToolMap, ToolCallLike } from "#harness/types.js";
 import { createToolExecuteWithAuth } from "#execution/tool-auth.js";
 import type { ApprovalContext } from "#approval/definition.js";
 import type { ToolContext } from "#tools/definition.js";
@@ -35,14 +35,31 @@ function getOutputJsonSchema(tool: unknown): unknown {
   return (tool as { outputSchema: { jsonSchema: unknown } }).outputSchema.jsonSchema;
 }
 
+function catalogOf(tools: HarnessToolMap) {
+  return {
+    describe: (definition: HarnessToolDefinition) => definition.description,
+    resolve: <T extends ToolCallLike>(call: T) => {
+      const definition = tools.get(call.toolName);
+      return definition === undefined ? undefined : { call, definition };
+    },
+  };
+}
+
 async function resolveApproval(
-  tools: ReturnType<typeof buildToolSet>,
+  tools: HarnessToolMap,
   toolName: string,
   input: unknown,
   session?: Session,
-  options: { readonly abortSignal?: AbortSignal } = {},
+  options: {
+    readonly abortSignal?: AbortSignal;
+    readonly approvedTools?: ReadonlySet<string>;
+  } = {},
 ): Promise<unknown> {
-  const approval = buildToolApproval(tools, options.abortSignal);
+  const approval = buildToolApproval({
+    abortSignal: options.abortSignal,
+    approvedTools: options.approvedTools ?? new Set(),
+    ...catalogOf(tools),
+  });
   const activeSession = session ?? {
     auth: { current: null, initiator: null },
     sessionId: "session-1",
@@ -56,7 +73,7 @@ async function resolveApproval(
       messages: [],
       runtimeContext: {},
       toolCall: { input, toolCallId: "call_1", toolName } as never,
-      tools,
+      tools: buildToolSet({ ...catalogOf(tools), tools }),
       toolsContext: {} as never,
     }),
   );
@@ -126,7 +143,7 @@ describe("buildToolSet", () => {
       ],
     ]);
 
-    const result = buildToolSet({ tools });
+    const result = buildToolSet({ ...catalogOf(tools), tools });
     await executeSdkTool({
       abortSignal: abortController.signal,
       tool: result.observe_options,
@@ -164,7 +181,7 @@ describe("buildToolSet", () => {
       turn: { id: "turn-1", sequence: 0 },
     });
 
-    const result = buildToolSet({ tools });
+    const result = buildToolSet({ ...catalogOf(tools), tools });
     await contextStorage.run(ctx, () =>
       executeSdkTool({
         abortSignal: abortController.signal,
@@ -201,7 +218,7 @@ describe("buildToolSet", () => {
     });
 
     await contextStorage.run(ctx, async () => {
-      const result = buildToolSet({ tools });
+      const result = buildToolSet({ ...catalogOf(tools), tools });
       const execute = (
         result.stream_progress as {
           readonly execute?: (
@@ -249,7 +266,7 @@ describe("buildToolSet", () => {
       turn: { id: "turn-1", sequence: 0 },
     });
 
-    const result = buildToolSet({ tools });
+    const result = buildToolSet({ ...catalogOf(tools), tools });
     await contextStorage.run(ctx, () => executeSdkTool({ tool: result.observe_signal }));
 
     expect(receivedSignal).toBeInstanceOf(AbortSignal);
@@ -282,7 +299,7 @@ describe("buildToolSet", () => {
       turn: { id: "turn-1", sequence: 0 },
     });
 
-    const result = buildToolSet({ tools });
+    const result = buildToolSet({ ...catalogOf(tools), tools });
     await contextStorage.run(ctx, () =>
       executeSdkTool({ tool: result.observe_call_id, toolCallId: "call_observe" }),
     );
@@ -320,7 +337,7 @@ describe("buildToolSet", () => {
       { content: "Let me check.", role: "assistant" },
     ];
 
-    const result = buildToolSet({ tools });
+    const result = buildToolSet({ ...catalogOf(tools), tools });
     await contextStorage.run(ctx, () =>
       executeSdkTool({ messages, tool: result.observe_messages }),
     );
@@ -346,7 +363,7 @@ describe("buildToolSet", () => {
       ],
     ]);
 
-    const result = buildToolSet({ tools });
+    const result = buildToolSet({ ...catalogOf(tools), tools });
 
     expect(getJsonSchema(result.echo_city)).toEqual(schema);
   });
@@ -370,7 +387,7 @@ describe("buildToolSet", () => {
       ],
     ]);
 
-    const result = buildToolSet({ tools });
+    const result = buildToolSet({ ...catalogOf(tools), tools });
 
     expect(getOutputJsonSchema(result.summarize)).toEqual(outputSchema);
   });
@@ -416,7 +433,7 @@ describe("buildToolSet", () => {
       ]),
     );
 
-    const result = buildToolSet({ tools });
+    const result = buildToolSet({ ...catalogOf(tools), tools });
 
     for (const tool of Object.values(result)) {
       for (const schema of [tool.inputSchema, tool.outputSchema]) {
@@ -456,7 +473,7 @@ describe("buildToolSet", () => {
       ],
     ]);
 
-    const result = buildToolSet({ tools });
+    const result = buildToolSet({ ...catalogOf(tools), tools });
 
     expect(getJsonSchema(result.pick_color)).toEqual(schema);
   });
@@ -491,6 +508,7 @@ describe("buildToolSet", () => {
 
     const result = buildToolSet({
       disabledProviderTools: new Set(["web_search"]),
+      ...catalogOf(tools),
       tools,
     });
 
@@ -562,6 +580,7 @@ describe("buildToolSet", () => {
       const result = await buildToolSetWithProviderTools({
         modelReference,
         modelProvider,
+        ...catalogOf(tools),
         tools,
       });
 
@@ -588,6 +607,7 @@ describe("buildToolSet", () => {
     const result = await buildToolSetWithProviderTools({
       modelReference: { id: "openai/gpt-5.4" },
       modelProvider: "gateway.chat",
+      ...catalogOf(tools),
       tools,
     });
 
@@ -621,6 +641,7 @@ describe("buildToolSet", () => {
         },
       },
       modelProvider: "some-provider",
+      ...catalogOf(tools),
       tools,
     });
 
@@ -640,11 +661,7 @@ describe("buildToolSet", () => {
       ],
     ]);
 
-    const result = buildToolSet({
-      tools,
-    });
-
-    await expect(resolveApproval(result, "dangerous_tool", {})).resolves.toBeUndefined();
+    await expect(resolveApproval(tools, "dangerous_tool", {})).resolves.toBeUndefined();
   });
 
   it("forwards toModelOutput to the SDK tool", () => {
@@ -665,7 +682,7 @@ describe("buildToolSet", () => {
       ],
     ]);
 
-    const result = buildToolSet({ tools });
+    const result = buildToolSet({ ...catalogOf(tools), tools });
     const sdkTool = result.report as { toModelOutput?: (...args: unknown[]) => unknown };
 
     expect(sdkTool.toModelOutput).toBeTypeOf("function");
@@ -684,7 +701,7 @@ describe("buildToolSet", () => {
       ],
     ]);
 
-    const result = buildToolSet({ tools });
+    const result = buildToolSet({ ...catalogOf(tools), tools });
     const sdkTool = result.echo as { toModelOutput?: unknown };
 
     expect(sdkTool.toModelOutput).toBeTypeOf("function");
@@ -708,7 +725,7 @@ describe("buildToolSet", () => {
       ],
     ]);
 
-    const result = buildToolSet({ tools });
+    const result = buildToolSet({ ...catalogOf(tools), tools });
     const sdkTool = result.report as {
       toModelOutput?: (options: { toolCallId: string; input: unknown; output: unknown }) => unknown;
     };
@@ -736,7 +753,7 @@ describe("buildToolSet", () => {
       ],
     ]);
 
-    const result = buildToolSet({ tools });
+    const result = buildToolSet({ ...catalogOf(tools), tools });
 
     await expect(
       executeSdkTool({
@@ -762,7 +779,7 @@ describe("buildToolSet", () => {
       ],
     ]);
 
-    const result = buildToolSet({ tools });
+    const result = buildToolSet({ ...catalogOf(tools), tools });
 
     await expect(executeSdkTool({ tool: result.report })).resolves.toBe(output);
   });
@@ -780,7 +797,7 @@ describe("buildToolSet", () => {
       ],
     ]);
 
-    const result = buildToolSet({ tools });
+    const result = buildToolSet({ ...catalogOf(tools), tools });
 
     await expect(executeSdkTool({ tool: result.maybe_empty })).resolves.toBeNull();
   });
@@ -802,7 +819,7 @@ describe("buildToolSet", () => {
       ],
     ]);
 
-    const result = buildToolSet({ tools });
+    const result = buildToolSet({ ...catalogOf(tools), tools });
 
     await expect(
       projectSdkToolOutput({
@@ -842,7 +859,7 @@ describe("buildToolSet", () => {
       ],
     ]);
 
-    const result = buildToolSet({ tools });
+    const result = buildToolSet({ ...catalogOf(tools), tools });
 
     await expect(
       projectSdkToolOutput({ output: { ok: true }, tool: result.screenshot }),
@@ -874,7 +891,7 @@ describe("buildToolSet", () => {
       ],
     ]);
 
-    const result = buildToolSet({ tools });
+    const result = buildToolSet({ ...catalogOf(tools), tools });
 
     await expect(
       projectSdkToolOutput({
@@ -912,9 +929,8 @@ describe("buildToolSet", () => {
         ],
       ]);
 
-      const result = buildToolSet({ tools });
-      await expect(resolveApproval(result, "dangerous", {})).resolves.toBe("user-approval");
-      await expect(resolveApproval(result, "safe", {})).resolves.toBe("not-applicable");
+      await expect(resolveApproval(tools, "dangerous", {})).resolves.toBe("user-approval");
+      await expect(resolveApproval(tools, "safe", {})).resolves.toBe("not-applicable");
     });
 
     it("preserves async AI SDK 7 approval statuses", async () => {
@@ -931,8 +947,7 @@ describe("buildToolSet", () => {
         ],
       ]);
 
-      const result = buildToolSet({ tools });
-      await expect(resolveApproval(result, "delete_account", {})).resolves.toEqual({
+      await expect(resolveApproval(tools, "delete_account", {})).resolves.toEqual({
         type: "denied",
         reason: "Account is protected.",
       });
@@ -952,10 +967,7 @@ describe("buildToolSet", () => {
         ],
       ]);
 
-      const result = buildToolSet({
-        tools,
-      });
-      await expect(resolveApproval(result, "bash", {})).resolves.toBe("user-approval");
+      await expect(resolveApproval(tools, "bash", {})).resolves.toBe("user-approval");
     });
 
     it("never() skips approval", async () => {
@@ -972,10 +984,7 @@ describe("buildToolSet", () => {
         ],
       ]);
 
-      const result = buildToolSet({
-        tools,
-      });
-      await expect(resolveApproval(result, "bash", {})).resolves.toBe("not-applicable");
+      await expect(resolveApproval(tools, "bash", {})).resolves.toBe("not-applicable");
     });
 
     it("once() requires approval when tool not yet approved", async () => {
@@ -992,10 +1001,7 @@ describe("buildToolSet", () => {
         ],
       ]);
 
-      const result = buildToolSet({
-        tools,
-      });
-      await expect(resolveApproval(result, "bash", {})).resolves.toBe("user-approval");
+      await expect(resolveApproval(tools, "bash", {})).resolves.toBe("user-approval");
     });
 
     it("once() skips approval when tool already approved", async () => {
@@ -1012,11 +1018,9 @@ describe("buildToolSet", () => {
         ],
       ]);
 
-      const result = buildToolSet({
-        approvedTools: new Set(["bash"]),
-        tools,
-      });
-      await expect(resolveApproval(result, "bash", {})).resolves.toBe("not-applicable");
+      await expect(
+        resolveApproval(tools, "bash", {}, undefined, { approvedTools: new Set(["bash"]) }),
+      ).resolves.toBe("not-applicable");
     });
 
     it("tool without approval defaults to false when another tool has an override", async () => {
@@ -1042,11 +1046,8 @@ describe("buildToolSet", () => {
         ],
       ]);
 
-      const result = buildToolSet({
-        tools,
-      });
-      await expect(resolveApproval(result, "bash", {})).resolves.toBe("user-approval");
-      await expect(resolveApproval(result, "write_file", {})).resolves.toBeUndefined();
+      await expect(resolveApproval(tools, "bash", {})).resolves.toBe("user-approval");
+      await expect(resolveApproval(tools, "write_file", {})).resolves.toBeUndefined();
     });
 
     it("passes toolInput from the AI SDK into approval", async () => {
@@ -1067,9 +1068,8 @@ describe("buildToolSet", () => {
         ],
       ]);
 
-      const result = buildToolSet({ tools });
       const toolInput = { teamId: "team_abc", limit: 20 };
-      await resolveApproval(result, "vercel__list_projects", toolInput);
+      await resolveApproval(tools, "vercel__list_projects", toolInput);
 
       expect(capturedInput).toEqual(toolInput);
     });
@@ -1092,8 +1092,7 @@ describe("buildToolSet", () => {
         ],
       ]);
 
-      const result = buildToolSet({ tools });
-      await resolveApproval(result, "vercel__list_projects", {});
+      await resolveApproval(tools, "vercel__list_projects", {});
 
       expect(capturedCallId).toBe("call_1");
     });
@@ -1117,8 +1116,7 @@ describe("buildToolSet", () => {
       ]);
       const abortSignal = new AbortController().signal;
 
-      const result = buildToolSet({ tools });
-      await resolveApproval(result, "deploy", {}, undefined, { abortSignal });
+      await resolveApproval(tools, "deploy", {}, undefined, { abortSignal });
 
       expect(capturedSignal).toBe(abortSignal);
     });
@@ -1167,8 +1165,7 @@ describe("buildToolSet", () => {
         turn: { id: "turn_current", sequence: 2 },
       };
 
-      const result = buildToolSet({ tools });
-      await expect(resolveApproval(result, "delete_project", {}, session)).resolves.toBe(
+      await expect(resolveApproval(tools, "delete_project", {}, session)).resolves.toBe(
         "user-approval",
       );
 
@@ -1218,12 +1215,11 @@ describe("buildToolSet", () => {
         sessionId: "schedule-session",
         turn: { id: "human-turn", sequence: 1 },
       };
-      const result = buildToolSet({ tools });
 
-      await expect(resolveApproval(result, "refund", {}, scheduleSession)).resolves.toBe(
+      await expect(resolveApproval(tools, "refund", {}, scheduleSession)).resolves.toBe(
         "not-applicable",
       );
-      await expect(resolveApproval(result, "refund", {}, humanResumedSession)).resolves.toBe(
+      await expect(resolveApproval(tools, "refund", {}, humanResumedSession)).resolves.toBe(
         "user-approval",
       );
     });
@@ -1247,22 +1243,30 @@ describe("buildToolSet", () => {
         ],
       ]);
 
-      const withCompoundKey = buildToolSet({
-        approvedTools: new Set(["vercel__list_projects:team_abc"]),
-        tools,
-      });
       await expect(
-        resolveApproval(withCompoundKey, "vercel__list_projects", {
-          teamId: "team_abc",
-          limit: 10,
-        }),
+        resolveApproval(
+          tools,
+          "vercel__list_projects",
+          {
+            teamId: "team_abc",
+            limit: 10,
+          },
+          undefined,
+          { approvedTools: new Set(["vercel__list_projects:team_abc"]) },
+        ),
       ).resolves.toBe("not-applicable");
 
       await expect(
-        resolveApproval(withCompoundKey, "vercel__list_projects", {
-          teamId: "team_xyz",
-          limit: 10,
-        }),
+        resolveApproval(
+          tools,
+          "vercel__list_projects",
+          {
+            teamId: "team_xyz",
+            limit: 10,
+          },
+          undefined,
+          { approvedTools: new Set(["vercel__list_projects:team_abc"]) },
+        ),
       ).resolves.toBe("user-approval");
     });
   });

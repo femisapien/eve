@@ -80,15 +80,10 @@ export function createAgentActionInstrumentation(input: {
       kind: event.kind,
       name: event.name,
       parent: {
-        spanId: input.idGenerator.deriveSpanId(
-          event.parentCallId === undefined
-            ? attemptIdempotencyKey(event.scope)
-            : `action:${actionIdempotencyKey(event.scope.sessionId, event.scope.turnId, event.parentCallId)}`,
-        ),
+        spanId: input.idGenerator.deriveSpanId(attemptIdempotencyKey(event.scope)),
         traceFlags: traceContext.traceFlags,
         traceId: traceContext.traceId,
       },
-      parentCallId: event.parentCallId,
       rootSessionId: event.scope.rootSessionId ?? event.scope.sessionId,
       traceSessionId: traceSessionIdOf(event.scope),
       sessionId: event.scope.sessionId,
@@ -126,9 +121,6 @@ export function createAgentActionInstrumentation(input: {
           attributes: {
             "agent.action.call_id": state.callId,
             "agent.action.kind": state.kind,
-            ...(state.parentCallId === undefined
-              ? undefined
-              : { "agent.action.parent_call_id": state.parentCallId }),
             "agent.action.name": state.name,
             "agent.framework.name": "eve",
             "agent.framework.version": input.frameworkVersion,

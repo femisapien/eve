@@ -211,9 +211,6 @@ async function publishActionStarts(
     await hooks.publish(
       Object.freeze({
         callId: action.callId,
-        ...(action.kind === "tool-call" && action.parentCallId !== undefined
-          ? { parentCallId: action.parentCallId }
-          : undefined),
         startedAtMs,
         idempotencyKey,
         input: capturesInputs ? action.input : undefined,

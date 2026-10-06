@@ -22,7 +22,7 @@ import { getDeferredStepInput } from "#harness/pending-input-batches.js";
 import { createSessionLimitContinuationRequest } from "#harness/session-limit-continuation.js";
 import { createRuntimeToolCallActionFromToolCall } from "#harness/tool-call-action.js";
 import { buildToolApproval, buildToolSet } from "#harness/tools.js";
-import type { HarnessSession, HarnessToolMap } from "#harness/types.js";
+import type { HarnessSession, HarnessToolMap, ToolCallLike } from "#harness/types.js";
 
 function createHarnessSession(): HarnessSession {
   return {
@@ -897,11 +897,19 @@ describe("resolvePendingInput", () => {
       ],
     ]);
 
+    const resolve = <T extends ToolCallLike>(call: T) => {
+      const definition = tools.get(call.toolName);
+      return definition === undefined ? undefined : { call, definition };
+    };
     const rebuilt = buildToolSet({
-      approvedTools: getApprovedTools(result.session),
+      describe: (definition) => definition.description,
+      resolve,
       tools,
     });
-    const approval = buildToolApproval(rebuilt);
+    const approval = buildToolApproval({
+      approvedTools: getApprovedTools(result.session),
+      resolve,
+    });
     if (typeof approval !== "function") throw new TypeError("Expected generic approval function.");
 
     const ctx = new ContextContainer();

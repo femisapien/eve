@@ -20,10 +20,11 @@ import { extractHistoricalInputRequests } from "#harness/input-extraction.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import { pendingTaskToolCalls } from "#execution/tasks/calls.js";
 import { startsTasks } from "#execution/tasks/tool-entry-point.js";
+import { historyCallNames } from "#harness/execute-call.js";
 import type {
   HarnessEmitFn,
   HarnessSession,
-  HarnessToolMap,
+  HarnessToolLookup,
   SessionStateMap,
   StepInput,
 } from "#harness/types.js";
@@ -113,10 +114,11 @@ export function commitCancelledCoordinationBatch(session: HarnessSession): Harne
       toolName: call.kind,
     })),
   ];
+  const historyNames = historyCallNames([...session.history, ...batch.responseMessages]);
   const cancelledResults = cancelledCalls.map(({ callId, toolName }): ToolResultPart => ({
     output: { type: "text", value: CANCELLED_CALL_RESULT },
     toolCallId: callId,
-    toolName,
+    toolName: historyNames.get(callId) ?? toolName,
     type: "tool-result",
   }));
   const history = validateHarnessModelMessages([
@@ -227,7 +229,7 @@ export async function resolvePendingCoordination(input: {
   readonly session: HarnessSession;
   readonly stepInput?: StepInput;
   /** Definitions whose `toModelOutput` projects a workflow tool's result for the model. */
-  readonly tools?: HarnessToolMap;
+  readonly tools?: HarnessToolLookup;
 }): Promise<ResolvePendingCoordinationResult> {
   const batch = getPendingCoordinationBatch(input.session.state);
 
@@ -285,39 +287,20 @@ export async function resolvePendingCoordination(input: {
     }
   }
 
+  const messages = [...nextSession.history, ...batch.responseMessages];
+  const historyNames = historyCallNames(messages);
   const toolResults: ToolResultPart[] = [];
   for (const result of readyResults) {
-    switch (result.kind) {
-      case "load-skill-result":
-        toolResults.push({
-          output: toToolResultOutput(result),
-          toolCallId: result.callId,
-          toolName: "load_skill",
-          type: "tool-result",
-        });
-        continue;
-      case "subagent-result":
-        toolResults.push({
-          output: toToolResultOutput(result),
-          toolCallId: result.callId,
-          toolName: result.subagentName,
-          type: "tool-result",
-        });
-        continue;
-      case "tool-result":
-        toolResults.push({
-          output: await projectToolResultOutput(result, input.tools?.get(result.toolName)),
-          toolCallId: result.callId,
-          toolName: result.toolName,
-          type: "tool-result",
-        });
-        continue;
-    }
-
-    throw new Error(`Unsupported runtime action result kind "${String(result)}".`);
+    toolResults.push({
+      output:
+        result.kind === "tool-result"
+          ? await projectToolResultOutput(result, input.tools?.get(result.toolName))
+          : toToolResultOutput(result),
+      toolCallId: result.callId,
+      toolName: historyNames.get(result.callId) ?? runtimeToolName(result),
+      type: "tool-result",
+    });
   }
-
-  const messages = [...nextSession.history, ...batch.responseMessages];
 
   if (toolResults.length > 0) {
     // AI SDK reads approved calls and their results only from the tail tool
@@ -348,7 +331,7 @@ export interface CoordinationToolCall {
  */
 export function createRuntimeActionRequestFromToolCall(input: {
   readonly toolCall: CoordinationToolCall;
-  readonly tools: HarnessToolMap;
+  readonly tools: HarnessToolLookup;
 }): RuntimeActionRequest {
   const definition = input.tools.get(input.toolCall.toolName);
   const toolInput = resolveToolCallInputObject(input.toolCall.input, {
@@ -368,18 +351,18 @@ export function createRuntimeActionRequestFromToolCall(input: {
 }
 
 /**
- * Projects one deferred harness tool call into a workflow run request. The
- * input is the tool's own, without anything eve added to its model input.
+ * Projects one workflow tool call into a workflow run request. The input is
+ * the tool's own, without anything eve added to its model input.
  */
 export function createCoordinationRequestFromToolCall(input: {
   readonly entry: WorkflowToolCallEntry;
   readonly input: JsonObject;
   readonly toolCall: CoordinationToolCall;
-  readonly tools: HarnessToolMap;
+  readonly tools: HarnessToolLookup;
 }): RuntimeWorkflowTaskRequest {
   const definition = input.tools.get(input.toolCall.toolName);
   if (definition?.workflowId === undefined) {
-    throw new Error(`Deferred tool "${input.toolCall.toolName}" has no workflow.`);
+    throw new Error(`Workflow tool "${input.toolCall.toolName}" has no workflow.`);
   }
   return {
     callId: input.toolCall.toolCallId,
@@ -429,6 +412,17 @@ export function resolveToolCallInputObject(
 
 function parseJsonStringInput(value: string): unknown {
   return JSON.parse(value);
+}
+
+function runtimeToolName(result: RuntimeActionResult): string {
+  switch (result.kind) {
+    case "load-skill-result":
+      return "load_skill";
+    case "subagent-result":
+      return result.subagentName;
+    case "tool-result":
+      return result.toolName;
+  }
 }
 
 /** Errors bypass `toModelOutput`, as they do for local execution. */

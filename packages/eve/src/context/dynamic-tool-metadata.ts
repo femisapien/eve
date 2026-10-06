@@ -3,6 +3,7 @@ import type { DurableDynamicToolCallbacks } from "#tools/durable-callbacks.js";
 
 interface DynamicToolMetadataBase {
   readonly availableInSubagents?: boolean;
+  readonly deferred?: boolean;
   readonly name: string;
   readonly description: string;
   readonly endsTurn?: boolean;
