@@ -15,7 +15,23 @@ export default defineEval({
 
   async test(t) {
     // Drive a multi-step turn so the event log is long enough to split.
-    const turn = await t.send(
+    const session = await t.session({
+      stubs: [
+        {
+          id: "lookup-key",
+          tool: "lookup-step-a",
+          match: { topic: { const: "demo" } },
+          response: { stepKey: "K-9F2X" },
+        },
+        {
+          id: "lookup-value",
+          tool: "lookup-step-b",
+          match: { stepKey: { const: "K-9F2X" } },
+          response: { ok: true, value: "phoenix-rising-9F2X" },
+        },
+      ],
+    });
+    const turn = await session.send(
       [
         "Follow these steps exactly:",
         "1. Call the `lookup-step-a` tool with topic 'demo'.",

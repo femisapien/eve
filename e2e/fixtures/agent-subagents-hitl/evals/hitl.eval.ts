@@ -22,7 +22,23 @@ export default defineEval({
   timeoutMs: 90_000,
 
   async test(t) {
-    const started = await t.send(
+    const session = await t.session({
+      stubs: [
+        {
+          id: "goog-quote",
+          tool: "get_stock_price",
+          match: { ticker: { const: "GOOG" } },
+          response: {
+            ticker: "GOOG",
+            price: 178.92,
+            change: -0.43,
+            changePercent: "-0.24%",
+            currency: "USD",
+          },
+        },
+      ],
+    });
+    const started = await session.send(
       `Call the stock-price subagent exactly once with message 'Call the get_stock_price tool exactly once with ticker "GOOG". After it returns, do not call any tool again; return the result.'. After that single subagent call finishes, do not call any subagent or tool again; include the exact stock price in your final reply.`,
     );
     const blocked = await waitForInput(t, started.session, "get_stock_price");
