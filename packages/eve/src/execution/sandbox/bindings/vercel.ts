@@ -40,12 +40,10 @@ import {
 import {
   isVercelSandboxMissingError,
   isVercelSandboxNameConflictError,
+  isVercelSnapshotNotFoundError,
   isVercelSnapshotUnavailableError,
 } from "#execution/sandbox/bindings/vercel-errors.js";
-import {
-  openToolSessionGeneration,
-  withToolSessionRetention,
-} from "#execution/sandbox/bindings/vercel-tool-sessions.js";
+import { withToolSessionRetention } from "#execution/sandbox/bindings/vercel-tool-sessions.js";
 import { isToolSessionId } from "#execution/tool-session/id.js";
 import { withToolSessionSandboxes } from "#execution/tool-session/sandbox.js";
 import { getNamedVercelSandbox } from "#execution/sandbox/bindings/vercel-lookup.js";
@@ -142,25 +140,15 @@ export function createVercelSandbox(
       tags,
     };
     let session: VercelSandboxSessionCreateResult;
-    let openedName = sandboxName;
     try {
-      if (toolSession) {
-        ({ sandboxName: openedName, session } = await openToolSessionGeneration(
-          { baseName: sandboxName, createOptions: sessionCreateOptions, sandboxModule },
-          async (name, { mayCreate }) => {
-            const named = { ...ensureSessionInput, sessionKey: name };
-            return mayCreate ? await ensureSession(named) : await adoptSession(named);
-          },
-          ensureVercelSandboxBaseRuntime,
-        ));
-      } else {
-        session = await ensureSession(ensureSessionInput);
-        session = await ensureUsableSession({
-          input: ensureSessionInput,
-          loadDeleteSandboxModule,
-          session,
-        });
-      }
+      session = await ensureSession(ensureSessionInput);
+      session = await ensureUsableSession({
+        // Only an expired snapshot gives a tool session a fresh sandbox.
+        expired: toolSession ? isVercelSnapshotNotFoundError : isVercelSnapshotUnavailableError,
+        input: ensureSessionInput,
+        loadDeleteSandboxModule,
+        session,
+      });
       if (
         session.created &&
         artifact.snapshotId === undefined &&
@@ -202,7 +190,7 @@ export function createVercelSandbox(
       loadDeleteSandboxModule,
       sandbox: session.sandbox,
     });
-    return { handle, sandboxName: openedName };
+    return handle;
   }
 
   const implementation: ReturnType<typeof createVercelSandbox> = {
@@ -257,12 +245,8 @@ export function createVercelSandbox(
       return createHandle({ createOptions, loadDeleteSandboxModule, sandbox });
     },
     async start(context, options, artifact) {
-      const { handle, sandboxName } = await openSession(
-        context,
-        options,
-        artifact,
-        vercelSessionName(context.session.id, options, artifact, createOptions),
-      );
+      const sandboxName = vercelSessionName(context.session.id, options, artifact, createOptions);
+      const handle = await openSession(context, options, artifact, sandboxName);
       return {
         handle,
         state: { sandboxName, version: 3 },
@@ -465,6 +449,7 @@ interface VercelSandboxSessionCreateResult {
 }
 
 async function ensureUsableSession(input: {
+  readonly expired: (error: unknown) => boolean;
   readonly input: EnsureSessionInput;
   readonly loadDeleteSandboxModule: () => Promise<VercelModule>;
   readonly session: VercelSandboxSessionCreateResult;
@@ -473,39 +458,38 @@ async function ensureUsableSession(input: {
     await ensureVercelSandboxBaseRuntime(input.session.sandbox);
     return input.session;
   } catch (error) {
-    if (input.session.created || !isVercelSnapshotUnavailableError(error)) {
+    if (input.session.created || !input.expired(error)) {
       throw error;
     }
   }
 
-  await deleteUnusableVercelSandbox({
-    createOptions: input.input.createOptions,
-    loadDeleteSandboxModule: input.loadDeleteSandboxModule,
-    sandbox: input.session.sandbox,
-  });
+  try {
+    await deleteUnusableVercelSandbox({
+      createOptions: input.input.createOptions,
+      loadDeleteSandboxModule: input.loadDeleteSandboxModule,
+      sandbox: input.session.sandbox,
+    });
+  } catch (error) {
+    // Another instance that saw the same expiry deleted it first.
+    if (!isVercelSandboxMissingError(error)) throw error;
+  }
   const replacement = await ensureSession(input.input);
   await ensureVercelSandboxBaseRuntime(replacement.sandbox);
   return replacement;
 }
 
-// Opens the named session sandbox if it exists, without creating it.
-async function adoptSession(
-  input: EnsureSessionInput,
-): Promise<VercelSandboxSessionCreateResult | null> {
+async function ensureSession(input: EnsureSessionInput): Promise<VercelSandboxSessionCreateResult> {
+  const sandboxName = input.sessionKey;
   const existing = await getNamedVercelSandbox({
     createOptions: input.createOptions,
     sandboxModule: input.sandboxModule,
-    sandboxName: input.sessionKey,
+    sandboxName,
   });
-  if (existing === null) return null;
-  await ensureVercelSandboxTags(existing, input.tags);
-  return { created: false, sandbox: existing };
-}
 
-async function ensureSession(input: EnsureSessionInput): Promise<VercelSandboxSessionCreateResult> {
-  const sandboxName = input.sessionKey;
-  const existing = await adoptSession(input);
-  if (existing !== null) return existing;
+  if (existing !== null) {
+    await ensureVercelSandboxTags(existing, input.tags);
+    return { created: false, sandbox: existing };
+  }
 
   const sessionCreateOptions = await input.resolveSessionCreateOptions?.();
   const createParams = createSessionCreateParams(input, sandboxName, sessionCreateOptions);
