@@ -43,6 +43,12 @@ const MAX_TOOL_SESSION_GENERATIONS = 3;
  * the provider's name uniqueness picks one: `open` creates the name or adopts
  * the sandbox that won it. An expired generation cannot resume again, and
  * Vercel removes it.
+ *
+ * Only a name past the listed generations is ever created. A listed
+ * generation that is gone by the time it is opened was removed after expiry,
+ * so it is retired: recreating its name would fork the session away from the
+ * successor other instances use. Vercel removes a sandbox only well after its
+ * creation, so a generation the listing does not show was never retired.
  */
 export async function openToolSessionGeneration<Session extends { readonly created: boolean }>(
   input: {
@@ -50,19 +56,28 @@ export async function openToolSessionGeneration<Session extends { readonly creat
     readonly createOptions: VercelCreateOptions;
     readonly sandboxModule: VercelModule;
   },
-  open: (sandboxName: string) => Promise<Session & { readonly sandbox: VercelSandbox }>,
+  open: (
+    sandboxName: string,
+    options: { readonly mayCreate: boolean },
+  ) => Promise<(Session & { readonly sandbox: VercelSandbox }) | null>,
   ready: (sandbox: VercelSandbox) => Promise<void>,
 ): Promise<{ readonly sandboxName: string; readonly session: Session }> {
-  let generation = await latestToolSessionGeneration(input);
+  const listed = await latestToolSessionGeneration(input);
+  let generation = listed ?? 0;
   for (let attempt = 1; ; attempt += 1) {
     const sandboxName = toolSessionSandboxName(input.baseName, generation);
-    const session = await open(sandboxName);
-    try {
-      await ready(session.sandbox);
-      return { sandboxName, session };
-    } catch (error) {
-      const expired = !session.created && isVercelSnapshotNotFoundError(error);
-      if (!expired || attempt >= MAX_TOOL_SESSION_GENERATIONS) throw error;
+    const session = await open(sandboxName, {
+      mayCreate: listed === undefined || generation > listed,
+    });
+    // Only the listed generation can be missing: it was retired.
+    if (session !== null) {
+      try {
+        await ready(session.sandbox);
+        return { sandboxName, session };
+      } catch (error) {
+        const expired = !session.created && isVercelSnapshotNotFoundError(error);
+        if (!expired || attempt >= MAX_TOOL_SESSION_GENERATIONS) throw error;
+      }
     }
     generation += 1;
   }
@@ -80,15 +95,16 @@ function toolSessionGeneration(baseName: string, sandboxName: string): number | 
 }
 
 /*
- * The newest generation the provider lists. A listing that lags behind a
- * create only points at an older, expired generation; opening it fails with
- * the expiry and moves on to the name the newer sandbox already holds.
+ * The newest generation the provider lists, or `undefined` when it lists
+ * none. A listing that lags behind a create only points at an older, expired
+ * generation; opening it fails with the expiry and moves on to the name the
+ * newer sandbox already holds.
  */
 async function latestToolSessionGeneration(input: {
   readonly baseName: string;
   readonly createOptions: VercelCreateOptions;
   readonly sandboxModule: VercelModule;
-}): Promise<number> {
+}): Promise<number | undefined> {
   let credentials = {};
   try {
     credentials = await getVercelSandboxCredentials(input.createOptions);
@@ -102,10 +118,12 @@ async function latestToolSessionGeneration(input: {
     signal: input.createOptions.signal,
     sortBy: "name",
   });
-  let latest = 0;
+  let latest: number | undefined;
   for await (const sandbox of listed) {
     const generation = toolSessionGeneration(input.baseName, sandbox.name);
-    if (generation !== undefined && generation > latest) latest = generation;
+    if (generation !== undefined && (latest === undefined || generation > latest)) {
+      latest = generation;
+    }
   }
   return latest;
 }

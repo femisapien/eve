@@ -616,6 +616,82 @@ describe("createVercelSandbox", () => {
       ).toBe(true);
     });
 
+    it("adopts the successor of a listed generation Vercel removed, never recreating it", async () => {
+      const base = await baseName();
+      const sandboxes = new Map([[base, expiredSandbox(base)]]);
+      const { open, sandboxModule } = project(sandboxes);
+      // This instance lists the expired base. Another instance replaces it,
+      // and Vercel removes the old base before this one gets it, freeing
+      // its name.
+      const theirs = createMockSandbox({ name: `${base}-1` });
+      sandboxModule.Sandbox.list.mockImplementationOnce(async () => {
+        const listed = [...sandboxes.values()];
+        sandboxes.set(theirs.name, theirs);
+        sandboxes.delete(base);
+        return listed;
+      });
+
+      await open();
+
+      expect(sandboxModule.Sandbox.create).not.toHaveBeenCalled();
+      expect(sandboxes.has(base)).toBe(false);
+      expect(theirs.runCommand).toHaveBeenCalled();
+      expect(theirs.delete).not.toHaveBeenCalled();
+    });
+
+    it("adopts the replacement that won the name when its own create conflicts", async () => {
+      const base = await baseName();
+      const sandboxes = new Map([[base, expiredSandbox(base)]]);
+      const { open, sandboxModule } = project(sandboxes);
+      // Another instance creates the next generation after this one finds
+      // the name free and before its create lands.
+      const theirs = createMockSandbox({ name: `${base}-1` });
+      const get = sandboxModule.Sandbox.get.getMockImplementation()!;
+      sandboxModule.Sandbox.get.mockImplementation(async (options) => {
+        const found = await get(options);
+        if (options.name === theirs.name && !sandboxes.has(theirs.name)) {
+          sandboxes.set(theirs.name, theirs);
+        }
+        return found;
+      });
+
+      await open();
+
+      expect(sandboxModule.Sandbox.create).toHaveBeenCalledTimes(1);
+      expect(sandboxModule.Sandbox.create).toHaveBeenCalledWith(
+        expect.objectContaining({ name: theirs.name }),
+      );
+      await expect(sandboxModule.Sandbox.create.mock.results[0]!.value).rejects.toThrow(
+        "already exists",
+      );
+      expect(sandboxes.get(theirs.name)).toBe(theirs);
+      expect(theirs.runCommand).toHaveBeenCalled();
+      expect(
+        [...sandboxes.values()].every((sandbox) => sandbox.delete.mock.calls.length === 0),
+      ).toBe(true);
+    });
+
+    it("replaces a listed generation Vercel removed under the next name, not its own", async () => {
+      const base = await baseName();
+      const sandboxes = new Map([[base, expiredSandbox(base)]]);
+      const { open, sandboxModule } = project(sandboxes);
+      // Vercel removes the listed base before this instance gets it, and no
+      // other instance has replaced it yet.
+      sandboxModule.Sandbox.list.mockImplementationOnce(async () => {
+        const listed = [...sandboxes.values()];
+        sandboxes.delete(base);
+        return listed;
+      });
+
+      await open();
+
+      expect(sandboxModule.Sandbox.create).toHaveBeenCalledTimes(1);
+      expect(sandboxModule.Sandbox.create).toHaveBeenCalledWith(
+        expect.objectContaining({ name: `${base}-1` }),
+      );
+      expect(sandboxes.has(base)).toBe(false);
+    });
+
     it("opens the newest listed generation", async () => {
       const base = await baseName();
       const newest = createMockSandbox({ name: `${base}-10` });

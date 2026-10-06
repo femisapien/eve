@@ -147,7 +147,10 @@ export function createVercelSandbox(
       if (toolSession) {
         ({ sandboxName: openedName, session } = await openToolSessionGeneration(
           { baseName: sandboxName, createOptions: sessionCreateOptions, sandboxModule },
-          async (name) => await ensureSession({ ...ensureSessionInput, sessionKey: name }),
+          async (name, { mayCreate }) => {
+            const named = { ...ensureSessionInput, sessionKey: name };
+            return mayCreate ? await ensureSession(named) : await adoptSession(named);
+          },
           ensureVercelSandboxBaseRuntime,
         ));
       } else {
@@ -485,18 +488,24 @@ async function ensureUsableSession(input: {
   return replacement;
 }
 
-async function ensureSession(input: EnsureSessionInput): Promise<VercelSandboxSessionCreateResult> {
-  const sandboxName = input.sessionKey;
+// Opens the named session sandbox if it exists, without creating it.
+async function adoptSession(
+  input: EnsureSessionInput,
+): Promise<VercelSandboxSessionCreateResult | null> {
   const existing = await getNamedVercelSandbox({
     createOptions: input.createOptions,
     sandboxModule: input.sandboxModule,
-    sandboxName,
+    sandboxName: input.sessionKey,
   });
+  if (existing === null) return null;
+  await ensureVercelSandboxTags(existing, input.tags);
+  return { created: false, sandbox: existing };
+}
 
-  if (existing !== null) {
-    await ensureVercelSandboxTags(existing, input.tags);
-    return { created: false, sandbox: existing };
-  }
+async function ensureSession(input: EnsureSessionInput): Promise<VercelSandboxSessionCreateResult> {
+  const sandboxName = input.sessionKey;
+  const existing = await adoptSession(input);
+  if (existing !== null) return existing;
 
   const sessionCreateOptions = await input.resolveSessionCreateOptions?.();
   const createParams = createSessionCreateParams(input, sandboxName, sessionCreateOptions);
