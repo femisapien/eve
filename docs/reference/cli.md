@@ -426,7 +426,7 @@ eve link
 eve link --non-interactive --project <name-or-id> [--team <team-id-or-slug>]
 ```
 
-Links the current directory to a Vercel project. After selecting a team, you can create a project named for the agent or link an existing project. The existing-project picker shows recent projects; type a project name and choose **Search for '<name>'** to search the rest of that team's projects. Vercel links the resolved project, eve verifies its project ID, and then pulls the project's environment so an AI Gateway credential (`VERCEL_OIDC_TOKEN` or `AI_GATEWAY_API_KEY`) lands in `.env.local`. Running it again re-links: the pickers always run, and the new choice wins.
+Links the current directory to a Vercel project. After selecting a team, you can create a project named for the agent or link an existing project. The existing-project picker shows recent projects; type a project name and choose **Search for `'<name>'`** to search the rest of that team's projects. Vercel links the resolved project, eve verifies its project ID, and then pulls the project's environment so an AI Gateway credential (`VERCEL_OIDC_TOKEN` or `AI_GATEWAY_API_KEY`) lands in `.env.local`. Running it again re-links: the pickers always run, and the new choice wins.
 
 For CI or an agent, pass `--non-interactive` and `--project`. `--project` accepts the same Vercel project name or ID as `vercel link`; `--team` accepts its team ID or slug. The command never opens a picker or browser in this mode. A running `eve dev` reloads env files automatically, so you don't need to restart after the pull.
 
