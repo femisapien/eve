@@ -25,23 +25,18 @@ picker. Choose a hosting layout, then **Sign in with Vercel**. Setup uses a
 linked Vercel project and creates a Vercel App that only members of that
 project's team can sign in to.
 
-For a new app, run `eve init my-agent --channel-web-nextjs`. Initialization
-asks the same sign-in question, then lets you create or select a Vercel project
-if one is not linked. It installs the auth scaffold before initializing Git
-and opening the terminal UI. This option keeps the Next.js app at the project
-root; `eve add channel/web` installs its frontend under `apps/web`.
-
-For non-interactive initialization, select the provider and project explicitly:
+For a new agent, initialize it first, then link a project and add Web Chat:
 
 ```bash
-eve init my-agent --channel-web-nextjs --web-authentication vercel \
-  --project my-agent --team my-team --non-interactive
+eve init my-agent --non-interactive
+cd my-agent
+eve link
+eve add channel/web
 ```
 
-Use `--web-authentication custom` to supply your own auth. Without an explicit
-provider, non-interactive and coding-agent initialization keeps the default
-channel policy and does not provision a Vercel App. Plain `eve init` does not
-add Web Chat or prompt for browser authentication.
+`eve init --channel-web-nextjs` keeps its existing scaffolding behavior and does
+not provision authentication. Sign-in setup runs through `eve add channel/web`
+or the terminal UI's channel picker.
 
 The generated Next.js app uses Better Auth sessions. The selected agent's HTTP
 channel verifies the same session, while retaining Vercel OIDC and local
@@ -54,8 +49,8 @@ validates callbacks against the project's deployment domains. The app uses the
 `openid`, `email`, and `profile` scopes. Setup writes `VERCEL_APP_CLIENT_ID`,
 `VERCEL_APP_CLIENT_SECRET`, and `BETTER_AUTH_SECRET` to production and preview;
 secret values are marked sensitive and are never printed or written to source.
-Initialization does not deploy; run `eve deploy` after setup. Local development continues without browser
-sign-in.
+Run `eve deploy` after setup to publish the app. Local development continues
+without browser sign-in.
 
 For automation, supply the setup answers explicitly:
 
@@ -70,24 +65,23 @@ environment variables. A team owner can complete setup if your role cannot
 create apps. The searchable team picker lists eligible teams first. Disabled
 teams show `needs permission` or `couldn't verify`, with shared recovery guidance
 below the list. If permissions cannot be verified, that team stays
-disabled until you sign in or retry. Linked projects and explicit `--team`
-selections are checked before interactive auth setup or project creation.
+disabled until you sign in or retry. Linked projects are checked before
+interactive auth setup.
 If setup reports a missing prerequisite, complete it and resume with
 `eve add channel/web --skip-install`. Compatible existing apps
 and credentials are reused; conflicting app settings or credentials stop setup
 with an error. Authored channel or UI files are preserved unless you explicitly
 pass `--overwrite`.
 
+If authentication dependency installation fails, setup stops without reporting
+success. Run the printed package-manager install command before starting or
+deploying the app.
+
 If the team has reached its Vercel App limit, remove an unused app in team
 settings and retry. If a generated app name or slug is taken by an incompatible
 app, rename the Vercel project in its settings and retry. Compatible apps from a
 concurrent setup are reused. A client-secret limit requires removing an unused
 secret from the app's settings; setup never removes an existing secret for you.
-
-If sign-in setup fails or is cancelled during initialization, the generated
-app is preserved. Enter its directory, run `eve link` if needed, then resume
-with `eve add channel/web --skip-install`. The retry keeps the root Next.js
-layout; do not rerun `eve init` over the generated app.
 
 Choose **Configure authentication myself** (`web-authentication=custom`) to
 keep the current channel policy. The default placeholder rejects production

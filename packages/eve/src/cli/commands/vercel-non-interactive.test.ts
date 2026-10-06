@@ -5,14 +5,6 @@ import {
   type NonInteractiveLinkDependencies,
 } from "./vercel-non-interactive.js";
 
-import { captureVercel } from "#setup/primitives/index.js";
-import { WEB_CHAT_TEAM_REQUIREMENT } from "#setup/integrations/web/auth-options.js";
-
-vi.mock("#setup/primitives/index.js", async (importOriginal) => ({
-  ...(await importOriginal<typeof import("#setup/primitives/index.js")>()),
-  captureVercel: vi.fn(),
-}));
-
 class TestLogger {
   readonly errors: string[] = [];
   readonly logs: string[] = [];
@@ -46,25 +38,6 @@ afterEach(() => {
 });
 
 describe("runNonInteractiveLink", () => {
-  test("rejects a Web Chat team without permissions before linking or creating a project", async () => {
-    const deps = dependencies();
-    vi.mocked(captureVercel).mockResolvedValueOnce({
-      ok: true,
-      stdout: JSON.stringify({ permissions: {} }),
-    });
-    await expect(
-      runNonInteractiveLink({
-        appRoot: "/agent",
-        logger: new TestLogger(),
-        options: { nonInteractive: true, project: "web-chat", team: "acme" },
-        teamRequirement: WEB_CHAT_TEAM_REQUIREMENT,
-        dependencies: deps,
-      }),
-    ).rejects.toThrow(/owner/);
-    expect(deps.runVercel).not.toHaveBeenCalled();
-    expect(deps.runVercelEnvPull).not.toHaveBeenCalled();
-  });
-
   test("requires the project Vercel requires for a non-interactive link", async () => {
     const logger = new TestLogger();
     const deps = dependencies();
