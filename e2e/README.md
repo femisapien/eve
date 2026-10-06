@@ -67,13 +67,12 @@ needs external services or injected env is intentionally not part of this
 suite. Most fixtures use the shared model-provider credentials; dedicated
 runtime stress fixtures may use an authored deterministic model instead.
 
-Keep scenario-specific tool responses in the eval's `t.session({ stubs })`
-configuration. The [two-step lookup](fixtures/agent-tools/evals/static-tools/multi-step-loop.eval.ts),
-[stream resume](fixtures/agent-schedules/evals/stream-resume.eval.ts), and
-[subagent approval](fixtures/agent-subagents-hitl/evals/hitl.eval.ts) cases use
-plain TypeScript stubs. Their data-only fixture tools reject unstubbed calls;
-the runtime behavior each case tests still executes normally. Keep real tool
-execution when that execution is itself the contract under test.
+Use `t.session({ stubs })` for data that is incidental to the behavior under
+test. The [subagent approval](fixtures/agent-subagents-hitl/evals/hitl.eval.ts)
+case supplies its stock quote as a plain TypeScript stub while approval,
+child execution, and input hooks remain real. Keep real executors when their
+results and input handling are part of the contract, as in the chained lookup
+and stream-resume evals.
 
 Each retained fixture package also exposes the same command as:
 
