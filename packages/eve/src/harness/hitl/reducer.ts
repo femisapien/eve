@@ -97,7 +97,7 @@ export function reduce(
       const proposed = proposeCandidates(budget.state, { ...input, responses: gated });
       return then(
         { events: [...budget.events, ...proposed.events], state: proposed.state },
-        (next) => answerApprovals(next, plain),
+        (next) => answerApprovals(next, plain, input.responder),
         (next) => checkCandidates(next, proposed.checks, verdictOf),
       );
     }
@@ -139,7 +139,13 @@ export function reduce(
       const at = state.held?.at;
       const ran =
         input.approved === undefined ? state : ranApproved(state, input.approved.following);
-      const settled = settleCalls(ran, input.results, input.running, authorizations?.callIds);
+      const settled = settleCalls(
+        ran,
+        input.results,
+        input.running,
+        authorizations?.callIds,
+        input.runningApprovers,
+      );
       if (authorizations === undefined || at === undefined) return settled;
       // The approved calls that asked for an authorization left the step; their
       // authorizations open at the step that asked, and the turn waits on them.

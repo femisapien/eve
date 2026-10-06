@@ -1,4 +1,5 @@
 import type { ModelMessage, UserContent } from "ai";
+import type { SessionAuthContext } from "#channel/types.js";
 
 import type { SessionStateMap, StepInput } from "#harness/types.js";
 import type { InputRequest } from "#shared/input.js";
@@ -207,6 +208,11 @@ export class HumanInput {
     return held?.calls.some((call) => call.waitsOn === "runtime") === true ? held : undefined;
   }
 
+  /** The full auth of whoever approved a request, when it was allowed. */
+  approverOfRequest(requestId: string): SessionAuthContext | undefined {
+    return this.#state.audit?.settlements[requestId]?.approver;
+  }
+
   /** The calls a person approved that the turn has yet to run, at the step that asked. */
   approvedCalls():
     | { readonly at: RequestAt; readonly requests: readonly InputRequest[] }
@@ -271,6 +277,11 @@ export class HumanInput {
         open.kind === "authorization" || isOpenRelayed(open) ? [] : [requestId],
       ),
     );
+  }
+
+  /** Whether the open request is an approval, for attributing its response. */
+  isApproval(requestId: string): boolean {
+    return this.#state.requests[requestId]?.kind === "tool-approval";
   }
 
   /** The ids of the open relayed requests, whose answers a delivery may carry to who asked. */

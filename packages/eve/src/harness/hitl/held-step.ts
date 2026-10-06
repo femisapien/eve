@@ -1,3 +1,4 @@
+import type { SessionAuthContext } from "#channel/types.js";
 import type { ModelMessage, ToolResultPart } from "ai";
 
 import { pendingTaskToolCalls, type TaskToolCall } from "#execution/tasks/calls.js";
@@ -40,6 +41,7 @@ export interface HeldCalls {
   readonly calls: readonly HeldCall[];
   /** The workflow runs its runtime calls without a result start. */
   readonly tasks: readonly RuntimeWorkflowTaskRequest[];
+  readonly approvers?: Readonly<Record<string, SessionAuthContext>>;
   /** Its task tool calls without a result, which the session answers. */
   readonly taskToolCalls: readonly TaskToolCall[];
 }
@@ -80,7 +82,7 @@ export function heldCalls(
       calls.push({ callId: call.toolCallId, toolName: call.toolName, waitsOn: "person" });
     }
   }
-  return { at: step.at, calls, taskToolCalls, tasks };
+  return { at: step.at, calls, taskToolCalls, tasks, approvers: step.runtime?.approvers };
 }
 
 /** Holds a model step out of history, unless one already is: every rule on one step holds the same one. */
@@ -103,12 +105,19 @@ export function dispatchCalls<S extends HeldStepState>(
     readonly at: RequestAt;
     readonly messages: readonly ModelMessage[];
     readonly tasks: readonly RuntimeWorkflowTaskRequest[];
+    readonly approvers?: Readonly<Record<string, SessionAuthContext>>;
   },
 ): S {
   const held = holdStep(state, input.at, input.messages).held!;
   const tasks = [...(held.runtime?.tasks ?? []), ...input.tasks];
   assertUniqueCallIds(tasks);
-  return { ...state, held: { ...held, runtime: { tasks } } };
+  return {
+    ...state,
+    held: {
+      ...held,
+      runtime: { tasks, approvers: { ...held.runtime?.approvers, ...input.approvers } },
+    },
+  };
 }
 
 /**

@@ -3,6 +3,7 @@ import type { ModelMessage, ToolResultPart } from "ai";
 import type { SessionAuthContext } from "#channel/types.js";
 import {
   createActionResultEvent,
+  createApprovalSettledEvent,
   createInputRequestedEvent,
   createInputResolvedEvent,
   type InputResolution,
@@ -13,7 +14,7 @@ import type { InputRequest, InputResponse } from "#shared/input.js";
 
 import type { Command } from "./command.js";
 import type { Input, RequestAt } from "./input.js";
-import type { Reduced, OpenApproval } from "./state.js";
+import { EMPTY_AUDIT, type ApprovalAudit, type Reduced, type OpenApproval } from "./state.js";
 import {
   heldCalls,
   settleStep,
@@ -34,6 +35,7 @@ import {
 interface ApprovalState extends HeldStepState {
   readonly requests: Readonly<Record<string, { readonly kind: string }>>;
   readonly grants: readonly string[];
+  readonly audit?: ApprovalAudit;
 }
 
 type Outcome = "approved" | "denied" | "invalid" | "ignored";
@@ -152,17 +154,69 @@ export function openApprovals<S extends ApprovalState>(
  * Answers arrived. Each answers its open approval, the last one winning; the
  * step's approvals resolve once every one has an answer. Until then the
  * answers wait in state and the turn keeps waiting.
+ *
+ * An Approve or Cancel from a signed-in `responder` settles its approval the
+ * moment it arrives (`approval.settled`, naming who answered), ahead of the
+ * step's `input.resolved`, so a channel can retire the card with the
+ * responder's name. Approvals a response policy gates settle through their
+ * candidates instead, and never reach this with a responder.
  */
 export function answerApprovals<S extends ApprovalState>(
   state: S,
   responses: readonly InputResponse[],
+  responder: SessionAuthContext | null = null,
 ): Reduced<S> {
-  const recorded = recordAnswers(state, responses);
+  const settled =
+    responder === null ? { events: [], state } : settledBy(state, responses, responder);
+  const recorded = recordAnswers(settled.state, responses);
   const open = openApprovalsOf(recorded);
   if (open.length === 0 || open.some((approval) => approval.answer === undefined)) {
-    return { events: [], state: recorded };
+    return { events: settled.events, state: recorded };
   }
-  return resolveApprovals(recorded);
+  const resolved = resolveApprovals(recorded);
+  return { events: [...settled.events, ...resolved.events], state: resolved.state };
+}
+
+/**
+ * Settles each approval `responder` decided: the audit records who, and the
+ * event names them.
+ */
+function settledBy<S extends ApprovalState>(
+  state: S,
+  responses: readonly InputResponse[],
+  responder: SessionAuthContext,
+): Reduced<S> {
+  const events: Command[] = [];
+  const settlements = { ...state.audit?.settlements };
+  for (const response of responses) {
+    const approval = state.requests[response.requestId];
+    const outcome = outcomeOf(response);
+    if (!isOpenApproval(approval) || (outcome !== "approved" && outcome !== "denied")) continue;
+    settlements[response.requestId] = {
+      actor: {
+        authenticator: responder.authenticator,
+        ...(responder.issuer !== undefined && { issuer: responder.issuer }),
+        principalId: responder.principalId,
+        principalType: responder.principalType,
+      },
+      ...(outcome === "approved" && { approver: responder }),
+      outcome: outcome === "approved" ? "allowed" : "cancelled",
+      requestId: response.requestId,
+    };
+    events.push(
+      publish(
+        createApprovalSettledEvent({
+          ...approval.at,
+          outcome: outcome === "approved" ? "approved" : "cancelled",
+          requestId: response.requestId,
+          responderPrincipalId: responder.principalId,
+        }),
+      ),
+    );
+  }
+  if (events.length === 0) return { events, state };
+  const audit = state.audit ?? EMPTY_AUDIT;
+  return { events, state: { ...state, audit: { ...audit, settlements } } };
 }
 
 /**
@@ -226,6 +280,7 @@ export function settleCalls<S extends ApprovalState>(
   results: readonly ModelMessage[],
   running: readonly RuntimeWorkflowTaskRequest[] = [],
   stopped: readonly string[] = [],
+  approvers: Readonly<Record<string, SessionAuthContext>> = {},
 ): Reduced<S> {
   const { held } = state;
   // A step parked before steps were held out of history has its calls there.
@@ -241,7 +296,9 @@ export function settleCalls<S extends ApprovalState>(
     held: {
       ...held,
       messages,
-      ...((held.runtime !== undefined || running.length > 0) && { runtime: { tasks } }),
+      ...((held.runtime !== undefined || running.length > 0) && {
+        runtime: { tasks, approvers: { ...held.runtime?.approvers, ...approvers } },
+      }),
     },
   };
   if ((heldCalls(settled.held, askedCallIds(state))?.calls.length ?? 0) > 0) {

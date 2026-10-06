@@ -81,6 +81,7 @@ export type FromStep =
       readonly type: "actions.settled";
       readonly results: readonly ModelMessage[];
       readonly running?: readonly RuntimeWorkflowTaskRequest[];
+      readonly runningApprovers?: Readonly<Record<string, SessionAuthContext>>;
       readonly authorizations?: {
         readonly callIds: readonly string[];
         readonly challenges: readonly AuthorizationChallenge[];

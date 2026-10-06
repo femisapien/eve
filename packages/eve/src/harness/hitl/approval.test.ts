@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  ALICE,
   AT,
   Turn,
   answer,
@@ -59,11 +60,58 @@ describe("tool approvals", () => {
     expect(turn.stored().humanInput.openRequestIds()).toEqual(new Set(["send_email", "deploy"]));
   });
 
-  it("a partial answer keeps the turn waiting and runs nothing", () => {
+  it("a partial answer settles its approval with the responder's name, keeps the turn waiting and runs nothing", () => {
     const turn = waitingOnApprovals("send_email", "deploy").input(answer("approve", "send_email"));
 
-    expect(turn.events).toEqual([]);
+    // The channel retires the card naming Alice; the step's result waits for the other answer.
+    expect(turn.events).toEqual([
+      {
+        event: {
+          data: {
+            ...AT,
+            outcome: "approved",
+            requestId: "send_email",
+            responderPrincipalId: ALICE.principalId,
+          },
+          type: "approval.settled",
+        },
+        type: "publish",
+      },
+    ]);
+    expect(turn.published("input.resolved")).toEqual([]);
     expect(turn.stored().next()).toEqual({ waiting: "input" });
+  });
+
+  it("each Approve or Cancel a signed-in person presses settles before the step's input.resolved", () => {
+    const turn = waitingOnApprovals("send_email", "deploy").input(
+      answered([
+        { optionId: "approve", requestId: "send_email" },
+        { optionId: "cancel", requestId: "deploy" },
+      ]),
+    );
+
+    expect(
+      turn.events.map((command) => ("event" in command ? command.event.type : command.type)),
+    ).toEqual(["approval.settled", "approval.settled", "input.resolved", "action.result"]);
+    expect(turn.published("approval.settled").map(({ data }) => data)).toEqual([
+      {
+        ...AT,
+        outcome: "approved",
+        requestId: "send_email",
+        responderPrincipalId: ALICE.principalId,
+      },
+      { ...AT, outcome: "cancelled", requestId: "deploy", responderPrincipalId: ALICE.principalId },
+    ]);
+  });
+
+  it("an answer nobody signed in for, or that picks no decision, settles nothing", () => {
+    const anonymous = waitingOnApprovals("deploy").input(answer("approve", "deploy", null));
+    expect(anonymous.published("approval.settled")).toEqual([]);
+    expect(anonymous.resolutions().map(({ outcome }) => outcome)).toEqual(["approved"]);
+
+    const invalid = waitingOnApprovals("deploy").input(answer("maybe", "deploy"));
+    expect(invalid.published("approval.settled")).toEqual([]);
+    expect(invalid.resolutions().map(({ outcome }) => outcome)).toEqual(["invalid"]);
   });
 
   it("the answer that completes the step runs the approved calls with the step that asked", () => {
@@ -239,7 +287,9 @@ describe("tool approvals", () => {
       ...stepResponse([approval("deploy")]),
       { content: [notRun("deploy", "Tool execution was denied.")], role: "tool" },
     ]);
-    expect(denied.storesNothing()).toBe(true);
+    // Only the audit remains: who cancelled.
+    expect(denied.stored().humanInput.openRequestIds()).toEqual(new Set());
+    expect(denied.stored().humanInput.heldMessages()).toEqual([]);
   });
 
   it("calls that ran beside open approvals wait with the step, and join history with it", () => {

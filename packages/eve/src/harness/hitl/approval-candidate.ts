@@ -33,6 +33,7 @@ import type {
   ResponderIdentity,
   Settlement,
 } from "#harness/hitl/state.js";
+import { EMPTY_AUDIT } from "#harness/hitl/state.js";
 import { completed, authorizationRequested } from "#harness/hitl/authorization.js";
 import {
   createApprovalCandidateEvent,
@@ -341,6 +342,7 @@ function settle(
   const audit = auditOf(allowed.state);
   const settlement: Settlement = {
     actor: identityOf(winner.responder),
+    ...(winner.decision === "approve" && { approver: winner.responder }),
     candidateId: winner.candidateId,
     outcome: winner.decision === "approve" ? "allowed" : "cancelled",
     requestId: winner.requestId,
@@ -505,13 +507,6 @@ function identityOf(responder: SessionAuthContext): ResponderIdentity {
     principalType: responder.principalType,
   };
 }
-
-const EMPTY_AUDIT: ApprovalAudit = {
-  activeCandidates: {},
-  candidateHistory: [],
-  nextCandidateSequence: 0,
-  settlements: {},
-};
 
 function auditOf(state: HumanInputState): ApprovalAudit {
   return state.audit ?? EMPTY_AUDIT;

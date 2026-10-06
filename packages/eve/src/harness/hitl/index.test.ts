@@ -138,4 +138,17 @@ describe("HumanInput", () => {
     );
     expect(displayMessage).toBe("approve");
   });
+  it("includes a new message immediately after a cancelled approval turn", () => {
+    const { humanInput } = waitingOnApprovals("deploy").input(cancel).stored();
+    expect(humanInput.next()).toEqual({ run: "model" });
+    expect(humanInput.acceptInput({ message: "Answer this in the first step." })).toEqual({
+      input: { message: "Answer this in the first step." },
+    });
+  });
+
+  it("keeps approved work ahead of the next message, unlike a cancelled approval", () => {
+    const { humanInput } = waitingOnApprovals("deploy").input(answer("approve", "deploy")).stored();
+    expect(humanInput.next()).toEqual({ run: "approved" });
+    expect(humanInput.approverOfRequest("deploy")?.principalId).toBe("alice");
+  });
 });

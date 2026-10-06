@@ -122,7 +122,10 @@ export interface HeldStep {
    * Set once some of its calls run as runtime work: the workflow runs they
    * start. Its task tool calls run there too; the session answers them.
    */
-  readonly runtime?: { readonly tasks: readonly RuntimeWorkflowTaskRequest[] };
+  readonly runtime?: {
+    readonly tasks: readonly RuntimeWorkflowTaskRequest[];
+    readonly approvers?: Readonly<Record<string, SessionAuthContext>>;
+  };
   /**
    * Calls a person approved that haven't run yet. The turn runs them
    * (`approvedCalls`) before it reads anything else.
@@ -180,9 +183,12 @@ export interface FinishedCandidate {
   readonly status: "allowed" | Exclude<ApprovalCandidateOutcome, "pending">;
 }
 
+/** An approval a signed-in person settled: through a candidate, or directly. */
 export interface Settlement {
   readonly actor: ResponderIdentity;
-  readonly candidateId: string;
+  /** The full auth of the approver, absent for cancellations. */
+  readonly approver?: SessionAuthContext;
+  readonly candidateId?: string;
   readonly outcome: "allowed" | "cancelled";
   readonly requestId: string;
 }
@@ -194,6 +200,13 @@ export interface ApprovalAudit {
   readonly nextCandidateSequence: number;
   readonly settlements: Readonly<Record<string, Settlement>>;
 }
+
+export const EMPTY_AUDIT: ApprovalAudit = {
+  activeCandidates: {},
+  candidateHistory: [],
+  nextCandidateSequence: 0,
+  settlements: {},
+};
 
 export function isOpenRelayed(value: { readonly kind: string } | undefined): value is OpenRelayed {
   return value?.kind === "relayed";
