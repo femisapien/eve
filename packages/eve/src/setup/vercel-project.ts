@@ -18,6 +18,9 @@ import {
   normalizeVercelApiResult,
 } from "./vercel-api-failure.js";
 import {
+  checkTeamRequirement,
+  checkTeamRequirements,
+  type VercelTeamRequirement,
   listRecentProjects,
   listTeams,
   parseVercelJson,
@@ -51,6 +54,7 @@ interface PickProjectOptions extends VercelProjectOperationOptions {
 }
 
 interface PickTeamOptions extends VercelProjectOperationOptions {
+  teamRequirement?: VercelTeamRequirement;
   /** Builds the team selector heading from the current team's display name. */
   selectMessage?: (currentTeam: string) => string;
 }
@@ -165,6 +169,7 @@ function isLoggedOutFailure(failure: VercelCaptureFailure): boolean {
   return (
     text.includes("credentials") ||
     text.includes("not authenticated") ||
+    text.includes("not authorized") ||
     text.includes("not logged in") ||
     text.includes("specified token is not valid") ||
     text.includes("scope-not-accessible") ||
@@ -309,7 +314,8 @@ export async function validateTeam(
 /**
  * Picks the Vercel team (scope). A passed slug is validated and resolved; with
  * zero or one team the current scope is used without prompting; otherwise the
- * user filters and chooses from the list with a single-selection picker.
+ * user filters and chooses from the list with a single-selection picker. Flows
+ * with a team requirement always show the picker and disable ineligible teams.
  */
 export async function pickTeam(
   prompter: Prompter,
@@ -319,11 +325,72 @@ export async function pickTeam(
 ): Promise<string> {
   if (presetTeam !== undefined) {
     await validateTeam(prompter, projectRoot, presetTeam, options);
-    return resolveTeam(projectRoot, presetTeam, options);
+    const team = await resolveTeam(projectRoot, presetTeam, options);
+    if (options.teamRequirement) {
+      const issue = await checkTeamRequirement(projectRoot, team, options.teamRequirement, options);
+      if (issue) throw new Error(`Cannot use Vercel team "${team}". ${issue}`);
+    }
+    return team;
   }
   const teams = await withSpinner(prompter, whimsyFor("teams"), () =>
     listTeams(projectRoot, options),
   );
+  if (options.teamRequirement) {
+    const requirement = options.teamRequirement;
+    const issues = await withSpinner(prompter, "Checking team permissions…", () =>
+      checkTeamRequirements(projectRoot, teams, requirement, options),
+    );
+    const choices = teams
+      .map((team) => {
+        const issue = issues.get(team.slug);
+        return {
+          value: team.slug,
+          label: team.current ? `${team.name} (current)` : team.name,
+          disabled: issue !== undefined,
+          disabledReason:
+            issue === undefined
+              ? undefined
+              : issue === requirement.disabledReason
+                ? "needs permission"
+                : "couldn't verify",
+        };
+      })
+      .sort((a, b) => Number(a.disabled) - Number(b.disabled));
+    const helpText = [
+      ...(choices.some((choice) => choice.disabledReason === "needs permission")
+        ? [
+            "For teams that need permission, ask a team owner to run setup,\nor choose another team.",
+          ]
+        : []),
+      ...(choices.some((choice) => choice.disabledReason === "couldn't verify")
+        ? ["Couldn't verify access? Retry, or run `vercel login` and try again."]
+        : []),
+    ].join("\n");
+    const enabled = choices.filter((choice) => !choice.disabled);
+    if (enabled.length === 0) {
+      if (choices.length)
+        prompter.note(
+          choices.map((choice) => `${choice.label}: ${choice.disabledReason}`).join("\n"),
+        );
+      throw new Error(
+        `No Vercel teams are available for this setup. ${requirement.disabledReason} If permissions could not be verified, run \`vercel login\` and retry.`,
+      );
+    }
+    const current = teams.find((team) => team.current);
+    const selected = await prompter.select({
+      message: options.selectMessage?.(current?.name ?? "your current team") ?? "Select your team",
+      search: true,
+      placeholder: "type to search teams",
+      options: choices,
+      helpText: helpText || undefined,
+      initialValue:
+        enabled.find((choice) => choice.value === current?.slug)?.value ?? enabled[0]!.value,
+    });
+    if (!enabled.some((choice) => choice.value === selected)) {
+      throw new Error(`Cannot use Vercel team "${selected}". ${requirement.disabledReason}`);
+    }
+    return selected;
+  }
   if (teams.length <= 1) {
     return teams.find((team) => team.current)?.slug ?? (await whoamiScope(projectRoot, options));
   }

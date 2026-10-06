@@ -6,6 +6,7 @@ import {
   withAnswers,
   withPolicy,
 } from "#setup/ask.js";
+import { WEB_CHAT_TEAM_REQUIREMENT } from "#setup/integrations/web/auth-options.js";
 import { ensureVercelProject } from "#setup/flows/ensure-vercel-project.js";
 import { resolveEveProjectContext } from "#internal/project-context.js";
 import { createHeadlessPrompter } from "#setup/headless.js";
@@ -72,6 +73,7 @@ export async function runIntegrationSetupCommand(
           : () =>
               ensureVercelProject({
                 appRoot: projectRoot,
+                teamRequirement: kind === "web" ? WEB_CHAT_TEAM_REQUIREMENT : undefined,
                 prompter,
                 signal: client?.signal ?? options.signal,
               }),

@@ -3,6 +3,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createPromptCommandOutput, WHIMSY_POOLS } from "#setup/cli/index.js";
 import { captureVercel, runVercel, type VercelCaptureResult } from "#setup/primitives/index.js";
 
+import { WEB_CHAT_TEAM_REQUIREMENT } from "./integrations/web/auth-options.js";
+
 import { HumanActionRequiredError } from "#setup/human-action.js";
 import type { Prompter, PrompterValue, SingleSelectOptions } from "./prompter.js";
 import { createFakePrompter } from "#internal/testing/fake-prompter.js";
@@ -101,6 +103,7 @@ describe("getVercelAuthStatus", () => {
 
   it.each([
     "Error: Not authenticated",
+    "Vercel CLI 62.1.0\nError: Not authorized",
     "Error: The specified token is not valid. Use `vercel login` to generate a new token.",
     "Error: You do not have access to the specified account\nLearn More: https://err.sh/vercel/scope-not-accessible",
   ])("reports logged-out for an authentication-recovery diagnostic: %s", async (stderr) => {
@@ -1075,6 +1078,8 @@ describe("linkProject", () => {
 function stubVercel(responses: {
   whoami?: string;
   teams?: { name: string; slug: string; current: boolean }[];
+  permissions?: Record<string, Record<string, string[]> | null>;
+  limitedTeams?: string[];
   projects?: { name: string; id: string; updatedAt?: number }[];
 }): void {
   mockedCaptureVercel.mockImplementation(async (args): Promise<VercelCaptureResult> => {
@@ -1092,6 +1097,19 @@ function stubVercel(responses: {
       return responses.teams === undefined
         ? failed()
         : { ok: true, stdout: JSON.stringify({ teams: responses.teams }) };
+    }
+    if (args[0] === "api" && args[1] === "/v2/teams?permissions=true&limit=100") {
+      return captured({
+        teams: Object.entries(responses.permissions ?? {}).map(([slug, permissions]) => ({
+          slug,
+          permissions,
+          limited: responses.limitedTeams?.includes(slug),
+        })),
+      });
+    }
+    if (args[0] === "api" && args[1] === "/v1/user/permissions") {
+      const permissions = responses.permissions?.[String(args[args.indexOf("--scope") + 1])];
+      return permissions == null ? failed() : captured({ permissions });
     }
     if (args[0] === "project" && args[1] === "ls") {
       return responses.projects === undefined
@@ -1139,6 +1157,72 @@ describe("pickTeam selection", () => {
     await expect(pickTeam(prompter, "/tmp/parent", undefined)).resolves.toBe("other");
     expect(selectMessages).toEqual(["Select your team"]);
   });
+
+  it("keeps ineligible teams visible and defaults to a team with Web Chat permissions", async () => {
+    const permitted = {
+      oauth2Application: ["create", "update"],
+      projectEnvVars: ["create"],
+      projectEnvVarsProduction: ["create"],
+    };
+    stubVercel({
+      teams: [
+        { name: "Member team", slug: "member", current: true },
+        { name: "Owner team", slug: "owner", current: false },
+        { name: "Unavailable team", slug: "unavailable", current: false },
+        { name: "No production env access", slug: "restricted", current: false },
+        { name: "SSO required", slug: "sso", current: false },
+      ],
+      permissions: {
+        member: { ...permitted, oauth2Application: ["read", "list"] },
+        owner: permitted,
+        unavailable: null,
+        restricted: { ...permitted, projectEnvVarsProduction: [] },
+        sso: permitted,
+      },
+      limitedTeams: ["sso"],
+    });
+    const { prompter } = createFakePrompter({
+      single: (opts) => {
+        expect(opts.initialValue).toBe("owner");
+        expect(opts.options).toMatchObject([
+          { value: "owner", disabled: false },
+          { value: "member", disabled: true, disabledReason: "needs permission" },
+          {
+            value: "unavailable",
+            disabled: true,
+            disabledReason: "couldn't verify",
+          },
+          { value: "restricted", disabled: true },
+          { value: "sso", disabled: true },
+        ]);
+        expect(opts.search).toBe(true);
+        expect(opts.helpText).toContain("ask a team owner");
+        expect(opts.helpText).toContain("vercel login");
+        return "owner";
+      },
+    });
+    await expect(
+      pickTeam(prompter, "/tmp/parent", undefined, {
+        teamRequirement: WEB_CHAT_TEAM_REQUIREMENT,
+      }),
+    ).resolves.toBe("owner");
+  });
+
+  it.each([undefined, "member"])(
+    "rejects an ineligible sole or preset team (%s)",
+    async (preset) => {
+      stubVercel({
+        teams: [{ name: "Member", slug: "member", current: true }],
+        permissions: { member: { oauth2Application: ["read"] } },
+      });
+      const { prompter } = createFakePrompter();
+      await expect(
+        pickTeam(prompter, "/tmp/parent", preset, {
+          teamRequirement: WEB_CHAT_TEAM_REQUIREMENT,
+        }),
+      ).rejects.toThrow(/owner/);
+    },
+  );
 
   it("uses a current-team-aware heading when the caller supplies one", async () => {
     stubVercel({
