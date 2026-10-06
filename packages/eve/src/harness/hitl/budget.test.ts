@@ -80,6 +80,21 @@ describe("the budget question", () => {
     expect(turn.storesNothing()).toBe(true);
   });
 
+  it("a step rolled back after publishing its answer closes the question silently, so a cancel doesn't withdraw it", () => {
+    const rolledBack = waitingOnBudget().input({ resolved: [requestId], type: "step.rolledBack" });
+
+    expect(rolledBack.events).toEqual([]);
+    expect(rolledBack.storesNothing()).toBe(true);
+    expect(rolledBack.stored().input(cancel).resolutions()).toEqual([]);
+  });
+
+  it("a rolled-back step that resolved something else leaves the question open", () => {
+    const rolledBack = waitingOnBudget().input({ resolved: ["other"], type: "step.rolledBack" });
+
+    expect(rolledBack.events).toEqual([]);
+    expect(rolledBack.next()).toEqual({ waiting: "input" });
+  });
+
   it.each([
     { input: message("Also check the invoices."), name: "a message that answers nothing" },
     { input: answer("maybe", requestId), name: "an answer with neither option" },

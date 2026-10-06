@@ -175,9 +175,8 @@ export function consumeAuthorizationResult(
   const result = results[index]!;
   const remaining = results.filter((_, resultIndex) => resultIndex !== index);
   ctx.delete(PendingAuthorizationResultKey);
-  if (remaining.length > 0) {
-    ctx.set(PendingAuthorizationResultKey, remaining);
-  }
+  // Callbacks are step-local: what's left stays out of durable context.
+  if (remaining.length > 0) ctx.setVirtualContext(PendingAuthorizationResultKey, remaining);
   return result;
 }
 

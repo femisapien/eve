@@ -226,19 +226,20 @@ export function completeCandidateAuthorization(
           principal: challenge.principal,
           resume: challenge.resume,
         };
-  const rest = without(candidate, challenge);
+  const narrowed = without(candidate, challenge);
+  const authorized = [...(narrowed.authorized ?? []), ...(authorization ? [authorization] : [])];
+  const rest: ActiveCandidate = {
+    ...narrowed,
+    ...(authorized.length > 0 && { authorized }),
+  };
+  // The policy runs once its other authorizations complete; this callback waits on the candidate for it.
   if ((rest.authorizations?.length ?? 0) > 0) {
-    // The policy runs once its other authorizations complete; this callback waits in the step for it.
-    if (authorization !== undefined) {
-      // The policy binds its responder itself; the turn's person stays who it runs as.
-      events.push({ requester: null, result: authorization, type: "resumeAuthorization" });
-    }
     return { checks: [], events, state: withCandidate(state, rest) };
   }
-  const { authorizations: _done, ...ready } = rest;
+  const { authorizations: _done, authorized: _read, ...ready } = rest;
   const pending: ActiveCandidate = { ...ready, status: "pending" };
   return {
-    checks: [check(approval, pending, authorization)],
+    checks: [check(approval, pending, authorized)],
     events,
     state: withCandidate(state, pending),
   };
@@ -394,7 +395,14 @@ function finish(
     const candidate =
       activeCandidates[candidateId] ?? candidates.find((c) => c.candidateId === candidateId)!;
     delete activeCandidates[candidateId];
-    const { responder, authorizations: waiting, status: _status, ...rest } = candidate;
+    // The audit keeps who answered and how it ended, never a callback's payload.
+    const {
+      responder,
+      authorizations: waiting,
+      authorized: _callbacks,
+      status: _status,
+      ...rest
+    } = candidate;
     finished.push({
       ...rest,
       ...(reason !== undefined && { reason }),
@@ -421,11 +429,11 @@ function finish(
 function check(
   approval: OpenApproval,
   candidate: ActiveCandidate,
-  authorization?: PolicyCheck["authorization"],
+  authorizations: PolicyCheck["authorizations"] = [],
 ): PolicyCheck {
   return {
     at: approval.at,
-    ...(authorization !== undefined && { authorization }),
+    ...(authorizations.length > 0 && { authorizations }),
     candidateId: candidate.candidateId,
     decision: candidate.decision,
     request: approval.request,

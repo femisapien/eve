@@ -178,7 +178,7 @@ describe("approval response policies", () => {
     // The policy reads the callback; the turn keeps Alice as its person.
     expect(authorization.checks(callback("r1", "reviewer"))).toEqual([
       expect.objectContaining({
-        authorization: expect.objectContaining({ attemptId: "r1", name: "reviewer" }),
+        authorizations: [expect.objectContaining({ attemptId: "r1", name: "reviewer" })],
         candidateId,
         responder: BOB,
       }),
@@ -188,6 +188,82 @@ describe("approval response policies", () => {
     expect(turn.published("approval.settled").map(({ data }) => data.responderPrincipalId)).toEqual(
       ["bob"],
     );
+  });
+
+  it("a policy that asks for two authorizations reads both callbacks, though they arrive apart", () => {
+    const twice = guarded().checked(answerAs(BOB), {
+      challenges: [
+        challenge("r1", { name: "reviewer", principalId: "bob", requester: BOB }),
+        challenge("g1", { name: "github", principalId: "bob", requester: BOB }),
+      ],
+      kind: "threw",
+    });
+
+    expect(twice.checks(callback("r1", "reviewer"))).toEqual([]);
+    const first = twice.input(callback("r1", "reviewer")).stored();
+    expect(first.reported("resumeAuthorization")).toEqual([]);
+    expect(first.humanInput.awaitedAuthorizations()).toEqual(["g1"]);
+
+    expect(first.checks(callback("g1", "github"))).toEqual([
+      expect.objectContaining({
+        authorizations: [
+          expect.objectContaining({ attemptId: "r1", name: "reviewer" }),
+          expect.objectContaining({ attemptId: "g1", name: "github" }),
+        ],
+        responder: BOB,
+      }),
+    ]);
+    const turn = first.checked(callback("g1", "github"), ALLOWED);
+    expect(turn.published("approval.settled").map(({ data }) => data.responderPrincipalId)).toEqual(
+      ["bob"],
+    );
+  });
+
+  describe("a candidate that finishes with one of two authorizations completed", () => {
+    /** Bob's policy asked for two authorizations, and the first one completed. */
+    function halfAuthorized(): Turn {
+      return guarded()
+        .checked(answerAs(BOB), {
+          challenges: [
+            challenge("r1", { name: "reviewer", principalId: "bob", requester: BOB }),
+            challenge("g1", { name: "github", principalId: "bob", requester: BOB }),
+          ],
+          kind: "threw",
+        })
+        .input(callback("r1", "reviewer"))
+        .stored();
+    }
+    /** What the session keeps of its candidates, as stored. */
+    function audit(turn: Turn) {
+      return (
+        turn.stored().state?.["eve.harness.humanInput"] as
+          | {
+              readonly audit?: {
+                readonly activeCandidates: object;
+                readonly candidateHistory: object[];
+              };
+            }
+          | undefined
+      )?.audit;
+    }
+
+    it("keeps the completed callback on the candidate while it waits", () => {
+      expect(JSON.stringify(audit(halfAuthorized()))).toContain("callback/r1");
+    });
+
+    it.each([
+      ["times out", (turn: Turn) => turn.input({ now: NOW + 10 * 60_000 + 1, type: "time" })],
+      ["is cancelled", (turn: Turn) => turn.input(cancel)],
+      ["is steered past", (turn: Turn) => turn.input(message("Never mind."))],
+      ["loses to another candidate", (turn: Turn) => turn.checked(answerAs(CAROL), ALLOWED)],
+    ])("leaves no callback in the audit once it %s", (_name, end) => {
+      const ended = end(halfAuthorized());
+      const kept = audit(ended);
+
+      expect(JSON.stringify(kept ?? {})).not.toContain("authorized");
+      expect(JSON.stringify(kept ?? {})).not.toContain("callback/r1");
+      expect(Object.keys(kept?.activeCandidates ?? {})).toEqual([]);
+    });
   });
 
   it("a responder's authorization belongs to its candidate, not to the turn's requests", () => {

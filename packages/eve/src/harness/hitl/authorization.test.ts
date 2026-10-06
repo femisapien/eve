@@ -189,7 +189,11 @@ describe("authorizations", () => {
     const turn = waitingOnAuthorizations(challenge("a1")).input(callback("a1"));
 
     expect(outcomes(turn)).toEqual([{ attemptId: "a1", outcome: "authorized", reason: undefined }]);
-    expect(turn.reported("resumeAuthorization")).toEqual([
+    expect(turn.next()).toEqual({ run: "model" });
+    // The callback reaches the tools with the model step that can call again.
+    expect(turn.reported("resumeAuthorization")).toEqual([]);
+    const starting = turn.stored().input({ type: "model.starting" });
+    expect(starting.reported("resumeAuthorization")).toEqual([
       {
         requester: ALICE,
         result: {
@@ -204,7 +208,47 @@ describe("authorizations", () => {
         type: "resumeAuthorization",
       },
     ]);
-    expect(turn.next()).toEqual({ run: "model" });
+    expect(starting.storesNothing()).toBe(true);
+  });
+
+  it("a callback that completes while an approval keeps the turn waiting waits with it", () => {
+    const publish = approval("publish");
+    const signedIn = Turn.idle()
+      .input(approvalsRequested([publish]))
+      .input(authorizationRequired([challenge("a1")]))
+      .input(callback("a1"))
+      .stored();
+
+    expect(signedIn.next()).toEqual({ waiting: "input" });
+    const approved = signedIn.input(answer("approve", publish.requestId)).stored();
+    expect(approved.next()).toEqual({ run: "approved" });
+
+    const starting = approved.input({ type: "model.starting" });
+    expect(starting.reported("resumeAuthorization")).toEqual([
+      expect.objectContaining({
+        requester: ALICE,
+        result: expect.objectContaining({ attemptId: "a1", name: "weather" }),
+      }),
+    ]);
+    // Handed once: a later model step gets nothing.
+    expect(
+      starting.stored().input({ type: "model.starting" }).reported("resumeAuthorization"),
+    ).toEqual([]);
+  });
+
+  it("a completed callback no step read yet is dropped by a cancel or a steering message", () => {
+    const signedIn = Turn.idle()
+      .input(approvalsRequested([approval("publish")]))
+      .input(authorizationRequired([challenge("a1")]))
+      .input(callback("a1"))
+      .stored();
+
+    for (const moved of [signedIn.input(cancel), signedIn.input(message("Never mind."))]) {
+      expect(
+        moved.stored().input({ type: "model.starting" }).reported("resumeAuthorization"),
+      ).toEqual([]);
+    }
+    expect(signedIn.input(cancel).storesNothing()).toBe(true);
   });
 
   it("the turn keeps waiting until every authorization it waits on completes", () => {

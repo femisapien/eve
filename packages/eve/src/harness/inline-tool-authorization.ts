@@ -2,6 +2,7 @@ import type { ModelMessage, ToolSet, TypedToolResult } from "ai";
 
 import { contextStorage } from "#context/container.js";
 import {
+  type AuthorizationChallenge,
   type AuthorizationSignal,
   isAuthorizationSignal,
   isPendingAuthorizationToolOutput,
@@ -48,6 +49,26 @@ export function resolveInlineAuthorizationInterrupt(input: {
     ),
     history: projectCompletedSiblingCalls(input.messages, interruptedCallIds),
   };
+}
+
+/** The authorizations a step's tool calls asked for, and the calls that asked. */
+export function findInlineAuthorizationSignals(
+  toolResults: readonly TypedToolResult<ToolSet>[] | undefined,
+):
+  | {
+      readonly callIds: readonly string[];
+      readonly challenges: readonly AuthorizationChallenge[];
+    }
+  | undefined {
+  const callIds: string[] = [];
+  const challenges: AuthorizationChallenge[] = [];
+  for (const toolResult of toolResults ?? []) {
+    const signal = readAuthorizationSignal(toolResult);
+    if (signal === undefined) continue;
+    callIds.push(toolResult.toolCallId);
+    challenges.push(...signal.challenges);
+  }
+  return callIds.length === 0 ? undefined : { callIds, challenges };
 }
 
 function readAuthorizationSignal(

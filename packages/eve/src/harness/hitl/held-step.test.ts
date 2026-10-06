@@ -1,6 +1,7 @@
 import type { ModelMessage } from "ai";
 import { describe, expect, it } from "vitest";
 
+import { withoutCalls } from "#harness/hitl/held-step.js";
 import { HumanInput, reduceHumanInput } from "#harness/hitl/index.js";
 import {
   AT,
@@ -292,5 +293,60 @@ describe("a session parked on runtime calls under the old coordination key", () 
 
     expect(read.runtimeCalls()).toBeUndefined();
     expect(read.holdsStep()).toBe(true);
+  });
+});
+
+const authorizationCall = {
+  input: { action: "authorize" },
+  toolCallId: "call-auth",
+  toolName: "protected_action",
+  type: "tool-call" as const,
+};
+
+const authorizationResult = {
+  output: { type: "text" as const, value: "Authorization required." },
+  toolCallId: authorizationCall.toolCallId,
+  toolName: authorizationCall.toolName,
+  type: "tool-result" as const,
+};
+
+const siblingCall = {
+  input: { action: "complete" },
+  toolCallId: "call-sibling",
+  toolName: "protected_action",
+  type: "tool-call" as const,
+};
+
+const siblingResult = {
+  output: { type: "text" as const, value: "completed" },
+  toolCallId: siblingCall.toolCallId,
+  toolName: siblingCall.toolName,
+  type: "tool-result" as const,
+};
+
+describe("withoutCalls", () => {
+  it("removes a stopped call, its result, and the assistant text that narrated it", () => {
+    const messages: ModelMessage[] = [
+      { content: "Check the weather.", role: "user" },
+      {
+        content: [{ text: "I'll authorize this action.", type: "text" }, authorizationCall],
+        role: "assistant",
+      },
+      { content: [authorizationResult], role: "tool" },
+    ];
+
+    expect(withoutCalls(messages, new Set([authorizationCall.toolCallId]))).toEqual([messages[0]]);
+  });
+
+  it("keeps sibling calls and their results", () => {
+    const messages: ModelMessage[] = [
+      { content: [authorizationCall, siblingCall], role: "assistant" },
+      { content: [authorizationResult, siblingResult], role: "tool" },
+    ];
+
+    expect(withoutCalls(messages, new Set([authorizationCall.toolCallId]))).toEqual([
+      { content: [siblingCall], role: "assistant" },
+      { content: [siblingResult], role: "tool" },
+    ]);
   });
 });

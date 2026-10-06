@@ -2,6 +2,7 @@ import { type ToolApprovalConfiguration, type ToolApprovalStatus, type ToolSet, 
 
 import type { RuntimeModelReference } from "#runtime/agent/bootstrap.js";
 import { isObject } from "#shared/guards.js";
+import { markApprovalRecheck } from "#harness/approval-recheck.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import { resolveApprovalPolicy, type ApprovalStatus } from "#approval/definition.js";
 import { resolveWebSearchBackend, resolveWebSearchProviderTool } from "#harness/provider-tools.js";
@@ -10,7 +11,6 @@ import { buildCallbackContext } from "#context/build-callback-context.js";
 import { loadContext } from "#context/container.js";
 import { isAuthorizationSignal, modelFacingAuthorizationOutput } from "#harness/authorization.js";
 import { stashToolInterrupt } from "#harness/tool-interrupts.js";
-import { isApprovedToolCall, markApprovalRecheck } from "#harness/approval-recheck.js";
 import { toModelSchema } from "#tools/schema.js";
 import { normalizeToolJsonOutput } from "#harness/tool-model-output.js";
 import { toolCallModelOutput } from "#harness/tool-call-io.js";
@@ -24,7 +24,6 @@ type ApprovalFn = (
   toolInput: unknown,
   callId: string,
   abortSignal: AbortSignal | undefined,
-  recheck: boolean,
 ) => Promise<NativeApprovalStatus>;
 
 const toolApprovals = new WeakMap<object, ApprovalFn>();
@@ -41,6 +40,7 @@ const toolApprovals = new WeakMap<object, ApprovalFn>();
  * retry call so the request can proceed without it.
  */
 export function buildToolSet(input: {
+  /** Approval keys `once()` approvals granted, which approval policies read. */
   readonly approvedTools?: ReadonlySet<string>;
   readonly disabledProviderTools?: ReadonlySet<string>;
   readonly tools: HarnessToolMap;
@@ -54,7 +54,7 @@ export function buildToolSet(input: {
     }
 
     const authorToModelOutput = definition.toModelOutput;
-    const approval = buildApprovalFn(definition, input);
+    const approval = buildApprovalFn(definition, input.approvedTools);
     const aiTool = tool({
       description: definition.description,
       execute: wrapToolExecute(definition),
@@ -228,26 +228,47 @@ export async function buildToolSetWithProviderTools(input: {
 
 function buildApprovalFn(
   definition: HarnessToolDefinition,
-  input: { readonly approvedTools?: ReadonlySet<string> },
+  approvedTools: ReadonlySet<string> = new Set(),
+  options: { readonly recheck?: boolean } = {},
 ): ApprovalFn {
-  return async (toolInput, callId, abortSignal, recheck) => {
+  return async (toolInput, callId, abortSignal) => {
     if (definition.approval === undefined) return undefined;
 
     const toolInputRecord = isObject(toolInput) ? toolInput : undefined;
     const context = {
       ...buildCallbackContext(),
       abortSignal: abortSignal ?? new AbortController().signal,
-      approvedTools: input.approvedTools ?? new Set<string>(),
+      approvedTools,
       callId,
       toolInput: toolInputRecord,
       toolName: definition.name,
     };
 
     const status = await resolveApprovalPolicy(definition.approval)(
-      recheck ? markApprovalRecheck(context) : context,
+      options.recheck === true ? markApprovalRecheck(context) : context,
     );
     return typeof status === "boolean" ? (status ? "user-approval" : "not-applicable") : status;
   };
+}
+
+/**
+ * Re-runs a tool's approval policy for a call a person approved, just before
+ * eve runs it, so the policy can still refuse it.
+ */
+export async function recheckApprovedCall(
+  definition: HarnessToolDefinition,
+  call: { readonly callId: string; readonly input: unknown; readonly abortSignal?: AbortSignal },
+): Promise<{ readonly denied: boolean; readonly reason?: string }> {
+  const status = await buildApprovalFn(definition, undefined, { recheck: true })(
+    call.input,
+    call.callId,
+    call.abortSignal,
+  );
+  if (status === "denied") return { denied: true };
+  if (typeof status === "object" && status !== null && status.type === "denied") {
+    return { denied: true, reason: status.reason };
+  }
+  return { denied: false };
 }
 
 /** Builds the AI SDK 7 call-level approval policy for an assembled tool set. */
@@ -255,7 +276,7 @@ export function buildToolApproval(
   tools: ToolSet,
   abortSignal?: AbortSignal,
 ): ToolApprovalConfiguration<ToolSet, Record<string, unknown>> {
-  return async ({ toolCall, messages }) => {
+  return async ({ toolCall }) => {
     const toolDefinition = tools[toolCall.toolName];
     if (toolDefinition === undefined) return undefined;
 
@@ -264,7 +285,6 @@ export function buildToolApproval(
       toolCall.input,
       toolCall.toolCallId,
       abortSignal,
-      isApprovedToolCall(messages, toolCall.toolCallId),
     )) as ToolApprovalStatus;
   };
 }

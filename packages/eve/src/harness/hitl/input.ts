@@ -201,11 +201,23 @@ export type FromHost =
    */
   | { readonly type: "input.resumed" }
   /**
+   * The turn's model step runs: the sign-ins that completed for the turn's
+   * calls go to that step's tools, which can call again now.
+   */
+  | { readonly type: "model.starting" }
+  /**
    * The turn a budget Stop ended settles as cancelled, from before the step
    * that read the Stop: its budget question is closed, and its resolution
    * was already published.
    */
   | { readonly type: "budget.stopped"; readonly requestId: string }
+  /**
+   * A cancel ended the turn during a step, before the step committed, so the
+   * turn settles from before it. The step had already published a resolution
+   * for each of `resolved`: the budget question it answered closes again,
+   * with nothing published, so the cancel doesn't withdraw it after.
+   */
+  | { readonly type: "step.rolledBack"; readonly resolved: readonly string[] }
   /**
    * A cancel in the turn's step ended it; the session saved before that
    * step, which the turn settles from, closes what the cancel closed and
@@ -226,11 +238,11 @@ export interface PolicyCheck {
   readonly requester: SessionAuthContext | null;
   readonly responder: SessionAuthContext;
   /**
-   * The responder's authorization this input completes, which the policy reads as
-   * it runs again. The policy binds its responder itself; the turn's person
-   * stays who the turn runs as.
+   * The responder's authorizations its candidate waited on, this input's last,
+   * which the policy reads as it runs again. The policy binds its responder
+   * itself; the turn's person stays who the turn runs as.
    */
-  readonly authorization?: AuthorizationResult & { readonly name: string };
+  readonly authorizations?: readonly (AuthorizationResult & { readonly name: string })[];
 }
 
 /** What each check's response policy did, by candidate id. */

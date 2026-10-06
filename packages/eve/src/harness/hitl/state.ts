@@ -1,14 +1,14 @@
 import type { ModelMessage } from "ai";
 
 import type { SessionAuthContext } from "#channel/types.js";
-import type { AuthorizationChallenge } from "#harness/authorization.js";
+import type { AuthorizationChallenge, AuthorizationResult } from "#harness/authorization.js";
 import type { SessionStateMap, StepInput } from "#harness/types.js";
 import type { ApprovalCandidateOutcome } from "#protocol/message.js";
 import type { RuntimeWorkflowTaskRequest } from "#shared/action-types.js";
 import type { InputRequest, InputResponse } from "#shared/input.js";
 
 import type { Command } from "./command.js";
-import type { CandidateDecision, RelayRoute, RequestAt } from "./input.js";
+import type { CandidateDecision, PolicyCheck, RelayRoute, RequestAt } from "./input.js";
 
 // ---------------------------------------------------------------------------
 // State: one session key, read and written only here.
@@ -17,6 +17,38 @@ import type { CandidateDecision, RelayRoute, RequestAt } from "./input.js";
 export const STATE_KEY = "eve.harness.humanInput";
 /** Where sessions parked before the held step held runtime calls kept them. */
 export const LEGACY_BATCH_KEY = "eve.runtime.pendingCoordinationBatch";
+
+/**
+ * Where releases before `HumanInput` parked a turn's requests and the input
+ * that waited behind them: approvals and the budget question (the batch keys),
+ * authorizations, requests relayed from children and runs, and deferred input.
+ */
+const PRE_HUMAN_INPUT_KEYS = [
+  "eve.runtime.pendingInputBatches",
+  "eve.runtime.pendingInputBatch",
+  "eve.runtime.pendingAuthorization",
+  "eve.runtime.proxyInputRequests",
+  "eve.runtime.deferredStepInput",
+  "eve.harness.pendingWorkflowInterrupt",
+] as const;
+
+/** Those releases left an empty list or map behind once nothing was open. */
+function isParked(key: (typeof PRE_HUMAN_INPUT_KEYS)[number], value: unknown): boolean {
+  if (value === undefined) return false;
+  if (key === "eve.runtime.pendingInputBatches") return !Array.isArray(value) || value.length > 0;
+  if (key === "eve.runtime.proxyInputRequests") {
+    return typeof value !== "object" || value === null || Object.keys(value).length > 0;
+  }
+  return true;
+}
+
+/** See `HumanInput.unreadableKeys`. */
+export function unreadableKeys(sessionState: SessionStateMap | undefined): readonly string[] {
+  if (sessionState === undefined) return [];
+  const keys = PRE_HUMAN_INPUT_KEYS.filter((key) => isParked(key, sessionState[key]));
+  const own = sessionState[STATE_KEY];
+  return own === undefined || isReadableState(own) ? keys : [STATE_KEY, ...keys];
+}
 
 /** What a rule leaves: the state, and the events it reports, in order. */
 export interface Reduced<S = HumanInputState> {
@@ -36,8 +68,20 @@ export interface HumanInputState {
   readonly held?: HeldStep;
   /** Every response-policy candidate and settlement of the session. */
   readonly audit?: ApprovalAudit;
+  /**
+   * Sign-ins that completed for the turn's own calls, kept until the turn's
+   * model step runs and its tools can read them (`model.starting`). Another
+   * request can keep the turn waiting after a sign-in completes.
+   */
+  readonly authorized?: readonly AuthorizedResult[];
   /** Authorizations children and runs started through this session, by attempt id, until they complete. */
   readonly relayedAuthorizations?: Readonly<Record<string, RelayedAuthorization>>;
+}
+
+/** A completed sign-in, and who the turn runs as once its tools read it. */
+export interface AuthorizedResult {
+  readonly result: AuthorizationResult & { readonly name: string };
+  readonly requester: SessionAuthContext | null;
 }
 
 type OpenRequest =
@@ -56,11 +100,14 @@ export const LEGACY_GRANTS_KEY = "eve.runtime.hitl.approvedTools";
  * (`state-legacy.ts`) upgrades what earlier releases stored.
  */
 export function parseState(value: unknown): HumanInputState {
-  if (typeof value !== "object" || value === null) return EMPTY;
+  return isReadableState(value) ? value : EMPTY;
+}
+
+function isReadableState(value: unknown): value is HumanInputState {
+  if (typeof value !== "object" || value === null) return false;
   const requests: unknown = Reflect.get(value, "requests");
   const grants: unknown = Reflect.get(value, "grants");
-  if (typeof requests !== "object" || requests === null || !Array.isArray(grants)) return EMPTY;
-  return value as HumanInputState;
+  return typeof requests === "object" && requests !== null && Array.isArray(grants);
 }
 
 /** Stores `state` in the session's state, removing the key when nothing is open. */
@@ -72,6 +119,10 @@ export function store(
   // `readState` moved a legacy batch and grants into `state`.
   delete next[LEGACY_BATCH_KEY];
   delete next[LEGACY_GRANTS_KEY];
+  // This build can't honor what earlier releases parked there, and the turn
+  // that commits here has moved on without it. Left behind, it would keep the
+  // session from ever looking idle to a handoff.
+  for (const key of PRE_HUMAN_INPUT_KEYS) delete next[key];
   if (isEmpty(state)) delete next[STATE_KEY];
   else next[STATE_KEY] = state;
   return Object.keys(next).length > 0 ? next : undefined;
@@ -84,6 +135,7 @@ function isEmpty(state: HumanInputState): boolean {
     state.held === undefined &&
     state.grants.length === 0 &&
     state.audit === undefined &&
+    (state.authorized?.length ?? 0) === 0 &&
     Object.keys(state.relayedAuthorizations ?? {}).length === 0
   );
 }
@@ -162,6 +214,8 @@ export interface ActiveCandidate {
   readonly status: "pending" | "authorization-required";
   /** The authorizations its policy waits on, while `authorization-required`. */
   readonly authorizations?: readonly AuthorizationChallenge[];
+  /** Callbacks of the ones that completed, kept until its policy runs again. */
+  readonly authorized?: readonly NonNullable<PolicyCheck["authorizations"]>[number][];
 }
 
 /** Who answered, narrowed to identity for the audit's finished records. */

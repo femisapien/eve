@@ -1,3 +1,5 @@
+import { HumanInput } from "#harness/hitl/index.js";
+import type { InputRequest } from "#shared/input.js";
 import type { SessionAuthContext } from "#channel/types.js";
 import { runAsCaller } from "#context/caller-scope.js";
 import { contextStorage } from "#context/container.js";
@@ -31,6 +33,21 @@ export function setApprovedCallCallers(
       const approver = approverOfRequest(state, request.requestId);
       if (approver !== undefined) callers.set(request.action.callId, approver);
     }
+  }
+  ctx.setVirtualContext(ApprovedCallCallersKey, callers);
+}
+
+export function setApprovedRequests(
+  requests: readonly InputRequest[],
+  state: SessionStateMap | undefined,
+): void {
+  const ctx = contextStorage.getStore();
+  if (ctx === undefined) return;
+  const callers = new Map<string, SessionAuthContext>();
+  const humanInput = HumanInput.read(state);
+  for (const request of requests) {
+    const approver = humanInput.approverOfRequest(request.requestId);
+    if (approver !== undefined) callers.set(request.action.callId, approver);
   }
   ctx.setVirtualContext(ApprovedCallCallersKey, callers);
 }

@@ -7,7 +7,9 @@
  * history: it leaves its step, so the model calls it again once the person has
  * authorized. A step whose other calls all have results joins history without
  * it; a step held on an approval or on runtime calls stays held, out
- * of history, until those calls have results. A newer attempt for the same authorization replaces an
+ * of history, until those calls have results. A completed callback waits in
+ * the session until the turn's model step runs, since another request can
+ * keep the turn waiting first. A newer attempt for the same authorization replaces an
  * older one; steering or cancelling the turn declines every open authorization.
  */
 import type { ModelMessage } from "ai";
@@ -17,7 +19,12 @@ import { authorizationEventFields } from "#harness/authorization-event-fields.js
 import type { AuthorizationChallenge } from "#harness/authorization.js";
 import type { Command } from "#harness/hitl/command.js";
 import type { RequestAt } from "#harness/hitl/input.js";
-import type { HumanInputState, Reduced, OpenAuthorization } from "#harness/hitl/state.js";
+import type {
+  AuthorizedResult,
+  HumanInputState,
+  OpenAuthorization,
+  Reduced,
+} from "#harness/hitl/state.js";
 import {
   createAuthorizationCompletedEvent,
   createAuthorizationRequiredEvent,
@@ -131,23 +138,51 @@ export function completeAuthorization(
   }
   const { challenge } = open;
   const events: Command[] = [completed(challenge, open.at, input.outcome)];
-  if (input.outcome === "authorized" && input.callback !== undefined) {
-    events.push({
-      requester: challenge.requester ?? null,
-      result: {
-        attemptId: input.attemptId,
-        callback: input.callback,
-        hookUrl: challenge.hookUrl,
-        instanceId: challenge.instanceId,
-        name: challenge.name,
-        principal: challenge.principal,
-        resume: challenge.resume,
-      },
-      type: "resumeAuthorization",
-    });
-  }
   const { [input.attemptId]: _closed, ...requests } = state.requests;
-  return { events, state: { ...state, requests } };
+  if (input.outcome !== "authorized" || input.callback === undefined) {
+    return { events, state: { ...state, requests } };
+  }
+  // Another request can keep the turn waiting: the callback waits with it.
+  const authorized: AuthorizedResult = {
+    requester: challenge.requester ?? null,
+    result: {
+      attemptId: input.attemptId,
+      callback: input.callback,
+      hookUrl: challenge.hookUrl,
+      instanceId: challenge.instanceId,
+      name: challenge.name,
+      principal: challenge.principal,
+      resume: challenge.resume,
+    },
+  };
+  return {
+    events,
+    state: { ...state, authorized: [...(state.authorized ?? []), authorized], requests },
+  };
+}
+
+/**
+ * The turn's model step runs: each sign-in that completed for its calls goes
+ * to the step's tools, and the turn runs as who it was asked for.
+ */
+export function handAuthorizations(state: HumanInputState): Reduced {
+  if (state.authorized === undefined) return { events: [], state };
+  const { authorized, ...rest } = state;
+  return {
+    events: authorized.map(({ requester, result }) => ({
+      requester,
+      result,
+      type: "resumeAuthorization",
+    })),
+    state: rest,
+  };
+}
+
+/** The completed sign-ins no step read yet are dropped: the turn moved on without them. */
+export function dropAuthorized(state: HumanInputState): Reduced {
+  if (state.authorized === undefined) return { events: [], state };
+  const { authorized: _dropped, ...rest } = state;
+  return { events: [], state: rest };
 }
 
 /**

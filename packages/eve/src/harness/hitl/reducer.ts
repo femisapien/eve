@@ -31,6 +31,8 @@ import {
 import {
   closeAuthorizations,
   completeAuthorization,
+  dropAuthorized,
+  handAuthorizations,
   openAuthorizations,
   requireAuthorizations,
 } from "./authorization.js";
@@ -123,6 +125,11 @@ export function reduce(
       return { events: [{ type: "waitTurn" }], state };
     case "budget.stopped":
       return stopBudget(state, input.requestId);
+    case "step.rolledBack":
+      return input.resolved.reduce<Reduced>(
+        (reduced, requestId) => then(reduced, (next) => stopBudget(next, requestId)),
+        { events: [], state },
+      );
     case "delivery.received":
       return deliverToRelayed(state, input);
     case "run.ended":
@@ -167,6 +174,8 @@ export function reduce(
       return { events: [], state: clearedState(state) };
     case "input.resumed":
       return takeQueued(state);
+    case "model.starting":
+      return handAuthorizations(state);
     case "cancel.replayed":
       return carryCancel(state);
     default: {
@@ -218,6 +227,7 @@ function closeOwn(state: HumanInputState, options: { readonly step: boolean }): 
     cancelApprovals,
     (next) => (options.step ? cancelStep(next) : { events: [], state: next }),
     (next) => closeAuthorizations(next, { outcome: "declined", reason: CANCELLED_REASON }),
+    dropAuthorized,
   );
 }
 
@@ -228,7 +238,7 @@ function closeOwn(state: HumanInputState, options: { readonly step: boolean }): 
  */
 function steer(state: HumanInputState): Reduced {
   const approvals = then(staleCandidates(state, STEERED_REASON), steerPastApprovals);
-  const authorizations = closeAuthorizations(approvals.state, {
+  const authorizations = closeAuthorizations(dropAuthorized(approvals.state).state, {
     outcome: "declined",
     reason: STEERED_REASON,
   });

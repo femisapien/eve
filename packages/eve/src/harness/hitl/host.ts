@@ -63,11 +63,13 @@ export const INPUT_PHASES = {
   "actions.settled": ["post-step"],
   time: ["pre-step"],
   "budget.stopped": ["pre-step"],
+  "step.rolledBack": ["pre-step"],
   "run.ended": ["parked"],
   "delivery.received": ["parked"],
   "relayed.withdrawn": ["parked"],
   "context.cleared": ["pre-step"],
   "input.resumed": ["pre-step"],
+  "model.starting": ["pre-step"],
   "cancel.replayed": ["pre-step"],
 } as const satisfies { readonly [T in Input["type"]]: readonly Phase[] };
 

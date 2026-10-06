@@ -26,7 +26,13 @@ import { reduce, verdictsOf } from "./reducer.js";
 import { relayedRequestIds } from "./relay.js";
 import { awaitedAuthorizations } from "./authorization.js";
 import { staleAnswersAsText } from "./input-stale-answer.js";
-import { LEGACY_BATCH_KEY, store, type HumanInputState, isOpenRelayed } from "./state.js";
+import {
+  LEGACY_BATCH_KEY,
+  store,
+  unreadableKeys,
+  type HumanInputState,
+  isOpenRelayed,
+} from "./state.js";
 import { readState } from "./state-legacy.js";
 
 export { approvalsRequested, withoutApprovalParts } from "./approval.js";
@@ -100,22 +106,36 @@ export class HumanInput {
   }
 
   /**
+   * The keys of `sessionState` that hold a request or input this build can't
+   * read: the human input key when it doesn't parse, and the keys releases
+   * before `HumanInput` parked requests under. A session that still has any
+   * isn't idle, even though `read` sees nothing open. Releases before
+   * `HumanInput` refuse to hand such a session off, so it only reaches this
+   * build when that check was skipped.
+   */
+  static unreadableKeys(sessionState: SessionStateMap | undefined): readonly string[] {
+    return unreadableKeys(sessionState);
+  }
+
+  /**
    * The one way human input changes: runs the rules on what happened, stores
    * the state they leave in `session`, and carries out the events they report,
    * through `host` for the events only its phase can carry out. A host never
    * reports back mid-commit: work the turn runs for a person (approved calls,
    * response policies) runs between commits, and what it did is committed as
-   * the next input. Returns the session with its human input, and how the turn ended when an
-   * event ended it.
+   * the next input. Returns the session with its human input, that human
+   * input already read, and how the turn ended when an event ended it.
    */
   static async commit<S extends Stateful, P extends Phase>(
     host: HumanInputHost<S, P>,
     session: S,
     input: NoInfer<InputOf<P>>,
-  ): Promise<Committed<S>> {
+  ): Promise<Committed<S> & { readonly humanInput: HumanInput }> {
     assertPhase(INPUT_PHASES, input.type, host.phase);
     const reduced = reduce(readState(session.state), input, host.phase, verdictsOf(input));
     let current: S = { ...session, state: store(session.state, reduced.state) };
+    // What `read` would parse from `current`: hosts don't write human input.
+    const humanInput = new HumanInput(reduced.state, false);
     for (const event of reduced.events) {
       switch (event.type) {
         case "publish":
@@ -128,12 +148,14 @@ export class HumanInput {
           return {
             ending:
               event.closed === "own" ? { closed: "own", kind: "cancelled" } : { kind: "cancelled" },
+            humanInput,
             session: current,
           };
         // Stop resolved the budget question: the turn ends as cancelled.
         case "declineBudget":
           return {
             ending: { declined: "budget", kind: "cancelled", requestId: event.requestId },
+            humanInput,
             session: current,
           };
         default: {
@@ -142,7 +164,7 @@ export class HumanInput {
         }
       }
     }
-    return { session: current };
+    return { humanInput, session: current };
   }
 
   /**
@@ -160,6 +182,17 @@ export class HumanInput {
   }
 
   /**
+   * Whether the turn's next action is to wait for a person: one of its own
+   * requests (an approval, a sign-in, the budget question) is open and no
+   * approved calls are ready to run first. It doesn't mean the session is
+   * idle, and a relayed request alone doesn't make the turn wait here: it
+   * waits on the call that asked.
+   */
+  isWaitingForInput(): boolean {
+    return "waiting" in this.next();
+  }
+
+  /**
    * The input a step runs with, once answers to closed budget questions are
    * dropped and answers to other requests that are no longer open become text
    * the model reads. `displayMessage` is that input's message as the person
@@ -173,6 +206,11 @@ export class HumanInput {
     return staleAnswersAsText(input, open);
   }
 
+  /** Whether sign-ins completed for the turn's calls wait for its model step (`model.starting`). */
+  holdsAuthorizations(): boolean {
+    return (this.#state.authorized?.length ?? 0) > 0;
+  }
+
   /** Whether turn input waits for the turn's next step, behind calls that have joined history. */
   hasQueuedInput(): boolean {
     return this.#state.queued !== undefined;
@@ -182,7 +220,7 @@ export class HumanInput {
   arrivals(
     input: Omit<Parameters<typeof arrivalsOf>[0], "waiting">,
   ): readonly InputOf<"pre-step">[] {
-    return arrivalsOf({ ...input, waiting: "waiting" in this.next() });
+    return arrivalsOf({ ...input, waiting: this.isWaitingForInput() });
   }
 
   /**
@@ -293,7 +331,7 @@ export class HumanInput {
   steering(): Steering {
     return {
       interruptsGeneration: this.relayedRequestIds().size === 0,
-      overridesQueue: "waiting" in this.next(),
+      overridesQueue: this.isWaitingForInput(),
     };
   }
 }
