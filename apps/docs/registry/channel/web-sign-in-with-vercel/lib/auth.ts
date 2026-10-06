@@ -1,16 +1,11 @@
 import { betterAuth } from "better-auth";
 
 const SESSION_MAX_AGE_SECONDS = 8 * 60 * 60;
-export const skipLocalAuth =
-  process.env.NODE_ENV === "development" &&
-  (!process.env.VERCEL || process.env.VERCEL_ENV === "development") &&
-  process.env.EVE_WEB_CHAT_SKIP_AUTH === "1";
-
-const localUrl = new URL(process.env.EVE_WEB_CHAT_LOCAL_URL ?? "http://localhost:3000");
+const DEVELOPMENT_ALLOWED_HOSTS = ["localhost:*", "127.0.0.1:*"];
 
 function getAllowedHosts(): string[] {
   if (process.env.NODE_ENV === "development") {
-    return [localUrl.host];
+    return DEVELOPMENT_ALLOWED_HOSTS;
   }
   const deploymentHosts = [
     process.env.VERCEL_URL,
@@ -26,15 +21,14 @@ function getAllowedHosts(): string[] {
 function requireEnvironmentVariable(name: string): string {
   const value = process.env[name];
   if (value) return value;
-  if (skipLocalAuth) return `development-${name}`;
+  if (process.env.NODE_ENV === "development") return `development-${name}`;
   throw new Error(`Missing required environment variable: ${name}`);
 }
 
 export const auth = betterAuth({
   baseURL: {
     allowedHosts: getAllowedHosts(),
-    protocol:
-      process.env.NODE_ENV === "development" && localUrl.protocol === "http:" ? "http" : "https",
+    protocol: process.env.NODE_ENV === "development" ? "auto" : "https",
   },
   secret: requireEnvironmentVariable("BETTER_AUTH_SECRET"),
   session: {

@@ -7,11 +7,8 @@ import type { VercelProjectReference } from "#setup/project-resolution.js";
 const APP_CONFLICT_RECOVERY =
   "Rename the Vercel project in its settings, then retry `eve add channel/web --skip-install`.";
 const CALLBACK_PATH = "/api/auth/callback/vercel";
-const TARGETS = ["production", "preview", "development"] as const;
+const TARGETS = ["production", "preview"] as const;
 const KEYS = ["VERCEL_APP_CLIENT_ID", "VERCEL_APP_CLIENT_SECRET", "BETTER_AUTH_SECRET"] as const;
-export type WebAuthEnvironment = Record<(typeof KEYS)[number], string> & {
-  EVE_WEB_CHAT_LOCAL_URL: string;
-};
 const AppSchema = z.object({
   clientId: z.string().min(1),
   teamId: z.string(),
@@ -20,14 +17,12 @@ const AppSchema = z.object({
   grantTypes: z.record(z.string(), z.boolean()).optional(),
   clientAuthenticationMethods: z.record(z.string(), z.boolean()).optional(),
   projectRedirectUris: z.array(z.object({ projectId: z.string(), path: z.string() })).optional(),
-  redirectUris: z.array(z.string()).optional(),
   clientSecrets: z.array(z.object({ lastFourChars: z.string() })).optional(),
 });
 const EnvSchema = z.object({
   id: z.string(),
   key: z.string(),
   value: z.string().optional(),
-  decrypted: z.boolean().optional(),
   target: z.union([z.string(), z.array(z.string())]).optional(),
   gitBranch: z.string().nullable().optional(),
   customEnvironmentIds: z.array(z.string()).optional(),
@@ -74,26 +69,7 @@ function assertMatchingApp(app: App, project: VercelProjectReference, configured
 export async function provisionWebChatAuth(
   project: VercelProjectReference,
   signal?: AbortSignal,
-): Promise<WebAuthEnvironment> {
-  let localUrl: URL;
-  try {
-    localUrl = new URL(process.env.EVE_WEB_CHAT_LOCAL_URL ?? "http://localhost:3000");
-    if (
-      !["http:", "https:"].includes(localUrl.protocol) ||
-      !["localhost", "127.0.0.1", "[::1]"].includes(localUrl.hostname) ||
-      localUrl.username ||
-      localUrl.password ||
-      localUrl.search ||
-      localUrl.hash ||
-      localUrl.pathname !== "/"
-    )
-      throw new Error();
-  } catch {
-    throw new Error(
-      "EVE_WEB_CHAT_LOCAL_URL must be a loopback origin, such as http://localhost:3000, without a path, query, or credentials.",
-    );
-  }
-  const localCallback = `${localUrl.origin}${CALLBACK_PATH}`;
+): Promise<void> {
   const token = await readVercelCliToken();
   if (!token) throw new Error("Run `vercel login` before setting up Sign in with Vercel.");
   const query = new URLSearchParams({ teamId: project.orgId });
@@ -161,7 +137,7 @@ export async function provisionWebChatAuth(
     )
   ) {
     throw new Error(
-      "Web Chat has conflicting or incomplete Vercel App credentials. Check production, preview, and development environment variables before retrying.",
+      "Web Chat has conflicting or incomplete Vercel App credentials. Check production and preview environment variables before retrying.",
     );
   }
   const suffix = project.projectId.replace(/^prj_/, "").toLowerCase();
@@ -182,7 +158,6 @@ export async function provisionWebChatAuth(
           name: `${remote.name.slice(0, 100)} Web Chat ${suffix}`,
           slug,
           projectRedirectUris: [{ projectId: project.projectId, path: CALLBACK_PATH }],
-          redirectUris: [localCallback],
           scopes: ["openid", "email", "profile"],
           grantTypes: { authorization_code: true },
           clientAuthenticationMethods: { client_secret_post: true },
@@ -201,40 +176,8 @@ export async function provisionWebChatAuth(
     }
   }
   assertMatchingApp(app, project, configuredId !== undefined);
-  if (!app.redirectUris?.includes(localCallback)) {
-    await request(`/oauth-apps/${encodeURIComponent(app.clientId)}`, "PATCH", {
-      redirectUris: [...(app.redirectUris ?? []), localCallback],
-    });
-  }
   const missingTargets = (key: string) => TARGETS.filter((target) => !forTarget(key, target));
-  const readDevelopment = async (
-    values: Partial<Record<(typeof KEYS)[number], string>> = {},
-  ): Promise<WebAuthEnvironment> => {
-    const environment: WebAuthEnvironment = {
-      EVE_WEB_CHAT_LOCAL_URL: localUrl.origin,
-      VERCEL_APP_CLIENT_ID: app.clientId,
-      VERCEL_APP_CLIENT_SECRET: "",
-      BETTER_AUTH_SECRET: "",
-    };
-    for (const key of [KEYS[1], KEYS[2]]) {
-      const existing = forTarget(key, "development");
-      const value = existing
-        ? EnvSchema.parse(
-            await request(
-              `/v1/projects/${encodeURIComponent(project.projectId)}/env/${encodeURIComponent(existing.id)}`,
-            ),
-          )
-        : { value: values[key], decrypted: true };
-      if (!value.value || value.value === "<redacted>" || value.decrypted === false) {
-        throw new Error(
-          "Could not read development Web Chat credentials. Check development environment access in Vercel and retry setup.",
-        );
-      }
-      environment[key] = value.value;
-    }
-    return environment;
-  };
-  if (KEYS.every((key) => missingTargets(key).length === 0)) return readDevelopment();
+  if (KEYS.every((key) => missingTargets(key).length === 0)) return;
   const secretTargets = missingTargets(KEYS[1]);
   if (secretTargets.length && (app.clientSecrets?.length ?? 0) >= 2) {
     throw new Error(
@@ -250,10 +193,6 @@ export async function provisionWebChatAuth(
   const values = {
     VERCEL_APP_CLIENT_ID: app.clientId,
     VERCEL_APP_CLIENT_SECRET: clientSecret,
-    BETTER_AUTH_SECRET: randomBytes(32).toString("base64url"),
-  };
-  const developmentValues = {
-    ...values,
     BETTER_AUTH_SECRET: randomBytes(32).toString("base64url"),
   };
   const rollback = async (created: z.infer<typeof EnvSchema>[]): Promise<void> => {
@@ -290,35 +229,13 @@ export async function provisionWebChatAuth(
       await request(
         `/v10/projects/${encodeURIComponent(project.projectId)}/env`,
         "POST",
-        KEYS.flatMap((key) => {
-          const missing = missingTargets(key);
-          const deployed = missing.filter((target) => target !== "development");
-          return [
-            ...(deployed.length
-              ? [
-                  {
-                    key,
-                    value: values[key],
-                    target: deployed,
-                    type: key === KEYS[0] ? "plain" : "sensitive",
-                    visibility: key === KEYS[0] ? "config" : "secret",
-                  },
-                ]
-              : []),
-            ...(missing.includes("development")
-              ? [
-                  {
-                    key,
-                    value: developmentValues[key],
-                    target: ["development"],
-                    type: key === KEYS[0] ? "plain" : "encrypted",
-                    // Secret visibility requires sensitive storage, which cannot be pulled locally.
-                    visibility: key === KEYS[0] ? "config" : undefined,
-                  },
-                ]
-              : []),
-          ];
-        }),
+        KEYS.filter((key) => missingTargets(key).length).map((key) => ({
+          key,
+          value: values[key],
+          target: missingTargets(key),
+          type: key === KEYS[0] ? "plain" : "sensitive",
+          visibility: key === KEYS[0] ? "config" : "secret",
+        })),
       ).catch(async (error: unknown) => {
         // Validation and permission rejections did not commit env writes.
         // Timeouts and server failures can happen after a write committed.
@@ -334,7 +251,7 @@ export async function provisionWebChatAuth(
         throw error;
       }),
     );
-  if (result.failed.length === 0) return readDevelopment(developmentValues);
+  if (result.failed.length === 0) return;
 
   // Only roll back writes acknowledged by this attempt. An ambiguous network
   // failure may have committed the secret, so it must remain usable on retry.

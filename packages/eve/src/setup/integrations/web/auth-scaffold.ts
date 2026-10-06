@@ -1,6 +1,5 @@
-import { chmod, readFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import { basename, dirname, join, relative, sep } from "node:path";
-import { parseEnv } from "node:util";
 
 import { appendEnv } from "#setup/append-env.js";
 import { writeTextFile } from "#setup/scaffold/files.js";
@@ -10,7 +9,6 @@ import {
   WEB_CHANNEL_TEMPLATES,
 } from "#setup/scaffold/create/web-template.js";
 import { resolveWebPackageVersions } from "#setup/scaffold/update/web-options.js";
-import type { WebAuthEnvironment } from "./provision-auth.js";
 
 async function readOptional(path: string): Promise<string | undefined> {
   try {
@@ -27,7 +25,7 @@ export async function prepareWebAuthScaffold(input: {
   agentAppRoot: string;
   webRoot?: string;
   force?: boolean;
-}): Promise<(environment: WebAuthEnvironment) => Promise<void>> {
+}): Promise<() => Promise<void>> {
   const webRoot = input.webRoot ?? join(input.environmentRoot, "apps", "web");
   const channelPath = join(input.agentAppRoot, "agent", "channels", "eve.ts");
   const authPath = relative(dirname(channelPath), join(webRoot, "lib", "auth.js"))
@@ -63,23 +61,7 @@ export async function prepareWebAuthScaffold(input: {
     }
   }
   const packagePath = join(input.environmentRoot, "package.json");
-  return async (environment) => {
-    const roots = [...new Set([input.environmentRoot, webRoot])];
-    for (const root of roots) {
-      const current = parseEnv((await readOptional(join(root, ".env.local"))) ?? "");
-      for (const [key, value] of Object.entries(environment)) {
-        if (
-          key !== "EVE_WEB_CHAT_LOCAL_URL" &&
-          current[key] &&
-          current[key] !== value &&
-          !input.force
-        ) {
-          throw new Error(
-            `Could not save local Web Chat credentials because ${key} in ${join(root, ".env.local")} differs from the linked project. Preserve your settings and retry with --overwrite if you want to replace it.`,
-          );
-        }
-      }
-    }
+  return async () => {
     const document = JSON.parse(await readFile(packagePath, "utf8")) as {
       dependencies?: Record<string, string>;
     };
@@ -95,27 +77,6 @@ export async function prepareWebAuthScaffold(input: {
       VERCEL_APP_CLIENT_ID: "",
       VERCEL_APP_CLIENT_SECRET: "",
       BETTER_AUTH_SECRET: "",
-      EVE_WEB_CHAT_LOCAL_URL: "http://localhost:3000",
-      EVE_WEB_CHAT_SKIP_AUTH: "0",
     });
-    for (const root of roots) {
-      const ignorePath = join(root, ".gitignore");
-      const ignore = (await readOptional(ignorePath)) ?? "";
-      if (!ignore.split("\n").includes(".env.local")) {
-        await writeTextFile(ignorePath, `${ignore.trimEnd()}\n.env.local\n`, { force: true });
-      }
-      const envPath = join(root, ".env.local");
-      await appendEnv(
-        envPath,
-        Object.fromEntries(
-          Object.entries(environment).map(([key, value]) => [
-            key,
-            JSON.stringify(value).replaceAll("$", "\\$"),
-          ]),
-        ),
-        { force: true },
-      );
-      await chmod(envPath, 0o600);
-    }
   };
 }

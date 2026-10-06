@@ -21,12 +21,7 @@ function deps(): WebSetupDeps {
     })),
     writeTextFile: vi.fn(async () => {}),
     prepareWebAuthScaffold: vi.fn(async () => vi.fn(async () => {})),
-    provisionWebChatAuth: vi.fn(async () => ({
-      VERCEL_APP_CLIENT_ID: "cl_test",
-      VERCEL_APP_CLIENT_SECRET: "dev-client-secret",
-      BETTER_AUTH_SECRET: "dev-session-secret",
-      EVE_WEB_CHAT_LOCAL_URL: "http://localhost:3000",
-    })),
+    provisionWebChatAuth: vi.fn(async () => {}),
     installScaffoldDependencies: vi.fn(async () => {}),
   };
 }

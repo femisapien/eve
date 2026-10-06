@@ -1150,12 +1150,7 @@ describe("runInitCommand", () => {
       const deps = dependencies();
       const interactive = mode === "interactive";
       const fake = createFakePrompter(interactive ? { single: () => "vercel" } : {});
-      const provision = vi.fn(async () => ({
-        VERCEL_APP_CLIENT_ID: "cl_test",
-        VERCEL_APP_CLIENT_SECRET: "dev-client-secret",
-        BETTER_AUTH_SECRET: "dev-session-secret",
-        EVE_WEB_CHAT_LOCAL_URL: "http://localhost:3000",
-      }));
+      const provision = vi.fn(async () => {});
       const link = vi.fn(async () => {
         await mkdir(join(projectPath, ".vercel"));
         await writeFile(join(projectPath, ".vercel/project.json"), JSON.stringify(project));
@@ -1219,12 +1214,9 @@ describe("runInitCommand", () => {
           "better-auth"
         ],
       ).toBeDefined();
-      expect(await readFile(join(projectPath, ".env.local"), "utf8")).toContain(
-        'VERCEL_APP_CLIENT_SECRET="dev-client-secret"',
-      );
       expect(await pathExists(join(projectPath, "apps/web"))).toBe(false);
       expect(output.messages.join("\n")).toContain(
-        "Development, preview, and production credentials are configured.",
+        "Production and preview credentials are configured.",
       );
     },
   );
@@ -1279,12 +1271,7 @@ describe("runInitCommand", () => {
     const parentDirectory = await mkdtemp(join(tmpdir(), "eve-init-web-local-"));
     const output = logger();
     const deps = dependencies();
-    const provision = vi.fn(async () => ({
-      VERCEL_APP_CLIENT_ID: "cl_test",
-      VERCEL_APP_CLIENT_SECRET: "dev-client-secret",
-      BETTER_AUTH_SECRET: "dev-session-secret",
-      EVE_WEB_CHAT_LOCAL_URL: "http://localhost:3000",
-    }));
+    const provision = vi.fn(async () => {});
     deps.webAuth = {
       createPrompter: () => createFakePrompter().prompter,
       provisionWebChatAuth: provision,
@@ -1328,12 +1315,7 @@ describe("runInitCommand", () => {
       resolveEveProjectContext,
       writeTextFile,
       prepareWebAuthScaffold,
-      provisionWebChatAuth: async () => ({
-        VERCEL_APP_CLIENT_ID: "cl_test",
-        VERCEL_APP_CLIENT_SECRET: "dev-client-secret",
-        BETTER_AUTH_SECRET: "dev-session-secret",
-        EVE_WEB_CHAT_LOCAL_URL: "http://localhost:3000",
-      }),
+      provisionWebChatAuth: async () => {},
       installScaffoldDependencies: async () => {},
     };
     for (let attempt = 0; attempt < 2; attempt += 1) {

@@ -8,12 +8,6 @@ import {
 } from "#setup/scaffold/create/web-template.js";
 import { prepareWebAuthScaffold } from "./auth-scaffold.js";
 
-const environment = {
-  VERCEL_APP_CLIENT_ID: "cl_test",
-  VERCEL_APP_CLIENT_SECRET: "dev-client-secret",
-  BETTER_AUTH_SECRET: "dev-session-secret",
-  EVE_WEB_CHAT_LOCAL_URL: "http://localhost:3000",
-};
 const roots: string[] = [];
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
@@ -49,7 +43,7 @@ describe("Web Chat auth scaffold", () => {
       const layoutPath = join(input.environmentRoot, "apps/web/app/layout.tsx");
       const layout = await readFile(layoutPath, "utf8");
       const write = await prepareWebAuthScaffold(input);
-      await write(environment);
+      await write();
       const signIn = await readFile(
         join(input.environmentRoot, "apps/web/app/_components/web-chat-auth.tsx"),
         "utf8",
@@ -57,7 +51,7 @@ describe("Web Chat auth scaffold", () => {
       expect(signIn).toContain(JSON.stringify(basename(input.agentAppRoot)));
       expect(signIn).not.toContain("__EVE_INIT_APP_NAME__");
       const channel = await readFile(input.channelPath, "utf8");
-      const importPath = /import \{ auth, skipLocalAuth \} from "(.+)"/.exec(channel)?.[1];
+      const importPath = /import \{ auth \} from "(.+)"/.exec(channel)?.[1];
       expect(importPath).toBeDefined();
       expect(resolve(dirname(input.channelPath), importPath!)).toBe(
         join(input.environmentRoot, "apps/web/lib/auth.js"),
@@ -65,34 +59,16 @@ describe("Web Chat auth scaffold", () => {
       expect(await readFile(join(input.environmentRoot, "apps/web/lib/auth.ts"), "utf8")).toContain(
         'requireEnvironmentVariable("BETTER_AUTH_SECRET")',
       );
-      for (const root of [input.environmentRoot, join(input.environmentRoot, "apps/web")]) {
-        expect(await readFile(join(root, ".env.local"), "utf8")).toContain(
-          'VERCEL_APP_CLIENT_SECRET="dev-client-secret"',
-        );
-        expect(await readFile(join(root, ".gitignore"), "utf8")).toContain(".env.local");
-      }
       const document = JSON.parse(await readFile(input.packagePath, "utf8"));
       expect(document.dependencies["better-auth"]).toBeDefined();
       expect(document.scripts["dev:all"]).toBe("vercel dev --local");
       expect(await readFile(layoutPath, "utf8")).toBe(layout);
       await (
         await prepareWebAuthScaffold(input)
-      )(environment);
+      )();
       expect(await readFile(input.channelPath, "utf8")).toBe(channel);
     },
   );
-
-  it("preserves unrelated local settings and refuses conflicting credentials", async () => {
-    const input = await fixture();
-    const envPath = join(input.environmentRoot, ".env.local");
-    await writeFile(envPath, "CUSTOM_SETTING=keep-me\nVERCEL_APP_CLIENT_SECRET=authored-secret\n");
-    const write = await prepareWebAuthScaffold(input);
-    await expect(write(environment)).rejects.toThrow("differs from the linked project");
-    expect(await readFile(envPath, "utf8")).toContain("authored-secret");
-    await writeFile(envPath, "CUSTOM_SETTING=keep-me\n");
-    await write(environment);
-    expect(await readFile(envPath, "utf8")).toContain("CUSTOM_SETTING=keep-me");
-  });
 
   it("rejects custom auth before the caller provisions resources or writes files", async () => {
     const input = await fixture();
