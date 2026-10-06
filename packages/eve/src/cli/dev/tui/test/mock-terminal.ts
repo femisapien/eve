@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import type { TerminalInput, TerminalOutput } from "../terminal-renderer.js";
 
 const ansiControlSequencePattern = new RegExp(
-  `^${String.fromCharCode(27)}\\[([0-9?;]*)([ -/]*)([@-~])`,
+  `^${String.fromCharCode(27)}\\[([0-?]*)([ -/]*)([@-~])`,
 );
 
 export class MockUserInput extends EventEmitter implements TerminalInput {
@@ -257,8 +257,8 @@ export class MockScreen extends EventEmitter implements TerminalOutput {
     }
 
     const [sequence, rawParameters = "", , command] = match;
-    // Private-mode sequences (e.g. `?2026h`, `?25l`) carry no grid effect.
-    const isPrivate = rawParameters.startsWith("?");
+    // Private sequences (e.g. `?2026h`, `?25l`, `>1u`) carry no grid effect.
+    const isPrivate = /^[<=>?]/u.test(rawParameters);
     const parameters = rawParameters && !isPrivate ? rawParameters.split(";") : [];
     const first = (fallback: number) =>
       parameters[0] === undefined || parameters[0] === "" ? fallback : Number(parameters[0]);

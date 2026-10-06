@@ -155,6 +155,12 @@ describe("nextKey", () => {
     expect(nextKey("\r")).toEqual({ key: { type: "enter" }, consumed: 1 });
   });
 
+  it("decodes the newline fallbacks: LF (Ctrl+J) and Alt+Enter", () => {
+    expect(nextKey("\n")).toEqual({ key: { type: "newline" }, consumed: 1 });
+    expect(nextKey("\x1b\r")).toEqual({ key: { type: "newline" }, consumed: 2 });
+    expect(nextKey("\x1b[106;5u")).toEqual({ key: { type: "newline" }, consumed: 8 });
+  });
+
   it("stops a printable run at a control byte", () => {
     expect(nextKey("ab\rcd")).toEqual({
       key: { type: "text", value: "ab", framing: "unframed" },
@@ -222,6 +228,18 @@ describe("parseKey", () => {
     expect(parseKey(Buffer.from("\x1b[8;3u"))).toEqual({ type: "alt-backspace" });
     expect(parseKey(Buffer.from("\x1b[27;3;127~"))).toEqual({ type: "alt-backspace" });
     expect(parseKey(Buffer.from("\x1b[27;3;8~"))).toEqual({ type: "alt-backspace" });
+  });
+
+  it("maps kitty keyboard protocol keys back onto legacy keys", () => {
+    expect(parseKey(Buffer.from("\x1b[99;5u"))).toEqual({ type: "ctrl-c" });
+    expect(parseKey(Buffer.from("\x1b[99;69u"))).toEqual({ type: "ctrl-c" }); // Caps Lock on
+    expect(parseKey(Buffer.from("\x1b[27u"))).toEqual({ type: "escape" });
+    expect(parseKey(Buffer.from("\x1b[98;3u"))).toEqual({ type: "alt-b" });
+    expect(parseKey(Buffer.from("\x1b[13u"))).toEqual({ type: "enter" });
+    expect(parseKey(Buffer.from("\x1b[57414u"))).toEqual({ type: "enter" }); // keypad Enter
+    // Unhandled chords are dropped rather than typed into the prompt.
+    expect(parseKey(Buffer.from("\x1b[120;3u"))).toEqual({ type: "ignore" });
+    expect(parseKey(Buffer.from("\x1b[57399u"))).toEqual({ type: "ignore" });
   });
 
   it("decodes SGR mouse press and release with cell coordinates", () => {

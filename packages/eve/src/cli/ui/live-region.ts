@@ -29,8 +29,11 @@ const CLEAR_SCROLLBACK = `${ESC}[3J`;
 const CURSOR_HOME = `${ESC}[H`;
 const SYNC_START = `${ESC}[?2026h`;
 const SYNC_END = `${ESC}[?2026l`;
-const BRACKETED_PASTE_ON = `${ESC}[?2004h`;
-const BRACKETED_PASTE_OFF = `${ESC}[?2004l`;
+// Bracketed paste (DEC mode 2004) plus the kitty keyboard protocol's
+// "disambiguate" flag, pushed and popped on the terminal's flag stack so
+// modified keys such as Shift+Enter arrive as distinct sequences.
+const INPUT_MODES_ON = `${ESC}[?2004h${ESC}[>1u`;
+const INPUT_MODES_OFF = `${ESC}[<u${ESC}[?2004l`;
 
 interface LiveRegionOutput {
   write(chunk: string): boolean;
@@ -61,9 +64,12 @@ export class LiveRegion {
     this.#write(SHOW_CURSOR);
   }
 
-  /** Toggles bracketed paste through the original write, bypassing foreign-output capture. */
-  emitBracketedPaste(enabled: boolean): void {
-    this.#write(enabled ? BRACKETED_PASTE_ON : BRACKETED_PASTE_OFF);
+  /**
+   * Toggles bracketed paste and enhanced key reporting through the original
+   * write, bypassing foreign-output capture. Calls must be balanced.
+   */
+  emitInputModes(enabled: boolean): void {
+    this.#write(enabled ? INPUT_MODES_ON : INPUT_MODES_OFF);
   }
 
   /** Writes a newline through the bound (original) write. */

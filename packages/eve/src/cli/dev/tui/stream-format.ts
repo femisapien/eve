@@ -203,6 +203,11 @@ export function nextKey(buffer: string): KeyToken {
     if (second === "\x7f" || second === "\b") {
       return { key: { type: "alt-backspace" }, consumed: 2 };
     }
+    // Alt+Enter, which some terminals are also configured to send for
+    // Shift+Enter.
+    if (second === "\r") {
+      return { key: { type: "newline" }, consumed: 2 };
+    }
     // Other `ESC` + byte chords surface Escape and then re-tokenize the byte.
     return { key: { type: "escape" }, consumed: 1 };
   }
@@ -228,6 +233,56 @@ export function nextKey(buffer: string): KeyToken {
 // viewer's alt screen).
 const SGR_MOUSE = new RegExp(`^${String.fromCharCode(27)}\\[<(\\d+);(\\d+);(\\d+)([Mm])$`, "u");
 
+// Modified keys in the kitty keyboard protocol (`CSI code[:alternates] ;
+// modifiers[:event] u`) and xterm modifyOtherKeys (`CSI 27 ; modifiers ; code ~`).
+const KITTY_KEY = new RegExp(
+  `^${String.fromCharCode(27)}\\[(\\d+)[\\d:]*(?:;(\\d+)[\\d:]*)?u$`,
+  "u",
+);
+const MODIFY_OTHER_KEY = new RegExp(`^${String.fromCharCode(27)}\\[27;(\\d+);(\\d+)~$`, "u");
+
+const SHIFT = 1;
+const ALT = 2;
+const CTRL = 4;
+// Caps Lock and Num Lock bits, which never change what a chord means here.
+const LOCKS = 64 | 128;
+const KITTY_KEYPAD_ENTER = 57414;
+
+function parseModifiedKey(value: string): TerminalKey | undefined {
+  const kitty = KITTY_KEY.exec(value);
+  const other = kitty ? null : MODIFY_OTHER_KEY.exec(value);
+  if (!kitty && !other) return undefined;
+  const code = Number(kitty ? kitty[1] : other![2]);
+  const modifiers = (Number((kitty ? kitty[2] : other![1]) ?? 1) - 1) & ~LOCKS;
+
+  switch (code) {
+    case 13:
+    case KITTY_KEYPAD_ENTER:
+      return { type: modifiers === 0 ? "enter" : "newline" };
+    case 27:
+      return { type: "escape" };
+    case 9:
+      return modifiers === 0 ? { type: "tab" } : { type: "ignore" };
+    case 127:
+    case 8:
+      return { type: modifiers & (ALT | CTRL) ? "alt-backspace" : "backspace" };
+  }
+
+  // ASCII letters only; `| 0x20` folds A-Z onto a-z.
+  const lower = code | 0x20;
+  if (code > 0x7a || lower < 0x61 || lower > 0x7a) return { type: "ignore" };
+  const letter = String.fromCharCode(lower);
+  // The protocol reports Ctrl+letter (including Ctrl+C) as a sequence instead
+  // of the C0 byte, so map it back onto the legacy key.
+  if ((modifiers & ~SHIFT) === CTRL) {
+    return parseKey(Buffer.from(String.fromCharCode(lower & 0x1f)));
+  }
+  if (modifiers === ALT && (letter === "b" || letter === "f" || letter === "y")) {
+    return { type: `alt-${letter}` };
+  }
+  return { type: "ignore" };
+}
+
 export function parseKey(chunk: Buffer): TerminalKey {
   const value = chunk.toString("utf8");
 
@@ -241,6 +296,9 @@ export function parseKey(chunk: Buffer): TerminalKey {
       y: Number(mouse[3]),
     };
   }
+
+  const modified = parseModifiedKey(value);
+  if (modified !== undefined) return modified;
 
   switch (value) {
     case "\u0001":
@@ -272,12 +330,10 @@ export function parseKey(chunk: Buffer): TerminalKey {
     case "\u0003":
       return { type: "ctrl-c" };
     case "\r":
-    case "\n":
       return { type: "enter" };
-    // Shift+Enter inserts a newline instead of submitting. Terminals report it
-    // as xterm modifyOtherKeys (`CSI 27 ; 2 ; 13 ~`) or the kitty/CSI-u form.
-    case "\x1b[27;2;13~":
-    case "\x1b[13;2u":
+    // Raw-mode Enter is CR. LF is Ctrl+J, and what Warp and some other
+    // terminals send for Shift+Enter without a keyboard protocol.
+    case "\n":
       return { type: "newline" };
     case "\u007f":
     case "\b":
@@ -312,13 +368,6 @@ export function parseKey(chunk: Buffer): TerminalKey {
       return { type: "end" };
     case "\x1B[3~":
       return { type: "delete" };
-    // Alt+Backspace commonly arrives as Meta+Backspace, kitty CSI-u, or
-    // xterm's modifyOtherKeys form.
-    case "\x1B[127;3u":
-    case "\x1B[8;3u":
-    case "\x1B[27;3;127~":
-    case "\x1B[27;3;8~":
-      return { type: "alt-backspace" };
     case "\t":
       return { type: "tab" };
     case "\x1B":

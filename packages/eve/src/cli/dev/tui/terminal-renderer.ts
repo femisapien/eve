@@ -2723,6 +2723,9 @@ export class TerminalRenderer implements AgentTUIRenderer {
     this.#clearTicker();
     this.#live.clear();
     this.#removeLogCapture();
+    // The child gets the terminal's default key encoding. Toggle before the
+    // screen switch because terminals keep a keyboard-flag stack per screen.
+    if (this.#input.isTTY) this.#live.emitInputModes(false);
     this.#altScreen.enter({ cursor: "visible", mouse: false });
     if (this.#input.isTTY) this.#input.setRawMode?.(false);
     this.#input.pause();
@@ -2730,7 +2733,10 @@ export class TerminalRenderer implements AgentTUIRenderer {
       return await task();
     } finally {
       this.#altScreen.exit();
-      if (this.#input.isTTY) this.#input.setRawMode?.(true);
+      if (this.#input.isTTY) {
+        this.#input.setRawMode?.(true);
+        this.#live.emitInputModes(true);
+      }
       // The parent stream must remain paused while the child owns the terminal.
       // Resume only after its raw mode and key consumer are ready again.
       this.#input.resume();
@@ -2862,12 +2868,12 @@ export class TerminalRenderer implements AgentTUIRenderer {
     if (this.#input.isTTY) {
       this.#input.setRawMode?.(true);
       this.#input.resume();
-      // Enable bracketed paste (DEC private mode 2004) so the terminal wraps
-      // pasted text in \x1b[200~ … \x1b[201~; the decoder then inserts a
-      // multi-line paste intact instead of each newline submitting the prompt.
+      // Bracketed paste keeps a multi-line paste intact instead of each
+      // newline submitting the prompt, and enhanced key reporting lets
+      // Shift+Enter insert a newline in terminals that only report it on request.
       // Routed through the live region's original `write` so the foreign-output
       // capture installed just above can't swallow the control sequence.
-      this.#live.emitBracketedPaste(true);
+      this.#live.emitInputModes(true);
     }
 
     this.#onResize = () => this.#paint();
@@ -2886,7 +2892,7 @@ export class TerminalRenderer implements AgentTUIRenderer {
     if (!this.#isInteractive) return;
     this.#altScreen.exit();
     if (this.#input.isTTY) {
-      this.#live.emitBracketedPaste(false);
+      this.#live.emitInputModes(false);
       this.#input.setRawMode?.(false);
     }
     this.#live.showCursor();
@@ -2941,8 +2947,8 @@ export class TerminalRenderer implements AgentTUIRenderer {
     this.#live.newline();
 
     if (this.#input.isTTY) {
-      // Disable bracketed paste, restoring the terminal to how we found it.
-      this.#live.emitBracketedPaste(false);
+      // Restore the terminal's input modes to how we found them.
+      this.#live.emitInputModes(false);
       this.#input.setRawMode?.(false);
       this.#input.pause();
     }

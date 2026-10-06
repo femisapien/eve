@@ -445,6 +445,41 @@ describe("TerminalRenderer (inline scrollback)", () => {
     renderer.shutdown();
   });
 
+  // Warp, among others, sends a bare LF for Shift+Enter when no keyboard
+  // protocol is negotiated, and Ctrl+J is LF everywhere (#4404).
+  it("inserts a newline on LF (Shift+Enter in Warp, or Ctrl+J)", async () => {
+    const { input, renderer } = makeRenderer();
+
+    const prompt = readPrompt(renderer);
+    input.type("line one");
+    input.send("\n");
+    input.type("line two");
+    input.enter();
+
+    expect(await prompt).toBe("line one\nline two");
+    renderer.shutdown();
+  });
+
+  it("negotiates the kitty keyboard protocol so terminals report Shift+Enter", async () => {
+    const { screen, input, renderer } = makeRenderer();
+
+    const prompt = readPrompt(renderer);
+    expect(screen.rawOutput()).toContain("\x1b[>1u");
+    input.type("line one");
+    input.send("\x1b[13;2u"); // Shift+Enter once the protocol is on
+    input.type("line two");
+    input.enter();
+    expect(await prompt).toBe("line one\nline two");
+
+    // The protocol reports Ctrl+C as `CSI 99 ; 5 u` instead of ETX.
+    const next = readPrompt(renderer);
+    input.send("\x1b[99;5u");
+    input.send("\x1b[99;5u");
+    await expect(next).rejects.toThrow("Interrupted");
+    renderer.shutdown();
+    expect(screen.rawOutput()).toContain("\x1b[<u");
+  });
+
   it("moves the caret into the line above on ↑, then edits it", async () => {
     const { input, renderer } = makeRenderer();
 
@@ -2466,6 +2501,9 @@ describe("TerminalRenderer setup flow session", () => {
     await renderer.setupFlow.withInheritedStdio(async () => {
       inherited = true;
       input.pause();
+      // The child gets the terminal's default key encoding.
+      expect(screen.rawOutput().split("\x1b[>1u")).toHaveLength(2);
+      expect(screen.rawOutput().split("\x1b[<u")).toHaveLength(2);
       screen.write("temporary OAuth instructions\n");
       expect(screen.snapshot()).toContain("temporary OAuth instructions");
     });
