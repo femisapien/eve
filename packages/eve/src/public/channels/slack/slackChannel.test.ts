@@ -1,6 +1,7 @@
 import { createHmac } from "node:crypto";
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import type { Mock } from "vitest";
 
 import { buildAdapterContext } from "#channel/adapter-context.js";
 import { callAdapterEventHandler, type ChannelAdapter } from "#channel/adapter.js";
@@ -122,7 +123,7 @@ function withLiveThreadRoot(
         headers: { "content-type": "application/json" },
       });
     }
-    return (fetchMock as unknown as typeof fetch)(input, init);
+    return (fetchMock as Mock<typeof fetch>)(input, init);
   }) as typeof fetch;
 }
 
