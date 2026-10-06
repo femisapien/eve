@@ -64,6 +64,32 @@ that has not reached its next turn dispatch has not migrated yet.
 Transparent rollback to the former execution model is unsupported. Retire and
 restart affected sessions before rolling back.
 
+### Upgrading self-hosted sessions that wait on a person
+
+Releases after eve 0.70.2 replace how a turn records the requests it makes of a person: tool
+approvals, tool sign-ins, the session budget question, and questions relayed
+from subagents, remote agents, and workflows. It can't read requests that an
+earlier release left open.
+
+On Vercel this needs no action. A waiting session stays on its current
+deployment until its requests settle, and only then moves to the new one.
+
+In a self-hosted service, such as `eve start` with the local or Postgres world,
+existing runs resume on the new release after a restart. Answer or cancel
+pending requests before you upgrade. Pending work and queued input from the
+earlier release aren't supported after the upgrade. A session that was waiting
+on a person keeps its ID, history, and event stream, but:
+
+- Its open requests aren't honored, and an answer to one isn't applied. The step
+  that asked may run again and make a new request under a new ID, or you may
+  need to start that work again.
+- Messages the earlier release had queued behind those requests aren't
+  delivered.
+
+Once the requests it makes on the new release and its remaining work, such as
+tasks and subagents, settle, the session can move between runs and deployments
+normally.
+
 Nitro hosts the HTTP routes and workflow entrypoints. It does not supply the workflow state store or the sandbox runtime. Those are separate adapters: Workflow uses the active world implementation, and Sandbox uses the backend from `agent/sandbox` or the default sandbox environment.
 
 For advanced self-hosted deployments, the root `agent.ts` can select the installed Workflow world package to use with `experimental.workflow.world`:

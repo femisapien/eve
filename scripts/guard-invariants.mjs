@@ -121,6 +121,20 @@
  *             `execution/legacy-remote-agent/`. Only the ingress files that
  *             route protocol-1 callers into it may import it, so deleting the
  *             directory removes protocol 1 without a search.
+ *   rule 49 — Human input lives in `harness/hitl/` alone. Outside it,
+ *             code imports only its entry points: `index.ts` (`HumanInput`,
+ *             the rules), `host/index.ts` (what step code calls to carry
+ *             out its events), and `host/workflow.ts` (what workflow bodies
+ *             call). Tests may also import `host/session-step.ts`, since session
+ *             tests mock durable steps by module. Only the directory names
+ *             the session state key, so nothing else reads or changes it.
+ *   rule 50 — Human input decides in its rules and does I/O in `host/`.
+ *             Files in `host/` never branch on request kinds or outcomes:
+ *             they do the I/O for the command they are given; nothing reports back.
+ *             The rules never import `host/`. Inside it, the executors are
+ *             imported only by the appliers (`turn*.ts`, `session.ts`),
+ *             and outside the directory nothing names the commands that need
+ *             I/O.
  *
  * Baselines for rules with pre-existing violations live in
  * `guard-invariants-baseline.json`. Counts and allowlists in that file
@@ -240,6 +254,8 @@ function isTsLike(relPath) {
  *   rule46: Violation[];
  *   rule47: Violation[];
  *   rule48: Violation[];
+ *   rule49: Violation[];
+ *   rule50: Violation[];
  *   symlinks: string[];
  * }} state
  */
@@ -273,6 +289,8 @@ async function scanRepo(state) {
     checkRule46(posix, lines, state.rule46);
     checkRule47(posix, lines, state.rule47);
     checkRule48(posix, lines, state.rule48);
+    checkRule49(posix, lines, state.rule49);
+    checkRule50(posix, lines, state.rule50);
   }
 }
 
@@ -512,6 +530,125 @@ function checkRule48(posix, lines, violations) {
       message:
         "imports remote agent protocol 1 outside its ingress files. Route protocol-1 behavior through execution/legacy-remote-agent/ from an existing ingress so the legacy path stays removable in one place.",
     });
+  });
+}
+
+// ---------- Rule 49: human input lives in harness/hitl/ alone ----------
+
+const HUMAN_INPUT_DIR = "packages/eve/src/harness/hitl/";
+const HUMAN_INPUT_HOST_DIR = `${HUMAN_INPUT_DIR}host/`;
+const HUMAN_INPUT_STATE_KEY = "eve.harness.humanInput";
+const HUMAN_INPUT_IMPORT_RE = /\b(?:from|import)\s*\(?\s*["'][^"']*harness\/hitl\/([^"']+)\.js["']/;
+const HUMAN_INPUT_ENTRY_POINTS = new Set(["index", "host/index", "host/workflow"]);
+const HUMAN_INPUT_TEST_ENTRY_POINTS = new Set([...HUMAN_INPUT_ENTRY_POINTS, "host/session-step"]);
+const TEST_FILE_RE = /\.(?:test|integration\.test|scenario\.test)\.ts$/;
+
+/** @param {string} posix @param {string[]} lines @param {Violation[]} violations */
+function checkRule49(posix, lines, violations) {
+  if (!posix.startsWith("packages/eve/src/") || posix.startsWith(HUMAN_INPUT_DIR)) return;
+  const entryPoints = TEST_FILE_RE.test(posix)
+    ? HUMAN_INPUT_TEST_ENTRY_POINTS
+    : HUMAN_INPUT_ENTRY_POINTS;
+  lines.forEach((line, idx) => {
+    const imported = HUMAN_INPUT_IMPORT_RE.exec(line)?.[1];
+    if (imported !== undefined && !entryPoints.has(imported)) {
+      violations.push({
+        rule: 49,
+        file: posix,
+        line: idx + 1,
+        message:
+          "imports a hitl module other than its entry points (harness/hitl/index.ts, host/index.ts, host/workflow.ts). Go through them so only harness/hitl/ decides how a person's input works and carries it out.",
+      });
+    }
+    if (line.includes(HUMAN_INPUT_STATE_KEY)) {
+      violations.push({
+        rule: 49,
+        file: posix,
+        line: idx + 1,
+        message: `names the hitl state key "${HUMAN_INPUT_STATE_KEY}" outside harness/hitl/. Read and write it through HumanInput.read and HumanInput.write.`,
+      });
+    }
+  });
+}
+
+// ---------- Rule 50: human input decides in its rules, does I/O in host/ ----------
+
+// Every module in host/ that is not an entry point or an applier executes
+// one kind of I/O; only the appliers decide when to run it.
+const HUMAN_INPUT_HOST_APPLIERS = new Set(["turn", "turn-pre-step", "turn-post-step", "session"]);
+const HUMAN_INPUT_HOST_NON_EXECUTORS = new Set([
+  ...HUMAN_INPUT_HOST_APPLIERS,
+  "index",
+  "session-step",
+  "workflow",
+]);
+const RELATIVE_IMPORT_RE = /\b(?:from|import)\s*\(?\s*["']\.\/([^"'/]+)\.js["']/;
+const HOST_IMPORT_RE = /\b(?:from|import)\s*\(?\s*["'](?:[^"']*\/hitl\/host\/|\.\/host\/)/;
+// From host/, the rules are reached only through HumanInput.
+const HOST_RULES_IMPORT_RE =
+  /\b(?:from|import)\s*\(?\s*["'](?:\.\.\/|[^"']*harness\/hitl\/(?!index\.js["']|host\/))/;
+// Commands that need I/O to carry out; naming one is carrying it out.
+const HUMAN_INPUT_IO_EVENT_RE = /["'](?:forwardAnswer|withdrawQuestion)["']/;
+const HUMAN_INPUT_EFFECT_DECISIONS = [
+  '"tool-approval"',
+  '"session-limit"',
+  '"approved"',
+  '"denied"',
+  "outcome ===",
+];
+
+/** @param {string} posix @param {string[]} lines @param {Violation[]} violations */
+function checkRule50(posix, lines, violations) {
+  if (!posix.startsWith("packages/eve/src/") || TEST_FILE_RE.test(posix)) return;
+  /** @param {number} idx @param {string} message */
+  const report = (idx, message) =>
+    violations.push({ rule: 50, file: posix, line: idx + 1, message });
+  if (posix.startsWith(HUMAN_INPUT_HOST_DIR)) {
+    const name = posix.slice(HUMAN_INPUT_HOST_DIR.length).replace(/\.ts$/, "");
+    lines.forEach((line, idx) => {
+      const decision = HUMAN_INPUT_EFFECT_DECISIONS.find((needle) => line.includes(needle));
+      if (decision !== undefined) {
+        report(
+          idx,
+          `branches on human input (${decision}) in harness/hitl/host/. Decide in the rules and have the host only do the I/O for the command it is given, committing what it did as the next input.`,
+        );
+      }
+      if (HOST_RULES_IMPORT_RE.test(line)) {
+        report(
+          idx,
+          "imports a hitl rules module from host/. Reach the rules only through HumanInput (harness/hitl/index.ts), so the host never decides.",
+        );
+      }
+      const imported = RELATIVE_IMPORT_RE.exec(line)?.[1];
+      if (
+        imported !== undefined &&
+        !HUMAN_INPUT_HOST_NON_EXECUTORS.has(imported) &&
+        !HUMAN_INPUT_HOST_APPLIERS.has(name)
+      ) {
+        report(
+          idx,
+          `imports the executor ./${imported}.js outside the appliers. Only host/turn*.ts and host/session.ts run executors, so one place carries out what HumanInput reports.`,
+        );
+      }
+    });
+    return;
+  }
+  if (posix.startsWith(HUMAN_INPUT_DIR)) {
+    lines.forEach((line, idx) => {
+      if (!HOST_IMPORT_RE.test(line)) return;
+      report(
+        idx,
+        "imports harness/hitl/host/ from the rules. The rules only decide and report events; the runtime carries them out through host/.",
+      );
+    });
+    return;
+  }
+  lines.forEach((line, idx) => {
+    if (!HUMAN_INPUT_IO_EVENT_RE.test(line)) return;
+    report(
+      idx,
+      "names a human input command that needs I/O outside harness/hitl/. Carry it out in harness/hitl/host/, the only place that does that I/O.",
+    );
   });
 }
 
@@ -1544,6 +1681,8 @@ async function main() {
     rule46: /** @type {Violation[]} */ ([]),
     rule47: /** @type {Violation[]} */ ([]),
     rule48: /** @type {Violation[]} */ ([]),
+    rule49: /** @type {Violation[]} */ ([]),
+    rule50: /** @type {Violation[]} */ ([]),
     symlinks: /** @type {string[]} */ ([]),
   };
 
@@ -1658,6 +1797,8 @@ async function main() {
   // Rule 47
   violations.push(...state.rule47);
   violations.push(...state.rule48);
+  violations.push(...state.rule49);
+  violations.push(...state.rule50);
 
   if (violations.length === 0) {
     process.stdout.write("[eve:guard:invariants] ok — all mechanical lints passed.\n");
