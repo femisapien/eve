@@ -247,22 +247,11 @@ export interface StepResult {
   readonly settledTurn?: SettledTurn;
   /**
    * Present when the turn stays open: the model ended it while tasks work, or
-   * it waits on a sign-in or tool approval it raised. It resumes when a task
-   * settles, or when the person answers, steers, or cancels.
-   */
-  readonly held?: TurnHold;
-  /**
-   * Present when the turn stays open: the model ended it while tasks work, or
    * it waits on a person. It resumes when a task settles, or when the person
-   * answers, steers, or cancels. Replaces `held` once the turn waits through
-   * human input.
+   * answers, steers, or cancels.
    */
   readonly waiting?: TurnWait;
 }
-
-export type TurnHold =
-  | { readonly kind: "tasks"; readonly taskIds: readonly string[] }
-  | { readonly kind: "request" };
 
 export type TurnWait =
   | { readonly kind: "tasks"; readonly taskIds: readonly string[] }

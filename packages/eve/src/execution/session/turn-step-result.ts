@@ -31,10 +31,10 @@ export function resolveSessionStepResult(
     };
   }
 
-  if (stepResult.held?.kind === "tasks") {
-    return { action: "held", hold: "tasks", ...values, taskIds: stepResult.held.taskIds };
+  if (stepResult.waiting?.kind === "tasks") {
+    return { action: "held", hold: "tasks", ...values, taskIds: stepResult.waiting.taskIds };
   }
-  if (stepResult.held?.kind === "request") {
+  if (stepResult.waiting?.kind === "input") {
     const pending = derivePendingState(stepResult.session);
     return {
       action: "held",
@@ -72,5 +72,9 @@ export function resolveSessionStepResult(
     return { action: "park", ...pending, ...values };
   }
 
-  return { action: "continue", ...values };
+  return {
+    action: "continue",
+    ...(stepResult.readsResults === true && { readsResults: true }),
+    ...values,
+  };
 }

@@ -102,17 +102,18 @@ async function requestConnectionApproval(
   const registry = loadContext().get(ConnectionRegistryKey);
   if (target === undefined || registry === undefined) return "not-applicable";
   const connection = findConnection(registry, target.connection);
+  // An approved call runs only against the instance it was approved for: a
+  // changed or missing instance, or a missing pin, refuses it before it runs.
+  if (isApprovalRecheck(context) && !matchesApprovalPin(context.callId, connection)) {
+    dropApprovalPin(context.callId);
+    return { reason: CONNECTION_CHANGED_MESSAGE, type: "denied" };
+  }
   const approval =
     connection === undefined
       ? undefined
       : registry.getConnectionApproval(connection.connectionName);
   if (connection === undefined || approval === undefined) return "not-applicable";
 
-  // Denying here would drop the call without a result, so the approved call
-  // runs and fails in execution instead, where the failure is reported.
-  if (isApprovalRecheck(context) && !matchesApprovalPin(context.callId, connection)) {
-    markApprovalPinChanged(context.callId);
-  }
   const status = await resolveApprovalPolicy(approval)({
     ...context,
     approvedTools: policyApprovedTools(context.approvedTools, target),
@@ -182,20 +183,22 @@ function pinApprovedInstance(callId: string, connection: ResolvedConnectionDefin
   );
 }
 
-/** Fails closed: a parked call whose pin is missing counts as changed. */
-function matchesApprovalPin(callId: string, connection: ResolvedConnectionDefinition): boolean {
+/** Fails closed: a missing connection or pin counts as changed. */
+function matchesApprovalPin(
+  callId: string,
+  connection: ResolvedConnectionDefinition | undefined,
+): boolean {
+  if (connection === undefined) return false;
   const pinned = loadContext().get(ConnectionApprovalPinsKey)?.[callId];
   return pinned !== undefined && pinned === (connection.instanceId ?? UNKEYED_INSTANCE);
 }
 
-/** No instance id matches this, so the call fails when it runs. */
-const CHANGED_INSTANCE = "\u0000changed";
-
-function markApprovalPinChanged(callId: string): void {
-  loadContext().set(ConnectionApprovalPinsKey, (pins = {}) => ({
-    ...pins,
-    [callId]: CHANGED_INSTANCE,
-  }));
+function dropApprovalPin(callId: string): void {
+  const ctx = loadContext();
+  const pins = ctx.get(ConnectionApprovalPinsKey);
+  if (pins?.[callId] === undefined) return;
+  const { [callId]: _dropped, ...rest } = pins;
+  ctx.set(ConnectionApprovalPinsKey, rest);
 }
 
 /** Consumes the call's approval pin, rejecting the call if its connection changed. */

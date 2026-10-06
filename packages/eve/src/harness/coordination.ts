@@ -21,6 +21,7 @@ import { extractHistoricalInputRequests } from "#harness/input-extraction.js";
 import type { HarnessToolDefinition } from "#harness/execute-tool.js";
 import { pendingTaskToolCalls } from "#execution/tasks/calls.js";
 import { startsTasks } from "#execution/tasks/tool-entry-point.js";
+import type { HeldCalls } from "#harness/hitl/index.js";
 import type {
   HarnessEmitFn,
   HarnessSession,
@@ -190,6 +191,82 @@ export function assertUniqueCoordinationCallIds(
     }
     seen.add(request.callId);
   }
+}
+
+/**
+ * Reads the results of the held step's runtime calls, once every one of them
+ * has a result: emits each as `action.result` at the step's coordinates,
+ * drops the workflow runs that finished, and returns the tool message that
+ * joins the step. Unknown and duplicate results are ignored. Returns
+ * `undefined` while some call still runs.
+ */
+export async function readRuntimeResults(input: {
+  readonly emit?: HarnessEmitFn;
+  readonly held: HeldCalls;
+  readonly results: readonly RuntimeActionResult[];
+  readonly session: HarnessSession;
+  /** Definitions whose `toModelOutput` projects a workflow tool's result for the model. */
+  readonly tools?: HarnessToolMap;
+  /** The turn a step stored without one runs in. */
+  readonly turnId: string;
+}): Promise<{ readonly message: ModelMessage; readonly session: HarnessSession } | undefined> {
+  const { held } = input;
+  const readyResults = resolveRuntimeActionResultsForCallIds({
+    pendingCallIds: held.calls
+      .filter((call) => call.waitsOn === "runtime")
+      .map((call) => call.callId),
+    results: input.results,
+  });
+  if (readyResults === undefined) return undefined;
+  const at = held.at.turnId === "" ? { ...held.at, turnId: input.turnId } : held.at;
+
+  let nextSession: HarnessSession = input.session;
+  // The session withdrew each finished run's open questions when its outcome arrived.
+  for (const result of readyResults) {
+    if (result.kind !== "tool-result") continue;
+    const record = findBlockingWorkflowToolRun(nextSession.state, result.callId, at.turnId);
+    if (record === undefined) continue;
+    nextSession = removeBlockingWorkflowToolRuns(nextSession, at.turnId, record.callId);
+  }
+
+  if (input.emit !== undefined) {
+    for (const result of readyResults) {
+      await input.emit(createActionResultEvent({ result, ...at }));
+    }
+  }
+
+  const toolResults: ToolResultPart[] = [];
+  for (const result of readyResults) {
+    switch (result.kind) {
+      case "load-skill-result":
+        toolResults.push({
+          output: toToolResultOutput(result),
+          toolCallId: result.callId,
+          toolName: "load_skill",
+          type: "tool-result",
+        });
+        continue;
+      case "subagent-result":
+        toolResults.push({
+          output: toToolResultOutput(result),
+          toolCallId: result.callId,
+          toolName: result.subagentName,
+          type: "tool-result",
+        });
+        continue;
+      case "tool-result":
+        toolResults.push({
+          output: await projectToolResultOutput(result, input.tools?.get(result.toolName)),
+          toolCallId: result.callId,
+          toolName: result.toolName,
+          type: "tool-result",
+        });
+        continue;
+    }
+
+    throw new Error(`Unsupported runtime action result kind "${String(result)}".`);
+  }
+  return { message: { content: toolResults, role: "tool" }, session: nextSession };
 }
 
 /**
