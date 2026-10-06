@@ -56,7 +56,11 @@ async function dispatchCoordination(
   for (const task of prepared.plan) {
     const start = {
       agentContext: captureAgentSessionContext(prepared, task.callId, agentLimits),
-      auth: { current: prepared.auth, initiator: prepared.initiatorAuth },
+      // An approved call runs as whoever approved it; the rest as the turn's caller.
+      auth: {
+        current: batch.approvers?.[task.callId] ?? prepared.auth,
+        initiator: prepared.initiatorAuth,
+      },
       batchEvent: batch.event,
       owner: input.workflowToolRunOwner,
       parentSession: prepared.parentSession,

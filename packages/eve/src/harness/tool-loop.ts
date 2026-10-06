@@ -191,6 +191,7 @@ import {
   workingTaskIds,
 } from "#execution/tasks/model-step.js";
 import { renderFinalOutputWhileWorkingError } from "#execution/tasks/render.js";
+import { setApprovedCallCallers } from "#harness/approved-call-callers.js";
 import {
   classifyModelCallError,
   ContentFilteredModelResponseError,
@@ -1204,6 +1205,7 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
     const replayRequests = (pending.resolvedInputs ?? []).flatMap((batch) =>
       batch.inputs.filter((input) => input.outcome === "approved"),
     );
+    setApprovedCallCallers(pending.resolvedInputs, session.state);
     if (replayRequests.length > 0) {
       const replayTools = buildResponseAuthorizationTools({
         authoredTools: config.tools,

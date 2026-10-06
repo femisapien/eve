@@ -38,6 +38,8 @@ export interface ApprovalResponderIdentity {
 
 export interface ApprovalSettlementAuditRecord {
   readonly actor: ApprovalResponderIdentity;
+  /** The approver's full auth, which the approved call runs as. Absent for cancellations. */
+  readonly approver?: SessionAuthContext;
   readonly outcome: "allowed" | "cancelled";
   readonly requestId: string;
   readonly settledAt: number;
@@ -274,10 +276,10 @@ export function settleAllowedCandidate(input: {
     throw new Error(`Unknown approval candidate "${input.candidateId}".`);
   }
   return settleRequest({
-    actor: projectResponder(candidate.responder),
     candidateId: candidate.candidateId,
     outcome: candidate.decision === "cancel" ? "cancelled" : "allowed",
     requestId: candidate.requestId,
+    responder: candidate.responder,
     settledAt: input.settledAt,
     state: expiredState,
   });
@@ -293,9 +295,9 @@ export function settleDirectApprovalResponse(input: {
 }): ApprovalStateTransition {
   const state = expireApprovalCandidates({ now: input.settledAt, state: input.state });
   return settleRequest({
-    actor: projectResponder(input.actor),
     outcome: input.outcome,
     requestId: input.requestId,
+    responder: input.actor,
     settledAt: input.settledAt,
     state,
   });
@@ -324,10 +326,10 @@ export function getApprovalAuditState(state: SessionStateMap | undefined): {
 }
 
 function settleRequest(input: {
-  readonly actor: ApprovalResponderIdentity;
   readonly candidateId?: string;
   readonly outcome: ApprovalSettlementAuditRecord["outcome"];
   readonly requestId: string;
+  readonly responder: SessionAuthContext;
   readonly settledAt: number;
   readonly state: SessionStateMap | undefined;
 }): ApprovalStateTransition {
@@ -338,7 +340,8 @@ function settleRequest(input: {
   }
 
   const settlement: ApprovalSettlementAuditRecord = {
-    actor: input.actor,
+    actor: projectResponder(input.responder),
+    ...(input.outcome === "allowed" && { approver: input.responder }),
     candidateId: input.candidateId,
     outcome: input.outcome,
     requestId: input.requestId,
@@ -467,4 +470,12 @@ function writeApprovalState(
   approvalState: DurableApprovalState,
 ): SessionStateMap {
   return { ...state, [APPROVAL_STATE_KEY]: approvalState };
+}
+
+/** The full auth of whoever approved `requestId`, when it was allowed. */
+export function approverOfRequest(
+  state: SessionStateMap | undefined,
+  requestId: string,
+): SessionAuthContext | undefined {
+  return readApprovalState(state).settlements[requestId]?.approver;
 }
