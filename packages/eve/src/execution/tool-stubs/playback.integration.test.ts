@@ -21,13 +21,12 @@ describe("durable tool stub playback", () => {
           input: {},
           serializedContext: {
             ...buildSerializedContext({ channelKind: "http" }),
-            [STUB_CONTEXT_KEY]: { owner: "alice", token: "test-stub-playback", rules },
+            [STUB_CONTEXT_KEY]: { token: "test-stub-playback", rules },
           },
         },
       ]);
       await waitForHook({ runId: run.runId }, { token: "test-stub-playback" });
       const scope = {
-        owner: "alice",
         token: "test-stub-playback",
         rootSessionId: run.runId,
         rules,

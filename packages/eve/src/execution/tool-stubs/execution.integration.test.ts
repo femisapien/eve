@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { getWorld, start } from "#internal/workflow/runtime.js";
+import { start } from "#internal/workflow/runtime.js";
 import { createTestRuntime } from "#internal/testing/app-harness.js";
 import { buildSerializedContext, handoffFollowUp } from "#internal/testing/entry-test-helpers.js";
 import { captureTurnEvents, filterEventsByType } from "#internal/testing/events.js";
 import { workflowEntry } from "#execution/session/entry.js";
 import { dispatchWorkflowSessionCommand } from "#execution/workflow-runtime.js";
 import { readStubFailure } from "#execution/tool-stubs/steps.js";
-import { STUB_CONTEXT_KEY, STUB_OWNER_ATTRIBUTE } from "#tool-stubs/types.js";
+import { STUB_CONTEXT_KEY } from "#tool-stubs/types.js";
 import { defineTool } from "#tools/definition.js";
 import { createWorkflowToolRuntime } from "#internal/testing/workflow-tool-run-harness.js";
 import { failingDeployWorkflow } from "#internal/testing/workflow-tool-fixtures.js";
@@ -48,7 +48,6 @@ describe("tool replacement through the session runtime", () => {
           serializedContext: {
             ...buildSerializedContext({ channelKind: "http" }),
             [STUB_CONTEXT_KEY]: {
-              owner: "alice",
               token: "failed-output-playback",
               rules: [{ id: "deploy", tool: "deploy_service", response: "stubbed" }],
             },
@@ -99,7 +98,6 @@ describe("tool replacement through the session runtime", () => {
           serializedContext: {
             ...buildSerializedContext({ channelKind: "http" }),
             [STUB_CONTEXT_KEY]: {
-              owner: "alice",
               token: "inherited-playback",
               rules: [
                 {
@@ -125,8 +123,6 @@ describe("tool replacement through the session runtime", () => {
         const events = await stream.nextTurn();
         const children = filterEventsByType(events, "agent.started");
         expect(children).toHaveLength(1);
-        const child = await (await getWorld()).runs.get(children[0]!.data.sessionId);
-        expect(child.attributes?.[STUB_OWNER_ATTRIBUTE]).toBe("alice");
         const settlements = filterEventsByType(events, "task.settled");
         expect(
           settlements.some((event) => JSON.stringify(event.data.output).includes("child")),
@@ -149,7 +145,6 @@ describe("tool replacement through the session runtime", () => {
           serializedContext: {
             ...buildSerializedContext({ channelKind: "http" }),
             [STUB_CONTEXT_KEY]: {
-              owner: "alice",
               token: "whole-agent-playback",
               rules: [{ id: "agent", tool: "agent", response: "Hello from the stub." }],
             },
@@ -204,7 +199,6 @@ describe("tool replacement through the session runtime", () => {
             ...buildSerializedContext({ channelKind: "http" }),
             "eve.capabilities": { requestInput: true },
             [STUB_CONTEXT_KEY]: {
-              owner: "alice",
               token: "approval-playback",
               rules: [
                 {
@@ -285,7 +279,6 @@ describe("tool replacement through the session runtime", () => {
           serializedContext: {
             ...buildSerializedContext({ channelKind: "http" }),
             [STUB_CONTEXT_KEY]: {
-              owner: "alice",
               token: "ordinary-tool-playback",
               rules: [
                 {
@@ -349,7 +342,6 @@ describe("tool replacement through the session runtime", () => {
           serializedContext: {
             ...buildSerializedContext({ channelKind: "http" }),
             [STUB_CONTEXT_KEY]: {
-              owner: "alice",
               token: "workflow-tool-playback",
               rules: [{ id: "deploy", tool: "deploy_service", response: { state: "stubbed" } }],
             },

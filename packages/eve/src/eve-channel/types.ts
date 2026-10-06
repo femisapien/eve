@@ -99,7 +99,7 @@ export interface EveChannelInput {
    * by default, including in development. Subject patterns use the same `*`
    * matching as route authentication, without implicitly allowing current-project
    * callers. Use a callback for custom claims or subjectless authenticators.
-   * Rechecked on session access.
+   * Checked when creating a session with stubs. Later requests use route auth.
    */
   readonly allowToolStubs?:
     | { readonly subjects: readonly string[] }

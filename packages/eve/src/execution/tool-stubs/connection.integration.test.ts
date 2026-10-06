@@ -36,7 +36,7 @@ describe("connection operation stubs", () => {
           input: {},
           serializedContext: {
             ...buildSerializedContext({ channelKind: "http" }),
-            [STUB_CONTEXT_KEY]: { owner: "alice", token, rules },
+            [STUB_CONTEXT_KEY]: { token, rules },
           },
         },
       ]);
@@ -76,7 +76,7 @@ describe("connection operation stubs", () => {
           auth: { current: null, initiator: null },
           turn: { id: "turn-0", sequence: 0 },
         });
-        context.set(ToolStubsKey, { owner: "alice", token, rules, rootSessionId: run.runId });
+        context.set(ToolStubsKey, { token, rules, rootSessionId: run.runId });
         context.set(ConnectionRegistryKey, {
           dispose: async () => {},
           getClient: () => client,

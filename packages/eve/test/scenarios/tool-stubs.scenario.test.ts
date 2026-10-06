@@ -6,7 +6,7 @@ import { startEveDev } from "./dev-server-harness.js";
 
 const scenarioApp = useScenarioApp();
 
-it("carries authorized stubs through a compiled HTTP agent and reports recovered failures", async () => {
+it("separates stub creation permission from session access through compiled HTTP", async () => {
   const app = await scenarioApp({
     name: "declarative-tool-stubs",
     installDependencies: true,
@@ -60,11 +60,6 @@ export default eveChannel({
     ];
     const { session } = await alice.sessions.create({ stubs });
     const path = `/eve/v1/session/${session.state.sessionId}`;
-    const denied = await bob.fetch(path, {
-      method: "POST",
-      body: JSON.stringify({ message: "Deploy api" }),
-    });
-    expect(denied.status).toBe(404);
     const forbidden = await bob.fetch("/eve/v1/session", {
       method: "POST",
       body: JSON.stringify({ stubs }),
@@ -73,17 +68,19 @@ export default eveChannel({
 
     const first = await (await session.send("Alice asks to deploy api.")).result();
     expect(results(first.events)).toEqual(["pending"]);
-    const next = await (await session.send("Alice asks for another api deployment.")).result();
+    const shared = bob.sessions.attach(session.state.sessionId, {
+      streamIndex: session.state.streamIndex,
+    });
+    const next = await (await shared.send("Bob asks for another api deployment.")).result();
     expect(results(next.events)).toEqual(["completed"]);
-    const exhausted = await (
-      await session.send("Alice asks for one more api deployment.")
-    ).result();
+    const exhausted = await (await shared.send("Bob asks for one more api deployment.")).result();
     expect(results(exhausted.events)).toEqual(["completed"]);
-    const live = await (await session.send("Alice asks to deploy web.")).result();
+    const live = await (await shared.send("Bob asks to deploy web.")).result();
     expect(results(live.events)).toEqual(["live"]);
-    const status = await alice.fetch(path + "/stubs");
+    const status = await bob.fetch(path + "/stubs");
+    expect(status.status).toBe(200);
     expect(await status.json()).toEqual({ error: null });
-    const replacement = await alice.fetch(path, {
+    const replacement = await bob.fetch(path, {
       method: "POST",
       body: JSON.stringify({ message: "Next", stubs }),
     });
@@ -105,7 +102,8 @@ export default eveChannel({
       ],
     });
     await (await ambiguous.send("Alice asks to deploy api.")).result();
-    const failure = await alice.fetch(`/eve/v1/session/${ambiguous.state.sessionId}/stubs`);
+    const failure = await bob.fetch(`/eve/v1/session/${ambiguous.state.sessionId}/stubs`);
+    expect(failure.status).toBe(200);
     expect(await failure.json()).toEqual({ error: 'Ambiguous tool stubs for "deploy": a, b.' });
   } finally {
     await server.stop();

@@ -1,7 +1,7 @@
 ---
 issue: https://linear.app/vercel/issue/AX-5133
 status: implementing
-last_updated: "2026-10-05"
+last_updated: "2026-10-06"
 ---
 
 # Declarative tool stubs
@@ -45,7 +45,7 @@ The first stub failure is recorded before its response is released. The eval run
 
 Reuse existing route authentication. Configure `eveChannel({ auth, allowToolStubs: { subjects: evalSubjects } })` with the eval runners' subjects. Reuse the existing `*` subject-pattern matcher; do not inherit OIDC's implicit current-project acceptance. An omitted policy, empty list, or missing caller subject grants no replacement permission. A callback remains available for custom claims and subjectless authenticators such as local development.
 
-Bind sessions and local descendants to the verified principal independently of `onMessage` projection. Recheck ownership and permission on continuation, approvals, controls, and streams. An eval bearer token does not implicitly grant overrides. Playback hooks have unguessable tokens; caller-supplied context cannot manufacture a trusted scope.
+Check replacement permission at creation against the verified route caller before `onMessage` projection. Later messages, approvals, controls, and result reads use normal channel auth, without additional stub-specific ownership checks or permission rechecks. Session isolation is application policy, as for ordinary sessions; callers admitted to a session can use its configured stubs. Playback hooks have unguessable tokens; caller-supplied context cannot manufacture a trusted scope.
 
 ## Verification
 

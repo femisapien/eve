@@ -31,13 +31,11 @@ export type StubResult =
 
 /** Trusted server metadata, never read from a client-supplied session identifier. */
 export interface StubScope {
-  readonly owner: string;
   readonly token: string;
   readonly rules: readonly ToolStub[];
   readonly rootSessionId?: string;
 }
 
 export const STUB_CONTEXT_KEY = "eve.toolStubs";
-export const STUB_OWNER_ATTRIBUTE = "$eve.stubOwner";
 export const STUB_FAILURE_NAMESPACE = "eve.tool-stubs.failure";
 export const stubResponseNamespace = (callId: string): string => `eve.tool-stubs.${callId}`;

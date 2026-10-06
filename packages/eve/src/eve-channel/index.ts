@@ -1,5 +1,4 @@
-import { authorizeToolStubs, authorizeStubbedSession } from "#eve-channel/tool-stubs.js";
-import { invocationOwnerKey } from "#internal/invocation/metadata.js";
+import { authorizeToolStubs } from "#eve-channel/tool-stubs.js";
 import { readStubFailure } from "#execution/tool-stubs/steps.js";
 import { handleExpiredLegacyAuthorization } from "#execution/legacy-session/authorization.js";
 import { EVE_ROUTE_PREFIX } from "#protocol/routes.js";
@@ -337,7 +336,6 @@ export function eveChannel(input: EveChannelInput): EveChannel {
                 ? undefined
                 : {
                     rules: body.stubs,
-                    owner: invocationOwnerKey(authResult),
                     token: crypto.randomUUID(),
                   },
             auth: messageResult.auth,
@@ -388,8 +386,6 @@ export function eveChannel(input: EveChannelInput): EveChannel {
 
         const sessionId = requireSessionId(params);
         if (sessionId instanceof Response) return sessionId;
-        const denied = await authorizeStubbedSession(input, authResult, sessionId);
-        if (denied !== undefined) return denied;
         const payload = await parseJsonRequest(req);
         if (payload instanceof Response) return payload;
         const forwarded = await resolveForwardedPrincipal({
@@ -482,8 +478,6 @@ export function eveChannel(input: EveChannelInput): EveChannel {
         if (authResult instanceof Response) return authResult;
         const sessionId = requireSessionId(params);
         if (sessionId instanceof Response) return sessionId;
-        const denied = await authorizeStubbedSession(input, authResult, sessionId);
-        if (denied !== undefined) return denied;
         const body = await parseCancelTurnBody(req);
         if (body instanceof Response) return body;
         let result: Awaited<ReturnType<Session["cancel"]>>;
@@ -516,8 +510,6 @@ export function eveChannel(input: EveChannelInput): EveChannel {
         if (authResult instanceof Response) return authResult;
         const sessionId = requireSessionId(params);
         if (sessionId instanceof Response) return sessionId;
-        const denied = await authorizeStubbedSession(input, authResult, sessionId);
-        if (denied !== undefined) return denied;
         const body = await parseSessionControlBody(req);
         if (body instanceof Response) return body;
         let result: Awaited<ReturnType<Session["compact"]>>;
@@ -550,8 +542,6 @@ export function eveChannel(input: EveChannelInput): EveChannel {
         if (authResult instanceof Response) return authResult;
         const sessionId = requireSessionId(params);
         if (sessionId instanceof Response) return sessionId;
-        const denied = await authorizeStubbedSession(input, authResult, sessionId);
-        if (denied !== undefined) return denied;
         const body = await parseSessionControlBody(req);
         if (body instanceof Response) return body;
         let result: Awaited<ReturnType<Session["clear"]>>;
@@ -584,8 +574,6 @@ export function eveChannel(input: EveChannelInput): EveChannel {
         if (authResult instanceof Response) return authResult;
         const sessionId = requireSessionId(params);
         if (sessionId instanceof Response) return sessionId;
-        const denied = await authorizeStubbedSession(input, authResult, sessionId);
-        if (denied !== undefined) return denied;
         const body = await parseResetBody(req);
         if (body instanceof Response) return body;
         let result: Awaited<ReturnType<Session["reset"]>>;
@@ -615,10 +603,6 @@ export function eveChannel(input: EveChannelInput): EveChannel {
         if (authResult instanceof Response) return authResult;
         const sessionId = requireSessionId(params);
         if (sessionId instanceof Response) return sessionId;
-        const denied = await authorizeStubbedSession(input, authResult, sessionId);
-        if (denied !== undefined) return denied;
-        const permission = await authorizeToolStubs(input, authResult);
-        if (permission !== undefined) return permission;
         return Response.json(
           { error: (await readStubFailure(sessionId)) ?? null },
           { headers: { "cache-control": "no-store" } },
@@ -630,8 +614,6 @@ export function eveChannel(input: EveChannelInput): EveChannel {
         if (authResult instanceof Response) return authResult;
         const sessionId = requireSessionId(params);
         if (sessionId instanceof Response) return sessionId;
-        const denied = await authorizeStubbedSession(input, authResult, sessionId);
-        if (denied !== undefined) return denied;
         return await createSessionStreamResponse(req, attachSession(sessionId));
       }),
 
@@ -660,8 +642,6 @@ export function eveChannel(input: EveChannelInput): EveChannel {
         });
         let binding: RemoteAgentBinding;
         try {
-          const denied = await authorizeStubbedSession(input, authResult, parentSessionId);
-          if (denied !== undefined) return denied;
           const parent = args.attachSession(parentSessionId);
           const found = await findRemoteAgentBinding({
             callId,

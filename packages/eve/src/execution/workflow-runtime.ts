@@ -19,7 +19,6 @@ import type {
   SessionCommandResult,
 } from "#channel/types.js";
 import { serializeContext } from "#context/serialize.js";
-import { STUB_CONTEXT_KEY, STUB_OWNER_ATTRIBUTE, type StubScope } from "#tool-stubs/types.js";
 import {
   buildSessionAttributes,
   buildSubagentRootAttributes,
@@ -40,7 +39,7 @@ import {
 import type { MessageStreamEvent } from "#protocol/message.js";
 import type { RuntimeCompiledArtifactsSource } from "#runtime/compiled-artifacts-source.js";
 import { ROOT_RUNTIME_AGENT_NODE_ID } from "#runtime/graph.js";
-import { normalizeEveAttributes, type EveAttributeValue } from "#runtime/attributes/normalize.js";
+import { normalizeEveAttributes } from "#runtime/attributes/normalize.js";
 import { getCompiledRuntimeAgentBundle } from "#runtime/sessions/compiled-agent-cache.js";
 import { buildRunContext } from "#execution/runtime-context.js";
 import { resolveEffectiveAgentRuntime } from "#execution/effective-agent-config.js";
@@ -172,13 +171,12 @@ export function createWorkflowRuntime(config: {
               rootSessionId: parentLineage.rootSessionId ?? parentLineage.sessionId,
               serializedContext,
             });
-      const attributes: Record<string, EveAttributeValue> = {
+      const attributes = {
         ...sessionAttributes,
         ...(input.externalInvocation === undefined
           ? {}
           : buildInvocationAttributes(input.externalInvocation)),
       };
-      if (input.toolStubs !== undefined) attributes[STUB_OWNER_ATTRIBUTE] = input.toolStubs.owner;
 
       let run: Awaited<ReturnType<typeof startWorkflowOnCurrentDeployment>>;
       try {
@@ -277,18 +275,13 @@ export async function startSessionOwnerStep(input: SessionOwnerStartInput): Prom
     sessionWritable: getRun(anchorRunId).getWritable<Uint8Array>(),
     sessionId: anchorRunId,
   };
-  const options: StartOptionsWithoutDeploymentId = {};
-  if (checkpoint.retention !== undefined) options.experimental_retention = checkpoint.retention;
-  const stubs = checkpoint.serializedContext[STUB_CONTEXT_KEY] as StubScope | undefined;
-  if (stubs !== undefined) {
-    options.allowReservedAttributes = true;
-    options.attributes = { [STUB_OWNER_ATTRIBUTE]: stubs.owner };
-  }
   await startWorkflowOnDeployment(
     workflowEntryReference,
     [workflowInput],
     targetDeploymentId,
-    options,
+    checkpoint.retention === undefined
+      ? undefined
+      : { experimental_retention: checkpoint.retention },
   );
 }
 

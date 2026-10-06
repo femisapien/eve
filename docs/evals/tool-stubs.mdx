@@ -119,9 +119,9 @@ export default eveChannel({
 });
 ```
 
-Only the authenticated identity that created a stubbed session can send later messages, answer approvals, control the session, or read its results. eve rechecks that identity's replacement permission on each request. The same access rule applies to local child sessions.
+`allowToolStubs` is checked when a session is created with stubs, using the verified route caller before any `onMessage` auth projection. Later messages, approvals, controls, and result reads use the channel's normal authentication policy. Replacement permission is not rechecked, and stubbed sessions have no additional creator-only access rule.
 
-For example, an eval runner may use `onMessage` to make the agent act as Alice during a test. The runner still owns the stubbed session. Alice's ordinary credentials do not grant access to that session.
+Anyone your channel admits to an existing session can use its configured stubs. If mocked evals share a production deployment, your application's [session-access policy](../guides/auth-and-route-protection#what-reaches-ctxsessionauth) must provide the required isolation. An isolated eval deployment can use the same agent code.
 
 ## Match tool arguments
 
