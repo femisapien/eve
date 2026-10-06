@@ -50,6 +50,7 @@ export async function compileSkillSource(
     return {
       kind: "skill",
       definition: {
+        deferred: definition.deferred,
         description: definition.description,
         files: definition.files,
         license: definition.license,
@@ -105,6 +106,7 @@ export async function compileSkillSource(
   return {
     kind: "skill",
     definition: {
+      deferred: definition.deferred,
       description: definition.description,
       files: definition.files,
       license: definition.license,
@@ -129,6 +131,7 @@ function compileSkillPackageSource(
 ): CompiledSkillDefinition {
   return {
     assetsPath: source.assetsPath,
+    deferred: source.deferred,
     description: source.description,
     license: source.license,
     logicalPath: source.logicalPath,

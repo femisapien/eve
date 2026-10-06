@@ -8,6 +8,7 @@ import type {
   RuntimeWorkflowTaskRequest,
   WorkflowToolCallEntry,
 } from "#shared/action-types.js";
+import { EXECUTE_TOOL_NAME, SKILL_ENTRY_NAME } from "#protocol/catalog-tools.js";
 import { markRuntimeWorkflowToolAction } from "#shared/action-types.js";
 import { parseJsonObject, type JsonObject } from "#shared/json.js";
 import {
@@ -338,7 +339,7 @@ export function createRuntimeActionRequestFromToolCall(input: {
     callId: input.toolCall.toolCallId,
     toolName: input.toolCall.toolName,
   });
-  if (definition?.frameworkAction === "load-skill") {
+  if (input.toolCall.toolName === SKILL_ENTRY_NAME) {
     return { callId: input.toolCall.toolCallId, input: toolInput, kind: "load-skill" };
   }
   const action: RuntimeActionRequest = {
@@ -416,8 +417,9 @@ function parseJsonStringInput(value: string): unknown {
 
 function runtimeToolName(result: RuntimeActionResult): string {
   switch (result.kind) {
+    // A skill load is always an `execute` call in history.
     case "load-skill-result":
-      return "load_skill";
+      return EXECUTE_TOOL_NAME;
     case "subagent-result":
       return result.subagentName;
     case "tool-result":

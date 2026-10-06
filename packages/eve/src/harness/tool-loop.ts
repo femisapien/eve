@@ -30,6 +30,7 @@ import {
 } from "#harness/request-envelope.js";
 import {
   AuthKey,
+  DynamicSkillManifestKey,
   HistoryStateKey,
   ParentSessionKey,
   ScheduleIdKey,
@@ -48,7 +49,7 @@ import {
 } from "#context/memory-lifecycle.js";
 import { isDynamicModelSelectionError } from "#context/dynamic-model-lifecycle.js";
 import { getEffectiveModelSelection } from "#context/effective-model.js";
-import { PendingSkillAnnouncementKey } from "#context/dynamic-skill-lifecycle.js";
+import { dynamicSkillAnnouncements } from "#execution/skills/instructions.js";
 import type { ContextReader } from "#context/key.js";
 import { catalogAnnouncements } from "#execution/catalog/listing.js";
 import { buildStepCatalog, type StepCatalog } from "#execution/catalog/step-catalog.js";
@@ -1222,9 +1223,10 @@ export function createToolLoopHarness(config: ToolLoopHarnessConfig): StepFn {
       currentMessages.addSystem(
         taskSystemMessages(catalog.offersTasks, { finalReplyOnly: hidesHeldText }),
       );
+      const announced = ctx?.get(HistoryStateKey)?.announcements;
       currentMessages.addAnnouncements({
-        availableSkills: ctx?.get(PendingSkillAnnouncementKey),
-        keyed: catalogAnnouncements(catalog, ctx?.get(HistoryStateKey)?.announcements),
+        ...catalogAnnouncements(catalog, announced),
+        ...dynamicSkillAnnouncements(ctx?.get(DynamicSkillManifestKey), announced),
       });
       const pendingApprovals = renderPendingApprovalsInstruction(
         getPendingInputBatches(session.state).flatMap((batch) => batch.requests),

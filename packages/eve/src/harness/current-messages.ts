@@ -12,11 +12,6 @@ interface AddCurrentMessageOptions {
   readonly cacheFriendly?: boolean;
 }
 
-interface CurrentAnnouncements {
-  readonly availableSkills?: string;
-  readonly keyed?: Readonly<Record<string, Announcement>>;
-}
-
 interface CurrentMessagesOptions {
   readonly historyState?: HistoryState;
   readonly currentTurnMessages?: readonly HarnessModelMessage[];
@@ -33,7 +28,7 @@ export function createCurrentMessages(
   readonly nonSystemMessages: readonly HarnessModelMessage[];
   readonly systemMessages: readonly SystemModelMessage[];
   add(message: string, kind: FrameworkMessageKind, options?: AddCurrentMessageOptions): void;
-  addAnnouncements(announcements: CurrentAnnouncements): void;
+  addAnnouncements(announcements: Readonly<Record<string, Announcement>>): void;
   addSystem(messages: SystemModelMessage | readonly SystemModelMessage[]): void;
 } {
   const durableMessages = [...history];
@@ -90,14 +85,8 @@ export function createCurrentMessages(
       // A system-message fallback would change the cached prefix; the next
       // step appends the announcement instead.
       if (!canAppendUserMessages) return;
-      const skills = announcements.availableSkills;
-      if (skills !== undefined && skills.length > 0 && historyState.availableSkills !== skills) {
-        appendUserMessage(skills, "context.state");
-        historyState.availableSkills = skills;
-      }
-      const keyed = announcements.keyed ?? {};
-      for (const key of Object.keys(keyed).sort()) {
-        const announcement = keyed[key]!;
+      for (const key of Object.keys(announcements).sort()) {
+        const announcement = announcements[key]!;
         const previous = historyState.announcements?.[key];
         if (previous === announcement.value) continue;
         const message = announcement.render(previous);

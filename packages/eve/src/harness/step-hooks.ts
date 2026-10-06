@@ -21,6 +21,7 @@ import {
   createRuntimeToolResultFromToolError,
   createRuntimeToolResultFromMessagePart,
   createRuntimeToolResultFromStepResult,
+  toActionResult,
 } from "#harness/action-result-helpers.js";
 import type { HarnessEmissionState } from "#harness/emission.js";
 import { emitStepStarted } from "#harness/emission.js";
@@ -314,6 +315,12 @@ export async function emitStepActions(
       toolResult.output,
     ]),
   );
+  const inputByCallId = new Map<string, unknown>(
+    (step.toolCalls as TypedToolCall<ToolSet>[]).map((toolCall) => [
+      toolCall.toolCallId,
+      toolCall.input,
+    ]),
+  );
 
   for (const result of reconcileToolResults(step)) {
     if (isExcluded(result.callId, result.toolName)) {
@@ -331,7 +338,7 @@ export async function emitStepActions(
 
     await emitFn(
       createActionResultEvent({
-        result,
+        result: toActionResult(result, inputByCallId.get(result.callId)),
         sequence: state.sequence,
         stepIndex: state.stepIndex,
         turnId: state.turnId,

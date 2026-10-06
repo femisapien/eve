@@ -34,6 +34,7 @@ import {
   type RuntimeActionResult,
 } from "#shared/action-types.js";
 import type { ChannelAudience } from "#shared/channel-audience.js";
+import { requestedSkill } from "#shared/action-request-name.js";
 
 export interface CreateInstrumentationHandleEventInput {
   readonly traceSessionId?: string;
@@ -303,7 +304,7 @@ function actionUsage(result: RuntimeActionResult): InstrumentationUsage | undefi
 
 function actionName(action: RuntimeActionRequest): string {
   if (action.kind === "tool-call" || action.kind === "workflow-tool-call") return action.toolName;
-  if (action.kind === "load-skill") return "load_skill";
+  if (action.kind === "load-skill") return requestedSkill(action);
   return action.name;
 }
 

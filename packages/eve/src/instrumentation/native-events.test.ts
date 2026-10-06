@@ -259,7 +259,6 @@ describe("createInstrumentationHandleEvent", () => {
           nodeId: "workers",
           subagentName: "worker",
         },
-        { callId: "skill-1", input: { name: "research" }, kind: "load-skill" },
         {
           callId: "remote-1",
           description: "Call a remote agent.",
@@ -388,7 +387,7 @@ describe("createInstrumentationHandleEvent", () => {
       );
     });
 
-    expect(events.slice(0, 5)).toEqual([
+    expect(events.slice(0, 4)).toEqual([
       {
         callId: "delegate-1",
         startedAtMs: 1_000,
@@ -396,16 +395,6 @@ describe("createInstrumentationHandleEvent", () => {
         input: { task: "research" },
         kind: "subagent-call",
         name: "delegate",
-        scope,
-        type: "action.started",
-      },
-      {
-        callId: "skill-1",
-        startedAtMs: 1_000,
-        idempotencyKey: actionIdempotencyKey("session-1", "turn-1", "skill-1"),
-        input: { name: "research" },
-        kind: "load-skill",
-        name: "load_skill",
         scope,
         type: "action.started",
       },
@@ -441,7 +430,7 @@ describe("createInstrumentationHandleEvent", () => {
         type: "action.started",
       },
     ]);
-    expect(events[5]).toMatchObject({
+    expect(events[4]).toMatchObject({
       errorCode: "ACTION_RESULT_FAILED",
       idempotencyKey: actionIdempotencyKey("session-1", "turn-1", "delegate-1"),
       outcome: "failed",
@@ -454,7 +443,7 @@ describe("createInstrumentationHandleEvent", () => {
         outputTokens: 2,
       },
     });
-    expect(events[6]).toEqual({
+    expect(events[5]).toEqual({
       acceptedAtMs: 1_234,
       idempotencyKey: actionIdempotencyKey("session-1", "turn-1", "remote-1"),
       outcome: "completed",
@@ -468,7 +457,7 @@ describe("createInstrumentationHandleEvent", () => {
         outputTokens: 5,
       },
     });
-    expect(events[7]).toEqual({
+    expect(events[6]).toEqual({
       acceptedAtMs: undefined,
       idempotencyKey: actionIdempotencyKey("session-1", "turn-1", "add-1"),
       outcome: "completed",
@@ -477,7 +466,7 @@ describe("createInstrumentationHandleEvent", () => {
       type: "action.completed",
       usage: undefined,
     });
-    expect(events).toHaveLength(8);
+    expect(events).toHaveLength(7);
     expect(events.every(Object.isFrozen)).toBe(true);
   });
 
