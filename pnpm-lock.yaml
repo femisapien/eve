@@ -321,8 +321,8 @@ importers:
         specifier: 2.0.1
         version: 2.0.1(e9f01ee4848ee8142aacdb51dfc5a6a4)
       '@vercel/geistdocs':
-        specifier: 1.28.0
-        version: 1.28.0(2c11eed8bc5f8aab47defdc24085560f)
+        specifier: 2.9.0
+        version: 2.9.0(79560e942e5066c3fa0e250d382bc1cd)
       '@vercel/speed-insights':
         specifier: 2.0.0
         version: 2.0.0(e9f01ee4848ee8142aacdb51dfc5a6a4)
@@ -962,7 +962,7 @@ importers:
         version: 5.0.1(@opentelemetry/api@1.9.1)(@types/pg@8.23.1)(@upstash/redis@1.38.4)(sql.js@1.14.2)(supports-color@10.2.2)(typescript@7.0.2)
       ai:
         specifier: 'catalog:'
-        version: 7.0.105(zod@4.5.4)
+        version: 7.0.105(zod@4.6.5)
       eve:
         specifier: workspace:*
         version: link:../../../packages/eve
@@ -1462,7 +1462,7 @@ importers:
     dependencies:
       '@ai-sdk/openai':
         specifier: 'catalog:'
-        version: 4.0.69(zod@4.5.4)
+        version: 4.0.69(zod@4.6.5)
       '@opentelemetry/sdk-trace-base':
         specifier: 'catalog:'
         version: 2.6.1(@opentelemetry/api@1.9.1)
@@ -7489,8 +7489,8 @@ packages:
       ws:
         optional: true
 
-  '@vercel/geistdocs@1.28.0':
-    resolution: {integrity: sha512-ZcfwAnZ7EKdXwjwFlHXAvdGoMT17s0+Noq7Su/7Gb8M9L3nsFsViD86nRXwnmsMFUyzEHab4dUosz8T/jFB4pA==}
+  '@vercel/geistdocs@2.9.0':
+    resolution: {integrity: sha512-dtFyqu/r4BINxX7AFN54ka8RojsDUmNwvUe8kV8PzVcov1YITySniDrfKMk+xGz8UukSh3+yLMI/qOXnCo9olA==}
     hasBin: true
     peerDependencies:
       next: ^16.3.3
@@ -9070,12 +9070,6 @@ packages:
   devtools-protocol@0.0.1642743:
     resolution: {integrity: sha512-vTCGze95hGFayPNUXv2H/3cNt/Kqv3J7XqS519j7U8HYhmtD6+eVEPHp6nRHD64dDXJ022TU4reAYhjYyuxm8Q==}
 
-  dexie-react-hooks@4.4.0:
-    resolution: {integrity: sha512-ObLXBS5+4BJU8vtSvBx6b9fY6zZYgniAtwxzjCHsUQadgbqYN6935X2/1TWw4Rf2N1aZV1io5/ziox4vKuxABA==}
-    peerDependencies:
-      dexie: '>=4.2.0-alpha.1 <5.0.0'
-      react: '>=16'
-
   dexie@4.4.6:
     resolution: {integrity: sha512-hJP/BO6mjB+tX6hToIO1kmxYLNmun90wYbfcoAoLpKEyDYal/k33dg0TAfoUe2TDsbbLoVIzljJ3BN2UbR5EOg==}
 
@@ -10040,6 +10034,11 @@ packages:
   gcp-metadata@8.1.4:
     resolution: {integrity: sha512-iJ9KMsiu+xKtNRX0PmGLSaIU3bUBAyzWTyqKemKPzNPsmmsBCQYmlNg+brEbES7IHSXtdVwzBPzx1vz3FAaipw==}
     engines: {node: '>=18'}
+
+  geist@1.7.1:
+    resolution: {integrity: sha512-XF8DM30ODhDu0Ng5S2kOS8j4ZkG/6z2fKWAiFJA7wG0Hc92ZXgjYLrwbD9bVU4nGVzwboPtG+QtaPGsfgnXLaA==}
+    peerDependencies:
+      next: '>=13.2.0'
 
   generator-function@2.0.1:
     resolution: {integrity: sha512-SFdFmIJi+ybC0vjlHN0ZGVGHc3lgE0DxPAT0djjVg+kjOnSqclqmj0KQ7ykTOLP6YxoqOvuAODGdcHJn+43q3g==}
@@ -11247,11 +11246,6 @@ packages:
     resolution: {integrity: sha512-jumlc0BIUrS3qJGgIkWZsyfAM7NCWiBcCDhnd+3NNM5KbBmLTgHVfWBcg6W+rLUsIpzpERPsvwUP7CckAQSOoA==}
     engines: {node: '>=12'}
 
-  lucide-react@0.555.0:
-    resolution: {integrity: sha512-D8FvHUGbxWBRQM90NZeIyhAvkFfsh3u9ekrMvJ30Z6gnpBHS6HC6ldLg7tL45hwiIz/u66eKDtdA23gwwGsAHA==}
-    peerDependencies:
-      react: ^16.5.1 || ^17.0.0 || ^18.0.0 || ^19.0.0
-
   lucide-react@1.16.0:
     resolution: {integrity: sha512-dYwyPzb4MEKpGUmNYk3WKWPnMrHs3FKM+q94kAnJrcDIqqn1hq2xY8scaS2ovsOCM5D51ey2gaRG3PBb1vgoYQ==}
     peerDependencies:
@@ -11313,6 +11307,17 @@ packages:
 
   matrix-widget-api@1.19.0:
     resolution: {integrity: sha512-Qe7L6G1mQJphBC47/Bzp5ljPIK1UARgLiuGgS+/KmEs/eaNHkQ3+ArD0/0kvMV+d6kCGAZ9OKRqsnuPjizI+tw==}
+
+  mcp-handler@2.2.0:
+    resolution: {integrity: sha512-loJsIem4jM1jLUsI4x2errOHSzvU+Et6XV4Aqq1AEUkHOqridUoY4dLM02OlRfsku+OjtMlk+tHyYjpfO65X6g==}
+    engines: {node: '>=20'}
+    hasBin: true
+    peerDependencies:
+      '@modelcontextprotocol/server': ^2.0.0
+      next: '>=13.0.0'
+    peerDependenciesMeta:
+      next:
+        optional: true
 
   mdast-util-find-and-replace@3.0.2:
     resolution: {integrity: sha512-Tmd1Vg/m3Xz43afeNxDIhWRtFZgM2VLyaf4vSTYwudTyeuTneoL3qtWMA5jeLyz/O1vDJmmV4QuScFCA2tBPwg==}
@@ -12386,6 +12391,16 @@ packages:
 
   phase@0.0.1:
     resolution: {integrity: sha512-QTeTClFj700SPwdgfVckQ8uO/dquPO5MdxHpSLCOtKpJbLrpUrFnEVhoCuQKXMSWXNIMlnwPsKQ7fqfXCX6BJg==}
+    engines: {node: 24.x}
+    deprecated: phase is now the scan tool; the runtime library moved to @usephase/core and @usephase/react
+    peerDependencies:
+      react: '>=18'
+    peerDependenciesMeta:
+      react:
+        optional: true
+
+  phase@0.5.4:
+    resolution: {integrity: sha512-3nCOrMZ/dW1q0nLCbVZBcGW/60TEApcoBPCT7s8SsQ2I0/rHLeSMkxlPhaGfW/yEKgkLkCfmd+YGss65ZwR77Q==}
     engines: {node: 24.x}
     deprecated: phase is now the scan tool; the runtime library moved to @usephase/core and @usephase/react
     peerDependencies:
@@ -14857,6 +14872,9 @@ packages:
   zod@4.5.4:
     resolution: {integrity: sha512-sC95tT5iHHH9gtpj6A81kh+NEaRAUFN+qlUPDUbRfOMvNf5QCBqsb3WgvnpVtK5Y+4UfA6KqufotuTvMGiTlsA==}
 
+  zod@4.6.5:
+    resolution: {integrity: sha512-v5l/aFXZQeai4awLbOpSoHecE9UiMrnfx75tEXLjNonXVARxQ5mOeipTjROUchszUNCqnE+hqAMujRsRHsut2Q==}
+
   zwitch@2.0.4:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
@@ -14969,12 +14987,12 @@ snapshots:
       '@vercel/oidc': 3.1.0
       zod: 4.4.3
 
-  '@ai-sdk/gateway@3.0.196(zod@4.5.4)':
+  '@ai-sdk/gateway@3.0.196(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 3.0.16
-      '@ai-sdk/provider-utils': 4.0.51(zod@4.5.4)
+      '@ai-sdk/provider-utils': 4.0.51(zod@4.6.5)
       '@vercel/oidc': 3.2.0
-      zod: 4.5.4
+      zod: 4.6.5
 
   '@ai-sdk/gateway@4.0.85(zod@4.5.4)':
     dependencies:
@@ -14982,6 +15000,13 @@ snapshots:
       '@ai-sdk/provider-utils': 5.0.43(zod@4.5.4)
       '@vercel/oidc': 3.2.0
       zod: 4.5.4
+
+  '@ai-sdk/gateway@4.0.85(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.17
+      '@ai-sdk/provider-utils': 5.0.43(zod@4.6.5)
+      '@vercel/oidc': 3.2.0
+      zod: 4.6.5
 
   '@ai-sdk/google-vertex@3.0.174(supports-color@10.2.2)(zod@4.4.3)':
     dependencies:
@@ -15051,6 +15076,12 @@ snapshots:
       '@ai-sdk/provider-utils': 5.0.43(zod@4.5.4)
       zod: 4.5.4
 
+  '@ai-sdk/openai@4.0.69(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.17
+      '@ai-sdk/provider-utils': 5.0.43(zod@4.6.5)
+      zod: 4.6.5
+
   '@ai-sdk/otel@1.0.105(zod@4.5.4)':
     dependencies:
       '@ai-sdk/provider': 4.0.17
@@ -15089,13 +15120,13 @@ snapshots:
       undici: 5.29.0
       zod: 4.4.3
 
-  '@ai-sdk/provider-utils@4.0.51(zod@4.5.4)':
+  '@ai-sdk/provider-utils@4.0.51(zod@4.6.5)':
     dependencies:
       '@ai-sdk/provider': 3.0.16
       '@standard-schema/spec': 1.1.0
       eventsource-parser: 3.1.0
       undici: 6.28.1
-      zod: 4.5.4
+      zod: 4.6.5
 
   '@ai-sdk/provider-utils@5.0.43(zod@4.5.4)':
     dependencies:
@@ -15105,6 +15136,15 @@ snapshots:
       eventsource-parser: 3.1.0
       undici: 7.30.0
       zod: 4.5.4
+
+  '@ai-sdk/provider-utils@5.0.43(zod@4.6.5)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.17
+      '@standard-schema/spec': 1.1.0
+      '@workflow/serde': 4.1.0
+      eventsource-parser: 3.1.0
+      undici: 7.30.0
+      zod: 4.6.5
 
   '@ai-sdk/provider@1.1.3':
     dependencies:
@@ -15122,10 +15162,10 @@ snapshots:
     dependencies:
       json-schema: 0.4.0
 
-  '@ai-sdk/react@3.0.288(react@19.2.6)(zod@4.5.4)':
+  '@ai-sdk/react@3.0.288(react@19.2.6)(zod@4.6.5)':
     dependencies:
-      '@ai-sdk/provider-utils': 4.0.51(zod@4.5.4)
-      ai: 6.0.285(zod@4.5.4)
+      '@ai-sdk/provider-utils': 4.0.51(zod@4.6.5)
+      ai: 6.0.285(zod@4.6.5)
       react: 19.2.6
       swr: 2.5.1(react@19.2.6)
       throttleit: 2.1.0
@@ -20982,34 +21022,34 @@ snapshots:
       '@aws-sdk/credential-provider-web-identity': 3.972.49
       ws: 8.21.3(bufferutil@4.1.0)
 
-  '@vercel/geistdocs@1.28.0(2c11eed8bc5f8aab47defdc24085560f)':
+  '@vercel/geistdocs@2.9.0(79560e942e5066c3fa0e250d382bc1cd)':
     dependencies:
-      '@ai-sdk/react': 3.0.288(react@19.2.6)(zod@4.5.4)
+      '@ai-sdk/react': 3.0.288(react@19.2.6)(zod@4.6.5)
       '@clack/prompts': 0.11.0
-      '@icons-pack/react-simple-icons': 13.13.0(react@19.2.6)
+      '@modelcontextprotocol/server': 2.0.0
       '@next/env': 16.3.3
       '@orama/tokenizers': 3.1.18
       '@streamdown/cjk': 1.0.3(@types/mdast@4.0.4)(micromark-util-types@2.0.2)(micromark@4.0.2(supports-color@10.2.2))(react@19.2.6)(supports-color@10.2.2)(unified@11.0.5)
-      '@streamdown/code': 1.1.1(react@19.2.6)
       '@types/mdx': 2.0.13
       '@types/react': 19.2.15
       '@vercel/agent-readability': 0.7.0(@sveltejs/kit@2.70.3(@opentelemetry/api@1.9.1)(@sveltejs/vite-plugin-svelte@7.3.0(svelte@5.57.0(@typescript-eslint/types@8.70.0))(vite@8.3.1(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.13)(yaml@2.9.1)))(svelte@5.57.0(@typescript-eslint/types@8.70.0))(typescript@6.0.3)(vite@8.3.1(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.13)(yaml@2.9.1)))(@vercel/functions@3.9.8(@aws-sdk/credential-provider-web-identity@3.972.49)(ws@8.21.3(bufferutil@4.1.0)))(h3@1.15.11)(next@16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))
       '@vercel/oidc': 3.8.0
-      ai: 6.0.285(zod@4.5.4)
+      ai: 6.0.285(zod@4.6.5)
       class-variance-authority: 0.7.1
       clsx: 2.1.1
       commander: 14.0.3
       dexie: 4.4.6
-      dexie-react-hooks: 4.4.0(dexie@4.4.6)(react@19.2.6)
-      fumadocs-core: 16.2.2(@types/react@19.2.15)(lucide-react@0.555.0(react@19.2.6))(next@16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(supports-color@10.2.2)
+      fumadocs-core: 16.2.2(@types/react@19.2.15)(lucide-react@1.16.0(react@19.2.6))(next@16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(supports-color@10.2.2)
       fumadocs-mdx: 14.0.4(fumadocs-core@16.2.2(@types/react@19.2.15)(lucide-react@1.16.0(react@19.2.6))(next@16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(supports-color@10.2.2))(next@16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react@19.2.6)(supports-color@10.2.2)(vite@8.3.1(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.13)(yaml@2.9.1))
-      fumadocs-ui: 16.2.2(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(lucide-react@0.555.0(react@19.2.6))(next@16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(supports-color@10.2.2)(tailwindcss@4.3.0)
+      fumadocs-ui: 16.2.2(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(lucide-react@1.16.0(react@19.2.6))(next@16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(supports-color@10.2.2)(tailwindcss@4.3.0)
+      geist: 1.7.1(next@16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))
       glob: 11.1.0
-      lucide-react: 0.555.0(react@19.2.6)
+      mcp-handler: 2.2.0(@modelcontextprotocol/server@2.0.0)(next@16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))
       mermaid: 11.17.2
       motion: 12.43.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       next: 16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       next-themes: 0.4.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
+      phase: 0.5.4(react@19.2.6)
       radix-ui: 1.6.4(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       react: 19.2.6
       react-dom: 19.2.6(react@19.2.6)
@@ -21019,6 +21059,7 @@ snapshots:
       remark-gfm: 4.0.1(supports-color@10.2.2)
       remark-mdx: 3.1.1(supports-color@10.2.2)
       remark-parse: 11.0.0(supports-color@10.2.2)
+      remark-stringify: 11.0.0
       sonner: 2.0.7(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
       streamdown: 2.5.0(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(supports-color@10.2.2)
       tailwind-merge: 3.6.0
@@ -21029,7 +21070,7 @@ snapshots:
       unist-util-visit: 5.1.0
       use-stick-to-bottom: 1.1.6(react@19.2.6)
       vaul: 1.1.2(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
-      zod: 4.5.4
+      zod: 4.6.5
     transitivePeerDependencies:
       - '@emotion/is-prop-valid'
       - '@fumadocs/mdx-remote'
@@ -21045,6 +21086,7 @@ snapshots:
       - '@vercel/functions'
       - algoliasearch
       - h3
+      - lucide-react
       - micromark
       - micromark-util-types
       - react-router
@@ -21560,13 +21602,13 @@ snapshots:
       '@opentelemetry/api': 1.9.0
       zod: 4.4.3
 
-  ai@6.0.285(zod@4.5.4):
+  ai@6.0.285(zod@4.6.5):
     dependencies:
-      '@ai-sdk/gateway': 3.0.196(zod@4.5.4)
+      '@ai-sdk/gateway': 3.0.196(zod@4.6.5)
       '@ai-sdk/provider': 3.0.16
-      '@ai-sdk/provider-utils': 4.0.51(zod@4.5.4)
+      '@ai-sdk/provider-utils': 4.0.51(zod@4.6.5)
       '@opentelemetry/api': 1.9.1
-      zod: 4.5.4
+      zod: 4.6.5
 
   ai@7.0.105(zod@4.5.4):
     dependencies:
@@ -21574,6 +21616,13 @@ snapshots:
       '@ai-sdk/provider': 4.0.17
       '@ai-sdk/provider-utils': 5.0.43(zod@4.5.4)
       zod: 4.5.4
+
+  ai@7.0.105(zod@4.6.5):
+    dependencies:
+      '@ai-sdk/gateway': 4.0.85(zod@4.6.5)
+      '@ai-sdk/provider': 4.0.17
+      '@ai-sdk/provider-utils': 5.0.43(zod@4.6.5)
+      zod: 4.6.5
 
   ajv-draft-04@1.0.0(ajv@8.20.0):
     optionalDependencies:
@@ -22920,11 +22969,6 @@ snapshots:
 
   devtools-protocol@0.0.1642743: {}
 
-  dexie-react-hooks@4.4.0(dexie@4.4.6)(react@19.2.6):
-    dependencies:
-      dexie: 4.4.6
-      react: 19.2.6
-
   dexie@4.4.6: {}
 
   diff@8.0.4: {}
@@ -23968,35 +24012,6 @@ snapshots:
   fsevents@2.3.3:
     optional: true
 
-  fumadocs-core@16.2.2(@types/react@19.2.15)(lucide-react@0.555.0(react@19.2.6))(next@16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(supports-color@10.2.2):
-    dependencies:
-      '@formatjs/intl-localematcher': 0.6.2
-      '@orama/orama': 3.1.18
-      '@shikijs/rehype': 3.23.0
-      '@shikijs/transformers': 3.23.0
-      estree-util-value-to-estree: 3.5.0
-      github-slugger: 2.0.0
-      hast-util-to-estree: 3.1.3(supports-color@10.2.2)
-      hast-util-to-jsx-runtime: 2.3.6(supports-color@10.2.2)
-      image-size: 2.0.4
-      negotiator: 1.1.0
-      npm-to-yarn: 3.2.0
-      path-to-regexp: 8.4.2
-      remark: 15.0.1(supports-color@10.2.2)
-      remark-gfm: 4.0.1(supports-color@10.2.2)
-      remark-rehype: 11.1.2
-      scroll-into-view-if-needed: 3.1.0
-      shiki: 3.23.0
-      unist-util-visit: 5.1.0
-    optionalDependencies:
-      '@types/react': 19.2.15
-      lucide-react: 0.555.0(react@19.2.6)
-      next: 16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
-      react: 19.2.6
-      react-dom: 19.2.6(react@19.2.6)
-    transitivePeerDependencies:
-      - supports-color
-
   fumadocs-core@16.2.2(@types/react@19.2.15)(lucide-react@1.16.0(react@19.2.6))(next@16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(supports-color@10.2.2):
     dependencies:
       '@formatjs/intl-localematcher': 0.6.2
@@ -24053,43 +24068,6 @@ snapshots:
       vite: 8.3.1(@types/node@24.13.3)(esbuild@0.28.2)(jiti@2.7.0)(terser@5.51.2)(tsx@4.23.13)(yaml@2.9.1)
     transitivePeerDependencies:
       - supports-color
-
-  fumadocs-ui@16.2.2(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(lucide-react@0.555.0(react@19.2.6))(next@16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(supports-color@10.2.2)(tailwindcss@4.3.0):
-    dependencies:
-      '@radix-ui/react-accordion': 1.2.20(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
-      '@radix-ui/react-collapsible': 1.1.20(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
-      '@radix-ui/react-dialog': 1.1.23(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
-      '@radix-ui/react-direction': 1.1.4(@types/react@19.2.15)(react@19.2.6)
-      '@radix-ui/react-navigation-menu': 1.2.22(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
-      '@radix-ui/react-popover': 1.1.23(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
-      '@radix-ui/react-presence': 1.1.10(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
-      '@radix-ui/react-scroll-area': 1.2.18(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
-      '@radix-ui/react-slot': 1.3.3(@types/react@19.2.15)(react@19.2.6)
-      '@radix-ui/react-tabs': 1.1.21(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
-      class-variance-authority: 0.7.1
-      fumadocs-core: 16.2.2(@types/react@19.2.15)(lucide-react@0.555.0(react@19.2.6))(next@16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(supports-color@10.2.2)
-      lodash.merge: 4.6.2
-      next-themes: 0.4.6(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
-      postcss-selector-parser: 7.1.6
-      react: 19.2.6
-      react-dom: 19.2.6(react@19.2.6)
-      react-medium-image-zoom: 5.4.9(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
-      scroll-into-view-if-needed: 3.1.0
-      tailwind-merge: 3.6.0
-    optionalDependencies:
-      '@types/react': 19.2.15
-      next: 16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
-      tailwindcss: 4.3.0
-    transitivePeerDependencies:
-      - '@mixedbread/sdk'
-      - '@orama/core'
-      - '@tanstack/react-router'
-      - '@types/react-dom'
-      - algoliasearch
-      - lucide-react
-      - react-router
-      - supports-color
-      - waku
 
   fumadocs-ui@16.2.2(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(lucide-react@1.16.0(react@19.2.6))(next@16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6))(react-dom@19.2.6(react@19.2.6))(react@19.2.6)(supports-color@10.2.2)(tailwindcss@4.3.0):
     dependencies:
@@ -24188,6 +24166,10 @@ snapshots:
       json-bigint: 1.0.0
     transitivePeerDependencies:
       - supports-color
+
+  geist@1.7.1(next@16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)):
+    dependencies:
+      next: 16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
 
   generator-function@2.0.1: {}
 
@@ -25520,10 +25502,6 @@ snapshots:
 
   lru-cache@7.18.3: {}
 
-  lucide-react@0.555.0(react@19.2.6):
-    dependencies:
-      react: 19.2.6
-
   lucide-react@1.16.0(react@19.2.6):
     dependencies:
       react: 19.2.6
@@ -25584,6 +25562,14 @@ snapshots:
     dependencies:
       '@types/events': 3.0.3
       events: 3.3.0
+
+  mcp-handler@2.2.0(@modelcontextprotocol/server@2.0.0)(next@16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)):
+    dependencies:
+      '@modelcontextprotocol/server': 2.0.0
+      chalk: 5.6.2
+      commander: 11.1.0
+    optionalDependencies:
+      next: 16.3.4(@babel/core@7.29.7(supports-color@10.2.2))(@opentelemetry/api@1.9.1)(@types/node@24.13.3)(react-dom@19.2.6(react@19.2.6))(react@19.2.6)
 
   mdast-util-find-and-replace@3.0.2:
     dependencies:
@@ -27568,6 +27554,10 @@ snapshots:
       split2: 4.2.0
 
   phase@0.0.1(react@19.2.6):
+    optionalDependencies:
+      react: 19.2.6
+
+  phase@0.5.4(react@19.2.6):
     optionalDependencies:
       react: 19.2.6
 
@@ -30498,5 +30488,7 @@ snapshots:
   zod@4.4.3: {}
 
   zod@4.5.4: {}
+
+  zod@4.6.5: {}
 
   zwitch@2.0.4: {}
