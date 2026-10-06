@@ -1,4 +1,4 @@
-import type { LanguageModel } from "ai";
+import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it } from "vitest";
 
 import { ContextContainer } from "#context/container.js";
@@ -16,18 +16,7 @@ import { ROOT_COMPILED_AGENT_NODE_ID } from "#compiler/manifest.js";
 import { readAgentModelSelection } from "#context/agent-model-selection.js";
 import { buildResolveContext } from "#context/dynamic-resolve-context.js";
 
-const mockLanguageModel = {
-  specificationVersion: "v3",
-  provider: "custom",
-  modelId: "model",
-  supportedUrls: {},
-  doGenerate: async () => {
-    throw new Error("unused");
-  },
-  doStream: async () => {
-    throw new Error("unused");
-  },
-} as unknown as LanguageModel;
+const mockLanguageModel = new MockLanguageModelV3({ provider: "custom", modelId: "model" });
 
 function createCtx(): ContextContainer {
   const ctx = new ContextContainer();

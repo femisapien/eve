@@ -1,4 +1,5 @@
 import type { LanguageModel } from "ai";
+import { MockLanguageModelV3 } from "ai/test";
 
 import { ROOT_COMPILED_AGENT_NODE_ID } from "#compiler/manifest.js";
 import { ContextContainer } from "#context/container.js";
@@ -8,6 +9,7 @@ import {
   getDynamicSubagentSelection,
 } from "#context/dynamic-subagent-lifecycle.js";
 import { StaticModelReferenceKey } from "#context/keys.js";
+import { deserializeContext, serializeContext } from "#context/serialize.js";
 import type { DynamicResolveContext } from "#dynamic/definition.js";
 import { mockModel } from "#evals/mock-model.js";
 import { formatLanguageModelGatewayId } from "#internal/runtime-model.js";
@@ -90,18 +92,7 @@ function selfModificationResolver(
 }
 
 function codexModel(): LanguageModel {
-  return {
-    specificationVersion: "v3",
-    provider: "codex.responses",
-    modelId: "gpt-5.5",
-    supportedUrls: {},
-    doGenerate: async () => {
-      throw new Error("unused");
-    },
-    doStream: async () => {
-      throw new Error("unused");
-    },
-  } as unknown as LanguageModel;
+  return new MockLanguageModelV3({ provider: "codex.responses", modelId: "gpt-5.5" });
 }
 
 const savedEnvironment = { ...process.env };
@@ -210,7 +201,11 @@ describe("self-modification local agent", () => {
           const ctx = parentContext(parent.reference);
           await dispatchDynamicSubagentEvent({ ctx, event, messages: [], resolvers: [resolver] });
 
-          const selection = getDynamicSubagentSelection(ctx, SELF_MODIFICATION_NODE_ID);
+          // The stored reference crosses the durable boundary intact.
+          const resumed = await deserializeContext(
+            JSON.parse(JSON.stringify(serializeContext(ctx))) as Record<string, unknown>,
+          );
+          const selection = getDynamicSubagentSelection(resumed, SELF_MODIFICATION_NODE_ID);
           expect(selection?.agentConfig?.model).toEqual({
             ...parent.reference,
             sourceNodeId: ROOT_COMPILED_AGENT_NODE_ID,

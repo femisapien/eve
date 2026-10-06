@@ -1,4 +1,4 @@
-import type { LanguageModel } from "ai";
+import { MockLanguageModelV3 } from "ai/test";
 import { describe, expect, it, vi } from "vitest";
 
 import { ContextContainer } from "#context/container.js";
@@ -9,18 +9,7 @@ import type { RuntimeModelReference } from "#runtime/agent/bootstrap.js";
 import type { RuntimeModelCatalog } from "#runtime/agent/model-catalog.js";
 import { normalizeDynamicSubagentAgentConfig } from "#runtime/subagents/dynamic-agent-config.js";
 
-const languageModel = {
-  specificationVersion: "v3",
-  provider: "custom",
-  modelId: "model",
-  supportedUrls: {},
-  doGenerate: async () => {
-    throw new Error("unused");
-  },
-  doStream: async () => {
-    throw new Error("unused");
-  },
-} as unknown as LanguageModel;
+const languageModel = new MockLanguageModelV3({ provider: "custom", modelId: "model" });
 
 function createCatalog(): RuntimeModelCatalog {
   return { getByGatewayId: vi.fn(async () => null), getByProviderModelId: vi.fn(async () => null) };
