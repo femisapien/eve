@@ -7,6 +7,7 @@ const VIOLATION = { kind: "input", limit: 40_000_000, usedTokens: 40_120_500 } a
 function createTestRequest() {
   return createSessionLimitContinuationRequest({
     sessionId: "sess-test",
+    turnSequence: 0,
     violation: VIOLATION,
   });
 }
@@ -19,7 +20,7 @@ describe("createSessionLimitContinuationRequest", () => {
     expect(first).toEqual(second);
     expect(first).toEqual({
       action: {
-        callId: "sess-test:limit:input:40120500",
+        callId: "sess-test:0:limit:input:40120500",
         input: { kind: "input", limit: 40_000_000, usedTokens: 40_120_500 },
         kind: "tool-call",
         toolName: "session_limit_continuation",
@@ -45,26 +46,40 @@ describe("createSessionLimitContinuationRequest", () => {
         "This session has hit the input-token limit (40M) per session. This is a guardrail " +
         "against defective long-running sessions. If session activity looks fine, just " +
         "approve to keep going.",
-      requestId: "sess-test:limit:input:40120500",
+      requestId: "sess-test:0:limit:input:40120500",
     });
+  });
+
+  it("gives the prompt of a later turn at the same usage its own id", () => {
+    // After Stop, the next turn is over budget at the same usage; clients drop
+    // request ids they have seen, so its prompt must not reuse the earlier id.
+    const later = createSessionLimitContinuationRequest({
+      sessionId: "sess-test",
+      turnSequence: 1,
+      violation: VIOLATION,
+    });
+
+    expect(later.requestId).toBe("sess-test:1:limit:input:40120500");
+    expect(later.requestId).not.toBe(createTestRequest().requestId);
   });
 
   it("creates a token-cost continuation prompt", () => {
     const request = createSessionLimitContinuationRequest({
       sessionId: "sess-test",
+      turnSequence: 0,
       violation: { kind: "token-cost", limitUsd: 1.5, usedCostUsd: 1.5123 },
     });
 
     expect(request).toMatchObject({
       action: {
-        callId: "sess-test:limit:token-cost:1.5123",
+        callId: "sess-test:0:limit:token-cost:1.5123",
         input: { kind: "token-cost", limitUsd: 1.5, usedCostUsd: 1.5123 },
       },
       prompt:
         "This session has hit the $1.5 model token-cost limit per session. This is a guardrail " +
         "against defective long-running sessions. If session activity looks fine, just " +
         "approve to keep going.",
-      requestId: "sess-test:limit:token-cost:1.5123",
+      requestId: "sess-test:0:limit:token-cost:1.5123",
     });
   });
 
@@ -72,6 +87,7 @@ describe("createSessionLimitContinuationRequest", () => {
     const promptFor = (limit: number): string =>
       createSessionLimitContinuationRequest({
         sessionId: "sess-test",
+        turnSequence: 0,
         violation: { kind: "input", limit, usedTokens: limit + 1 },
       }).prompt;
 
@@ -83,6 +99,7 @@ describe("createSessionLimitContinuationRequest", () => {
 
     const tinyCost = createSessionLimitContinuationRequest({
       sessionId: "sess-test",
+      turnSequence: 0,
       violation: { kind: "token-cost", limitUsd: 5e-7, usedCostUsd: 6e-7 },
     });
     expect(tinyCost.prompt).toContain("$5e-7 model token-cost limit");
@@ -93,6 +110,7 @@ describe("createSessionLimitContinuationRequest", () => {
     // response to an earlier prompt never resolves a later one.
     const later = createSessionLimitContinuationRequest({
       sessionId: "sess-test",
+      turnSequence: 0,
       violation: { ...VIOLATION, usedTokens: 80_500_000 },
     });
 

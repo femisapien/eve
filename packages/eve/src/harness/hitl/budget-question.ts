@@ -35,14 +35,18 @@ export function isSessionLimitContinuationRequestId(requestId: string): boolean 
  */
 export function createSessionLimitContinuationRequest(input: {
   readonly sessionId: string;
+  /** The turn's `sequence`, which tells its prompt apart from another turn's at the same usage. */
+  readonly turnSequence: number;
   readonly violation: SessionUsageLimitViolation;
 }): InputRequest {
-  const { sessionId, violation } = input;
+  const { sessionId, turnSequence, violation } = input;
   const used = violation.kind === "token-cost" ? violation.usedCostUsd : violation.usedTokens;
-  // The absolute session usage is strictly increasing across violations, so
-  // each prompt gets a deterministic id and stale controls cannot resolve a
-  // later prompt.
-  const requestId = `${sessionId}:limit:${violation.kind}:${String(used)}`;
+  // Re-raising an unanswered prompt within a turn keeps its id. Usage alone
+  // doesn't separate prompts across turns: after Stop the next turn is over
+  // budget at the same usage, and clients drop request ids they've seen. The
+  // sequence rather than the turn id keeps the id short enough for Discord's
+  // 100-character `custom_id`.
+  const requestId = `${sessionId}:${String(turnSequence)}:limit:${violation.kind}:${String(used)}`;
   const actionInput: JsonObject =
     violation.kind === "token-cost"
       ? {
