@@ -1,4 +1,4 @@
-import { runOnSelection, type ContextContainer } from "#context/container.js";
+import type { ContextContainer } from "#context/container.js";
 import type { ContextReader } from "#context/key.js";
 import { StaticModelReferenceKey, type LiveDynamicModelSelection } from "#context/keys.js";
 import { isMockModel } from "#internal/mock-model-identity.js";
@@ -11,14 +11,7 @@ import type { CompiledBundle } from "#runtime/sessions/runtime-context-keys.js";
 import type { PublicAgentDynamicModelResult } from "#shared/agent-definition.js";
 import { toErrorMessage } from "#shared/errors.js";
 import type { JsonValue } from "#shared/json.js";
-import type { ResolveContext } from "#dynamic/definition.js";
-import { readsConversation } from "#dynamic/model-options.js";
-import {
-  authoredBuild,
-  publicResolveContext,
-  type InternalResolveContext,
-  type Reaction,
-} from "../reaction.js";
+import { authoredRecord, authoredRender, type Reaction } from "../reaction.js";
 import { readLive, readReactionsState } from "../state.js";
 
 const MODEL_REACTION_ID = "model:agent";
@@ -49,9 +42,9 @@ interface ModelSlotValue {
 }
 
 /**
- * An agent's dynamic `model` field. `resolve` returns the model, or the JSON it's made from; a
- * gateway ID is data, and a provider object is code, which `build` creates. auto() records the
- * option it chose, and builds the model from it.
+ * An agent's dynamic `model` field: `render` returns the model, or `record` does, such as a gateway
+ * ID; a provider object is rendered, since what `record` keeps must be JSON. `null` chooses no
+ * model, as before auto()'s first turn, and a model call that needs one fails.
  */
 export async function loadModelReaction(bundle: CompiledBundle): Promise<Reaction | undefined> {
   const dynamicModel = bundle.turnAgent.dynamicModel;
@@ -61,47 +54,22 @@ export async function loadModelReaction(bundle: CompiledBundle): Promise<Reactio
     scope: { moduleMap: bundle.moduleMap, nodeId: bundle.nodeId },
   });
   const label = `${dynamicModel.logicalPath}#model`;
-  // auto() reads the conversation before the turn when it decides, so it runs where a step has it.
-  const conversation = readsConversation(definition);
-  const resolve = definition.resolve as
-    | ((selected: unknown, ctx: ResolveContext) => unknown)
-    | undefined;
   return {
-    // Without an authored build, the model is the JSON resolve returned, such as a gateway ID.
-    build:
-      authoredBuild(label, definition.build as never, { framework: conversation }) ??
-      ((input) => input),
     contribute: async (result, { ctx }) => {
-      // auto() resolves to nothing before there's a turn to choose for.
-      if (result === null && conversation) return { value: null };
+      if (result === null || result === undefined) return { value: null };
       try {
         return await contributionOf(result, ctx);
       } catch (error) {
         throw new DynamicModelSelectionError(error);
       }
     },
-    // A failed selection fails the model call that needs it, not the commit that ran it: a commit
-    // before the turn's input, say, may have nothing to choose from yet.
-    ...(conversation ? { conversation: true } : {}),
     id: MODEL_REACTION_ID,
     kind: "model",
     label,
-    ...(resolve === undefined
-      ? {}
-      : {
-          resolve: async (selected: unknown, ctx: InternalResolveContext) => {
-            try {
-              const context = conversation
-                ? { ...publicResolveContext(ctx), messages: ctx.messages ?? [] }
-                : publicResolveContext(ctx);
-              return await runOnSelection(dynamicModel.logicalPath, () =>
-                resolve(selected, context),
-              );
-            } catch (error) {
-              throw new DynamicModelSelectionError(error);
-            }
-          },
-        }),
+    // A failure fails the model call that needs it, not the commit that recorded it.
+    record: authoredRecord(label, definition.record as never),
+    // Without an authored render, the model is what record returned, such as a gateway ID.
+    render: authoredRender(label, definition.render as never) ?? ((input) => input),
     select: definition.select as NonNullable<Reaction["select"]>,
   };
 }

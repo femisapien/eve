@@ -5,6 +5,6 @@ import { githubInstructions } from "../lib/github-guidance.ts";
 
 export default defineDynamic({
   select: once,
-  resolve: () =>
+  render: () =>
     defineInstructions({ content: githubInstructions(extension.config.github !== undefined) }),
 });

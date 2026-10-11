@@ -5,7 +5,7 @@ import {
   loadModuleBackedDefinition,
   type ModuleBackedDefinitionLoadOptions,
 } from "#compiler/normalize-helpers.js";
-import { assertResolverForm, HOOK_FORM } from "#dynamic/definition.js";
+import { assertReactionForm, HOOK_FORM } from "#dynamic/definition.js";
 import { expectFunction, expectObjectRecord } from "#internal/authored-module.js";
 
 /** Compiles and validates one selected hook while preserving its exact subscriptions. */
@@ -22,7 +22,7 @@ export async function compileHookEntry(
     }),
     `Expected the hook export "${source.exportName ?? "default"}" from "${source.logicalPath}" to return an object.`,
   );
-  assertResolverForm(
+  assertReactionForm(
     loaded,
     `The hook export "${source.exportName ?? "default"}" from "${source.logicalPath}"`,
     HOOK_FORM,

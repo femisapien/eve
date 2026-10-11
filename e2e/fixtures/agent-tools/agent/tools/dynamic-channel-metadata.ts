@@ -6,7 +6,7 @@ import metadataProvider from "../channels/metadata-provider";
 /**
  * Smoke-test fixture: resolves a tool only when the session was started
  * via the `metadata-provider` channel. Verifies that
- * `ResolveContext.channel.metadata` surfaces the channel's
+ * `RecordContext.channel.metadata` surfaces the channel's
  * `metadata(state)` projection and that `isChannel` narrows it.
  */
 export default defineDynamic({
@@ -22,7 +22,7 @@ export default defineDynamic({
         }
       : null;
   },
-  build: (selected) => {
+  render: (selected) => {
     if (selected === null) return null;
     const { channelKind, contextMessages, topic } = selected;
 

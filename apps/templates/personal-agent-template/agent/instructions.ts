@@ -1,5 +1,5 @@
 import { defineDynamic, defineInstructions, once } from "eve/instructions";
-import type { ResolveContext } from "eve/instructions";
+import type { RecordContext } from "eve/instructions";
 import { BASE_INSTRUCTIONS } from "./lib/base-instructions.js";
 import { buildUserContextPrompt, fetchUserContext } from "./lib/memory-internal.js";
 
@@ -21,7 +21,7 @@ function instructionsForChannel(kind: string | undefined, base: string) {
 
 export default defineDynamic({
   select: once,
-  resolve: async (_event, ctx: ResolveContext) => {
+  record: async (_selected, ctx: RecordContext) => {
     const userId = ctx.session.auth.current?.principalId;
     if (!userId || userId.startsWith("eve:")) {
       return defineInstructions({

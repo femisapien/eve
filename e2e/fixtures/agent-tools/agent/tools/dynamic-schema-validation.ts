@@ -3,7 +3,7 @@ import { z } from "zod";
 
 export default defineDynamic({
   select: once,
-  build: () => ({
+  render: () => ({
     schema_validate: defineTool({
       description:
         "Returns the validated value. Call only when explicitly asked for schema_validate.",

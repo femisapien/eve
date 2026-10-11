@@ -24,9 +24,10 @@ import { effectiveModelId } from "./kinds/model.js";
 import {
   REACTION_ORDER,
   type BundleReactions,
-  type InternalResolveContext,
+  type InternalRecordContext,
   type Reaction,
   type ReactionKind,
+  withMessages,
 } from "./reaction.js";
 import {
   canonicalJson,
@@ -40,7 +41,7 @@ import {
   writeLive,
   writeReactionsState,
 } from "./state.js";
-import { takeIntents } from "./kinds/hook.js";
+import { takeIntents } from "./intents.js";
 import { latestTurn } from "./turn.js";
 
 const log = createLogger("reactions");
@@ -61,8 +62,8 @@ export interface RunReactionsInput {
 }
 
 /**
- * Runs after every commit: each reaction's `select` reads the view, and `resolve` runs only when
- * the selection changed since its slot was written. Slots change nothing else, so this settles.
+ * Runs after every commit: each reaction's `select` reads the view, and `record` and `render` run
+ * only when the selection changed since its slot was written. Slots change nothing else, so this settles.
  */
 export async function runReactions(ctx: ContextContainer, input: RunReactionsInput): Promise<void> {
   const { reactions, effects } = await bundleReactions(ctx);
@@ -81,7 +82,6 @@ export async function runReactions(ctx: ContextContainer, input: RunReactionsInp
 
   for (const reaction of reactions) {
     if (progressOnly && reaction.kind !== "hook") continue;
-    if (reaction.conversation === true && input.conversation === undefined) continue;
     let selection: JsonValue;
     try {
       selection = selectionOf(
@@ -153,8 +153,8 @@ function startsCompaction(written: readonly WrittenEvent[]): boolean {
 }
 
 /**
- * Builds the code of every slot that carries some, for a step in a process that didn't build it:
- * `build` runs with the JSON the slot recorded, and `resolve` doesn't run. What the code offers
+ * Renders the code of every slot that carries some, for a step in a process that didn't render it:
+ * `render` runs with the JSON the slot recorded, and `record` doesn't run. What the code offers
  * must match what the session was offered, or the slot is withdrawn: eve fails closed rather than
  * switch. `revision` is the runtime revision the step runs; a slot another revision resolved is
  * built for this step without that check, and resolves again after the step's first commit.
@@ -175,22 +175,22 @@ export async function restoreReactions(
   const revision = readReactionsState(ctx).revision;
   for (const reaction of reactions) {
     const slot = readSlot(ctx, reaction.id);
-    if (reaction.build === undefined || slot?.input === undefined) continue;
+    if (reaction.render === undefined || slot?.input === undefined) continue;
     if (readLive(ctx, reaction.id, slot) !== undefined) continue;
     const rctx = resolveContextOf(ctx, {
       abortSignal: input.abortSignal,
       digest: slot.digest,
       written: [],
     });
-    log.debug("Building a reaction's code from what its slot recorded", {
+    log.debug("Rendering a reaction's code again from what its slot recorded", {
       reaction: reaction.label,
     });
     try {
-      const contribution = await reaction.contribute(await reaction.build(slot.input, rctx), rctx);
+      const contribution = await reaction.contribute(await reaction.render(slot.input, rctx), rctx);
       const offered = parseJsonValue(contribution.value ?? null);
       if (!staleUnder(slot, revision) && canonicalJson(offered) !== canonicalJson(slot.value)) {
         throw new Error(
-          `"${reaction.label}" built something other than what this session was offered. eve fails closed rather than switch; the next change to its selection resolves it again.`,
+          `"${reaction.label}" rendered something other than what this session was offered. eve fails closed rather than switch; the next change to its selection records it again.`,
         );
       }
       if (contribution.live !== undefined) writeLive(ctx, reaction.id, slot, contribution.live);
@@ -242,7 +242,7 @@ function writeSlot(ctx: ContextContainer, id: string, slot: Slot | undefined): v
 }
 
 /**
- * Whether a new runtime revision must resolve the slot again. Only slots with code, which another
+ * Whether a new runtime revision must record the slot again. Only slots with code, which another
  * revision's code built, and failed slots, which new code may fix, do. A data slot keeps its value
  * until its selection changes, so a redeploy doesn't re-run every reaction in every session; data
  * that changed code would produce differently stays as it was until then.
@@ -253,8 +253,8 @@ function staleUnder(slot: Slot, revision: string | undefined): boolean {
 }
 
 /**
- * Resolves a new selection into its slot: `resolve` fetches, eve records its JSON when the value
- * carries code, and `build` creates that code. Returns whether the slot's contribution changed.
+ * Records a new selection into its slot: `record` fetches, eve keeps its JSON when the value
+ * carries code, and `render` makes the value. Returns whether the slot's contribution changed.
  */
 async function resolveInto(
   ctx: ContextContainer,
@@ -272,25 +272,27 @@ async function resolveInto(
   const previous = readSlot(ctx, reaction.id);
   const rctx = resolveContextOf(ctx, {
     abortSignal: run.abortSignal,
+    conversation: run.conversation,
     digest: run.digest,
-    messages: reaction.conversation === true ? run.conversation : undefined,
     written: run.written,
   });
   let value: JsonValue;
   let live: unknown;
   let input: JsonValue | undefined;
   try {
-    const resolved =
-      reaction.resolve === undefined ? run.selection : await reaction.resolve(run.selection, rctx);
-    let result = resolved;
-    if (reaction.build !== undefined) {
-      input = recordable(reaction, resolved);
-      result = await reaction.build(input, rctx);
+    const recorded =
+      reaction.record === undefined ? run.selection : await reaction.record(run.selection, rctx);
+    let result = recorded;
+    if (reaction.render !== undefined) {
+      input = recordable(reaction, recorded);
+      result = await reaction.render(input, rctx);
     }
     const contribution = await reaction.contribute(result, rctx);
     value = parseJsonValue(contribution.value ?? null);
     live = contribution.live;
   } catch (error) {
+    // record read the conversation in a commit without it: the next commit that has it records.
+    if (error === CONVERSATION_UNAVAILABLE) return false;
     if (reaction.failure === "throw") throw error;
     return withdraw(ctx, reaction, error, run);
   }
@@ -309,13 +311,13 @@ async function resolveInto(
   return !unchanged;
 }
 
-/** What `build` is built from, which eve records: it must be JSON. */
-function recordable(reaction: Reaction, resolved: unknown): JsonValue {
+/** What `render` renders from, which eve keeps: it must be JSON. */
+function recordable(reaction: Reaction, recorded: unknown): JsonValue {
   try {
-    return parseJsonValue(resolved ?? null);
+    return parseJsonValue(recorded ?? null);
   } catch {
     throw new Error(
-      `The resolve of "${reaction.label}" must return JSON: eve records it, and build creates code from it. Return the data, and create tools, clients, or models in build.`,
+      `The record of "${reaction.label}" must return JSON: eve keeps it, and render makes the value from it. Return the data, and create tools, clients, or models in render.`,
     );
   }
 }
@@ -366,7 +368,7 @@ function selectionOf(reaction: Reaction, view: ReactionView, ctx: SelectContext)
   const size = JSON.stringify(selection).length;
   if (size > SELECTION_CAP) {
     throw new Error(
-      `The select of "${reaction.label}" returned ${Math.ceil(size / 1024)} KB of JSON; a selection is at most 64 KB. Select an ID that resolve can look up instead.`,
+      `The select of "${reaction.label}" returned ${Math.ceil(size / 1024)} KB of JSON; a selection is at most 64 KB. Select an ID that record can look up instead.`,
     );
   }
   return selection;
@@ -453,20 +455,25 @@ function resolveContextOf(
   ctx: ContextContainer,
   input: {
     readonly abortSignal: AbortSignal | undefined;
+    readonly conversation?: readonly ModelMessage[];
     readonly digest: string;
-    readonly messages?: readonly ModelMessage[];
     readonly written: readonly WrittenEvent[];
   },
-): InternalResolveContext {
-  return {
-    ...selectContextOf(ctx),
-    abortSignal: input.abortSignal ?? neverAborted,
-    ctx,
-    digest: input.digest,
-    facts: input.written.map(({ event }) => event),
-    ...(input.messages === undefined ? {} : { messages: input.messages }),
-    written: input.written,
-  };
+): InternalRecordContext {
+  return withMessages(
+    {
+      ...selectContextOf(ctx),
+      abortSignal: input.abortSignal ?? neverAborted,
+      ctx,
+      digest: input.digest,
+      facts: input.written.map(({ event }) => event),
+      written: input.written,
+    },
+    () => {
+      if (input.conversation === undefined) throw CONVERSATION_UNAVAILABLE;
+      return input.conversation;
+    },
+  );
 }
 
 export type { BundleReactions };

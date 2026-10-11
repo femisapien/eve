@@ -216,25 +216,26 @@ export interface ResolvedHookDefinition extends ResolvedModuleSourceRef {
    * and ignored at dispatch time.
    */
   readonly events: Readonly<Record<string, StreamEventHook<SessionEvent>>>;
-  /** A hook authored as `select` and `resolve` instead of `events`. */
+  /** A hook authored as `select` with `record` or `render`, instead of `events`. */
   readonly select?: ReactionSelectFn;
-  readonly resolve?: ReactionResolveFn;
+  readonly record?: ReactionRecordFn;
+  readonly render?: ReactionRenderFn;
 }
 
 /** A reaction's `select`, loaded from its module. */
 export type ReactionSelectFn = (view: never, ctx: never) => unknown;
-/** A reaction's `resolve`, loaded from its module. */
-export type ReactionResolveFn = (selected: never, ctx: never) => unknown;
-/** A dynamic value's `build`, loaded from its module. */
-export type ReactionBuildFn = (input: never, ctx: never) => unknown;
+/** A reaction's `record`, loaded from its module. */
+export type ReactionRecordFn = (selected: never, ctx: never) => unknown;
+/** A reaction's `render`, loaded from its module. */
+export type ReactionRenderFn = (input: never, ctx: never) => unknown;
 
 /** A `defineDynamic()` export reattached from its compiled module. */
 export interface ResolvedReactionSource extends Readonly<ModuleSourceRef> {
-  /** eve generated it: its `resolve` and `build` run in the session's context. */
+  /** eve generated it: its `record` and `render` run in the session's context. */
   readonly framework?: true;
   readonly select: ReactionSelectFn;
-  readonly resolve?: ReactionResolveFn;
-  readonly build?: ReactionBuildFn;
+  readonly record?: ReactionRecordFn;
+  readonly render?: ReactionRenderFn;
 }
 
 /**
@@ -367,7 +368,7 @@ interface ResolvedAgentMetadata {
 }
 
 /**
- * Runtime resolver for dynamic tools declared via `defineDynamic({ select, resolve?, build })`.
+ * Runtime resolver for dynamic tools declared via `defineDynamic({ select, record?, render })`.
  */
 export interface ResolvedDynamicToolResolver extends ResolvedReactionSource {
   readonly slug: string;

@@ -4,9 +4,8 @@ import {
   defineDynamic,
   type DynamicSentinel,
   type ReactionView,
-  type ResolveContext,
+  type RecordContext,
 } from "#dynamic/definition.js";
-import { readingConversation } from "#dynamic/model-options.js";
 import { turnInputText } from "#reactions/turn.js";
 import { createLogger, formatError } from "#internal/logging.js";
 import { isAgentReasoningDefinition, isRuntimeLanguageModel } from "#internal/runtime-model.js";
@@ -190,12 +189,9 @@ export function auto<const T extends Readonly<Record<string, AutoOption>>>(
   const criteria = Object.fromEntries(options.map(({ key, description }) => [key, description]));
 
   /** The option a turn chooses: the decision's, or the fallback's. */
-  async function choose(
-    turn: TurnState | null,
-    ctx: ResolveContext & { readonly messages?: readonly ModelMessage[] },
-  ): Promise<string | null> {
+  async function choose(turn: TurnState | null, ctx: RecordContext): Promise<string | null> {
     if (turn === null) return null;
-    const state = routingState(turn, ctx.messages ?? []);
+    const state = routingState(turn, ctx.messages);
     if (!state.messages.some((message) => message.role === "user")) {
       throw new Error("auto requires user text to select a model.");
     }
@@ -226,15 +222,13 @@ export function auto<const T extends Readonly<Record<string, AutoOption>>>(
     }
   }
 
-  // resolve decides, and eve records the option it chose; build turns the option into a model, so
-  // a process that didn't decide builds the same model without deciding again.
-  return readingConversation(
-    defineDynamic({
-      select: turnState,
-      resolve: (state: TurnState | null, ctx) => choose(state, ctx),
-      build: (key: string | null) => (key === null ? null : optionOf(key)),
-    }),
-  ) as unknown as DynamicSentinel<PublicAgentDynamicModelResult, TurnState | null>;
+  // record decides, once per turn, and eve keeps the option it chose; render turns the option into
+  // a model, so a process that didn't decide renders the same model without deciding again.
+  return defineDynamic({
+    select: turnState,
+    record: (state: TurnState | null, ctx) => choose(state, ctx),
+    render: (key: string | null) => (key === null ? null : optionOf(key)),
+  }) as unknown as DynamicSentinel<PublicAgentDynamicModelResult, TurnState | null>;
 
   function optionOf(key: string): PublicAgentDynamicModelResult {
     const option = models.get(key);

@@ -9,7 +9,7 @@ import { z } from "zod";
  */
 export default defineDynamic({
   select: (_view, { session }) => session.auth.current?.attributes?.flag === "retire",
-  build: (retired) =>
+  render: (retired) =>
     retired
       ? null
       : defineTool({

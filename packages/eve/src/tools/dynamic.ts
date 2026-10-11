@@ -1,6 +1,6 @@
 import {
   defineDynamic as defineDynamicDefinition,
-  type DefineDynamicCode,
+  type DefineDynamicRendered,
 } from "#dynamic/definition.js";
 import type { ToolDefinition } from "#tools/definition.js";
 
@@ -21,7 +21,7 @@ export type DynamicToolResult = DynamicToolEntry | DynamicToolSet | null;
  * `defineDynamic()` for `agent/tools/`. Tools are code, so `build` creates them: from the JSON
  * `resolve` fetched, or from the selection.
  */
-export const defineDynamic = defineDynamicDefinition as DefineDynamicCode<DynamicToolResult>;
+export const defineDynamic = defineDynamicDefinition as DefineDynamicRendered<DynamicToolResult>;
 
 /**
  * Symbol-based brand stamped by `defineTool` on every entry. Invisible

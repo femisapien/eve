@@ -39,7 +39,7 @@ export interface ReactionView extends SessionView {
   readonly messages: readonly ModelMessage[];
 }
 
-/** The session's identity, auth, and channel, for `select` and `resolve`. */
+/** The session's identity, auth, and channel, for `select` and `record`. */
 export interface SelectContext {
   readonly session: {
     readonly id: string;
@@ -65,11 +65,19 @@ export interface SelectContext {
 }
 
 /**
- * What `resolve` receives besides its selection. eve calls `resolve` once for each new selection
- * and records what it returns, so it gets no facts. Read facts in a hook's `events` handlers.
+ * What `record` receives besides its selection: the session's identity and channel, an
+ * `abortSignal`, and the conversation. eve calls `record` once for each new selection and keeps
+ * what it returns, so only `select` is watched: a change to anything `record` reads here doesn't
+ * record again. Select what should.
  */
-export interface ResolveContext extends SelectContext {
+export interface RecordContext extends SelectContext {
   readonly abortSignal: AbortSignal;
+  /**
+   * The conversation as the model sees it, as of this commit. In a commit outside a turn step,
+   * which doesn't hold the conversation, reading it postpones `record` to the next commit that
+   * does.
+   */
+  readonly messages: readonly ModelMessage[];
 }
 
 /** Reads what a reaction depends on. Synchronous and deterministic; returns JSON. */
@@ -78,18 +86,21 @@ export type ReactionSelect<TSelected, TView = ReactionView> = (
   ctx: SelectContext,
 ) => TSelected;
 
-/** Fetches what a value is made of, given what its `select` read. eve records the result. */
-export type ReactionResolve<TSelected, TResult> = (
+/**
+ * Fetches what a value is made of, given what `select` read, or acts once on it. It runs once for
+ * each new selection, may await, and eve keeps what it returns.
+ */
+export type ReactionRecord<TSelected, TResult> = (
   selected: TSelected,
-  ctx: ResolveContext,
+  ctx: RecordContext,
 ) => TResult | Promise<TResult>;
 
 /**
- * Creates the code a value carries, such as tools, from the JSON eve recorded: what `resolve`
- * returned, or the selection when there's no `resolve`. Synchronous, so it can't do I/O. A process
- * that has never seen the session calls it with the recorded JSON, and never calls `resolve`.
+ * Renders what the session should have, such as tools, instructions, a model, or a hook's
+ * intents, from what `select` read, or from what `record` kept. Synchronous, so it can't do I/O.
+ * A process that has never seen the session renders again from what was kept, and never records.
  */
-export type ReactionBuild<TInput, TResult> = (input: TInput) => TResult;
+export type ReactionRender<TInput, TResult> = (input: TInput) => TResult;
 
 /** Resolves once per session: `select: once`. */
 export const once = (): null => null;
@@ -110,139 +121,138 @@ export const DYNAMIC_SENTINEL_KIND = "eve:dynamic" as const;
 export interface DynamicSentinel<TResult = unknown, TSelected = unknown> {
   readonly kind: typeof DYNAMIC_SENTINEL_KIND;
   readonly select: ReactionSelect<TSelected>;
-  readonly resolve?: ReactionResolve<TSelected, unknown>;
-  readonly build?: ReactionBuild<never, TResult>;
+  readonly record?: ReactionRecord<TSelected, unknown>;
+  readonly render?: ReactionRender<never, TResult>;
 }
 
-/** A value that is data: `resolve` returns it. */
-export interface DynamicDataDefinition<TSelected, TResult> {
+/** The usual form: `render` makes the value from the selection. */
+export interface DynamicRenderDefinition<TSelected, TResult> {
   readonly select: ReactionSelect<TSelected>;
-  readonly resolve: ReactionResolve<TSelected, TResult>;
-  readonly build?: never;
+  readonly render: ReactionRender<TSelected, TResult>;
+  readonly record?: never;
 }
 
-/** A value with code that needs I/O: `resolve` fetches JSON, and `build` creates the code. */
-export interface DynamicFetchedCodeDefinition<TSelected, TData, TResult> {
+/** With I/O: `record` fetches JSON, which eve keeps, and `render` makes the value from it. */
+export interface DynamicRecordRenderDefinition<TSelected, TData, TResult> {
   readonly select: ReactionSelect<TSelected>;
-  readonly resolve: ReactionResolve<TSelected, TData>;
-  readonly build: ReactionBuild<TData, TResult>;
+  readonly record: ReactionRecord<TSelected, TData>;
+  readonly render: ReactionRender<TData, TResult>;
 }
 
-/** A value with code and no I/O: `build` creates it from the selection. */
-export interface DynamicSelectedCodeDefinition<TSelected, TResult> {
+/** When what `record` fetches is already the value. */
+export interface DynamicRecordDefinition<TSelected, TResult> {
   readonly select: ReactionSelect<TSelected>;
-  readonly resolve?: never;
-  readonly build: ReactionBuild<TSelected, TResult>;
+  readonly record: ReactionRecord<TSelected, TResult>;
+  readonly render?: never;
 }
 
-/** `defineDynamic()` for a slot whose value may be data or code: instructions, skills, models. */
+/** `defineDynamic()` typed for the folder it's authored in. */
 export interface DefineDynamic<TResult> {
   <TSelected, TData, TStatic extends object = object>(
-    definition: DynamicFetchedCodeDefinition<TSelected, TData, TResult> & TStatic,
+    definition: DynamicRecordRenderDefinition<TSelected, TData, TResult> & TStatic,
   ): DynamicSentinel<TResult, TSelected> & TStatic;
   <TSelected, TStatic extends object = object>(
-    definition: DynamicSelectedCodeDefinition<TSelected, TResult> & TStatic,
+    definition: DynamicRenderDefinition<TSelected, TResult> & TStatic,
   ): DynamicSentinel<TResult, TSelected> & TStatic;
   <TSelected, TStatic extends object = object>(
-    definition: DynamicDataDefinition<TSelected, TResult> & TStatic,
-  ): DynamicSentinel<TResult, TSelected> & TStatic;
-}
-
-/** `defineDynamic()` for a slot whose value is always code, tools and connections: `build` makes it. */
-export interface DefineDynamicCode<TResult> {
-  <TSelected, TData, TStatic extends object = object>(
-    definition: DynamicFetchedCodeDefinition<TSelected, TData, TResult> & TStatic,
-  ): DynamicSentinel<TResult, TSelected> & TStatic;
-  <TSelected, TStatic extends object = object>(
-    definition: DynamicSelectedCodeDefinition<TSelected, TResult> & TStatic,
+    definition: DynamicRecordDefinition<TSelected, TResult> & TStatic,
   ): DynamicSentinel<TResult, TSelected> & TStatic;
 }
 
 /**
- * The one definition every authored reaction compiles from: `select` with `resolve` or `build`,
- * or a map of `events` handlers. `defineDynamic()` and `defineHook()` narrow it.
+ * `defineDynamic()` for folders whose values carry code, tools and connections: they're always
+ * rendered, since what `record` keeps must be JSON.
  */
-export type ResolverDefinition =
+export interface DefineDynamicRendered<TResult> {
+  <TSelected, TData, TStatic extends object = object>(
+    definition: DynamicRecordRenderDefinition<TSelected, TData, TResult> & TStatic,
+  ): DynamicSentinel<TResult, TSelected> & TStatic;
+  <TSelected, TStatic extends object = object>(
+    definition: DynamicRenderDefinition<TSelected, TResult> & TStatic,
+  ): DynamicSentinel<TResult, TSelected> & TStatic;
+}
+
+/**
+ * The one definition every authored reaction compiles from: `select` with `record`, `render`, or
+ * both, or a hook's map of `events` handlers. `defineDynamic()` and `defineHook()` narrow it.
+ */
+export type ReactionDefinition =
   | {
       readonly select: (...args: never[]) => unknown;
-      readonly resolve?: (...args: never[]) => unknown;
-      readonly build?: (...args: never[]) => unknown;
+      readonly record?: (...args: never[]) => unknown;
+      readonly render?: (...args: never[]) => unknown;
       readonly events?: never;
     }
   | {
       readonly events: Readonly<Record<string, unknown>>;
       readonly select?: never;
-      readonly resolve?: never;
-      readonly build?: never;
+      readonly record?: never;
+      readonly render?: never;
     };
 
-/** Validates a resolver's form and marks it for the compiler. Not public: use its narrowings. */
-export function defineResolver<T extends ResolverDefinition>(
+/** Validates a reaction's form and marks it for the compiler. Not public: use its narrowings. */
+export function defineReaction<T extends ReactionDefinition>(
   definition: T,
   name: string,
-  options: ResolverFormOptions = {},
+  options: ReactionFormOptions = {},
 ): T & { readonly kind: typeof DYNAMIC_SENTINEL_KIND } {
-  assertResolverForm(definition, `${name}()`, options);
+  assertReactionForm(definition, `${name}()`, options);
   const sentinel = { ...definition, kind: DYNAMIC_SENTINEL_KIND };
   stampDefinitionKey(sentinel, "dynamic");
   return sentinel;
 }
 
-/** A hook's form: `events`, or `select` and `resolve`. Hooks act, so they have nothing to build. */
-export const HOOK_FORM: ResolverFormOptions = { build: "forbidden", events: true };
+/** A hook's form: `select` with `record` or `render`, or a map of `events` handlers. */
+export const HOOK_FORM: ReactionFormOptions = { events: true };
 
-export interface ResolverFormOptions {
-  /** Whether an `events` map is allowed instead of `select`. Hooks only. */
+export interface ReactionFormOptions {
+  /** Whether a map of `events` handlers is allowed instead of `select`. Hooks only. */
   readonly events?: boolean;
-  /** Whether `build` is required (tools, connections), allowed (the default), or forbidden (hooks). */
-  readonly build?: "required" | "allowed" | "forbidden";
+  /** Whether `render` is required: for tools and connections, whose values are code. */
+  readonly render?: "required";
 }
 
 /**
- * Throws unless `value` takes one form: `select` with `resolve`, `build`, or both, or an `events`
+ * Throws unless `value` takes one form: `select` with `record`, `render`, or both, or an `events`
  * object. The definers, the compiler, and the runtime loader all use it, so every source agrees.
  */
-export function assertResolverForm(
+export function assertReactionForm(
   value: unknown,
   subject: string,
-  options: ResolverFormOptions = {},
+  options: ReactionFormOptions = {},
 ): void {
   if (typeof value !== "object" || value === null) {
     throw new Error(`${subject} takes an object.`);
   }
-  const { build, events, resolve, select } = value as Record<string, unknown>;
+  const { events, record, render, select } = value as Record<string, unknown>;
   if (events !== undefined) {
     if (options.events !== true) {
-      throw new Error(`${subject} takes select with resolve or build, not events.`);
+      throw new Error(`${subject} takes select with record or render, not events.`);
     }
-    if (select !== undefined || resolve !== undefined || build !== undefined) {
-      throw new Error(`${subject} takes either events or select and resolve, not both.`);
+    if (select !== undefined || record !== undefined || render !== undefined) {
+      throw new Error(`${subject} takes either events or select, not both.`);
     }
     if (typeof events !== "object" || events === null) {
       throw new Error(`${subject} events must be an object of handlers.`);
     }
     return;
   }
-  if (resolve !== undefined && typeof resolve !== "function") {
-    throw new Error(`${subject} resolve must be a function.`);
+  if (record !== undefined && typeof record !== "function") {
+    throw new Error(`${subject} record must be a function.`);
   }
-  if (build !== undefined && typeof build !== "function") {
-    throw new Error(`${subject} build must be a function.`);
+  if (render !== undefined && typeof render !== "function") {
+    throw new Error(`${subject} render must be a function.`);
   }
-  const mode = options.build ?? "allowed";
-  if (mode === "forbidden" && build !== undefined) {
-    throw new Error(`${subject} takes select and resolve; only dynamic values take build.`);
-  }
-  if (mode === "required" && build === undefined) {
+  if (options.render === "required" && render === undefined) {
     throw new Error(
-      `${subject} creates code, so it needs build: return JSON from resolve, and create the code from it in build. eve records the JSON, and a fresh process calls build with it.`,
+      `${subject} needs render: what record returns is kept, so it must be JSON. Return the data from record, and render the tools or connections from it.`,
     );
   }
-  if (resolve === undefined && build === undefined) {
+  if (record === undefined && render === undefined) {
     throw new Error(
       options.events === true
-        ? `${subject} requires events, or select and resolve.`
-        : `${subject} requires resolve or build beside select.`,
+        ? `${subject} requires events, or select with record or render.`
+        : `${subject} requires render, or record, beside select.`,
     );
   }
   if (typeof select !== "function") {
@@ -253,29 +263,29 @@ export function assertResolverForm(
 }
 
 /**
- * Defines a value that depends on the session. `select` reads what it depends on; `resolve`
- * fetches what it's made of, once per new selection, and eve records that; `build` creates any
- * code it carries from the recorded JSON. The directory decides what the value is: tools in
- * `agent/tools/`, skills in `agent/skills/`, and so on.
+ * Defines a value that depends on the session. `select` reads what it depends on, and `render`
+ * makes the value from it. When `render` needs something to await, `record` fetches it once per
+ * new selection, eve keeps what it returns, and `render` gets that instead. The folder decides
+ * what the value is: tools in `agent/tools/`, skills in `agent/skills/`, and so on.
  *
  * ```ts
- * import { defineDynamic, defineTool, once } from "eve/tools";
+ * import { defineDynamic, defineTool } from "eve/tools";
  *
  * export default defineDynamic({
- *   select: once,
- *   resolve: async () => (await listTables()).map(({ name, columns }) => ({ name, columns })),
- *   build: (tables) => Object.fromEntries(tables.map((table) => [table.name, tableTool(table)])),
+ *   select: (_view, { session }) => session.auth.current?.attributes.role ?? null,
+ *   render: (role) => (role === "admin" ? { list_users, delete_user } : { list_users }),
  * });
  * ```
  */
-export const defineDynamic: DefineDynamic<unknown> = ((definition: ResolverDefinition) =>
-  defineResolver(definition, "defineDynamic")) as DefineDynamic<unknown>;
+export const defineDynamic: DefineDynamic<unknown> = ((definition: ReactionDefinition) =>
+  defineReaction(definition, "defineDynamic")) as DefineDynamic<unknown>;
 
 const FRAMEWORK_RESOLVER = Symbol.for("eve.framework-resolver");
 
 /**
- * Marks a definition eve generates, such as a memory slot's tools: its `resolve` runs in the
- * session's context with eve's own resolve context, as eve's internal reactions do.
+ * Marks a definition eve generates, such as a memory slot's tools: its `record` and `render` run
+ * in the session's context with eve's own context, and `render` may await, as eve's internal
+ * reactions do.
  */
 export function asFrameworkResolver<T extends object>(definition: T): T {
   Object.defineProperty(definition, FRAMEWORK_RESOLVER, { value: true });
@@ -294,19 +304,19 @@ export function isDynamicSentinel(value: unknown): value is DynamicSentinel {
   );
 }
 
-/** Rejects keys a slot doesn't accept beside `select`, `resolve`, and `build`. */
+/** Rejects keys a slot doesn't accept beside `select`, `record`, and `render`. */
 export function assertDynamicSentinelKeys(
   sentinel: DynamicSentinel,
   message: string,
   allowed: readonly string[] = [],
 ): void {
-  assertResolverForm(sentinel, `${message} The definition`);
+  assertReactionForm(sentinel, `${message} The definition`);
   const unknownKeys = Object.keys(sentinel).filter(
     (key) =>
       key !== "kind" &&
       key !== "select" &&
-      key !== "resolve" &&
-      key !== "build" &&
+      key !== "record" &&
+      key !== "render" &&
       !allowed.includes(key),
   );
   if (unknownKeys.length > 0) {

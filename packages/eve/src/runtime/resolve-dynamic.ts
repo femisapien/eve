@@ -1,9 +1,9 @@
 import type { CompiledModuleMap } from "#compiler/module-map.js";
 import {
-  assertResolverForm,
+  assertReactionForm,
   isDynamicSentinel,
   isFrameworkResolver,
-  type ResolverFormOptions,
+  type ReactionFormOptions,
 } from "#dynamic/definition.js";
 import { loadResolvedModuleExport, ResolveAgentError } from "#runtime/resolve-helpers.js";
 import type { ResolvedReactionSource } from "#runtime/types.js";
@@ -11,14 +11,14 @@ import { toErrorMessage } from "#shared/errors.js";
 import type { ModuleSourceRef } from "#shared/source-ref.js";
 
 /**
- * Reattaches a compiled `defineDynamic()` export's `select`, `resolve`, and `build` from its
- * module. Kinds whose values are code, tools and connections, require `build`.
+ * Reattaches a compiled `defineDynamic()` export's `select`, `record`, and `render` from its
+ * module. Tools and connections require `render`.
  */
 export async function resolveDynamicDefinition<T extends ModuleSourceRef>(
   definition: T,
   input: {
     readonly kindLabel: string;
-    readonly build?: ResolverFormOptions["build"];
+    readonly render?: ReactionFormOptions["render"];
     readonly moduleMap: CompiledModuleMap;
     readonly nodeId: string | undefined;
   },
@@ -33,20 +33,20 @@ export async function resolveDynamicDefinition<T extends ModuleSourceRef>(
       nodeId: input.nodeId,
     });
     if (!isDynamicSentinel(value)) throw new Error(describe("to be created by defineDynamic()"));
-    assertResolverForm(
+    assertReactionForm(
       value,
       `The ${input.kindLabel} export "${definition.exportName ?? "default"}" from "${definition.logicalPath}"`,
-      { build: input.build },
+      { render: input.render },
     );
     return {
       ...definition,
       ...(isFrameworkResolver(value) ? { framework: true as const } : {}),
-      ...(value.build === undefined
+      ...(value.record === undefined
         ? {}
-        : { build: value.build as ResolvedReactionSource["build"] }),
-      ...(value.resolve === undefined
+        : { record: value.record as ResolvedReactionSource["record"] }),
+      ...(value.render === undefined
         ? {}
-        : { resolve: value.resolve as ResolvedReactionSource["resolve"] }),
+        : { render: value.render as ResolvedReactionSource["render"] }),
       select: value.select as ResolvedReactionSource["select"],
     };
   } catch (error) {

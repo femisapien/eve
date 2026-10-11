@@ -1,6 +1,6 @@
 import { defineDynamic, defineTool, once } from "eve/tools";
 
-/** I/O runs by session. `resolve` can't write session state, so the count lives in the process. */
+/** I/O runs by session. `record` can't write session state, so the count lives in the process. */
 const ioCallCount = new Map<string, number>();
 
 async function simulateIo(sessionId: string): Promise<{ label: string }> {
@@ -10,8 +10,8 @@ async function simulateIo(sessionId: string): Promise<{ label: string }> {
 
 export default defineDynamic({
   select: once,
-  resolve: (_selected, ctx) => simulateIo(ctx.session.id),
-  build: (data) => {
+  record: (_selected, ctx) => simulateIo(ctx.session.id),
+  render: (data) => {
     return {
       get_io_count: defineTool({
         description:

@@ -3,7 +3,7 @@ import type { ModelMessage } from "ai";
 import type { SessionEvent } from "#protocol/session-event.js";
 
 import { runOnSelection, type ContextContainer } from "#context/container.js";
-import type { ReactionView, ResolveContext, SelectContext } from "#dynamic/definition.js";
+import type { ReactionView, RecordContext, SelectContext } from "#dynamic/definition.js";
 import type { WrittenEvent } from "#execution/publish-session-events.js";
 import type { JsonValue } from "#shared/json.js";
 
@@ -39,15 +39,13 @@ export interface Contribution {
   readonly live?: unknown;
 }
 
-/** What eve's own reactions receive besides the public {@link ResolveContext}. */
-export interface InternalResolveContext extends ResolveContext {
+/** What eve's own reactions receive besides the public {@link RecordContext}. */
+export interface InternalRecordContext extends RecordContext {
   readonly ctx: ContextContainer;
-  /** The commit's records with their positions, empty when a fresh process builds code. */
+  /** The commit's records with their positions, empty when a fresh process renders again. */
   readonly written: readonly WrittenEvent[];
-  /** The commit's events, for eve's own effects; authored `resolve` never sees them. */
+  /** The commit's events, for eve's own effects; authored `record` never sees them. */
   readonly facts: readonly SessionEvent[];
-  /** The conversation, for a reaction that declares it reads one. */
-  readonly messages?: readonly ModelMessage[];
   /** The digest of the selection this run is for: a hook's occurrence. */
   readonly digest: string;
 }
@@ -60,20 +58,18 @@ export interface Reaction {
   readonly label: string;
   readonly select?: (view: ReactionView, ctx: SelectContext) => unknown;
   /** Fetches what the value is made of, once per new selection. Without it, that's the selection. */
-  readonly resolve?: (selected: unknown, ctx: InternalResolveContext) => unknown;
+  readonly record?: (selected: unknown, ctx: InternalRecordContext) => unknown;
   /**
-   * Creates the code the value carries from the JSON eve records: what `resolve` returned, or the
-   * selection. A process that didn't build it calls it with the recorded JSON; nothing calls
-   * `resolve` again for a selection it resolved. Without it, `resolve`'s result is the value.
+   * Renders the value from what was recorded: `record`'s result, or the selection. A process that
+   * didn't render it renders again from the recorded JSON; nothing records again for a selection
+   * already recorded. Without it, what `record` returned is the value.
    */
-  readonly build?: (input: JsonValue, ctx: InternalResolveContext) => unknown;
+  readonly render?: (input: JsonValue, ctx: InternalRecordContext) => unknown;
   /** Validates and names the value. Throws on a value the kind can't read. */
   readonly contribute: (
     result: unknown,
-    ctx: InternalResolveContext,
+    ctx: InternalRecordContext,
   ) => Contribution | Promise<Contribution>;
-  /** Reads the conversation in `resolve`, so it runs only where the step has it. */
-  readonly conversation?: boolean;
   /** A failure fails the commit instead of withdrawing the slot. */
   readonly failure?: "throw";
 }
@@ -85,47 +81,63 @@ export interface BundleReactions {
 }
 
 /**
- * An authored `resolve` as a reaction's: it runs outside the session's context and gets only the
- * public {@link ResolveContext}, so it depends on its selection alone.
+ * An authored `record` as a reaction's: it runs outside the session's context and gets only the
+ * public {@link RecordContext}, so only its selection is watched.
  */
-export function authoredResolve(
+export function authoredRecord(
   label: string,
-  resolve: ((selected: never, ctx: never) => unknown) | undefined,
+  record: ((selected: never, ctx: never) => unknown) | undefined,
   options: { readonly framework?: boolean } = {},
-): Reaction["resolve"] {
-  if (resolve === undefined) return undefined;
-  if (options.framework === true) return resolve as Reaction["resolve"];
+): Reaction["record"] {
+  if (record === undefined) return undefined;
+  if (options.framework === true) return record as Reaction["record"];
   return (selected, ctx) =>
-    runOnSelection(label, () => resolve(selected as never, publicResolveContext(ctx) as never));
+    runOnSelection(label, () => record(selected as never, publicRecordContext(ctx) as never));
 }
 
 /**
- * An authored `build` as a reaction's: synchronous, outside the session's context, and given only
- * the recorded JSON. eve's own builds, such as a memory slot's tools, run in context and may wait.
+ * An authored `render` as a reaction's: synchronous, outside the session's context, and given only
+ * what was recorded. eve's own renders, such as a memory slot's tools, run in context and may wait.
  */
-export function authoredBuild(
+export function authoredRender(
   label: string,
-  build: ((input: never, ctx: never) => unknown) | undefined,
+  render: ((input: never, ctx: never) => unknown) | undefined,
   options: { readonly framework?: boolean } = {},
-): Reaction["build"] {
-  if (build === undefined) return undefined;
-  if (options.framework === true) return build as Reaction["build"];
+): Reaction["render"] {
+  if (render === undefined) return undefined;
+  if (options.framework === true) return render as Reaction["render"];
   return (input) => {
-    const built = runOnSelection(label, () => build(input as never, undefined as never));
-    if (typeof (built as { then?: unknown } | null)?.then === "function") {
+    const rendered = runOnSelection(label, () => render(input as never, undefined as never));
+    if (typeof (rendered as { then?: unknown } | null)?.then === "function") {
       throw new Error(
-        `The build of "${label}" returned a promise. build is synchronous, so it can't do I/O: fetch in resolve, and build from what it returns.`,
+        `The render of "${label}" returned a promise. render is synchronous, so it can't do I/O: fetch in record, and render from what it returns.`,
       );
     }
-    return built;
+    return rendered;
   };
 }
 
-export function publicResolveContext(ctx: InternalResolveContext): ResolveContext {
-  return {
-    abortSignal: ctx.abortSignal,
-    channel: ctx.channel,
-    session: ctx.session,
-    ...(ctx.conversation === undefined ? {} : { conversation: ctx.conversation }),
-  };
+/**
+ * The public part of a record context. `messages` stays a lazy getter, so a commit without the
+ * conversation postpones only a `record` that reads it.
+ */
+export function publicRecordContext(ctx: InternalRecordContext): RecordContext {
+  return withMessages(
+    {
+      abortSignal: ctx.abortSignal,
+      channel: ctx.channel,
+      session: ctx.session,
+      ...(ctx.conversation === undefined ? {} : { conversation: ctx.conversation }),
+    },
+    () => ctx.messages,
+  );
+}
+
+/** Adds `messages` as a lazy, non-enumerable getter, so spreading a context doesn't read it. */
+export function withMessages<T extends object>(
+  target: T,
+  read: () => readonly ModelMessage[],
+): T & { readonly messages: readonly ModelMessage[] } {
+  Object.defineProperty(target, "messages", { enumerable: false, get: read });
+  return target as T & { readonly messages: readonly ModelMessage[] };
 }

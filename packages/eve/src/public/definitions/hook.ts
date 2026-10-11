@@ -2,11 +2,11 @@ import type { SessionEvent } from "../../protocol/session-event.js";
 import type { FactPosition } from "../../protocol/session-events/envelope.js";
 import type { SessionView } from "../../protocol/session-projection/tables.js";
 import {
-  defineResolver,
+  defineReaction,
   HOOK_FORM,
   type ReactionSelect,
   type ReactionView,
-  type ResolveContext,
+  type RecordContext,
 } from "../../dynamic/definition.js";
 import type { SessionContext } from "./callback-context.js";
 import type { ExactDefinition } from "./exact.js";
@@ -148,8 +148,8 @@ export interface HookContext extends SessionContext {
   readonly occurrence: string;
 }
 
-/** What a hook's `resolve` receives besides its selection. */
-export interface HookResolveContext extends ResolveContext, Omit<SessionContext, "session"> {
+/** What a hook's `record` receives besides its selection. */
+export interface HookRecordContext extends RecordContext, Omit<SessionContext, "session"> {
   readonly session: SessionContext["session"];
   readonly agent: HookContext["agent"];
   /** A stable key for this occurrence: the hook, and its selection. See {@link HookContext}. */
@@ -190,48 +190,78 @@ export type HookView = Omit<ReactionView, "model">;
 export interface EventHookDefinition<TKey extends HookEventKey = HookEventKey> {
   readonly events: StreamEventHooks<TKey>;
   readonly select?: never;
-  readonly resolve?: never;
+  readonly record?: never;
+  readonly render?: never;
 }
 
-/**
- * A hook of `select` and `resolve`: each new selection is an occurrence, and `resolve` runs once
- * for it and returns the hook's intents. A side effect runs at least once: key it on
- * `ctx.occurrence`.
- */
-export interface ResolverHookDefinition<TSelected = unknown> {
+/** The usual form: `render` returns the intents for each new selection. */
+export interface RenderedHookDefinition<TSelected = unknown> {
   readonly select: ReactionSelect<TSelected, HookView>;
-  readonly resolve: (
-    selected: TSelected,
-    ctx: HookResolveContext,
-  ) => HookResult | Promise<HookResult>;
+  readonly render: (selected: TSelected) => HookResult;
+  readonly record?: never;
   readonly events?: never;
 }
 
 /**
- * Public hook definition authored in `agent/hooks/*.ts`: a reaction to the session, either
- * `events` handlers or `select` and `resolve`. Both run after eve has durably recorded the commit,
- * and both may return intents such as {@link cancel}.
+ * With something to await, or a side effect: `record` runs once per new selection, eve keeps what
+ * it returns, and `render` returns the intents from it. Key a side effect on `ctx.occurrence`.
+ */
+export interface RecordedHookDefinition<TSelected = unknown, TData = unknown> {
+  readonly select: ReactionSelect<TSelected, HookView>;
+  readonly record: (selected: TSelected, ctx: HookRecordContext) => TData | Promise<TData>;
+  readonly render: (data: TData) => HookResult;
+  readonly events?: never;
+}
+
+/** When `record` returns the intents itself. */
+export interface RecordOnlyHookDefinition<TSelected = unknown> {
+  readonly select: ReactionSelect<TSelected, HookView>;
+  readonly record: (
+    selected: TSelected,
+    ctx: HookRecordContext,
+  ) => HookResult | Promise<HookResult>;
+  readonly render?: never;
+  readonly events?: never;
+}
+
+/** A hook that reads the session: `select` with `render`, `record`, or both. */
+export type SelectHookDefinition<TSelected = unknown> =
+  | RenderedHookDefinition<TSelected>
+  | RecordedHookDefinition<TSelected>
+  | RecordOnlyHookDefinition<TSelected>;
+
+/**
+ * Public hook definition authored in `agent/hooks/*.ts`: `events` handlers, or a reaction to the
+ * session like any dynamic value, whose `render` returns intents such as {@link compact}. Both run
+ * after eve has durably recorded the commit.
  */
 export type HookDefinition<TKey extends HookEventKey = HookEventKey, TSelected = unknown> =
   | EventHookDefinition<TKey>
-  | ResolverHookDefinition<TSelected>;
+  | SelectHookDefinition<TSelected>;
 
 /**
- * Defines a hook and returns it with its authored event keys, rejecting any key outside the
- * definition. Pass `events` handlers, or `select` and `resolve`, never both.
+ * Defines a hook. Pass `events` handlers, or `select` with `render`, `record`, or both, as a
+ * dynamic value does: intents act once for each new selection.
  *
  * ```ts
  * export default defineHook({
- *   events: { "turn.started": async (fact, ctx) => ((await allowed(ctx)) ? null : cancel()) },
+ *   select: (view) => (idle(view) ? (view.turn?.id ?? null) : null),
+ *   render: (turnId) => (turnId === null ? null : compact({ reason: "The session went idle." })),
  * });
  * ```
  */
 export function defineHook<const T extends StreamEventHooks<HookEventKey>>(definition: {
   readonly events: ExactDefinition<T, StreamEventHooks<HookEventKey>>;
 }): EventHookDefinition<NoInfer<Extract<keyof T, HookEventKey>>>;
+export function defineHook<TSelected, TData>(
+  definition: RecordedHookDefinition<TSelected, TData>,
+): RecordedHookDefinition<TSelected, TData>;
 export function defineHook<TSelected>(
-  definition: ResolverHookDefinition<TSelected>,
-): ResolverHookDefinition<TSelected>;
+  definition: RenderedHookDefinition<TSelected>,
+): RenderedHookDefinition<TSelected>;
+export function defineHook<TSelected>(
+  definition: RecordOnlyHookDefinition<TSelected>,
+): RecordOnlyHookDefinition<TSelected>;
 export function defineHook(definition: HookDefinition<HookEventKey, unknown>): HookDefinition {
-  return defineResolver(definition as never, "defineHook", HOOK_FORM) as unknown as HookDefinition;
+  return defineReaction(definition as never, "defineHook", HOOK_FORM) as unknown as HookDefinition;
 }

@@ -6,7 +6,7 @@ import type { SessionAuth } from "#context/keys.js";
 import type { Approval } from "#public/definitions/approval.js";
 import type { SessionContext } from "#public/definitions/callback-context.js";
 import type { ExactDefinition } from "#public/definitions/exact.js";
-import type { ResolveContext } from "#dynamic/definition.js";
+import type { RecordContext } from "#dynamic/definition.js";
 import { EVE_INTERNAL_AGENT_WORKSPACE_MEMBER_ENV } from "#internal/application/build-output-environment.js";
 import { MEMORY_DEFINITION_BRAND } from "#shared/memory-definition.js";
 import {
@@ -97,7 +97,7 @@ export type MemoryCaptureHandler<TContext extends MemoryOperationContext> = (
   context: TContext,
 ) => void | Promise<void>;
 
-export interface MemoryToolsContext extends ResolveContext {
+export interface MemoryToolsContext extends Omit<RecordContext, "messages"> {
   readonly memory: {
     readonly scope: MemoryScope;
     readonly slot: string;

@@ -13,7 +13,7 @@ export { defineDynamic, type DynamicSkillResult } from "#public/definitions/skil
 export type {
   DynamicSentinel,
   ReactionView,
-  ResolveContext,
+  RecordContext,
   SelectContext,
 } from "#dynamic/definition.js";
 

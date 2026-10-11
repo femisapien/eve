@@ -14,7 +14,7 @@ export default defineDynamic({
     const narration = channel.metadata.observedNarration;
     return typeof narration === "string" && narration.length > 0 ? narration : null;
   },
-  build: (narration) => {
+  render: (narration) => {
     if (narration === null) return null;
 
     return {

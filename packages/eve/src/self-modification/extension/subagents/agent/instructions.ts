@@ -37,7 +37,7 @@ ${renderLocalSelfModificationExtension()}\`\`\``;
 
 export default defineDynamic({
   select: () => null,
-  resolve: () => {
+  render: () => {
     if (!isLocalSelfModificationEnabled(resolveSelfModificationConfig(selfModification.config))) {
       return null;
     }

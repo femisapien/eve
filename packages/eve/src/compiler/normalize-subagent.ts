@@ -1,7 +1,6 @@
 import {
   expectAgentToolExposure,
   expectBoolean,
-  expectFunction,
   expectObjectRecord,
   expectOnlyKnownKeys,
   expectString,
@@ -35,13 +34,13 @@ export function normalizeSubagentConfig(value: unknown, message: string): Normal
   // model field is dynamic.
   if (isDynamicSentinel(value) && (value as { description?: unknown }).description !== undefined) {
     throw new Error(
-      `${message} A dynamic subagent returns its description from resolve. To keep the description and choose the model per session, export defineAgent({ description, model: defineDynamic({ select, resolve }) }) with defineDynamic from "eve/models".`,
+      `${message} A dynamic subagent returns its description from render. To keep the description and choose the model per session, export defineAgent({ description, model: defineDynamic({ select, render }) }) with defineDynamic from "eve/models".`,
     );
   }
   if (isDynamicSentinel(value)) {
     assertDynamicSentinelKeys(value, message, ["build", "defaultTools"]);
     const record = value as unknown as Record<string, unknown>;
-    expectFunction(record.resolve, message);
+    // assertDynamicSentinelKeys checked the form: select with record, render, or both.
     const build =
       record.build === undefined ? undefined : normalizeDynamicSubagentBuild(record.build, message);
     return {

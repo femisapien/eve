@@ -30,7 +30,7 @@ export default defineAgent({
       view.messages.some(
         (message) => message.role === "user" && message.content === PREFIX_REQUEST,
       ),
-    build: (prefixed) =>
+    render: (prefixed) =>
       prefixed
         ? { model: prefixModel, modelContextWindowTokens: 1_000_000 }
         : { model, modelContextWindowTokens },

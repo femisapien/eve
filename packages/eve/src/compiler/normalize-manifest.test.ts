@@ -442,7 +442,7 @@ describe("compileAgentManifest source graph", () => {
       sourceRegistry,
     ]);
     const namespace = moduleMap.nodes.__root__!.modules[wrapper.sourceId]!;
-    const tools = await (namespace.default as ReturnType<typeof defineDynamic>).build!({
+    const tools = await (namespace.default as ReturnType<typeof defineDynamic>).render!({
       schedule: null,
       turn: null,
     } as never);
@@ -480,7 +480,7 @@ describe("compileAgentManifest source graph", () => {
         loadNamespace: async () => ({
           default: defineDynamic({
             select: () => null,
-            resolve: () => ({ content: "Dynamic instructions." }),
+            render: () => ({ content: "Dynamic instructions." }),
           }),
         }),
       },
@@ -495,7 +495,7 @@ describe("compileAgentManifest source graph", () => {
         loadNamespace: async () => ({
           default: defineDynamic({
             select: () => null,
-            resolve: () => defineSkill({ description: "Dynamic skill.", markdown: "# Dynamic\n" }),
+            render: () => defineSkill({ description: "Dynamic skill.", markdown: "# Dynamic\n" }),
           }),
         }),
       },
@@ -522,7 +522,7 @@ describe("compileAgentManifest source graph", () => {
         loadNamespace: async () => ({
           default: defineDynamic({
             select: () => null,
-            resolve: () =>
+            render: () =>
               defineTool({ description: "Dynamic.", execute: () => null, inputSchema: {} }),
           }),
         }),
@@ -545,7 +545,7 @@ describe("compileAgentManifest source graph", () => {
         loadNamespace: async () => ({
           default: defineDynamic({
             select: (view) => view.latest["turn.started"] ?? null,
-            resolve: () =>
+            render: () =>
               defineMcpClientConnection({
                 description: "Caller account.",
                 url: "https://mcp.accounts.example",
@@ -626,7 +626,7 @@ describe("compileAgentManifest source graph", () => {
         logicalPath: "agent.ts",
         loadNamespace: async () => ({
           default: defineAgent({
-            model: defineDynamicModel({ select: () => null, resolve: () => "openai/gpt-5.4" }),
+            model: defineDynamicModel({ select: () => null, render: () => "openai/gpt-5.4" }),
           }),
         }),
       },

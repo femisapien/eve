@@ -21,7 +21,7 @@ export { toolOutput, toolOutputPart } from "#tools/model-output.js";
 export type {
   DynamicSentinel,
   ReactionView,
-  ResolveContext,
+  RecordContext,
   SelectContext,
 } from "#dynamic/definition.js";
 export type { DynamicToolEntry, DynamicToolSet, DynamicToolResult } from "#tools/dynamic.js";

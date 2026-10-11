@@ -403,7 +403,7 @@ export type PublicAgentDefinition = PublicAgentDefinitionBase &
       }
     | {
         /**
-         * The model chosen per session. `resolve` returns the model with its context window,
+         * The model chosen per session. `render` returns the model with its context window,
          * options, and reasoning, so those fields don't sit beside it.
          */
         readonly model: PublicAgentDynamicModelDefinition;

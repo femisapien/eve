@@ -33,7 +33,7 @@ import { discardAttempt } from "#harness/session-machine/transitions.js";
 import { publicViewOf } from "#harness/session-machine/closure.js";
 import { activeTurnId } from "#harness/session-machine/view.js";
 import type { Step } from "#harness/step/context.js";
-import { hasPendingCompaction } from "#reactions/kinds/hook.js";
+import { hasPendingCompaction } from "#reactions/intents.js";
 import {
   compactPrompt,
   projectPrompt,

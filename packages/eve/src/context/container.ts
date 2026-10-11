@@ -166,7 +166,7 @@ export function loadContext(): AlsContext {
     const resolving = selectionScope.getStore();
     if (resolving !== undefined) {
       throw new Error(
-        `"${resolving}" read session state in resolve or build, which read only what select returned. Read the state in select, so a change to it resolves again, or in the execute of a tool that build creates.`,
+        `"${resolving}" read session state in record or render, which read only what select returned. Read the state in select, so a change to it records again, or in the execute of a tool that render creates.`,
       );
     }
     throw new Error(

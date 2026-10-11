@@ -24,7 +24,7 @@ import {
   type AnthropicPromptCacheTtl,
   type PublicAgentStaticModelDefinition,
 } from "#shared/agent-definition.js";
-import { assertResolverForm, isDynamicSentinel } from "#dynamic/definition.js";
+import { assertReactionForm, isDynamicSentinel } from "#dynamic/definition.js";
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
@@ -46,7 +46,7 @@ export function normalizeAgentDefinition(
 ): Readonly<NormalizedAgentDefinition> {
   if (isDynamicSentinel(value)) {
     throw new Error(
-      `${message} agent.ts exports defineAgent(). To choose the model per session, make the model field dynamic: model: defineDynamic({ select, resolve }) from "eve/models", or model: auto({ ... }).`,
+      `${message} agent.ts exports defineAgent(). To choose the model per session, make the model field dynamic: model: defineDynamic({ select, render }) from "eve/models", or model: auto({ ... }).`,
     );
   }
   const record = expectObjectRecord(value, message);
@@ -79,7 +79,7 @@ export function normalizeAgentDefinition(
     (record.modelContextWindowTokens !== undefined || record.modelOptions !== undefined)
   ) {
     throw new Error(
-      `${message} A dynamic model returns its "modelContextWindowTokens" and "modelOptions" from resolve, with the model they describe; remove them beside it.`,
+      `${message} A dynamic model returns its "modelContextWindowTokens" and "modelOptions" from render, with the model they describe; remove them beside it.`,
     );
   }
 
@@ -129,17 +129,17 @@ export function normalizeAgentDefinition(
   return definition as Readonly<NormalizedAgentDefinition>;
 }
 
-/** A static model passes through; a dynamic one keeps only its `select`, `resolve`, and `build`. */
+/** A static model passes through; a dynamic one keeps only its `select`, `record`, and `render`. */
 function normalizeAgentModel(value: unknown, message: string): NormalizedAgentDefinition["model"] {
   if (!isDynamicSentinel(value)) return value as NormalizedAgentDefinition["model"];
   const subject = `${message} The dynamic "model"`;
-  assertResolverForm(value, subject);
+  assertReactionForm(value, subject);
   const extra = Object.keys(value).filter(
-    (key) => key !== "kind" && key !== "select" && key !== "resolve" && key !== "build",
+    (key) => key !== "kind" && key !== "select" && key !== "record" && key !== "render",
   );
   if (extra.length > 0) {
     throw new Error(
-      `${subject} takes only select, resolve, and build. Unknown key(s): ${extra.join(", ")}.`,
+      `${subject} takes only select, record, and render. Unknown key(s): ${extra.join(", ")}.`,
     );
   }
   // Keep the sentinel itself: eve's own resolvers, such as auto(), carry internal hooks on it.

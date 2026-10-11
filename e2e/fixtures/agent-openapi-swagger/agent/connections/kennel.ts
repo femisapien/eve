@@ -4,7 +4,7 @@ import { kennelHeaders, kennelUrl } from "../../kennel";
 
 export default defineDynamic({
   select: once,
-  build: () =>
+  render: () =>
     defineMcpClientConnection({
       description: "Maple Street kennel: boarding pets, feedings, photos, and care visits.",
       url: kennelUrl(),

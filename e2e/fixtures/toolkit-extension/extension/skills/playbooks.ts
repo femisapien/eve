@@ -6,7 +6,7 @@ import { defineDynamic, defineSkill, once } from "eve/skills";
 // skills. The dynamic-skill eval loads it by the namespaced name to prove that.
 export default defineDynamic({
   select: once,
-  resolve: async () => ({
+  render: () => ({
     incident: defineSkill({
       description:
         "Use ONLY when the user asks for the toolkit incident playbook. " +

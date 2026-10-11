@@ -87,7 +87,7 @@ describe("schedule creation and invocation", () => {
       )!;
       const dynamic = app.moduleMap.nodes.__root__!.modules[wrapper.sourceId]!
         .default as ReturnType<typeof import("#dynamic/definition.js").defineDynamic>;
-      const tools = (await dynamic.build!({ schedule: null, turn: null } as never)) as Record<
+      const tools = (await dynamic.render!({ schedule: null, turn: null } as never)) as Record<
         string,
         ToolDefinition<never, unknown> & {
           execute(input: unknown, ctx: never): Promise<unknown>;

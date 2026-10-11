@@ -3,7 +3,7 @@ import { z } from "zod";
 
 export default defineDynamic({
   select: (_view, { session }) => session.id,
-  build: (sessionId) => {
+  render: (sessionId) => {
     const version = "v2";
 
     function buildTool(action: string) {

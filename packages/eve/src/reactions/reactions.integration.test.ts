@@ -108,11 +108,11 @@ describe("reactions", () => {
           // resolve chooses, once per selection; a provider object is code, so build creates it.
           model: defineDynamicModel({
             select: () => null,
-            resolve: () => {
-              log.push("resolve:model");
+            record: () => {
+              log.push("record:model");
               return "scripted";
             },
-            build: () => ({ model, modelContextWindowTokens: 200_000 }),
+            render: () => ({ model, modelContextWindowTokens: 200_000 }),
           }),
         }),
         name: "reactions",
@@ -145,8 +145,8 @@ describe("reactions", () => {
           loadNamespace: async () => ({
             default: defineDynamic({
               select: (view) => view.latest["turn.started"] ?? null,
-              build: () => {
-                log.push("build:tools");
+              render: () => {
+                log.push("render:tools");
                 return {
                   lookup: defineTool({
                     description: "Look something up.",
@@ -164,8 +164,8 @@ describe("reactions", () => {
           loadNamespace: async () => ({
             default: defineDynamic({
               select: () => null,
-              resolve: () => {
-                log.push("resolve:instructions");
+              render: () => {
+                log.push("render:instructions");
                 return defineInstructions({ content: POLICY });
               },
             }),
@@ -190,7 +190,7 @@ describe("reactions", () => {
           loadNamespace: async () => ({
             default: defineHook({
               select: (view) => view.session.turnCount >= 2,
-              resolve: (second) => {
+              render: (second) => {
                 log.push(`hook:compact:${String(second)}`);
                 return second ? compact() : null;
               },
@@ -238,12 +238,12 @@ describe("reactions", () => {
 
     // A constant selection resolves the model and the instructions once for the session. A fresh
     // process builds the model from what the session recorded, without resolving it again.
-    expect(log.filter((entry) => entry === "resolve:model")).toHaveLength(1);
-    expect(log.filter((entry) => entry === "resolve:instructions")).toHaveLength(1);
+    expect(log.filter((entry) => entry === "record:model")).toHaveLength(1);
+    expect(log.filter((entry) => entry === "render:instructions")).toHaveLength(1);
     // Tools select the latest turn start: once before the first turn, then once per turn, before
     // its first call.
-    expect(log.filter((entry) => entry === "build:tools").length).toBeGreaterThanOrEqual(4);
-    expect(log.indexOf("build:tools")).toBeLessThan(log.indexOf("call:turn"));
+    expect(log.filter((entry) => entry === "render:tools").length).toBeGreaterThanOrEqual(4);
+    expect(log.indexOf("render:tools")).toBeLessThan(log.indexOf("call:turn"));
     // Recall runs after each turn starts, and every model call reads it with the instructions.
     expect(log.filter((entry) => entry === "resolve:recall")).toHaveLength(3);
     // Recall and capture both see the turn's own input.

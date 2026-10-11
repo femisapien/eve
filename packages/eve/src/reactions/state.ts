@@ -18,7 +18,7 @@ export interface Slot {
   /** The contribution's JSON form: what readers of data kinds read, and what equality compares. */
   readonly value: JsonValue;
   /**
-   * What `build` built the code from: `resolve`'s result, or the selection. Kept only when the
+   * What `render` rendered the code from: `record`'s result, or the selection. Kept only when the
    * contribution carries code, so a step in another process can build it again.
    */
   readonly input?: JsonValue;

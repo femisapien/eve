@@ -5,43 +5,40 @@ import { cancel, defineHook, type HookDefinition } from "#public/definitions/hoo
 import { defineDynamic as defineDynamicInstructions } from "#public/definitions/instructions.js";
 import { defineDynamic as defineDynamicSkills } from "#public/definitions/skill.js";
 import { defineDynamic as defineDynamicTools, defineTool } from "#public/tools/index.js";
-import { assertResolverForm, DYNAMIC_SENTINEL_KIND, once } from "./definition.js";
+import { assertReactionForm, DYNAMIC_SENTINEL_KIND, once } from "./definition.js";
 
 declare const flag: boolean;
 const tool = defineTool({ description: "Echo.", execute: async () => null, inputSchema: {} });
 
 describe("defineDynamic and defineHook", () => {
-  it("compile to the same resolver form", () => {
-    const dynamic = defineDynamicTools({ select: () => null, build: () => tool });
-    const hook = defineHook({ select: () => null, resolve: () => cancel() });
+  it("compile to the same reaction form", () => {
+    const dynamic = defineDynamicTools({ select: () => null, render: () => tool });
+    const hook = defineHook({ select: () => null, render: () => cancel() });
+    const recorded = defineHook({ select: () => null, record: async () => cancel() });
     const events = defineHook({ events: { "turn.started": () => null } });
 
-    for (const definition of [dynamic, hook, events]) {
+    for (const definition of [dynamic, hook, recorded, events]) {
       expect(definition).toMatchObject({ kind: DYNAMIC_SENTINEL_KIND });
     }
   });
 
-  it("require select beside resolve or build", () => {
+  it("require select beside record or render", () => {
     expect(() =>
       // @ts-expect-error: select is required; select: once resolves once.
-      defineDynamicTools({ build: () => tool }),
+      defineDynamicTools({ render: () => tool }),
     ).toThrow("Use select: once to resolve once per session");
     expect(() =>
-      // @ts-expect-error: a hook's resolve needs a select too.
-      defineHook({ resolve: () => null }),
+      // @ts-expect-error: a hook's render needs a select too.
+      defineHook({ render: () => null }),
     ).toThrow("Use select: once to resolve once per session");
   });
 
-  it("require build where the value is code, and reject it on hooks", () => {
+  it("require render for tools and connections", () => {
     expect(() =>
-      assertResolverForm({ resolve: () => null, select: once }, "tools/x.ts", {
-        build: "required",
+      assertReactionForm({ record: () => null, select: once }, "tools/x.ts", {
+        render: "required",
       }),
-    ).toThrow("creates code, so it needs build");
-    expect(() =>
-      // @ts-expect-error: hooks act; they have nothing to build.
-      defineHook({ build: () => null, select: once }),
-    ).toThrow("only dynamic values take build");
+    ).toThrow("needs render: what record returns is kept, so it must be JSON");
   });
 
   it("type event handlers from their keys, with or without a declared type", () => {
@@ -61,14 +58,14 @@ describe("defineDynamic and defineHook", () => {
 
   it("reject a hook with both forms", () => {
     expect(() =>
-      // @ts-expect-error: events, or select and resolve, never both.
-      defineHook({ events: {}, resolve: () => null, select: () => null }),
+      // @ts-expect-error: events, or select, never both.
+      defineHook({ events: {}, render: () => null, select: () => null }),
     ).toThrow("not both");
   });
 
   it("reject events outside hooks", () => {
-    expect(() => assertResolverForm({ events: {} }, "defineDynamic()", { events: false })).toThrow(
-      "takes select with resolve or build, not events",
+    expect(() => assertReactionForm({ events: {} }, "defineDynamic()")).toThrow(
+      "takes select with record or render, not events",
     );
   });
 
@@ -77,17 +74,17 @@ describe("defineDynamic and defineHook", () => {
     defineDynamicTools({
       select: () => null,
       // @ts-expect-error: a branch without a return.
-      build: () => {
+      render: () => {
         if (flag) return tool;
       },
     });
-    // @ts-expect-error: tools are code, which build creates, not resolve.
-    defineDynamicTools({ select: () => null, resolve: () => tool });
+    // @ts-expect-error: what record returns is kept as JSON, so tools are rendered.
+    defineDynamicTools({ select: () => null, record: () => tool });
     // @ts-expect-error: no return at all.
-    defineDynamicSkills({ select: () => null, resolve: () => {} });
+    defineDynamicSkills({ select: () => null, render: () => {} });
     // @ts-expect-error: no return at all.
-    defineDynamicInstructions({ select: () => null, resolve: () => {} });
+    defineDynamicInstructions({ select: () => null, render: () => {} });
     // @ts-expect-error: no return at all.
-    defineDynamicAgent({ select: () => null, resolve: () => {} });
+    defineDynamicAgent({ select: () => null, render: () => {} });
   });
 });

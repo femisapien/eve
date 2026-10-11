@@ -3,7 +3,7 @@ import { z } from "zod";
 
 export default defineDynamic({
   select: once,
-  build: () => ({
+  render: () => ({
     dynamic_scoped_approval: defineTool({
       description:
         "Echoes a scope after approving that scope. Only call when explicitly asked for dynamic_scoped_approval.",

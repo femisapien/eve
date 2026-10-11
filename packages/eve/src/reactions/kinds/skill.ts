@@ -20,7 +20,7 @@ import {
   skillPackageRevision,
   writeSkillPackageToSandbox,
 } from "#shared/skill-package.js";
-import { authoredBuild, authoredResolve, type Reaction } from "../reaction.js";
+import { authoredRender, authoredRecord, type Reaction } from "../reaction.js";
 import { slotsOf } from "../runner.js";
 
 const log = createLogger("dynamic-skills");
@@ -32,7 +32,7 @@ const log = createLogger("dynamic-skills");
 export function skillReaction(resolver: ResolvedDynamicSkillResolver): Reaction {
   const framework = { framework: resolver.framework };
   return {
-    build: authoredBuild(resolver.logicalPath, resolver.build, framework),
+    render: authoredRender(resolver.logicalPath, resolver.render, framework),
     contribute: (result) => {
       const skills = namedSkills(resolver, result).map(({ entry, name }) =>
         normalizeSkillPackage({ ...entry, name }),
@@ -43,7 +43,7 @@ export function skillReaction(resolver: ResolvedDynamicSkillResolver): Reaction 
     id: `skill:${resolver.extensionNamespace ?? ""}:${resolver.slug}`,
     kind: "skill",
     label: resolver.logicalPath,
-    resolve: authoredResolve(resolver.logicalPath, resolver.resolve, framework),
+    record: authoredRecord(resolver.logicalPath, resolver.record, framework),
     select: resolver.select as Reaction["select"],
   };
 }

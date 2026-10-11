@@ -9,7 +9,7 @@ import { CATALOG_TOOLS, referenceOf } from "../lib/catalog";
  */
 export default defineDynamic({
   select: once,
-  build: () =>
+  render: () =>
     Object.fromEntries(
       CATALOG_TOOLS.map(({ description, inputs = {}, name, result }) => [
         name,

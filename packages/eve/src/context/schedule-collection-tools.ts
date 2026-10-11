@@ -84,7 +84,7 @@ export function createScheduleCollectionToolDynamicDefinition<TInput, TPrepared 
       schedule: ctx.session.schedule ?? null,
       turn: view.latest["turn.started"] ?? null,
     }),
-    build: (selected) => {
+    render: (selected: { readonly schedule: unknown; readonly turn: number | null }) => {
       // A scheduled run doesn't schedule more: `select` read the session's schedule.
       if (definition.tool === false || selected.schedule !== null) return null;
       const prefix = `${scheduleCollectionToolPrefix(identity.collection)}__`;

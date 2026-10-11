@@ -15,7 +15,7 @@ import { defineTool } from "#tools/definition.js";
 import { dynamicTools } from "./kinds/tool.js";
 import { restoreReactions, runReactions, slotsOf } from "./runner.js";
 import { cancel, compact } from "#public/definitions/hook.js";
-import { hasPendingCompaction } from "./kinds/hook.js";
+import { hasPendingCompaction } from "./intents.js";
 import { forgetSessionLive, readReactionsState, writeReactionsState } from "./state.js";
 
 const user = (content: string): ModelMessage => ({ content, role: "user" });
@@ -35,8 +35,8 @@ function written(line: number, type = "turn.started", data: object = {}) {
 function session(
   resolver: {
     readonly select?: (view: never, ctx: never) => unknown;
-    readonly resolve?: (selected: never, ctx: never) => unknown;
-    readonly build?: (input: never) => unknown;
+    readonly record?: (selected: never, ctx: never) => unknown;
+    readonly render?: (input: never) => unknown;
   },
   hooks: readonly object[] = [],
   instructions: readonly object[] = [],
@@ -79,20 +79,20 @@ const countTool = (count: unknown) =>
     inputSchema: {},
   });
 
-/** A tool whose `resolve` records each selection it fetches for, and whose `build` each build. */
+/** A tool whose `record` logs each selection it records, and whose `render` each render. */
 const counted = (selections: unknown[], builds: unknown[] = []) => ({
-  build: ((count: unknown) => {
+  render: ((count: unknown) => {
     builds.push(count);
     return countTool(count);
   }) as never,
-  resolve: ((selected: never) => {
+  record: ((selected: never) => {
     selections.push(selected);
     return selected;
   }) as never,
   select: ((view: { readonly messages: readonly ModelMessage[] }) => view.messages.length) as never,
 });
 
-const noTools = { build: (() => null) as never, select: (() => null) as never };
+const noTools = { render: (() => null) as never, select: (() => null) as never };
 
 describe("runReactions", () => {
   it("resolves only when the selection changes", async () => {
@@ -119,7 +119,7 @@ describe("runReactions", () => {
     expect(slotsOf(ctx, "tool")).toHaveLength(1);
   });
 
-  it("builds code in a fresh process from what the slot recorded, without resolving again", async () => {
+  it("renders code in a fresh process from what the slot recorded, without recording again", async () => {
     const selections: unknown[] = [];
     const builds: unknown[] = [];
     const ctx = session(counted(selections, builds));
@@ -134,11 +134,11 @@ describe("runReactions", () => {
     expect(dynamicTools(ctx).map((tool) => tool.description)).toEqual(["Count 2."]);
   });
 
-  it("builds from the latest input even when what the model is offered is unchanged", async () => {
+  it("renders from the latest input even when what the model is offered is unchanged", async () => {
     // Both scopes offer the same tool; only the code that closes over the scope differs.
     const built: string[] = [];
     const ctx = session({
-      build: ((scope: string) => {
+      render: ((scope: string) => {
         built.push(scope);
         return defineTool({
           description: "Forget a memory.",
@@ -159,10 +159,10 @@ describe("runReactions", () => {
     expect(built).toEqual(["tenant-a", "tenant-b", "tenant-b"]);
   });
 
-  it("withdraws a slot whose build offers something else in a fresh process", async () => {
+  it("withdraws a slot whose render offers something else in a fresh process", async () => {
     let description = "Offered.";
     const ctx = session({
-      build: (() =>
+      render: (() =>
         defineTool({ description, execute: async () => "ran", inputSchema: {} })) as never,
       select: (() => null) as never,
     });
@@ -174,38 +174,38 @@ describe("runReactions", () => {
 
     expect(dynamicTools(ctx)).toEqual([]);
     expect(slotsOf(ctx, "tool").map(({ slot }) => slot.error)).toEqual([
-      expect.stringContaining("built something other than what this session was offered"),
+      expect.stringContaining("rendered something other than what this session was offered"),
     ]);
   });
 
-  it("requires JSON from a resolve whose value build creates", async () => {
+  it("requires JSON from a record that render renders from", async () => {
     const ctx = session({
-      build: ((tool: never) => tool) as never,
-      resolve: (() => countTool(1)) as never,
+      render: ((tool: never) => tool) as never,
+      record: (() => countTool(1)) as never,
       select: (() => null) as never,
     });
     await runReactions(ctx, { written: written(1) });
 
     expect(slotsOf(ctx, "tool").map(({ slot }) => slot.error)).toEqual([
-      expect.stringContaining('The resolve of "tools/count.ts" must return JSON'),
+      expect.stringContaining('The record of "tools/count.ts" must return JSON'),
     ]);
   });
 
-  it("rejects a build that returns a promise, since build can't do I/O", async () => {
+  it("rejects a render that returns a promise, since render can't do I/O", async () => {
     const ctx = session({
-      build: (async () => countTool(1)) as never,
+      render: (async () => countTool(1)) as never,
       select: (() => null) as never,
     });
     await runReactions(ctx, { written: written(1) });
 
     expect(slotsOf(ctx, "tool").map(({ slot }) => slot.error)).toEqual([
-      expect.stringContaining('The build of "tools/count.ts" returned a promise'),
+      expect.stringContaining('The render of "tools/count.ts" returned a promise'),
     ]);
   });
 
   it("caps a selection at 64 KB", async () => {
     const ctx = session({
-      build: (() => null) as never,
+      render: (() => null) as never,
       select: (() => "x".repeat(70_000)) as never,
     });
     await runReactions(ctx, { written: written(1) });
@@ -219,7 +219,7 @@ describe("runReactions", () => {
     const seen: unknown[] = [];
     const ctx = session(
       {
-        build: (() => null) as never,
+        render: (() => null) as never,
         select: ((view: { readonly model: unknown }) => {
           seen.push(view.model);
           return null;
@@ -229,7 +229,7 @@ describe("runReactions", () => {
         {
           events: {},
           logicalPath: "hooks/modal.ts",
-          resolve: () => null,
+          render: () => null,
           select: (view: { readonly model: unknown }) => view.model,
           slug: "modal",
         },
@@ -250,7 +250,7 @@ describe("runReactions", () => {
       {
         events: {},
         logicalPath: "hooks/imports.ts",
-        resolve: () => compact(),
+        render: () => compact(),
         select: () => imports,
         slug: "imports",
       },
@@ -270,14 +270,14 @@ describe("runReactions", () => {
     expect(hasPendingCompaction(ctx)).toBe(true);
   });
 
-  it("gives a hook's resolve a stable key for its occurrence", async () => {
+  it("gives a hook's record a stable key for its occurrence", async () => {
     const occurrences: string[] = [];
     let turn = 1;
     const ctx = session(noTools, [
       {
         events: {},
         logicalPath: "hooks/notify.ts",
-        resolve: (_selected: unknown, hookContext: { readonly occurrence: string }) => {
+        record: (_selected: unknown, hookContext: { readonly occurrence: string }) => {
           occurrences.push(hookContext.occurrence);
           return null;
         },
@@ -299,7 +299,7 @@ describe("runReactions", () => {
       {
         events: {},
         logicalPath: "hooks/stop.ts",
-        resolve: () => cancel("Asked to stop."),
+        render: () => cancel("Asked to stop."),
         select: () => null,
         slug: "stop",
       },
@@ -317,16 +317,19 @@ describe("runReactions", () => {
     expect(stopped).toEqual([{ hook: "hooks/stop.ts", reason: "Asked to stop." }]);
   });
 
-  it("runs resolve and build outside the session's context, so they read only the selection", async () => {
+  it("runs record and render outside the session's context, so they read only the selection", async () => {
     const counter = defineState("runner-test.counter", () => 7);
     const read = session({
-      resolve: (() => counter.get()) as never,
-      build: (() => null) as never,
+      record: (() => counter.get()) as never,
+      render: (() => null) as never,
       select: (() => null) as never,
     });
-    const built = session({ build: (() => counter.get()) as never, select: (() => null) as never });
+    const built = session({
+      render: (() => counter.get()) as never,
+      select: (() => null) as never,
+    });
     const selected = session({
-      build: ((count: number) => countTool(count)) as never,
+      render: ((count: number) => countTool(count)) as never,
       select: (() => counter.get()) as never,
     });
     await inSession(read, { written: written(1) });
@@ -335,7 +338,7 @@ describe("runReactions", () => {
 
     for (const ctx of [read, built]) {
       expect(slotsOf(ctx, "tool").map(({ slot }) => slot.error)).toEqual([
-        expect.stringContaining('"tools/count.ts" read session state in resolve or build'),
+        expect.stringContaining('"tools/count.ts" read session state in record or render'),
       ]);
     }
     expect(dynamicTools(selected).map((tool) => tool.description)).toEqual(["Count 7."]);
@@ -344,7 +347,7 @@ describe("runReactions", () => {
   it("runs only hooks for a commit of streamed progress", async () => {
     let selects = 0;
     const ctx = session({
-      build: (() => null) as never,
+      render: (() => null) as never,
       select: (() => {
         selects += 1;
         return null;
@@ -359,17 +362,17 @@ describe("runReactions", () => {
     expect(selects).toBe(1);
   });
 
-  it("withdraws the slot of a resolve that throws, retrying when the selection changes", async () => {
+  it("withdraws the slot of a record that throws, retrying when the selection changes", async () => {
     let fail = false;
     let calls = 0;
     const ctx = session({
-      build: (() =>
+      render: (() =>
         defineTool({
           description: "Listed.",
           execute: async () => null,
           inputSchema: {},
         })) as never,
-      resolve: (() => {
+      record: (() => {
         calls += 1;
         if (fail) throw new Error("listing failed");
         return "listed";
@@ -403,7 +406,7 @@ describe("runReactions", () => {
     expect(selections).toEqual([1, 1]);
   });
 
-  it("builds a fresh process's code under a new revision, then resolves again at its first commit", async () => {
+  it("renders a fresh process's code under a new revision, then records again at its first commit", async () => {
     const selections: unknown[] = [];
     const builds: unknown[] = [];
     const ctx = session(counted(selections, builds));
@@ -414,7 +417,7 @@ describe("runReactions", () => {
     expect(dynamicTools(ctx).map((tool) => tool.description)).toEqual(["Count 1."]);
     await runReactions(ctx, { conversation: [user("a")], written: written(2) });
 
-    // Once to choose under r1; under r2, once to build for the step and once to resolve again.
+    // Once to record under r1; under r2, once to render for the step and once to record again.
     expect(selections).toEqual([1, 1]);
     expect(builds).toEqual([1, 1, 1]);
     expect(slotsOf(ctx, "tool")[0]?.slot.revision).toBe("r2");
@@ -428,7 +431,7 @@ describe("runReactions", () => {
       [
         {
           logicalPath: "instructions/policy.ts",
-          resolve: (selected: unknown) => {
+          record: (selected: unknown) => {
             resolved.push(selected);
             return defineInstructions({ markdown: `Policy ${String(selected)}.` });
           },

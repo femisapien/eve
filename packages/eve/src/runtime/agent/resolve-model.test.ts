@@ -107,7 +107,7 @@ describe("dynamic runtime model resolution", () => {
       default: {
         model: defineDynamic({
           select: (_view, ctx) => ctx.channel.kind ?? null,
-          resolve: (kind) => ({
+          render: (kind) => ({
             model: kind === "slack" ? "openai/gpt-5.5-mini" : "openai/gpt-5.5",
             modelContextWindowTokens: 128_000,
             modelOptions: {
@@ -122,7 +122,7 @@ describe("dynamic runtime model resolution", () => {
       dynamicModel: DYNAMIC_MODEL_SOURCE,
       scope: { moduleMap, nodeId: undefined },
     });
-    const result = await definition.resolve!("slack" as never, {} as never);
+    const result = definition.render!("slack" as never);
 
     const resolved = await resolveRuntimeModelSelection({
       durability: "live",

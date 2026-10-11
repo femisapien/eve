@@ -1,4 +1,4 @@
-import type { ResolveContext as DynamicResolveContext } from "#dynamic/definition.js";
+import type { RecordContext as DynamicResolveContext } from "#dynamic/definition.js";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { defineSelfModificationAgent } from "./agent.js";
@@ -6,6 +6,7 @@ import { defineSelfModificationAgent } from "./agent.js";
 const context: DynamicResolveContext = {
   abortSignal: new AbortController().signal,
   channel: {},
+  messages: [],
   session: { auth: { current: null, initiator: null }, id: "session" },
 };
 
@@ -22,7 +23,7 @@ describe("retired self-modification agent scaffold", () => {
       reasoning: "high",
     });
 
-    await expect(agent.resolve!(null, context)).resolves.toBeNull();
+    await expect(agent.record!(null, context)).resolves.toBeNull();
   });
 
   it("warns once in development across resolves", async () => {
@@ -30,8 +31,8 @@ describe("retired self-modification agent scaffold", () => {
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const agent = defineSelfModificationAgent();
 
-    await agent.resolve!(null, context);
-    await agent.resolve!(null, context);
+    await agent.record!(null, context);
+    await agent.record!(null, context);
 
     expect(warning).toHaveBeenCalledTimes(1);
     expect(warning).toHaveBeenCalledWith(
@@ -41,7 +42,7 @@ describe("retired self-modification agent scaffold", () => {
 
   it("does not warn in production", async () => {
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    await defineSelfModificationAgent().resolve!(null, context);
+    await defineSelfModificationAgent().record!(null, context);
     expect(warning).not.toHaveBeenCalled();
   });
 });

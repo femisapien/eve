@@ -8,8 +8,9 @@ export type {
 
 /**
  * Chooses an agent's model per session, as its `model` field. `select` reads what the choice
- * depends on, and `resolve` returns the model, or `{ model, reasoning?, modelContextWindowTokens?,
- * modelOptions? }`; eve calls it again only when the selection changes.
+ * depends on, and `render` returns the model, or `{ model, reasoning?, modelContextWindowTokens?,
+ * modelOptions? }`; eve renders again only when the selection changes. To decide with I/O, such
+ * as a call to a router model, `record` decides once per selection and `render` uses its answer.
  *
  * ```ts
  * import { defineAgent } from "eve";
@@ -18,13 +19,12 @@ export type {
  * export default defineAgent({
  *   model: defineDynamic({
  *     select: (view) => view.messages.some(hasImage),
- *     resolve: (image) => (image ? "google/gemini-3.5-flash" : "zai/glm-5.2"),
+ *     render: (image) => (image ? "google/gemini-3.5-flash" : "zai/glm-5.2"),
  *   }),
  * });
  * ```
  *
- * A gateway ID is data, and eve records it. A provider object, such as `anthropic("...")`, is
- * code: return the JSON it's made from in `resolve`, or select it, and create it in `build`, so a
- * process that didn't choose it builds the same model from what the session recorded.
+ * A provider object, such as `anthropic("...")`, is rendered: a process that didn't choose it
+ * renders the same model from what the session recorded, without recording again.
  */
 export const defineDynamic = defineDynamicBase as DefineDynamic<PublicAgentDynamicModelResult>;

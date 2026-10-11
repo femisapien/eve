@@ -5,7 +5,7 @@ export const DYNAMIC_MULTI_BETA_TOKEN = "dynamic-multi-beta-J5W1";
 
 export default defineDynamic({
   select: once,
-  resolve: async () => {
+  render: () => {
     return {
       alpha: defineSkill({
         description:

@@ -11,9 +11,9 @@ describe("defineDynamic connections", () => {
         url: "https://mcp.example.com/current",
       });
 
-    expect(defineDynamic({ select: () => null, build: handler })).toMatchObject({
+    expect(defineDynamic({ select: () => null, render: handler })).toMatchObject({
       kind: "eve:dynamic",
-      build: handler,
+      render: handler,
     });
   });
 });

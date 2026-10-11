@@ -530,7 +530,7 @@ async function transcriptReadingRuntime(name: string) {
         loadNamespace: async () => ({
           default: defineDynamic({
             select: () => null,
-            resolve: async (_selection, ctx) => {
+            record: async (_selection, ctx) => {
               const predecessor = ctx.session.predecessor;
               if (predecessor === undefined) return null;
               const reducer = transcriptReducer({ maxMessages: 40 });

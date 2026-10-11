@@ -13,7 +13,7 @@ export {
 export type {
   DynamicSentinel,
   ReactionView,
-  ResolveContext,
+  RecordContext,
   SelectContext,
 } from "#dynamic/definition.js";
 

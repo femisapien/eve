@@ -46,7 +46,7 @@ const localEffectiveEdits =
 
 /** Defines the local development self-modification dynamic subagent. */
 export function defineSelfModificationAgent(options: SelfModificationAgentOptions = {}) {
-  const resolve = async (effectiveModel: string | null) => {
+  const record = async (effectiveModel: string | null) => {
     const bound = selfModification.config;
     const config = resolveSelfModificationConfig(options.config ?? bound);
     if (!isLocalSelfModificationEnabled(config) || getLocalDevCapability() === undefined) {
@@ -72,7 +72,7 @@ export function defineSelfModificationAgent(options: SelfModificationAgentOption
     return defineAgent({ description, model, reasoning });
   };
 
-  return defineDynamic<string | null>({ select: (view) => view.model?.id ?? null, resolve });
+  return defineDynamic<string | null>({ select: (view) => view.model?.id ?? null, record });
 }
 
 export default defineSelfModificationAgent();

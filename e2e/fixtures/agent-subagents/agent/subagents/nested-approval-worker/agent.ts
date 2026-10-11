@@ -30,6 +30,6 @@ export default defineAgent({
   description: "Collects Alice's or Bob's release checklist approvals or authorization.",
   model: defineDynamic({
     select: once,
-    resolve: () => ({ model: workerModel, modelContextWindowTokens: 1_000_000 }),
+    render: () => ({ model: workerModel, modelContextWindowTokens: 1_000_000 }),
   }),
 });

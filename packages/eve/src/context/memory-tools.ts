@@ -2,11 +2,11 @@ import type { MemoryDefinition, MemoryScope, MemoryToolsContext } from "#public/
 import {
   asFrameworkResolver,
   defineDynamic,
-  type ResolveContext,
+  type RecordContext,
   type SelectContext,
 } from "#dynamic/definition.js";
 import { principalOf, resolveMemoryScope } from "#reactions/kinds/memory.js";
-import { publicResolveContext, type InternalResolveContext } from "#reactions/reaction.js";
+import { publicRecordContext, type InternalRecordContext } from "#reactions/reaction.js";
 import { isBrandedToolEntry } from "#tools/dynamic.js";
 
 /** A memory slot's provider tools, as a dynamic tool resolver named `<slot>__<key>`. */
@@ -18,18 +18,15 @@ export function createMemoryToolDynamicDefinition(definition: MemoryDefinition, 
         session: ctx.session.id,
       }),
       // The scope is the data the tools are made from, and the session records it.
-      resolve: async (_selected: unknown, resolveContext: ResolveContext) => {
+      record: async (_selected: unknown, resolveContext: RecordContext) => {
         if (definition.provider.tools === undefined) return null;
-        return resolveMemoryScope(
-          { ...definition, slot },
-          resolveContext as InternalResolveContext,
-        );
+        return resolveMemoryScope({ ...definition, slot }, resolveContext as InternalRecordContext);
       },
       // The provider builds its tools from the scope, in any process, without resolving it again.
-      build: async (scope: MemoryScope | null, resolveContext?: InternalResolveContext) => {
+      render: async (scope: MemoryScope | null, resolveContext?: InternalRecordContext) => {
         if (scope === null || definition.provider.tools === undefined) return null;
         const context = {
-          ...publicResolveContext(resolveContext!),
+          ...publicRecordContext(resolveContext!),
           memory: { scope, slot },
         } as MemoryToolsContext;
         const result = await definition.provider.tools(context);

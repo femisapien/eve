@@ -19,6 +19,6 @@ export default defineAgent({
   experimental,
   model: defineDynamic({
     select: once,
-    resolve: () => ({ model: selectedModel, modelContextWindowTokens: 1_000_000 }),
+    render: () => ({ model: selectedModel, modelContextWindowTokens: 1_000_000 }),
   }),
 });

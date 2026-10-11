@@ -5,7 +5,7 @@ const TOOL_NAMES = ["alpha", "beta"] as const;
 
 export default defineDynamic({
   select: once,
-  build: () => {
+  render: () => {
     const tools: Record<string, DynamicToolEntry> = {};
 
     for (let i = 0; i < TOOL_NAMES.length; i++) {

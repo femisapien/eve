@@ -202,7 +202,7 @@ describe("auto() as the agent's model", () => {
           // A build that isn't a function of what it's given: building again returns another model.
           model: defineDynamic({
             select: () => null,
-            build: () => {
+            render: () => {
               builds += 1;
               log.push("build");
               return { model: builds === 1 ? small : large, modelContextWindowTokens: 200_000 };

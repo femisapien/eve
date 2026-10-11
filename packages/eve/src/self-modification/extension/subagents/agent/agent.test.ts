@@ -1,4 +1,4 @@
-import type { ResolveContext as DynamicResolveContext } from "#dynamic/definition.js";
+import type { RecordContext as DynamicResolveContext } from "#dynamic/definition.js";
 import {
   installLocalDevCapabilityEnvironment,
   withLocalDevRequestScope,
@@ -13,6 +13,7 @@ const serverUrl = "http://127.0.0.1:3000";
 const context: DynamicResolveContext = {
   abortSignal: new AbortController().signal,
   channel: {},
+  messages: [],
   session: { auth: { current: null, initiator: null }, id: "session" },
 };
 
@@ -37,7 +38,7 @@ describe("self-modification local agent", () => {
     await withDevHost(async () => {
       const agent = defineSelfModificationAgent({ config: { local: { enabled: true } } });
 
-      await expect(agent.resolve!(null, context)).resolves.toMatchObject({
+      await expect(agent.record!(null, context)).resolves.toMatchObject({
         model: "openai/gpt-6-luna-fast",
         reasoning: "high",
       });
@@ -87,7 +88,7 @@ describe("self-modification local agent", () => {
           ...options,
           config: { local: { enabled: true } },
         });
-        const resolved = await agent.resolve!(parent, context);
+        const resolved = await agent.record!(parent, context);
 
         expect(resolved).toMatchObject({ model });
         expect(resolved).toHaveProperty("reasoning", reasoning);
@@ -105,7 +106,7 @@ describe("self-modification local agent", () => {
       await withLocalDevRequestScope(new Request(serverUrl, { headers }), async () => {
         const agent = defineSelfModificationAgent({ config: { local: { enabled: true } } });
 
-        await expect(agent.resolve!(null, context)).resolves.not.toBeNull();
+        await expect(agent.record!(null, context)).resolves.not.toBeNull();
       });
     });
   });
@@ -114,14 +115,14 @@ describe("self-modification local agent", () => {
     process.env.EVE_DEV = "1";
     const agent = defineSelfModificationAgent({ config: { local: { enabled: true } } });
 
-    await expect(agent.resolve!(null, context)).resolves.toBeNull();
+    await expect(agent.record!(null, context)).resolves.toBeNull();
   });
 
   it("honors local.enabled: false even when eve dev facilities are available", async () => {
     await withDevHost(async () => {
       const agent = defineSelfModificationAgent({ config: { local: { enabled: false } } });
 
-      await expect(agent.resolve!(null, context)).resolves.toBeNull();
+      await expect(agent.record!(null, context)).resolves.toBeNull();
     });
   });
 });

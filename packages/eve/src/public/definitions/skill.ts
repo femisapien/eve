@@ -43,5 +43,5 @@ export type DynamicSkillResult =
   | Readonly<Record<string, SkillPackageDefinition>>
   | null;
 
-/** `defineDynamic()` for `agent/skills/`: `resolve` returns skills. */
+/** `defineDynamic()` for `agent/skills/`: `render` returns skills. */
 export const defineDynamic = defineDynamicDefinition as DefineDynamic<DynamicSkillResult>;

@@ -7,7 +7,7 @@ import { stamp } from "../lib/brand";
 // at session start that composes and runs once mounted.
 export default defineDynamic({
   select: once,
-  build: () => ({
+  render: () => ({
     toolkit_forecast: defineTool({
       description:
         "Return the toolkit forecast token. Call when asked to run the toolkit forecast.",

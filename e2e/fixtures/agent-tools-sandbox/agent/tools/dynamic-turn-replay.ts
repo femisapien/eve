@@ -7,7 +7,7 @@ export default defineDynamic({
     sessionId: session.id,
     turn: view.latest["turn.started"] ?? null,
   }),
-  build: ({ sessionId: resolvedSessionId }) => {
+  render: ({ sessionId: resolvedSessionId }) => {
     return {
       dynamic_turn_replay_probe: defineTool({
         description:

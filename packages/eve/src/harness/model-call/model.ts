@@ -50,7 +50,7 @@ export async function resolveEffectiveRuntimeModel(input: {
 
   if (selected === null) {
     throw new Error(
-      "Dynamic model selection is required before model-dependent work begins. Add a matching resolver handler that returns a concrete model.",
+      "The dynamic model returned no model, so there's none to call. Return a model from its render or record.",
     );
   }
 

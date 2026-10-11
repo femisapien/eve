@@ -1,18 +1,18 @@
-import type { ResolveContext } from "eve/skills";
+import type { RecordContext } from "eve/skills";
 
-function snapshot(ctx: ResolveContext) {
+function snapshot(ctx: RecordContext) {
   return {
     session: {
       id: ctx.session.id,
       auth: ctx.session.auth,
       schedule: ctx.session.schedule ?? null,
       predecessor: ctx.session.predecessor ?? null,
-    } satisfies Record<keyof ResolveContext["session"], unknown>,
+    } satisfies Record<keyof RecordContext["session"], unknown>,
     channel: {
       kind: ctx.channel.kind ?? null,
       continuationToken: ctx.channel.continuationToken ?? null,
       metadata: ctx.channel.metadata ?? null,
-    } satisfies Record<keyof ResolveContext["channel"], unknown>,
+    } satisfies Record<keyof RecordContext["channel"], unknown>,
     conversation: ctx.conversation ?? null,
   };
 }
@@ -23,14 +23,14 @@ export interface DynamicSkillContextObservation {
 }
 
 /**
- * Observations by session. `resolve` runs outside the session's context, so it can't write
+ * Observations by session. `record` runs outside the session's context, so it can't write
  * session state; the fixture keeps them in the process, which a local run shares.
  */
 const observations = new Map<string, DynamicSkillContextObservation[]>();
 
 export function recordDynamicSkillContext(
   event: DynamicSkillContextObservation["event"],
-  ctx: ResolveContext,
+  ctx: RecordContext,
 ): void {
   observations.set(ctx.session.id, [
     ...(observations.get(ctx.session.id) ?? []),

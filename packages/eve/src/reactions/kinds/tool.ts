@@ -22,19 +22,19 @@ import {
   type ToolSchemaSource,
 } from "#tools/schema.js";
 import { isWorkflowToolDefinition } from "#tools/workflow-definition.js";
-import { authoredBuild, authoredResolve, type Reaction } from "../reaction.js";
+import { authoredRender, authoredRecord, type Reaction } from "../reaction.js";
 import { slotsOf } from "../runner.js";
 
 const log = createLogger("dynamic-tools");
 
 /**
- * A `defineDynamic()` in `agent/tools/`: one tool named after the file, or a map of them. `build`
- * creates the tools; the slot records what the model is offered, and what `build` built from.
+ * A `defineDynamic()` in `agent/tools/`: one tool named after the file, or a map of them. `render`
+ * creates the tools; the slot records what the model is offered, and what `render` rendered from.
  */
 export function toolReaction(resolver: ResolvedDynamicToolResolver): Reaction {
   const framework = { framework: resolver.framework };
   return {
-    build: authoredBuild(resolver.logicalPath, resolver.build, framework),
+    render: authoredRender(resolver.logicalPath, resolver.render, framework),
     contribute: (result, { ctx }) => {
       const tools = namedTools(resolver, result).map(({ entry, name }) => {
         assertToolNameAvailable(ctx, resolver, name);
@@ -46,7 +46,7 @@ export function toolReaction(resolver: ResolvedDynamicToolResolver): Reaction {
     id: `tool:${resolver.extensionNamespace ?? ""}:${resolver.slug}`,
     kind: "tool",
     label: resolver.logicalPath,
-    resolve: authoredResolve(resolver.logicalPath, resolver.resolve, framework),
+    record: authoredRecord(resolver.logicalPath, resolver.record, framework),
     select: resolver.select as Reaction["select"],
   };
 }

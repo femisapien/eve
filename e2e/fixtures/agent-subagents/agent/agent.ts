@@ -191,7 +191,7 @@ export default defineAgent({
       }
       return null;
     },
-    resolve: (scripted) =>
+    render: (scripted) =>
       scripted === null
         ? { model: defaultModel, modelContextWindowTokens }
         : { model: scriptedModels[scripted], modelContextWindowTokens: 1_000_000 },

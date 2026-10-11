@@ -29,5 +29,5 @@ export function defineInstructions<TInstructions extends InstructionsDefinition>
 
 export type DynamicInstructionsResult = InstructionsDefinition | null;
 
-/** `defineDynamic()` for `agent/instructions/`: `resolve` returns `defineInstructions()` or `null`. */
+/** `defineDynamic()` for `agent/instructions/`: `render` returns `defineInstructions()` or `null`. */
 export const defineDynamic = defineDynamicDefinition as DefineDynamic<DynamicInstructionsResult>;

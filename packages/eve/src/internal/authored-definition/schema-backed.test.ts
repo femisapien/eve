@@ -346,7 +346,7 @@ describe("normalizeToolDefinition", () => {
   it("returns a dynamic-tool entry for a defineDynamic({ events }) export with a map", () => {
     const dynamicTools = defineDynamic({
       select: () => null,
-      resolve: async () => ({
+      record: async () => ({
         echo: defineTool({
           description: "Echo tool",
           inputSchema: { type: "object" as const },
@@ -362,7 +362,7 @@ describe("normalizeToolDefinition", () => {
   it("returns a dynamic-tool entry for a defineDynamic({ events }) export with a single entry", () => {
     const dynamicTool = defineDynamic({
       select: () => null,
-      resolve: async () =>
+      record: async () =>
         defineTool({
           description: "Dynamic echo",
           inputSchema: { type: "object" as const },
@@ -378,7 +378,7 @@ describe("normalizeToolDefinition", () => {
     const dynamicTools = {
       ...defineDynamic({
         select: () => null,
-        resolve: async () => ({}),
+        record: async () => ({}),
       }),
       fallback: "not-supported-here",
     } as never;
@@ -391,7 +391,7 @@ describe("normalizeToolDefinition", () => {
   it("handles defineDynamic with multiple events", () => {
     const dynamicTools = defineDynamic({
       select: (view) => view.latest["model.requested"] ?? null,
-      resolve: async () => ({}),
+      record: async () => ({}),
     });
 
     const entry = normalizeToolDefinition(dynamicTools, FAILURE_MESSAGE);

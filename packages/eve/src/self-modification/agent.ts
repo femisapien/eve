@@ -25,7 +25,7 @@ function warnRetiredScaffold(): void {
 export function defineSelfModificationAgent(_options: SelfModificationAgentOptions = {}) {
   return defineDynamic({
     select: once,
-    resolve: async (): Promise<null> => {
+    record: async (): Promise<null> => {
       warnRetiredScaffold();
       return null;
     },

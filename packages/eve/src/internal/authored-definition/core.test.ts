@@ -32,7 +32,7 @@ describe("normalizeAgentDefinition", () => {
   });
 
   it("accepts a dynamic model field beside static fields", () => {
-    const model = defineDynamic({ select: () => null, resolve: () => "openai/gpt-5.5-mini" });
+    const model = defineDynamic({ select: () => null, render: () => "openai/gpt-5.5-mini" });
     const definition = normalizeAgentDefinition({ defaultTools: false, model }, FAILURE_MESSAGE);
 
     expect(definition.defaultTools).toBe(false);
@@ -42,7 +42,7 @@ describe("normalizeAgentDefinition", () => {
   it("rejects a dynamic agent.ts, pointing at the dynamic model field", () => {
     expect(() =>
       normalizeAgentDefinition(
-        defineDynamic({ select: () => null, resolve: () => ({ model: "openai/gpt-5.5-mini" }) }),
+        defineDynamic({ select: () => null, render: () => ({ model: "openai/gpt-5.5-mini" }) }),
         FAILURE_MESSAGE,
       ),
     ).toThrow(/make the model field dynamic/);
@@ -52,7 +52,7 @@ describe("normalizeAgentDefinition", () => {
     expect(() =>
       normalizeAgentDefinition(
         {
-          model: defineDynamic({ select: () => null, resolve: () => "openai/gpt-5.5-mini" }),
+          model: defineDynamic({ select: () => null, render: () => "openai/gpt-5.5-mini" }),
           modelContextWindowTokens: 128_000,
         },
         FAILURE_MESSAGE,
@@ -60,18 +60,18 @@ describe("normalizeAgentDefinition", () => {
     ).toThrow(/returns its "modelContextWindowTokens" and "modelOptions" from resolve/);
   });
 
-  it("rejects keys beside a dynamic model's select, resolve, and build", () => {
+  it("rejects keys beside a dynamic model's select, record, and render", () => {
     expect(() =>
       normalizeAgentDefinition(
         {
           model: {
-            ...defineDynamic({ select: () => null, resolve: () => "openai/gpt-5.5-mini" }),
+            ...defineDynamic({ select: () => null, render: () => "openai/gpt-5.5-mini" }),
             reasoning: "high",
           },
         },
         FAILURE_MESSAGE,
       ),
-    ).toThrow(/takes only select, resolve, and build. Unknown key\(s\): reasoning/);
+    ).toThrow(/takes only select, record, and render. Unknown key\(s\): reasoning/);
   });
 
   it("rejects a dynamic compaction model", () => {
@@ -81,7 +81,7 @@ describe("normalizeAgentDefinition", () => {
           compaction: {
             model: defineDynamic({
               select: () => null,
-              resolve: () => "openai/gpt-5.5-mini",
+              render: () => "openai/gpt-5.5-mini",
             }),
           },
           model: "openai/gpt-5.5",

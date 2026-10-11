@@ -3,7 +3,7 @@ import { defineDynamic, defineInstructions } from "eve/instructions";
 export default defineDynamic({
   // Six seed turns precede expansion.
   select: (view) => view.session.turnCount > 6,
-  resolve: (expanded) =>
+  render: (expanded) =>
     expanded
       ? defineInstructions({
           role: "system",

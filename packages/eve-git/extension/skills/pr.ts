@@ -5,7 +5,7 @@ import { prSkillDescription, prSkillMarkdown } from "../lib/github-guidance.ts";
 
 export default defineDynamic({
   select: once,
-  resolve: () => {
+  render: () => {
     const github = extension.config.github !== undefined;
     return defineSkill({
       description: prSkillDescription(github),

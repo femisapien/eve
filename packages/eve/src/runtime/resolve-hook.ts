@@ -1,7 +1,7 @@
 import type { SessionEvent } from "#protocol/session-event.js";
 import type { CompiledHookDefinition } from "../compiler/manifest.js";
 import type { CompiledModuleMap } from "../compiler/module-map.js";
-import { assertResolverForm, HOOK_FORM } from "../dynamic/definition.js";
+import { assertReactionForm, HOOK_FORM } from "../dynamic/definition.js";
 import { expectFunction, expectObjectRecord } from "../internal/authored-module.js";
 import type { StreamEventHook } from "../public/definitions/hook.js";
 import { removedEventKeyMessage } from "../public/definitions/removed-event-keys.js";
@@ -34,7 +34,7 @@ export async function resolveHookDefinition(
       resolvedExportValue,
       describe(definition, "to return an object"),
     );
-    assertResolverForm(
+    assertReactionForm(
       resolvedRecord,
       `The hook export "${definition.exportName ?? "default"}" from "${definition.logicalPath}"`,
       HOOK_FORM,
@@ -72,17 +72,20 @@ export async function resolveHookDefinition(
             resolvedRecord.select,
             describe(definition, "to provide select as a function"),
           );
-    const resolve =
-      resolvedRecord.resolve === undefined
+    const fn = (key: "record" | "render") =>
+      resolvedRecord[key] === undefined
         ? undefined
         : expectFunction(
-            resolvedRecord.resolve,
-            describe(definition, "to provide resolve as a function"),
+            resolvedRecord[key],
+            describe(definition, `to provide ${key} as a function`),
           );
+    const record = fn("record");
+    const render = fn("render");
     return {
       events,
       ...(select === undefined ? {} : { select: select as ResolvedHookDefinition["select"] }),
-      ...(resolve === undefined ? {} : { resolve: resolve as ResolvedHookDefinition["resolve"] }),
+      ...(record === undefined ? {} : { record: record as ResolvedHookDefinition["record"] }),
+      ...(render === undefined ? {} : { render: render as ResolvedHookDefinition["render"] }),
       exportName: definition.exportName,
       logicalPath: definition.logicalPath,
       slug: definition.slug,

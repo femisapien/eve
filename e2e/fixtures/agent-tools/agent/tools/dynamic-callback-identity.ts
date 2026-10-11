@@ -5,7 +5,7 @@ import metadataProvider from "../channels/metadata-provider";
 export default defineDynamic({
   select: (_view, { channel }) =>
     isChannel(channel, metadataProvider) ? (channel.metadata.topic ?? null) : null,
-  build: (topic) => {
+  render: (topic) => {
     if (topic === "callback-guarded") {
       return {
         callback_identity: defineTool({

@@ -20,7 +20,7 @@ import {
 import { BundleKey } from "#runtime/sessions/runtime-context-keys.js";
 import type { ResolvedMemoryDefinition } from "#runtime/types.js";
 import { createMemoryScope, validateMemoryRecallResult } from "#shared/memory-state.js";
-import type { InternalResolveContext, Reaction } from "../reaction.js";
+import type { InternalRecordContext, Reaction } from "../reaction.js";
 import { slotsOf } from "../runner.js";
 
 const log = createLogger("memory");
@@ -46,18 +46,18 @@ export function memoryReactions(memory: ResolvedMemoryDefinition): readonly Reac
       const messages = validateMemoryRecallResult(result as never, memory.slot);
       return { value: messages.length === 0 ? null : messages.map(({ content }) => content) };
     },
-    conversation: true,
     // A recall that fails fails the turn, rather than running it without what it would bring.
     failure: "throw",
     id: `memory:${memory.slot}:recall`,
     kind: "memory",
     label: memory.logicalPath,
-    resolve: async (selected, ctx) => {
+    record: async (selected, ctx) => {
       const { turn } = selected as { readonly turn: number | null };
       if (turn === null) return null;
+      // Read first: a commit without the conversation postpones recall before any I/O.
+      const turnContext = activeTurn(ctx.messages);
       const scope = await resolveMemoryScope(memory, ctx);
       if (scope === null) return null;
-      const turnContext = activeTurn(ctx.messages ?? []);
       const id = operationId(ctx, memory.slot, "turn.started", turnContext);
       return await instrumentMemoryOperation(
         instrumentations.get(ctx.ctx),
@@ -74,7 +74,7 @@ export function memoryReactions(memory: ResolvedMemoryDefinition): readonly Reac
             ...buildCallbackContext(),
             abortSignal: ctx.abortSignal,
             memory: { scope, slot: memory.slot },
-            messages: ctx.messages ?? [],
+            messages: ctx.messages,
             operationId: id,
             turn: turnContext,
           });
@@ -98,18 +98,17 @@ export function memoryReactions(memory: ResolvedMemoryDefinition): readonly Reac
     recall,
     {
       contribute: () => ({ value: null }),
-      conversation: true,
       id: `memory:${memory.slot}:capture`,
       kind: "memory",
       label: memory.logicalPath,
-      resolve: async (_selected, ctx) => {
+      record: async (_selected, ctx) => {
         const settled = ctx.facts.find(
           (fact) => fact.type === "turn.settled" && fact.data.outcome === "completed",
         );
         if (settled === undefined) return null;
+        const turnContext = activeTurn(ctx.messages);
         const scope = await resolveMemoryScope(memory, ctx);
         if (scope === null) return null;
-        const turnContext = activeTurn(ctx.messages ?? []);
         const id = operationId(ctx, memory.slot, "turn.completed", turnContext);
         try {
           await instrumentMemoryOperation(
@@ -127,7 +126,7 @@ export function memoryReactions(memory: ResolvedMemoryDefinition): readonly Reac
                 ...buildCallbackContext(),
                 abortSignal: ctx.abortSignal,
                 memory: { scope, slot: memory.slot },
-                messages: ctx.messages ?? [],
+                messages: ctx.messages,
                 operationId: id,
                 turn: turnContext,
               });
@@ -156,7 +155,7 @@ export function memoryRecallContents(
 /** The scope a memory slot operates under for this session, or `null` when it's disabled. */
 export async function resolveMemoryScope(
   memory: Pick<ResolvedMemoryDefinition, "namespace" | "scope" | "slot">,
-  ctx: Pick<InternalResolveContext, "abortSignal" | "channel" | "session" | "ctx">,
+  ctx: Pick<InternalRecordContext, "abortSignal" | "channel" | "session" | "ctx">,
 ): Promise<MemoryScope | null> {
   const scope =
     typeof memory.scope === "function"
@@ -212,7 +211,7 @@ function activeTurn(messages: readonly ModelMessage[]): MemoryTurnContext {
 }
 
 function operationId(
-  ctx: Pick<InternalResolveContext, "session">,
+  ctx: Pick<InternalRecordContext, "session">,
   slot: string,
   phase: string,
   turn: MemoryTurnContext,

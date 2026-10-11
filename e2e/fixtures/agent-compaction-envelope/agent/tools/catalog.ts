@@ -2,7 +2,7 @@ import { defineDynamic, defineTool } from "eve/tools";
 
 export default defineDynamic({
   select: (view) => JSON.stringify(view.messages).includes("[expand-envelope]"),
-  build: (expanded) => {
+  render: (expanded) => {
     if (!expanded) return null;
     return {
       catalog_probe: defineTool({

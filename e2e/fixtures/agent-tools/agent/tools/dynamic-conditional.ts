@@ -1,18 +1,18 @@
 import { defineDynamic, defineTool, once } from "eve/tools";
 
-/** Resolver runs by session. `resolve` can't write session state, so the count lives here. */
+/** Resolver runs by session. `record` can't write session state, so the count lives here. */
 const invocations = new Map<string, number>();
 
 export default defineDynamic({
   select: once,
   // Counts every invocation. If resolve truly runs once per session, this stays at 1 and build
   // returns the "first" tool. If it re-runs, the count increases and a different tool appears.
-  resolve: async (_selected, ctx) => {
+  record: async (_selected, ctx) => {
     const count = (invocations.get(ctx.session.id) ?? 0) + 1;
     invocations.set(ctx.session.id, count);
     return count;
   },
-  build: (count) => {
+  render: (count) => {
     if (count === 1) {
       return {
         check_stability: defineTool({

@@ -7,7 +7,7 @@ import { normalizeInstructionsDefinition } from "#internal/authored-definition/c
 import type { InstructionsDefinition } from "#public/definitions/instructions.js";
 import type { ResolvedDynamicInstructionsResolver } from "#runtime/types.js";
 import { isBrandedInstructionsEntry } from "#shared/instructions-definition.js";
-import { authoredBuild, authoredResolve, type Reaction } from "../reaction.js";
+import { authoredRender, authoredRecord, type Reaction } from "../reaction.js";
 import { slotsOf } from "../runner.js";
 import { readReactionsState, writeReactionsState } from "../state.js";
 
@@ -42,8 +42,10 @@ export function instructionsReaction(resolver: ResolvedDynamicInstructionsResolv
     id: `instructions:${resolver.slug}`,
     kind: "instructions",
     label: resolver.logicalPath,
-    build: authoredBuild(resolver.logicalPath, resolver.build, { framework: resolver.framework }),
-    resolve: authoredResolve(resolver.logicalPath, resolver.resolve, {
+    render: authoredRender(resolver.logicalPath, resolver.render, {
+      framework: resolver.framework,
+    }),
+    record: authoredRecord(resolver.logicalPath, resolver.record, {
       framework: resolver.framework,
     }),
     select: resolver.select as Reaction["select"],

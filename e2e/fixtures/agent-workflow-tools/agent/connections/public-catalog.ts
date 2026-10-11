@@ -5,7 +5,7 @@ import { fixtureUrl } from "../lib/fake-service.ts";
 
 export default defineDynamic({
   select: once,
-  build: () =>
+  render: () =>
     defineMcpClientConnection({
       description: "Public catalog: lists items without sign-in; orders need sign-in.",
       url: fixtureUrl("/fixture-public-catalog/mcp").href,

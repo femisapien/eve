@@ -6,6 +6,6 @@ import { deprecatedGitHubConfigured } from "../lib/github-compat.ts";
 /** @deprecated Mount `eve/extensions/git` with `github` config. */
 export default defineDynamic({
   select: once,
-  resolve: () =>
+  render: () =>
     deprecatedGitHubConfigured() ? defineInstructions({ content: githubInstructions(true) }) : null,
 });

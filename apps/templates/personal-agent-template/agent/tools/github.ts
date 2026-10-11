@@ -9,7 +9,7 @@ type GitHubSubject = { readonly type: "user"; readonly id: string; readonly issu
 export default defineDynamic({
   select: (_view, { session }) => session.auth.current,
   // Checks the user has connected GitHub. eve records the subject, never the token.
-  resolve: async (auth): Promise<GitHubSubject> => {
+  record: async (auth): Promise<GitHubSubject> => {
     const userId = auth?.principalId;
     if (!userId || userId.startsWith("eve:")) return null;
     const subject = {
@@ -26,7 +26,7 @@ export default defineDynamic({
     }
   },
   // Each call fetches a current token for the subject.
-  build: (subject) =>
+  render: (subject) =>
     subject === null
       ? {}
       : buildEveToolMap({

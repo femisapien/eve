@@ -81,25 +81,25 @@ describe("resolveHookDefinition", () => {
     });
 
     await expect(resolveHookDefinition(definition, moduleMap, undefined)).rejects.toThrow(
-      "requires events, or select and resolve",
+      "requires events, or select with record or render",
     );
   });
 
-  it("rejects a hook with both events and select and resolve", async () => {
+  it("rejects a hook with both events and select", async () => {
     const definition = buildDefinition({ slug: "both" });
     const moduleMap = buildModuleMap(definition.sourceId, {
-      default: { events: {}, resolve: () => null, select: () => null },
+      default: { events: {}, render: () => null, select: () => null },
     });
 
     await expect(resolveHookDefinition(definition, moduleMap, undefined)).rejects.toThrow(
-      "either events or select and resolve, not both",
+      "either events or select, not both",
     );
   });
 
-  it("rejects a hook resolve without select", async () => {
+  it("rejects a hook render without select", async () => {
     const definition = buildDefinition({ slug: "unselected" });
     const moduleMap = buildModuleMap(definition.sourceId, {
-      default: { resolve: () => null },
+      default: { render: () => null },
     });
 
     await expect(resolveHookDefinition(definition, moduleMap, undefined)).rejects.toThrow(

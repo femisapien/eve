@@ -13,18 +13,18 @@ const context = {
   channel: {},
 };
 
-/** Runs a definition as the runner does: `select`, then `resolve` if any, then `build` if any. */
+/** Runs a definition as the runner does: `select`, then `record` if any, then `render` if any. */
 async function run<T>(definition: {
   select: (view: never, ctx: never) => unknown;
-  resolve?: (selected: never, ctx: never) => unknown;
-  build?: (input: never) => unknown;
+  record?: (selected: never, ctx: never) => unknown;
+  render?: (input: never) => unknown;
 }): Promise<T> {
   const selected = definition.select({} as never, context as never);
-  const resolved =
-    definition.resolve === undefined
+  const recorded =
+    definition.record === undefined
       ? selected
-      : await definition.resolve(selected as never, context as never);
-  return (definition.build === undefined ? resolved : definition.build(resolved as never)) as T;
+      : await definition.record(selected as never, context as never);
+  return (definition.render === undefined ? recorded : definition.render(recorded as never)) as T;
 }
 
 /** Resolves each definition once, as the runner does for `select: once`. */

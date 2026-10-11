@@ -6,7 +6,12 @@ import type {
 import type { ExactDefinition } from "#public/definitions/exact.js";
 import type { RemoteAgentDefinition } from "#public/definitions/remote-agent.js";
 import { defineDynamic as defineDynamicBase } from "#dynamic/definition.js";
-import type { DynamicDataDefinition, DynamicSentinel } from "#dynamic/definition.js";
+import type {
+  DynamicRecordDefinition,
+  DynamicRecordRenderDefinition,
+  DynamicRenderDefinition,
+  DynamicSentinel,
+} from "#dynamic/definition.js";
 
 declare const DEFINED_AGENT: unique symbol;
 
@@ -54,7 +59,7 @@ export type DynamicLocalSubagentDefinition = Extract<
 /** Definition a dynamic subagent resolver may select at runtime. */
 export type DynamicSubagentDefinition = DynamicLocalSubagentDefinition | RemoteAgentDefinition;
 
-/** Static fields a dynamic subagent declares beside `select` and `resolve`. */
+/** Static fields a dynamic subagent declares beside `select`, `record`, and `render`. */
 export interface DynamicSubagentStaticFields {
   readonly build?: AgentBuildDefinition;
   readonly defaultTools?: boolean;
@@ -64,9 +69,9 @@ export interface DynamicSubagentStaticFields {
 export type DynamicSubagentResult = DynamicSubagentDefinition | null;
 
 /**
- * Makes a whole subagent dynamic: `resolve` returns `defineAgent({ description, model })`, a
- * remote agent, or `null` to omit it, and eve calls it again when `select` changes. Packaging
- * fields, `build` and `defaultTools`, sit beside `select` and `resolve`.
+ * Makes a whole subagent dynamic: `render` returns `defineAgent({ description, model })`, a
+ * remote agent, or `null` to omit it, and eve renders again when `select` changes. Packaging
+ * fields, `build` and `defaultTools`, sit beside `select` and `render`.
  *
  * To keep a subagent's description and choose only its model per session, export `defineAgent()`
  * with a dynamic `model` field instead: `defineDynamic` from `eve/models`, or `auto()`.
@@ -74,16 +79,29 @@ export type DynamicSubagentResult = DynamicSubagentDefinition | null;
  * ```ts
  * export default defineDynamic({
  *   select: (_view, ctx) => ctx.session.auth.current?.attributes?.role === "finance",
- *   resolve: (finance) =>
+ *   render: (finance) =>
  *     finance ? defineAgent({ description: "Answer billing questions.", model: "zai/glm-5.2" }) : null,
  * });
  * ```
  */
-export function defineDynamic<TSelected = null>(
-  definition: DynamicDataDefinition<TSelected, DynamicSubagentResult> & DynamicSubagentStaticFields,
-): DynamicSentinel<DynamicSubagentResult, TSelected> & DynamicSubagentStaticFields {
-  return defineDynamicBase(definition) as DynamicSentinel<DynamicSubagentResult, TSelected> &
-    DynamicSubagentStaticFields;
+export function defineDynamic<TSelected, TData>(
+  definition: DynamicRecordRenderDefinition<TSelected, TData, DynamicSubagentResult> &
+    DynamicSubagentStaticFields,
+): DynamicSentinel<DynamicSubagentResult, TSelected> & DynamicSubagentStaticFields;
+export function defineDynamic<TSelected>(
+  definition: DynamicRenderDefinition<TSelected, DynamicSubagentResult> &
+    DynamicSubagentStaticFields,
+): DynamicSentinel<DynamicSubagentResult, TSelected> & DynamicSubagentStaticFields;
+export function defineDynamic<TSelected>(
+  definition: DynamicRecordDefinition<TSelected, DynamicSubagentResult> &
+    DynamicSubagentStaticFields,
+): DynamicSentinel<DynamicSubagentResult, TSelected> & DynamicSubagentStaticFields;
+export function defineDynamic(
+  definition: DynamicSubagentStaticFields & {
+    readonly select: (...args: never[]) => unknown;
+  },
+): unknown {
+  return defineDynamicBase(definition as never);
 }
 
 /**

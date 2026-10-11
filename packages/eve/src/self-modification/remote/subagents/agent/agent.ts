@@ -1,4 +1,4 @@
-import type { ResolveContext } from "#dynamic/definition.js";
+import type { RecordContext } from "#dynamic/definition.js";
 import { defineAgent, defineDynamic } from "eve";
 
 import { DEFAULT_AGENT_MODEL_ID, DEFAULT_AGENT_REASONING } from "#shared/default-agent-model.js";
@@ -38,7 +38,7 @@ interface Selected {
   readonly principal: string | null;
 }
 
-const resolve = async (selected: Selected, ctx: ResolveContext) => {
+const record = async (selected: Selected, ctx: RecordContext) => {
   if (!isDeployedRuntime()) return null;
   const bound = selfModification.config;
   const config = resolveDeployedSelfModificationConfig(bound);
@@ -67,5 +67,5 @@ export default defineDynamic<Selected>({
     model: view.model?.id ?? null,
     principal: ctx.session.auth.current?.principalId ?? null,
   }),
-  resolve,
+  record,
 });

@@ -28,7 +28,7 @@ For investigation tasks, report the findings and supporting evidence requested b
 
 export default defineDynamic({
   select: () => null,
-  resolve: () => {
+  render: () => {
     if (!isDeployedRuntime()) return null;
 
     return defineInstructions({

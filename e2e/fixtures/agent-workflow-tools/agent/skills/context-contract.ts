@@ -3,7 +3,7 @@ import { recordDynamicSkillContext } from "../../dynamic-skill-context-audit";
 
 export default defineDynamic({
   select: (view) => view.latest["turn.started"] ?? null,
-  resolve: (turn, ctx) => {
+  record: (turn, ctx) => {
     recordDynamicSkillContext(turn === null ? "session.started" : "turn.started", ctx);
     return defineSkill({
       description: "Policy for auditing dynamic skill context.",
