@@ -11,13 +11,18 @@ import type {
   ResolvedConnectionDefinition,
   ResolvedDynamicConnectionResolver,
 } from "#runtime/types.js";
-import { authoredResolve, type Reaction } from "../reaction.js";
+import { authoredBuild, authoredResolve, type Reaction } from "../reaction.js";
 import { slotsOf } from "../runner.js";
 import { dynamicToolNames } from "./tool.js";
 
-/** A `defineDynamic()` in `agent/connections/`: one connection named after the file, or a map. */
+/**
+ * A `defineDynamic()` in `agent/connections/`: one connection named after the file, or a map.
+ * Connections carry code, such as `getToken`, so `build` creates them.
+ */
 export function connectionReaction(resolver: ResolvedDynamicConnectionResolver): Reaction {
+  const framework = { framework: resolver.framework };
   return {
+    build: authoredBuild(resolver.logicalPath, resolver.build, framework),
     contribute: (result, { ctx }) => {
       const connections = namedConnections(resolver, result).map(({ name, value }) =>
         resolveDynamicConnectionValue(value, {
@@ -38,9 +43,7 @@ export function connectionReaction(resolver: ResolvedDynamicConnectionResolver):
     id: `connection:${resolver.extensionNamespace ?? ""}:${resolver.slug}`,
     kind: "connection",
     label: resolver.logicalPath,
-    resolve: authoredResolve(resolver.logicalPath, resolver.resolve, {
-      framework: resolver.framework,
-    }),
+    resolve: authoredResolve(resolver.logicalPath, resolver.resolve, framework),
     select: resolver.select as Reaction["select"],
   };
 }

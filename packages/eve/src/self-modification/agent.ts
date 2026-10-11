@@ -1,5 +1,6 @@
 import {
   defineDynamic,
+  once,
   type AgentReasoningDefinition,
   type AgentStaticModelDefinition,
 } from "#public/index.js";
@@ -23,7 +24,7 @@ function warnRetiredScaffold(): void {
 /** @deprecated Use the packaged `eve/self-modification` extension. */
 export function defineSelfModificationAgent(_options: SelfModificationAgentOptions = {}) {
   return defineDynamic({
-    select: () => null,
+    select: once,
     resolve: async (): Promise<null> => {
       warnRetiredScaffold();
       return null;

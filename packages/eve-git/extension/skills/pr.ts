@@ -1,10 +1,10 @@
-import { defineDynamic, defineSkill } from "eve/skills";
+import { defineDynamic, defineSkill, once } from "eve/skills";
 
 import extension from "../extension.ts";
 import { prSkillDescription, prSkillMarkdown } from "../lib/github-guidance.ts";
 
 export default defineDynamic({
-  select: () => null,
+  select: once,
   resolve: () => {
     const github = extension.config.github !== undefined;
     return defineSkill({

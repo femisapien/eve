@@ -72,7 +72,7 @@ export default defineAgent({
         : hasUserText(view.messages, CHILD_REQUEST)
           ? "result-child"
           : null,
-    resolve: (probe) =>
+    build: (probe) =>
       probe === "disabled-agent-tool"
         ? { model: disabledAgentToolModel, modelContextWindowTokens: 1_000_000 }
         : probe === "result-child"

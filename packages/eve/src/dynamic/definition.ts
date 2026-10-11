@@ -65,9 +65,8 @@ export interface SelectContext {
 }
 
 /**
- * What `resolve` receives besides its selection. `resolve` is a function of its selection: eve
- * may call it again with the same selection at any time, such as to rebuild code in another
- * process, so it gets no facts. Read facts in a hook's `events` handlers.
+ * What `resolve` receives besides its selection. eve calls `resolve` once for each new selection
+ * and records what it returns, so it gets no facts. Read facts in a hook's `events` handlers.
  */
 export interface ResolveContext extends SelectContext {
   readonly abortSignal: AbortSignal;
@@ -79,11 +78,30 @@ export type ReactionSelect<TSelected, TView = ReactionView> = (
   ctx: SelectContext,
 ) => TSelected;
 
-/** Returns what a reaction contributes, given what its `select` read. */
+/** Fetches what a value is made of, given what its `select` read. eve records the result. */
 export type ReactionResolve<TSelected, TResult> = (
   selected: TSelected,
   ctx: ResolveContext,
 ) => TResult | Promise<TResult>;
+
+/**
+ * Creates the code a value carries, such as tools, from the JSON eve recorded: what `resolve`
+ * returned, or the selection when there's no `resolve`. Synchronous, so it can't do I/O. A process
+ * that has never seen the session calls it with the recorded JSON, and never calls `resolve`.
+ */
+export type ReactionBuild<TInput, TResult> = (input: TInput) => TResult;
+
+/** Resolves once per session: `select: once`. */
+export const once = (): null => null;
+
+/** Resolves once per turn: `select: perTurn`. */
+export const perTurn = (view: { readonly turn: { readonly id: string } | null }): string | null =>
+  view.turn?.id ?? null;
+
+/** Resolves once per model call: `select: perStep`. */
+export const perStep = (view: {
+  readonly latest: Readonly<Record<string, number | undefined>>;
+}): number | null => view.latest["model.requested"] ?? null;
 
 /** Marker discriminator for a `defineDynamic()` or `defineHook()` export. */
 export const DYNAMIC_SENTINEL_KIND = "eve:dynamic" as const;
@@ -92,69 +110,112 @@ export const DYNAMIC_SENTINEL_KIND = "eve:dynamic" as const;
 export interface DynamicSentinel<TResult = unknown, TSelected = unknown> {
   readonly kind: typeof DYNAMIC_SENTINEL_KIND;
   readonly select: ReactionSelect<TSelected>;
-  readonly resolve: ReactionResolve<TSelected, TResult>;
+  readonly resolve?: ReactionResolve<TSelected, unknown>;
+  readonly build?: ReactionBuild<never, TResult>;
 }
 
-/**
- * The `select` and `resolve` pair `defineDynamic()` accepts. `select` is required: return `null`
- * from it to resolve once per session.
- */
-export interface DynamicDefinition<TSelected, TResult> {
+/** A value that is data: `resolve` returns it. */
+export interface DynamicDataDefinition<TSelected, TResult> {
   readonly select: ReactionSelect<TSelected>;
   readonly resolve: ReactionResolve<TSelected, TResult>;
+  readonly build?: never;
 }
 
-/** `defineDynamic()` typed for the slot it is authored in. */
-export type DefineDynamic<TResult> = <TSelected, TStatic extends object = object>(
-  definition: DynamicDefinition<TSelected, TResult> & TStatic,
-) => DynamicSentinel<TResult, TSelected> & TStatic;
+/** A value with code that needs I/O: `resolve` fetches JSON, and `build` creates the code. */
+export interface DynamicFetchedCodeDefinition<TSelected, TData, TResult> {
+  readonly select: ReactionSelect<TSelected>;
+  readonly resolve: ReactionResolve<TSelected, TData>;
+  readonly build: ReactionBuild<TData, TResult>;
+}
+
+/** A value with code and no I/O: `build` creates it from the selection. */
+export interface DynamicSelectedCodeDefinition<TSelected, TResult> {
+  readonly select: ReactionSelect<TSelected>;
+  readonly resolve?: never;
+  readonly build: ReactionBuild<TSelected, TResult>;
+}
+
+/** `defineDynamic()` for a slot whose value may be data or code: instructions, skills, models. */
+export interface DefineDynamic<TResult> {
+  <TSelected, TData, TStatic extends object = object>(
+    definition: DynamicFetchedCodeDefinition<TSelected, TData, TResult> & TStatic,
+  ): DynamicSentinel<TResult, TSelected> & TStatic;
+  <TSelected, TStatic extends object = object>(
+    definition: DynamicSelectedCodeDefinition<TSelected, TResult> & TStatic,
+  ): DynamicSentinel<TResult, TSelected> & TStatic;
+  <TSelected, TStatic extends object = object>(
+    definition: DynamicDataDefinition<TSelected, TResult> & TStatic,
+  ): DynamicSentinel<TResult, TSelected> & TStatic;
+}
+
+/** `defineDynamic()` for a slot whose value is always code, tools and connections: `build` makes it. */
+export interface DefineDynamicCode<TResult> {
+  <TSelected, TData, TStatic extends object = object>(
+    definition: DynamicFetchedCodeDefinition<TSelected, TData, TResult> & TStatic,
+  ): DynamicSentinel<TResult, TSelected> & TStatic;
+  <TSelected, TStatic extends object = object>(
+    definition: DynamicSelectedCodeDefinition<TSelected, TResult> & TStatic,
+  ): DynamicSentinel<TResult, TSelected> & TStatic;
+}
 
 /**
- * The one definition every authored reaction compiles from: `select` and `resolve`, or a map of
- * `events` handlers, never both. `defineDynamic()` and `defineHook()` narrow it: a slot's folder
- * takes `select` and `resolve` returning its kind, and a hook takes either form returning intents.
+ * The one definition every authored reaction compiles from: `select` with `resolve` or `build`,
+ * or a map of `events` handlers. `defineDynamic()` and `defineHook()` narrow it.
  */
 export type ResolverDefinition =
   | {
       readonly select: (...args: never[]) => unknown;
-      readonly resolve: (...args: never[]) => unknown;
+      readonly resolve?: (...args: never[]) => unknown;
+      readonly build?: (...args: never[]) => unknown;
       readonly events?: never;
     }
   | {
       readonly events: Readonly<Record<string, unknown>>;
       readonly select?: never;
       readonly resolve?: never;
+      readonly build?: never;
     };
 
 /** Validates a resolver's form and marks it for the compiler. Not public: use its narrowings. */
 export function defineResolver<T extends ResolverDefinition>(
   definition: T,
   name: string,
+  options: ResolverFormOptions = {},
 ): T & { readonly kind: typeof DYNAMIC_SENTINEL_KIND } {
-  assertResolverForm(definition, `${name}()`);
+  assertResolverForm(definition, `${name}()`, options);
   const sentinel = { ...definition, kind: DYNAMIC_SENTINEL_KIND };
   stampDefinitionKey(sentinel, "dynamic");
   return sentinel;
 }
 
+/** A hook's form: `events`, or `select` and `resolve`. Hooks act, so they have nothing to build. */
+export const HOOK_FORM: ResolverFormOptions = { build: "forbidden", events: true };
+
+export interface ResolverFormOptions {
+  /** Whether an `events` map is allowed instead of `select`. Hooks only. */
+  readonly events?: boolean;
+  /** Whether `build` is required (tools, connections), allowed (the default), or forbidden (hooks). */
+  readonly build?: "required" | "allowed" | "forbidden";
+}
+
 /**
- * Throws unless `value` takes exactly one form: `select` and `resolve` functions, or an `events`
- * object. Both the definers and the compiler use it, so every source of a resolver agrees.
+ * Throws unless `value` takes one form: `select` with `resolve`, `build`, or both, or an `events`
+ * object. The definers, the compiler, and the runtime loader all use it, so every source agrees.
  */
 export function assertResolverForm(
   value: unknown,
   subject: string,
-  options: { readonly events?: boolean } = { events: true },
+  options: ResolverFormOptions = {},
 ): void {
   if (typeof value !== "object" || value === null) {
     throw new Error(`${subject} takes an object.`);
   }
-  const { events, resolve, select } = value as Record<string, unknown>;
+  const { build, events, resolve, select } = value as Record<string, unknown>;
   if (events !== undefined) {
-    if (options.events === false) {
-      throw new Error(`${subject} takes select and resolve, not events.`);
+    if (options.events !== true) {
+      throw new Error(`${subject} takes select with resolve or build, not events.`);
     }
-    if (select !== undefined || resolve !== undefined) {
+    if (select !== undefined || resolve !== undefined || build !== undefined) {
       throw new Error(`${subject} takes either events or select and resolve, not both.`);
     }
     if (typeof events !== "object" || events === null) {
@@ -162,46 +223,53 @@ export function assertResolverForm(
     }
     return;
   }
-  if (typeof resolve !== "function") {
+  if (resolve !== undefined && typeof resolve !== "function") {
+    throw new Error(`${subject} resolve must be a function.`);
+  }
+  if (build !== undefined && typeof build !== "function") {
+    throw new Error(`${subject} build must be a function.`);
+  }
+  const mode = options.build ?? "allowed";
+  if (mode === "forbidden" && build !== undefined) {
+    throw new Error(`${subject} takes select and resolve; only dynamic values take build.`);
+  }
+  if (mode === "required" && build === undefined) {
     throw new Error(
-      options.events === false
-        ? `${subject} requires a resolve function.`
-        : `${subject} requires events, or select and resolve.`,
+      `${subject} creates code, so it needs build: return JSON from resolve, and create the code from it in build. eve records the JSON, and a fresh process calls build with it.`,
+    );
+  }
+  if (resolve === undefined && build === undefined) {
+    throw new Error(
+      options.events === true
+        ? `${subject} requires events, or select and resolve.`
+        : `${subject} requires resolve or build beside select.`,
     );
   }
   if (typeof select !== "function") {
     throw new Error(
-      `${subject} requires a select function beside resolve. Return null from select to resolve once per session.`,
+      `${subject} requires a select function. Use select: once to resolve once per session.`,
     );
   }
 }
 
 /**
- * Defines what a file contributes as a function of the session. `select` reads what the result
- * depends on, and `resolve` returns the file's contribution; eve calls `resolve` again only when
- * the selection changes. The directory decides what `resolve` returns: tools in `agent/tools/`,
- * skills in `agent/skills/`, and so on. A single definition is named after the file; a map names
- * each entry by its key. Return `null` to contribute nothing, and from `select` to resolve once.
+ * Defines a value that depends on the session. `select` reads what it depends on; `resolve`
+ * fetches what it's made of, once per new selection, and eve records that; `build` creates any
+ * code it carries from the recorded JSON. The directory decides what the value is: tools in
+ * `agent/tools/`, skills in `agent/skills/`, and so on.
  *
  * ```ts
- * import { defineDynamic, defineTool } from "eve/tools";
+ * import { defineDynamic, defineTool, once } from "eve/tools";
  *
  * export default defineDynamic({
- *   select: (view) => view.latest["turn.started"] ?? null,
- *   resolve: async () =>
- *     Object.fromEntries((await listTables()).map((table) => [table.name, tableTool(table)])),
+ *   select: once,
+ *   resolve: async () => (await listTables()).map(({ name, columns }) => ({ name, columns })),
+ *   build: (tables) => Object.fromEntries(tables.map((table) => [table.name, tableTool(table)])),
  * });
  * ```
  */
-export function defineDynamic<TResult = unknown, TSelected = null, TStatic extends object = object>(
-  definition: DynamicDefinition<TSelected, TResult> & TStatic,
-): DynamicSentinel<TResult, TSelected> & TStatic {
-  assertResolverForm(definition, "defineDynamic()", { events: false });
-  return defineResolver(
-    definition as DynamicDefinition<TSelected, TResult> & TStatic & ResolverDefinition,
-    "defineDynamic",
-  ) as unknown as DynamicSentinel<TResult, TSelected> & TStatic;
-}
+export const defineDynamic: DefineDynamic<unknown> = ((definition: ResolverDefinition) =>
+  defineResolver(definition, "defineDynamic")) as DefineDynamic<unknown>;
 
 const FRAMEWORK_RESOLVER = Symbol.for("eve.framework-resolver");
 
@@ -226,15 +294,20 @@ export function isDynamicSentinel(value: unknown): value is DynamicSentinel {
   );
 }
 
-/** Rejects keys a slot doesn't accept beside `select` and `resolve`. */
+/** Rejects keys a slot doesn't accept beside `select`, `resolve`, and `build`. */
 export function assertDynamicSentinelKeys(
   sentinel: DynamicSentinel,
   message: string,
   allowed: readonly string[] = [],
 ): void {
-  assertResolverForm(sentinel, `${message} The definition`, { events: false });
+  assertResolverForm(sentinel, `${message} The definition`);
   const unknownKeys = Object.keys(sentinel).filter(
-    (key) => key !== "kind" && key !== "select" && key !== "resolve" && !allowed.includes(key),
+    (key) =>
+      key !== "kind" &&
+      key !== "select" &&
+      key !== "resolve" &&
+      key !== "build" &&
+      !allowed.includes(key),
   );
   if (unknownKeys.length > 0) {
     throw new Error(`${message} Unknown key(s): ${unknownKeys.join(", ")}.`);

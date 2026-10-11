@@ -6,7 +6,7 @@ import {
   type ReactionView,
   type ResolveContext,
 } from "#dynamic/definition.js";
-import { withModelOptions } from "#dynamic/model-options.js";
+import { readingConversation } from "#dynamic/model-options.js";
 import { turnInputText } from "#reactions/turn.js";
 import { createLogger, formatError } from "#internal/logging.js";
 import { isAgentReasoningDefinition, isRuntimeLanguageModel } from "#internal/runtime-model.js";
@@ -76,10 +76,15 @@ function selectionLogIdentity(selection: AutoModelSelection): string {
  * runs, so the turn decides once: its tool calls, steering, and compaction don't decide again.
  */
 function turnState(view: ReactionView): TurnState | null {
-  return view.turn === null ? null : { input: turnInputText(view.turn), turnId: view.turn.id };
+  if (view.turn === null) return null;
+  const input = turnInputText(view.turn);
+  // Longer input can't be routed, and needn't be digested after every commit.
+  return { input: input.length > MAX_ROUTING_CHARACTERS ? null : input, turnId: view.turn.id };
 }
 
-type TurnState = { readonly input: string; readonly turnId: string };
+const MAX_ROUTING_CHARACTERS = 16_000;
+
+type TurnState = { readonly input: string | null; readonly turnId: string };
 
 /**
  * What the decision reads: the turn's input, after up to seven earlier user and assistant text
@@ -108,7 +113,7 @@ function routingState(
       break;
     }
   }
-  if (turn.input.length > 16_000) {
+  if (turn.input === null) {
     throw new Error("The latest message is too long for auto routing.");
   }
   const messages: { role: string; text: string }[] = turn.input.trim()
@@ -117,7 +122,7 @@ function routingState(
   let characters = turn.input.length;
   for (let index = end - 1; index >= 0 && messages.length < 8; index--) {
     const message = texts[index]!;
-    if (message.text.length + characters > 16_000) break;
+    if (message.text.length + characters > MAX_ROUTING_CHARACTERS) break;
     characters += message.text.length;
     messages.unshift(message);
   }
@@ -221,16 +226,23 @@ export function auto<const T extends Readonly<Record<string, AutoOption>>>(
     }
   }
 
-  const definition = defineDynamic<PublicAgentDynamicModelResult, TurnState | null>({
-    select: turnState,
-    resolve: async (state, ctx) => {
-      const choice = await choose(state, ctx);
-      return (choice === null ? null : models.get(choice)!) as PublicAgentDynamicModelResult;
-    },
-  });
-  // The model slot records the option, and rebuilds its model from it.
-  return withModelOptions(definition, {
-    choose: choose as never,
-    option: (key) => models.get(key),
-  });
+  // resolve decides, and eve records the option it chose; build turns the option into a model, so
+  // a process that didn't decide builds the same model without deciding again.
+  return readingConversation(
+    defineDynamic({
+      select: turnState,
+      resolve: (state: TurnState | null, ctx) => choose(state, ctx),
+      build: (key: string | null) => (key === null ? null : optionOf(key)),
+    }),
+  ) as unknown as DynamicSentinel<PublicAgentDynamicModelResult, TurnState | null>;
+
+  function optionOf(key: string): PublicAgentDynamicModelResult {
+    const option = models.get(key);
+    if (option === undefined) {
+      throw new Error(
+        `The model option "${key}" this session chose is no longer one of auto()'s options.`,
+      );
+    }
+    return option as PublicAgentDynamicModelResult;
+  }
 }

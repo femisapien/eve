@@ -246,6 +246,11 @@ export interface DurableDynamicSkillMetadata {
    * supporting files, which are the only packages written to the sandbox.
    */
   readonly revision?: string;
+  /**
+   * The package's files, base64-encoded, for packages with supporting files: the session records
+   * them, so a step in any process can write the package to a new sandbox.
+   */
+  readonly files?: readonly { readonly relativePath: string; readonly content: string }[];
 }
 
 export type DynamicSkillManifest = Readonly<Record<string, readonly DurableDynamicSkillMetadata[]>>;

@@ -13,7 +13,7 @@ export default defineAgent({
   experimental,
   model: defineDynamic({
     select: (view) => lastUserText(view.messages),
-    resolve: (text) => {
+    build: (text) => {
       if (text.length === 0) throw new Error("The model resolver did not receive incoming input.");
       if (text.includes("[model: boom]")) throw new Error("intentional resolver failure");
       if (text.includes("[model: mini]")) return { model, modelContextWindowTokens: 128_000 };

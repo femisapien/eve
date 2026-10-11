@@ -1,10 +1,10 @@
-import { defineAgent, defineDynamic } from "eve";
+import { defineAgent, defineDynamic, once } from "eve";
 
 import extension from "../../extension.ts";
 
 export default defineDynamic({
   defaultTools: false,
-  select: () => null,
+  select: once,
   resolve: () => {
     const worker = extension.config.worker ?? {
       model: "openai/gpt-5.6-terra-fast",

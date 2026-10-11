@@ -9,12 +9,13 @@ import actionNarration from "../channels/action-narration";
  * action request consumed pre-tool narration.
  */
 export default defineDynamic({
-  select: (view) => view.latest["model.requested"] ?? null,
-  resolve: (_event, ctx) => {
-    if (!isChannel(ctx.channel, actionNarration)) return null;
-
-    const narration = ctx.channel.metadata.observedNarration;
-    if (typeof narration !== "string" || narration.length === 0) return null;
+  select: (_view, { channel }) => {
+    if (!isChannel(channel, actionNarration)) return null;
+    const narration = channel.metadata.observedNarration;
+    return typeof narration === "string" && narration.length > 0 ? narration : null;
+  },
+  build: (narration) => {
+    if (narration === null) return null;
 
     return {
       "read-channel-action-narration": defineTool({

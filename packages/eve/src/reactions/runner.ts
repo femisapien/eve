@@ -40,7 +40,7 @@ import {
   writeLive,
   writeReactionsState,
 } from "./state.js";
-import { pendingIntents, satisfyIntents } from "./kinds/hook.js";
+import { takeIntents } from "./kinds/hook.js";
 import { latestTurn } from "./turn.js";
 
 const log = createLogger("reactions");
@@ -67,13 +67,8 @@ export interface RunReactionsInput {
 export async function runReactions(ctx: ContextContainer, input: RunReactionsInput): Promise<void> {
   const { reactions, effects } = await bundleReactions(ctx);
   writeReactionsState(ctx, withLatest(readReactionsState(ctx), input.written));
-  // A compaction that starts satisfies every compact intent waiting for one.
-  if (startsCompaction(input.written)) {
-    writeReactionsState(
-      ctx,
-      satisfyIntents(readReactionsState(ctx), pendingIntents(ctx, "compact")),
-    );
-  }
+  // A compaction that starts acts on every compact intent waiting for one.
+  if (startsCompaction(input.written)) takeIntents(ctx, (intent) => intent.type === "compact");
   if (reactions.length === 0) return;
   const line = input.written.at(-1)?.position.line ?? readReactionsState(ctx).latest["*"] ?? 0;
   const selectContext = selectContextOf(ctx);
@@ -122,9 +117,8 @@ export async function runReactions(ctx: ContextContainer, input: RunReactionsInp
 }
 
 /**
- * Stops the running turn for the first cancel intent that targets it. The intent is satisfied
- * once the turn stops, so it acts once; one the commit can't act on waits for a commit that can,
- * while its turn still runs.
+ * Stops the running turn for the first cancel intent that targets it, and drops cancels whose turn
+ * has ended. One the commit can't act on waits for a commit that can, while its turn still runs.
  */
 function actOnCancels(
   ctx: ContextContainer,
@@ -133,7 +127,10 @@ function actOnCancels(
   cancelTurn: RunReactionsInput["cancelTurn"],
 ): void {
   const turnId = currentProjection(ctx).activeTurnId;
-  const pending = pendingIntents(ctx, "cancel").filter(({ intent }) => intent.turnId === turnId);
+  takeIntents(ctx, (intent) => intent.type === "cancel" && intent.turnId !== turnId);
+  const pending = (readReactionsState(ctx).intents ?? []).filter(
+    (intent) => intent.type === "cancel",
+  );
   const [first] = pending;
   if (first === undefined) return;
   const hook = reactions.find(({ id }) => id === first.reactionId)?.label ?? first.reactionId;
@@ -143,11 +140,8 @@ function actOnCancels(
     }
     return;
   }
-  writeReactionsState(ctx, satisfyIntents(readReactionsState(ctx), pending));
-  cancelTurn({
-    hook,
-    ...(first.intent.reason === undefined ? {} : { reason: first.intent.reason }),
-  });
+  takeIntents(ctx, (intent) => intent.type === "cancel");
+  cancelTurn({ hook, ...(first.reason === undefined ? {} : { reason: first.reason }) });
 }
 
 function startsCompaction(written: readonly WrittenEvent[]): boolean {
@@ -159,11 +153,11 @@ function startsCompaction(written: readonly WrittenEvent[]): boolean {
 }
 
 /**
- * Rebuilds the code of every slot that carries some, for a step in a process that didn't build it:
- * the reaction's `rebuild` reads what the slot recorded, or else `resolve` runs again with the
- * selection it recorded. `revision` is the runtime revision the step runs. A slot this rebuilds
- * is current under it; one built under another that this process already holds resolves again
- * after the step's first commit.
+ * Builds the code of every slot that carries some, for a step in a process that didn't build it:
+ * `build` runs with the JSON the slot recorded, and `resolve` doesn't run. What the code offers
+ * must match what the session was offered, or the slot is withdrawn: eve fails closed rather than
+ * switch. `revision` is the runtime revision the step runs; a slot another revision resolved is
+ * built for this step without that check, and resolves again after the step's first commit.
  */
 export async function restoreReactions(
   ctx: ContextContainer,
@@ -172,56 +166,34 @@ export async function restoreReactions(
   if (input.revision !== undefined) {
     writeReactionsState(ctx, { ...readReactionsState(ctx), revision: input.revision });
   }
-  // A test seam: every step rebuilds its code as a fresh process would.
+  // A test seam: every step builds its code as a fresh process would.
   if (process.env.EVE_REACTIONS_COLD === "1") {
     const sessionId = ctx.get(SessionIdKey);
     if (sessionId !== undefined) forgetSessionLive(sessionId);
   }
   const { reactions } = await bundleReactions(ctx);
+  const revision = readReactionsState(ctx).revision;
   for (const reaction of reactions) {
     const slot = readSlot(ctx, reaction.id);
-    if (slot?.selection === undefined || readLive(ctx, reaction.id, slot) !== undefined) continue;
+    if (reaction.build === undefined || slot?.input === undefined) continue;
+    if (readLive(ctx, reaction.id, slot) !== undefined) continue;
     const rctx = resolveContextOf(ctx, {
       abortSignal: input.abortSignal,
-      previous: slot,
+      digest: slot.digest,
       written: [],
     });
-    log.debug("Rebuilding a reaction's code from its recorded selection", {
+    log.debug("Building a reaction's code from what its slot recorded", {
       reaction: reaction.label,
     });
-    // This process's code rebuilt it, so a new revision needn't resolve it again.
-    const current = readReactionsState(ctx).revision;
-    const stamp = (restored: Slot): Slot =>
-      current === undefined || restored.revision === current
-        ? restored
-        : { ...restored, revision: current };
     try {
-      if (reaction.rebuild !== undefined) {
-        const restored = stamp(slot);
-        const live = await reaction.rebuild(slot.value, rctx);
-        if (restored !== slot) writeSlot(ctx, reaction.id, restored);
-        if (live !== undefined) writeLive(ctx, reaction.id, restored, live);
-        continue;
+      const contribution = await reaction.contribute(await reaction.build(slot.input, rctx), rctx);
+      const offered = parseJsonValue(contribution.value ?? null);
+      if (!staleUnder(slot, revision) && canonicalJson(offered) !== canonicalJson(slot.value)) {
+        throw new Error(
+          `"${reaction.label}" built something other than what this session was offered. eve fails closed rather than switch; the next change to its selection resolves it again.`,
+        );
       }
-      const contribution = await reaction.contribute(
-        await reaction.resolve(slot.selection, rctx),
-        rctx,
-      );
-      const value = parseJsonValue(contribution.value ?? null);
-      let restored = stamp(slot);
-      let live = contribution.live;
-      if (canonicalJson(value) !== canonicalJson(slot.value)) {
-        log.warn("A reaction rebuilt from its recorded selection returned something different", {
-          reaction: reaction.label,
-        });
-        if (reaction.reconcile === undefined) {
-          restored = { ...restored, value };
-        } else {
-          live = reaction.reconcile(slot.value, { live, value });
-        }
-      }
-      if (restored !== slot) writeSlot(ctx, reaction.id, restored);
-      if (live !== undefined) writeLive(ctx, reaction.id, restored, live);
+      if (contribution.live !== undefined) writeLive(ctx, reaction.id, slot, contribution.live);
     } catch (error) {
       if (reaction.failure === "throw") throw error;
       withdraw(ctx, reaction, error, {
@@ -277,10 +249,13 @@ function writeSlot(ctx: ContextContainer, id: string, slot: Slot | undefined): v
  */
 function staleUnder(slot: Slot, revision: string | undefined): boolean {
   if (revision === undefined || slot.revision === revision) return false;
-  return slot.selection !== undefined || slot.error !== undefined;
+  return slot.input !== undefined || slot.error !== undefined;
 }
 
-/** Records a contribution; returns whether the slot's contribution changed. */
+/**
+ * Resolves a new selection into its slot: `resolve` fetches, eve records its JSON when the value
+ * carries code, and `build` creates that code. Returns whether the slot's contribution changed.
+ */
 async function resolveInto(
   ctx: ContextContainer,
   reaction: Reaction,
@@ -297,17 +272,22 @@ async function resolveInto(
   const previous = readSlot(ctx, reaction.id);
   const rctx = resolveContextOf(ctx, {
     abortSignal: run.abortSignal,
+    digest: run.digest,
     messages: reaction.conversation === true ? run.conversation : undefined,
-    previous,
     written: run.written,
   });
   let value: JsonValue;
   let live: unknown;
+  let input: JsonValue | undefined;
   try {
-    const contribution = await reaction.contribute(
-      await reaction.resolve(run.selection, rctx),
-      rctx,
-    );
+    const resolved =
+      reaction.resolve === undefined ? run.selection : await reaction.resolve(run.selection, rctx);
+    let result = resolved;
+    if (reaction.build !== undefined) {
+      input = recordable(reaction, resolved);
+      result = await reaction.build(input, rctx);
+    }
+    const contribution = await reaction.contribute(result, rctx);
     value = parseJsonValue(contribution.value ?? null);
     live = contribution.live;
   } catch (error) {
@@ -320,13 +300,24 @@ async function resolveInto(
     digest: run.digest,
     since: unchanged ? previous.since : run.line,
     value,
-    ...(live === undefined ? {} : { selection: run.selection }),
+    ...(live === undefined || input === undefined ? {} : { input }),
     ...(run.revision === undefined ? {} : { revision: run.revision }),
   };
   writeSlot(ctx, reaction.id, slot);
   if (live === undefined) clearLive(ctx, reaction.id);
   else writeLive(ctx, reaction.id, slot, live);
   return !unchanged;
+}
+
+/** What `build` is built from, which eve records: it must be JSON. */
+function recordable(reaction: Reaction, resolved: unknown): JsonValue {
+  try {
+    return parseJsonValue(resolved ?? null);
+  } catch {
+    throw new Error(
+      `The resolve of "${reaction.label}" must return JSON: eve records it, and build creates code from it. Return the data, and create tools, clients, or models in build.`,
+    );
+  }
 }
 
 /**
@@ -360,14 +351,25 @@ function withdraw(
   return had;
 }
 
+/** The largest selection eve digests after every commit, as JSON characters. */
+const SELECTION_CAP = 64 * 1024;
+
 function selectionOf(reaction: Reaction, view: ReactionView, ctx: SelectContext): JsonValue {
   if (reaction.select === undefined) return null;
   const selected = reaction.select(view, ctx);
+  let selection: JsonValue;
   try {
-    return parseJsonValue(selected ?? null);
+    selection = parseJsonValue(selected ?? null);
   } catch {
     throw new Error(`The select of "${reaction.label}" must return JSON.`);
   }
+  const size = JSON.stringify(selection).length;
+  if (size > SELECTION_CAP) {
+    throw new Error(
+      `The select of "${reaction.label}" returned ${Math.ceil(size / 1024)} KB of JSON; a selection is at most 64 KB. Select an ID that resolve can look up instead.`,
+    );
+  }
+  return selection;
 }
 
 function withLatest(state: ReactionsState, written: readonly WrittenEvent[]): ReactionsState {
@@ -451,8 +453,8 @@ function resolveContextOf(
   ctx: ContextContainer,
   input: {
     readonly abortSignal: AbortSignal | undefined;
+    readonly digest: string;
     readonly messages?: readonly ModelMessage[];
-    readonly previous: Slot | undefined;
     readonly written: readonly WrittenEvent[];
   },
 ): InternalResolveContext {
@@ -460,9 +462,9 @@ function resolveContextOf(
     ...selectContextOf(ctx),
     abortSignal: input.abortSignal ?? neverAborted,
     ctx,
+    digest: input.digest,
     facts: input.written.map(({ event }) => event),
     ...(input.messages === undefined ? {} : { messages: input.messages }),
-    ...(input.previous === undefined ? {} : { previous: input.previous }),
     written: input.written,
   };
 }

@@ -190,22 +190,22 @@ describe("auto() as the agent's model", () => {
     expectCallsPerTurn(log);
   }, 60_000);
 
-  it("fails the model call when a fresh process resolves a different model", async () => {
+  it("fails the model call when a fresh process builds a different model", async () => {
     vi.stubEnv("EVE_REACTIONS_COLD", "1");
     const log: string[] = [];
-    let resolves = 0;
+    let builds = 0;
     const small = scriptedModel("small", "gpt-5.5-mini", log);
     const large = scriptedModel("large", "gpt-5.5", log);
     const runtime = await createTestRuntime({
       agent: {
         definition: defineAgent({
-          // Not a function of its selection: resolving again returns another model.
+          // A build that isn't a function of what it's given: building again returns another model.
           model: defineDynamic({
             select: () => null,
-            resolve: () => {
-              resolves += 1;
-              log.push("resolve");
-              return { model: resolves === 1 ? small : large, modelContextWindowTokens: 200_000 };
+            build: () => {
+              builds += 1;
+              log.push("build");
+              return { model: builds === 1 ? small : large, modelContextWindowTokens: 200_000 };
             },
           }),
         }),
@@ -238,14 +238,15 @@ describe("auto() as the agent's model", () => {
         },
       ]);
       try {
-        await until(log, "resolve", 2);
+        await until(log, "build", 2);
         await new Promise((resolve) => setTimeout(resolve, 500));
       } finally {
         await run.cancel().catch(() => {});
       }
     });
 
-    // The rebuilt model differed from the one the session chose, so no call reached it.
+    // The model built in a fresh process differed from the one the session chose, so no call
+    // reached it.
     expect(log.filter((entry) => entry.startsWith("call:"))).toEqual(["call:small"]);
   }, 60_000);
 });

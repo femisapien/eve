@@ -106,7 +106,7 @@ export default defineAgent({
       const model = ctx.session.auth.initiator?.attributes?.model;
       return typeof model === "string" ? model : null;
     },
-    resolve: (scripted) => {
+    build: (scripted) => {
       switch (scripted) {
         case "continuation":
           return { model: continuationModel(), modelContextWindowTokens: 1_000_000 };

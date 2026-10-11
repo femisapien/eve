@@ -1,8 +1,8 @@
-import { defineDynamic, defineSkill } from "eve/skills";
+import { defineDynamic, defineSkill, once } from "eve/skills";
 
 /** A deferred dynamic skill resolved for each session. */
 export default defineDynamic({
-  select: () => null,
+  select: once,
   resolve: () => ({
     "tenant-playbook": defineSkill({
       description: "The tenant's escalation playbook for billing disputes.",

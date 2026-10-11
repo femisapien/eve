@@ -44,4 +44,4 @@ export type DynamicSkillResult =
   | null;
 
 /** `defineDynamic()` for `agent/skills/`: `resolve` returns skills. */
-export const defineDynamic: DefineDynamic<DynamicSkillResult> = defineDynamicDefinition;
+export const defineDynamic = defineDynamicDefinition as DefineDynamic<DynamicSkillResult>;

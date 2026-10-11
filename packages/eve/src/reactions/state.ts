@@ -9,7 +9,7 @@ import type { JsonValue } from "#shared/json.js";
 // The session's reactions as they stand: one slot per reaction with its latest contribution, and
 // the position of the latest event of each type, which selections read. Both ride the checkpoint
 // and never reach the stream. Contributions that carry code live in an in-process cache beside
-// it, and a step without them rebuilds them from the recorded selection.
+// it, and a step without them builds them from the JSON the slot recorded.
 
 /** One reaction's current contribution. */
 export interface Slot {
@@ -17,8 +17,11 @@ export interface Slot {
   readonly digest: string;
   /** The contribution's JSON form: what readers of data kinds read, and what equality compares. */
   readonly value: JsonValue;
-  /** The selection, kept only when the contribution carries code a later step must rebuild. */
-  readonly selection?: JsonValue;
+  /**
+   * What `build` built the code from: `resolve`'s result, or the selection. Kept only when the
+   * contribution carries code, so a step in another process can build it again.
+   */
+  readonly input?: JsonValue;
   /** The line after which the slot last changed. */
   readonly since: number;
   /** The runtime revision that resolved it. */
@@ -35,11 +38,20 @@ export interface ReactionsState {
   readonly appended?: Readonly<Record<string, number>>;
   /** The runtime revision the latest turn step ran; a slot resolved under another is stale. */
   readonly revision?: string;
-  /**
-   * The intent keys the session has acted on, by reaction. An intent acts once per key, and this
-   * records that, rather than inferring it from facts a view may no longer hold.
-   */
-  readonly satisfied?: Readonly<Record<string, readonly string[]>>;
+  /** Intents hooks returned that the session hasn't acted on yet, one per occurrence and type. */
+  readonly intents?: readonly PendingIntent[];
+}
+
+/** An intent a hook returned for one occurrence, waiting for the session to act on it. */
+export interface PendingIntent {
+  /** The hook that returned it. */
+  readonly reactionId: string;
+  /** The occurrence it acts once for. */
+  readonly occurrence: string;
+  readonly type: "cancel" | "compact";
+  readonly reason?: string;
+  /** For a cancel, the turn running when the hook resolved: it stops that turn, never a later one. */
+  readonly turnId?: string;
 }
 
 export const ReactionsStateKey = new ContextKey<ReactionsState>("eve.reactions");

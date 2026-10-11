@@ -1,7 +1,7 @@
 import type { SessionEvent } from "#protocol/session-event.js";
 import type { CompiledHookDefinition } from "../compiler/manifest.js";
 import type { CompiledModuleMap } from "../compiler/module-map.js";
-import { assertResolverForm } from "../dynamic/definition.js";
+import { assertResolverForm, HOOK_FORM } from "../dynamic/definition.js";
 import { expectFunction, expectObjectRecord } from "../internal/authored-module.js";
 import type { StreamEventHook } from "../public/definitions/hook.js";
 import { removedEventKeyMessage } from "../public/definitions/removed-event-keys.js";
@@ -37,6 +37,7 @@ export async function resolveHookDefinition(
     assertResolverForm(
       resolvedRecord,
       `The hook export "${definition.exportName ?? "default"}" from "${definition.logicalPath}"`,
+      HOOK_FORM,
     );
 
     const events: Record<string, StreamEventHook<SessionEvent>> = {};

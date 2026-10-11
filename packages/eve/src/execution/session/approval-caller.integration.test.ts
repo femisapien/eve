@@ -151,7 +151,7 @@ async function withChainRun(
       definition: defineAgent({
         model: defineDynamic({
           select: () => null,
-          resolve: () => ({
+          build: () => ({
             model: options.model ?? scriptedModel,
             modelContextWindowTokens: 200_000,
           }),

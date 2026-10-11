@@ -57,3 +57,6 @@ export type {
   ToolInputRequestOptions,
   ToolInputResponse,
 } from "#tools/definition.js";
+
+/** Named lifetimes for `select`: once per session, turn, or model call. */
+export { once, perStep, perTurn } from "#dynamic/definition.js";

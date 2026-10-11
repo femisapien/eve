@@ -1,8 +1,8 @@
-import { defineDynamic } from "eve/tools";
+import { defineDynamic, once } from "eve/tools";
 
 export default defineDynamic({
-  select: () => null,
-  resolve: async () => {
+  select: once,
+  build: () => {
     return null;
   },
 });

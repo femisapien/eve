@@ -1,6 +1,6 @@
-import { defineDynamic } from "eve";
+import { defineDynamic, once } from "eve";
 
 export default defineDynamic({
-  select: () => null,
+  select: once,
   resolve: () => null,
 });

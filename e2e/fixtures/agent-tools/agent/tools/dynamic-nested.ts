@@ -2,9 +2,8 @@ import { defineDynamic, defineTool } from "eve/tools";
 import { z } from "zod";
 
 export default defineDynamic({
-  select: () => null,
-  resolve: async (event, ctx) => {
-    const sessionId = ctx.session.id;
+  select: (_view, { session }) => session.id,
+  build: (sessionId) => {
     const version = "v2";
 
     function buildTool(action: string) {

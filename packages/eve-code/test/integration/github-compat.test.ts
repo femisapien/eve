@@ -13,12 +13,26 @@ const context = {
   channel: {},
 };
 
-/** Resolves each definition once, as the runner does for a `select` of null. */
+/** Runs a definition as the runner does: `select`, then `resolve` if any, then `build` if any. */
+async function run<T>(definition: {
+  select: (view: never, ctx: never) => unknown;
+  resolve?: (selected: never, ctx: never) => unknown;
+  build?: (input: never) => unknown;
+}): Promise<T> {
+  const selected = definition.select({} as never, context as never);
+  const resolved =
+    definition.resolve === undefined
+      ? selected
+      : await definition.resolve(selected as never, context as never);
+  return (definition.build === undefined ? resolved : definition.build(resolved as never)) as T;
+}
+
+/** Resolves each definition once, as the runner does for `select: once`. */
 async function resolve() {
   return {
-    guidance: await instructions.resolve(instructions.select({} as never, context), context),
-    skill: (await pr.resolve(pr.select({} as never, context), context)) as SkillDefinition | null,
-    tool: await gh.resolve(gh.select({} as never, context), context),
+    guidance: await run<{ content?: string } | null>(instructions),
+    skill: await run<SkillDefinition | null>(pr),
+    tool: await run<object | null>(gh),
   };
 }
 

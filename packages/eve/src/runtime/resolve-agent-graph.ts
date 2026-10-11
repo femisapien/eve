@@ -249,6 +249,7 @@ async function resolveRuntimeSubagent(input: {
       ? { description: input.sourceRef.description, tool: input.sourceRef.agent.config.tool }
       : {
           dynamic: await resolveDynamicDefinition(input.sourceRef.configResolver, {
+            build: "forbidden",
             kindLabel: "dynamic subagent",
             moduleMap: input.moduleMap,
             nodeId: input.sourceRef.nodeId,

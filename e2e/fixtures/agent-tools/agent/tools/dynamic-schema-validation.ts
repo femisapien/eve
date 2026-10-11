@@ -1,9 +1,9 @@
-import { defineDynamic, defineTool } from "eve/tools";
+import { defineDynamic, defineTool, once } from "eve/tools";
 import { z } from "zod";
 
 export default defineDynamic({
-  select: () => null,
-  resolve: () => ({
+  select: once,
+  build: () => ({
     schema_validate: defineTool({
       description:
         "Returns the validated value. Call only when explicitly asked for schema_validate.",

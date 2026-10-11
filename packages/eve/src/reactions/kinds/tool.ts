@@ -22,15 +22,19 @@ import {
   type ToolSchemaSource,
 } from "#tools/schema.js";
 import { isWorkflowToolDefinition } from "#tools/workflow-definition.js";
-import { authoredResolve, type Reaction } from "../reaction.js";
+import { authoredBuild, authoredResolve, type Reaction } from "../reaction.js";
 import { slotsOf } from "../runner.js";
-import { canonicalJson } from "../state.js";
 
 const log = createLogger("dynamic-tools");
 
-/** A `defineDynamic()` in `agent/tools/`: one tool named after the file, or a map of them. */
+/**
+ * A `defineDynamic()` in `agent/tools/`: one tool named after the file, or a map of them. `build`
+ * creates the tools; the slot records what the model is offered, and what `build` built from.
+ */
 export function toolReaction(resolver: ResolvedDynamicToolResolver): Reaction {
+  const framework = { framework: resolver.framework };
   return {
+    build: authoredBuild(resolver.logicalPath, resolver.build, framework),
     contribute: (result, { ctx }) => {
       const tools = namedTools(resolver, result).map(({ entry, name }) => {
         assertToolNameAvailable(ctx, resolver, name);
@@ -42,10 +46,7 @@ export function toolReaction(resolver: ResolvedDynamicToolResolver): Reaction {
     id: `tool:${resolver.extensionNamespace ?? ""}:${resolver.slug}`,
     kind: "tool",
     label: resolver.logicalPath,
-    reconcile: (recorded, rebuilt) => reconcileTools(resolver, recorded, rebuilt),
-    resolve: authoredResolve(resolver.logicalPath, resolver.resolve, {
-      framework: resolver.framework,
-    }),
+    resolve: authoredResolve(resolver.logicalPath, resolver.resolve, framework),
     select: resolver.select as Reaction["select"],
   };
 }
@@ -174,51 +175,6 @@ function liveTool(name: string, authored: DynamicToolEntry): HarnessToolDefiniti
         ? undefined
         : toOutputSchema(entry.outputSchema as ToolSchemaSource),
     toModelOutput: entry.toModelOutput as HarnessToolDefinition["toModelOutput"],
-  };
-}
-
-/**
- * The model was offered the declarations the slot recorded, so those are the tools: a rebuilt tool
- * whose declaration still matches keeps its code, and one that changed, or is gone, fails its calls
- * rather than running code the model wasn't offered. That includes calls parked for an approval.
- */
-function reconcileTools(
-  resolver: ResolvedDynamicToolResolver,
-  recorded: unknown,
-  rebuilt: { readonly live?: unknown },
-): readonly HarnessToolDefinition[] {
-  const live = new Map(
-    ((rebuilt.live as readonly HarnessToolDefinition[] | undefined) ?? []).map((tool) => [
-      tool.name,
-      tool,
-    ]),
-  );
-  return ((recorded ?? []) as readonly JsonObject[]).map((offered) => {
-    const name = offered.name as string;
-    const tool = live.get(name);
-    if (tool !== undefined && canonicalJson(declaration(tool)) === canonicalJson(offered)) {
-      return tool;
-    }
-    log.error(`Dynamic tool "${name}" changed since it was offered; its calls fail.`, {
-      resolver: resolver.logicalPath,
-    });
-    return changedTool(offered);
-  });
-}
-
-/** A tool as it was offered, whose calls fail because its code no longer matches the offer. */
-function changedTool(offered: JsonObject): HarnessToolDefinition {
-  const name = offered.name as string;
-  return {
-    description: offered.description as string,
-    execute: async () => {
-      throw new Error(`Tool "${name}" changed since it was offered.`);
-    },
-    inputSchema: toInputSchema(offered.inputSchema as ToolSchemaSource),
-    name,
-    ...(offered.outputSchema === undefined
-      ? {}
-      : { outputSchema: toOutputSchema(offered.outputSchema as ToolSchemaSource) }),
   };
 }
 

@@ -39,3 +39,6 @@ export {
   type RemoteAgentUrl,
   defineRemoteAgent,
 } from "#public/definitions/remote-agent.js";
+
+/** Named lifetimes for `select`: once per session, turn, or model call. */
+export { once, perStep, perTurn } from "#dynamic/definition.js";

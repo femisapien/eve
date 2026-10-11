@@ -65,13 +65,15 @@ function view(text: string) {
 }
 
 /** Runs the reaction as the runner does: `select` over the session's tables, then `resolve`. */
-function run(definition: ReturnType<typeof auto>, input: ReturnType<typeof context>) {
+async function run(definition: ReturnType<typeof auto>, input: ReturnType<typeof context>) {
   const selected = definition.select(view(input.text), {} as never);
-  return definition.resolve(selected, {
+  const chosen = await definition.resolve!(selected, {
     abortSignal: input.abortSignal,
     channel: {},
     session: { id: "test", auth: { current: null, initiator: null } },
   });
+  // auto() records the option it chose, and builds the model from it.
+  return chosen === null ? null : definition.build!(chosen as never);
 }
 
 function decisionModel(choice = "openai/small", modelId = "fixture-decider") {

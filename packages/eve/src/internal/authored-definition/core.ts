@@ -129,17 +129,17 @@ export function normalizeAgentDefinition(
   return definition as Readonly<NormalizedAgentDefinition>;
 }
 
-/** A static model passes through; a dynamic one keeps only its `select` and `resolve`. */
+/** A static model passes through; a dynamic one keeps only its `select`, `resolve`, and `build`. */
 function normalizeAgentModel(value: unknown, message: string): NormalizedAgentDefinition["model"] {
   if (!isDynamicSentinel(value)) return value as NormalizedAgentDefinition["model"];
   const subject = `${message} The dynamic "model"`;
-  assertResolverForm(value, subject, { events: false });
+  assertResolverForm(value, subject);
   const extra = Object.keys(value).filter(
-    (key) => key !== "kind" && key !== "select" && key !== "resolve",
+    (key) => key !== "kind" && key !== "select" && key !== "resolve" && key !== "build",
   );
   if (extra.length > 0) {
     throw new Error(
-      `${subject} takes only select and resolve. Unknown key(s): ${extra.join(", ")}.`,
+      `${subject} takes only select, resolve, and build. Unknown key(s): ${extra.join(", ")}.`,
     );
   }
   // Keep the sentinel itself: eve's own resolvers, such as auto(), carry internal hooks on it.

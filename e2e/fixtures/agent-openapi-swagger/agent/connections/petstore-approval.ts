@@ -1,11 +1,11 @@
-import { defineDynamic, defineOpenAPIConnection } from "eve/connections";
+import { defineDynamic, defineOpenAPIConnection, once } from "eve/connections";
 import { always } from "eve/tools/approval";
 
 import { petstoreBaseUrl, petstoreHeaders, petstoreSpecUrl } from "../../petstore";
 
 export default defineDynamic({
-  select: () => null,
-  resolve: () => ({
+  select: once,
+  build: () => ({
     "petstore-approval": defineOpenAPIConnection({
       approval: always(),
       baseUrl: petstoreBaseUrl(),

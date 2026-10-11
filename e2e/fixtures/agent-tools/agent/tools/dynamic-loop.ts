@@ -1,11 +1,11 @@
-import { defineDynamic, defineTool } from "eve/tools";
+import { defineDynamic, defineTool, once } from "eve/tools";
 import type { DynamicToolEntry } from "eve/tools";
 
 const TOOL_NAMES = ["alpha", "beta"] as const;
 
 export default defineDynamic({
-  select: () => null,
-  resolve: async () => {
+  select: once,
+  build: () => {
     const tools: Record<string, DynamicToolEntry> = {};
 
     for (let i = 0; i < TOOL_NAMES.length; i++) {

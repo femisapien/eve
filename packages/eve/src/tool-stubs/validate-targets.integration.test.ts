@@ -9,7 +9,7 @@ import { validateToolStubTargets } from "#tool-stubs/validate-targets.js";
 it.each([false, true])(
   "checks paths without resolving dynamic tools (dynamic: %s)",
   async (dynamic) => {
-    const resolve = vi.fn(() => ({}));
+    const build = vi.fn(() => ({}));
     const lookup = defineTool({
       description: "List tasks.",
       inputSchema: { type: "object" },
@@ -32,7 +32,7 @@ it.each([false, true])(
               {
                 logicalPath: "tools/dynamic.ts",
                 loadNamespace: async () => ({
-                  default: defineDynamic({ select: () => null, resolve: resolve }),
+                  default: defineDynamic({ select: () => null, build }),
                 }),
               },
             ]
@@ -55,7 +55,7 @@ it.each([false, true])(
       for (const tool of ["unknown/list_tasks", "list_tasks/nested", "agent//list_tasks"]) {
         expect(() => check(tool), tool).toThrow(/unknown or unsupported tool path/);
       }
-      expect(resolve).not.toHaveBeenCalled();
+      expect(build).not.toHaveBeenCalled();
     });
   },
 );

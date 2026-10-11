@@ -20,34 +20,30 @@ import {
   skillPackageRevision,
   writeSkillPackageToSandbox,
 } from "#shared/skill-package.js";
-import { authoredResolve, type Reaction } from "../reaction.js";
+import { authoredBuild, authoredResolve, type Reaction } from "../reaction.js";
 import { slotsOf } from "../runner.js";
 
 const log = createLogger("dynamic-skills");
 
 /**
  * A `defineDynamic()` in `agent/skills/`: one skill named after the file, or a map of them. Skills
- * with supporting files keep their package as code, so a step can write it to the sandbox.
+ * are data: the slot records a package's files too, so any step can write it to the sandbox.
  */
 export function skillReaction(resolver: ResolvedDynamicSkillResolver): Reaction {
+  const framework = { framework: resolver.framework };
   return {
+    build: authoredBuild(resolver.logicalPath, resolver.build, framework),
     contribute: (result) => {
       const skills = namedSkills(resolver, result).map(({ entry, name }) =>
         normalizeSkillPackage({ ...entry, name }),
       );
       if (skills.length === 0) return { value: null };
-      const packaged = skills.filter((skill) => skill.files.length > 1);
-      return {
-        ...(packaged.length === 0 ? {} : { live: packaged }),
-        value: skills.map(toDurableSkill) as unknown as JsonValue,
-      };
+      return { value: skills.map(toDurableSkill) as unknown as JsonValue };
     },
     id: `skill:${resolver.extensionNamespace ?? ""}:${resolver.slug}`,
     kind: "skill",
     label: resolver.logicalPath,
-    resolve: authoredResolve(resolver.logicalPath, resolver.resolve, {
-      framework: resolver.framework,
-    }),
+    resolve: authoredResolve(resolver.logicalPath, resolver.resolve, framework),
     select: resolver.select as Reaction["select"],
   };
 }
@@ -87,12 +83,19 @@ export async function syncDynamicSkillFiles(ctx: ContextContainer): Promise<void
   if (access === undefined) return;
   const desired = new Map<string, string>();
   const packages = new Map<string, MaterializableSkillPackage>();
-  for (const { live, slot } of slotsOf(ctx, "skill")) {
+  for (const { slot } of slotsOf(ctx, "skill")) {
     for (const skill of (slot.value ?? []) as unknown as readonly DurableDynamicSkillMetadata[]) {
-      if (skill.revision !== undefined) desired.set(skill.name, skill.revision);
-    }
-    for (const skill of (live as readonly MaterializableSkillPackage[] | undefined) ?? []) {
-      packages.set(skill.name, skill);
+      if (skill.revision === undefined || skill.files === undefined) continue;
+      desired.set(skill.name, skill.revision);
+      packages.set(skill.name, {
+        description: skill.description,
+        files: skill.files.map(({ content, relativePath }) => ({
+          content: Buffer.from(content, "base64"),
+          relativePath,
+        })),
+        markdown: skill.markdown,
+        name: skill.name,
+      });
     }
   }
   const written = ctx.get(DynamicSkillSandboxKey) ?? {};
@@ -159,7 +162,15 @@ function toDurableSkill(skill: MaterializableSkillPackage): DurableDynamicSkillM
     description: skill.description,
     markdown: skill.markdown,
     name: skill.name,
-    ...(skill.files.length > 1 ? { revision: skillPackageRevision(skill) } : {}),
+    ...(skill.files.length > 1
+      ? {
+          files: skill.files.map(({ content, relativePath }) => ({
+            content: content.toString("base64"),
+            relativePath,
+          })),
+          revision: skillPackageRevision(skill),
+        }
+      : {}),
   };
 }
 

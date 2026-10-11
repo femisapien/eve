@@ -7,6 +7,7 @@ import {
   defineInteractiveAuthorization,
   defineMcpClientConnection,
   type McpClientConnectionDefinition,
+  once,
 } from "eve/connections";
 
 /**
@@ -162,8 +163,8 @@ if (userAuthEnabled) {
 }
 
 export default defineDynamic({
-  select: () => null,
-  resolve: () => (userAuthEnabled ? defineMcpClientConnection(definition) : null),
+  select: once,
+  build: () => (userAuthEnabled ? defineMcpClientConnection(definition) : null),
 });
 
 async function exchangeAuthorizationCode(input: {

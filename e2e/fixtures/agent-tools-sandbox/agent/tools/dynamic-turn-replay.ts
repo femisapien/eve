@@ -3,9 +3,11 @@ import { defineDynamic, defineTool } from "eve/tools";
 const TOKEN = "dynamic-turn-replay-ok-V6N";
 
 export default defineDynamic({
-  select: (view) => view.latest["turn.started"] ?? null,
-  resolve: (_event, ctx) => {
-    const resolvedSessionId = ctx.session.id;
+  select: (view, { session }) => ({
+    sessionId: session.id,
+    turn: view.latest["turn.started"] ?? null,
+  }),
+  build: ({ sessionId: resolvedSessionId }) => {
     return {
       dynamic_turn_replay_probe: defineTool({
         description:

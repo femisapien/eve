@@ -6,7 +6,7 @@ export default defineDynamic({
     messageCount: view.messages.length,
     toolResultCount: view.messages.filter((message) => message.role === "tool").length,
   }),
-  resolve: async ({ messageCount, toolResultCount }) => ({
+  build: ({ messageCount, toolResultCount }) => ({
     check_messages: defineTool({
       description:
         "Returns the message count and tool-result count visible to the resolver. " +

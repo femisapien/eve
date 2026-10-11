@@ -10,12 +10,21 @@ import metadataProvider from "../channels/metadata-provider";
  * `metadata(state)` projection and that `isChannel` narrows it.
  */
 export default defineDynamic({
-  select: (view) => view.latest["turn.started"] ?? null,
-  resolve: (_event, ctx) => {
-    if (!isChannel(ctx.channel, metadataProvider)) return null;
-
-    const { topic, contextMessages } = ctx.channel.metadata;
-    if (!topic) return null;
+  select: (view, { channel }) => {
+    if (!isChannel(channel, metadataProvider)) return null;
+    const { topic, contextMessages } = channel.metadata;
+    return topic
+      ? {
+          channelKind: channel.kind ?? null,
+          contextMessages: contextMessages ?? null,
+          topic,
+          turn: view.latest["turn.started"] ?? null,
+        }
+      : null;
+  },
+  build: (selected) => {
+    if (selected === null) return null;
+    const { channelKind, contextMessages, topic } = selected;
 
     return defineTool({
       description:
@@ -24,7 +33,7 @@ export default defineDynamic({
       inputSchema: z.object({}),
       async execute() {
         return {
-          channelKind: ctx.channel.kind ?? null,
+          channelKind,
           topic,
           contextMessages,
         };

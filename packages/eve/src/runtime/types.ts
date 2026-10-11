@@ -225,13 +225,16 @@ export interface ResolvedHookDefinition extends ResolvedModuleSourceRef {
 export type ReactionSelectFn = (view: never, ctx: never) => unknown;
 /** A reaction's `resolve`, loaded from its module. */
 export type ReactionResolveFn = (selected: never, ctx: never) => unknown;
+/** A dynamic value's `build`, loaded from its module. */
+export type ReactionBuildFn = (input: never, ctx: never) => unknown;
 
 /** A `defineDynamic()` export reattached from its compiled module. */
 export interface ResolvedReactionSource extends Readonly<ModuleSourceRef> {
-  /** eve generated it: its `resolve` runs in the session's context. */
+  /** eve generated it: its `resolve` and `build` run in the session's context. */
   readonly framework?: true;
   readonly select: ReactionSelectFn;
-  readonly resolve: ReactionResolveFn;
+  readonly resolve?: ReactionResolveFn;
+  readonly build?: ReactionBuildFn;
 }
 
 /**
@@ -364,7 +367,7 @@ interface ResolvedAgentMetadata {
 }
 
 /**
- * Runtime resolver for dynamic tools declared via `defineDynamic({ select, resolve })`.
+ * Runtime resolver for dynamic tools declared via `defineDynamic({ select, resolve?, build })`.
  */
 export interface ResolvedDynamicToolResolver extends ResolvedReactionSource {
   readonly slug: string;

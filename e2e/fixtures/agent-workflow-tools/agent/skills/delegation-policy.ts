@@ -1,7 +1,7 @@
-import { defineDynamic, defineSkill } from "eve/skills";
+import { defineDynamic, defineSkill, once } from "eve/skills";
 
 export default defineDynamic({
-  select: () => null,
+  select: once,
   resolve: () =>
     defineSkill({
       description: "Policy for auditing delegated reports.",

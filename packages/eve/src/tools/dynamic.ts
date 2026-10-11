@@ -1,6 +1,6 @@
 import {
   defineDynamic as defineDynamicDefinition,
-  type DefineDynamic,
+  type DefineDynamicCode,
 } from "#dynamic/definition.js";
 import type { ToolDefinition } from "#tools/definition.js";
 
@@ -17,8 +17,11 @@ export type DynamicToolSet = Readonly<Record<string, DynamicToolEntry>>;
 /** What a dynamic tool resolver returns: one tool, a map of them, or `null`. */
 export type DynamicToolResult = DynamicToolEntry | DynamicToolSet | null;
 
-/** `defineDynamic()` for `agent/tools/`: `resolve` returns tools. */
-export const defineDynamic: DefineDynamic<DynamicToolResult> = defineDynamicDefinition;
+/**
+ * `defineDynamic()` for `agent/tools/`. Tools are code, so `build` creates them: from the JSON
+ * `resolve` fetched, or from the selection.
+ */
+export const defineDynamic = defineDynamicDefinition as DefineDynamicCode<DynamicToolResult>;
 
 /**
  * Symbol-based brand stamped by `defineTool` on every entry. Invisible

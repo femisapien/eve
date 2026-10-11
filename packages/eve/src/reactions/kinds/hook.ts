@@ -15,15 +15,22 @@ import type { ResolvedHookDefinition } from "#runtime/types.js";
 import { BundleKey, ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
 import type { JsonValue } from "#shared/json.js";
 import type { InternalResolveContext, Reaction } from "../reaction.js";
-import { readReactionsState, type ReactionsState, type Slot } from "../state.js";
+import { readReactionsState, writeReactionsState, type PendingIntent } from "../state.js";
 
 const log = createLogger("hooks");
 
-/** An authored hook as a reaction. An `events` map selects the latest position of each key. */
+/**
+ * An authored hook as a reaction. A hook's results are occurrences, not a value: each new selection,
+ * or each record an `events` handler receives, is one occurrence, and the intents it returns are
+ * acted on once for it. The slot holds only the latest occurrences, for change detection.
+ */
 export function hookReaction(hook: ResolvedHookDefinition): Reaction {
+  const id = `hook:${hook.slug}`;
   const base = {
-    contribute: (result: unknown) => ({ value: intentsOf(result, hook.logicalPath) }),
-    id: `hook:${hook.slug}`,
+    contribute: (results: unknown, ctx: InternalResolveContext) => ({
+      value: queueIntents(ctx.ctx, id, hook.logicalPath, results as readonly Occurrence[]),
+    }),
+    id,
     kind: "hook" as const,
     label: hook.logicalPath,
   };
@@ -31,9 +38,11 @@ export function hookReaction(hook: ResolvedHookDefinition): Reaction {
     const resolve = hook.resolve as (selected: unknown, ctx: HookResolveContext) => unknown;
     return {
       ...base,
-      resolve: (selected, ctx) => {
-        const hookContext = hookResolveContext(ctx);
-        return runOnSelection(hook.logicalPath, () => resolve(selected, hookContext));
+      resolve: async (selected, ctx) => {
+        const occurrence = `${ctx.session.id}:${hook.slug}:${ctx.digest}`;
+        const hookContext = { ...hookResolveContext(ctx), occurrence };
+        const result = await runOnSelection(hook.logicalPath, () => resolve(selected, hookContext));
+        return [{ occurrence, result }];
       },
       ...(hook.select === undefined
         ? {}
@@ -48,22 +57,29 @@ export function hookReaction(hook: ResolvedHookDefinition): Reaction {
   };
 }
 
+/** One occurrence and what the hook returned for it. */
+interface Occurrence {
+  readonly occurrence: string;
+  readonly result: unknown;
+}
+
 /** Runs the hook's handlers for each record the commit carries, typed handler first, then `*`. */
 async function dispatchEvents(
   hook: ResolvedHookDefinition,
   ctx: InternalResolveContext,
-): Promise<readonly unknown[]> {
-  const results: unknown[] = [];
+): Promise<readonly Occurrence[]> {
+  const results: Occurrence[] = [];
   if (ctx.written.length === 0) return results;
   const base = hookContextBase(ctx.ctx);
   for (const { event: written, position, progress, view } of ctx.written) {
     const { meta: _meta, ...event } = written;
+    const occurrence = `${base.session.id}:${hook.slug}:${position.line}.${position.index}`;
     const handlers = [hook.events[event.type], progress ? undefined : hook.events["*"]];
     for (const handler of handlers) {
       if (handler === undefined) continue;
-      const hookContext: HookContext = { ...base, position, view };
+      const hookContext: HookContext = { ...base, occurrence, position, view };
       try {
-        results.push(await handler(event as never, hookContext));
+        results.push({ occurrence, result: await handler(event as never, hookContext) });
       } catch (error) {
         logError(log, "stream event hook failed", error, {
           eventType: event.type,
@@ -77,7 +93,9 @@ async function dispatchEvents(
   return results;
 }
 
-function hookContextBase(ctx: ContextContainer): Omit<HookContext, "position" | "view"> {
+function hookContextBase(
+  ctx: ContextContainer,
+): Omit<HookContext, "occurrence" | "position" | "view"> {
   const bundle = ctx.require(BundleKey);
   const channelAdapter = ctx.get(ChannelKey);
   return {
@@ -90,7 +108,7 @@ function hookContextBase(ctx: ContextContainer): Omit<HookContext, "position" | 
   };
 }
 
-function hookResolveContext(ctx: InternalResolveContext): HookResolveContext {
+function hookResolveContext(ctx: InternalResolveContext): Omit<HookResolveContext, "occurrence"> {
   const base = hookContextBase(ctx.ctx);
   return {
     abortSignal: ctx.abortSignal,
@@ -102,106 +120,76 @@ function hookResolveContext(ctx: InternalResolveContext): HookResolveContext {
   };
 }
 
-/** One intent as a slot records it: its key, which it acts once for, and what it asks. */
-interface RecordedIntent {
-  readonly key: string;
-  readonly type: HookIntent["type"];
-  readonly reason?: string;
-  readonly turnId?: string;
+/**
+ * Records the intents each occurrence returned, once per occurrence and type, and returns the
+ * occurrences that asked for something. A cancel targets the turn running now, and is dropped
+ * when none is.
+ */
+function queueIntents(
+  ctx: ContextContainer,
+  reactionId: string,
+  label: string,
+  occurrences: readonly Occurrence[],
+): JsonValue {
+  const state = readReactionsState(ctx);
+  const intents = [...(state.intents ?? [])];
+  const asked: string[] = [];
+  const turnId = currentProjection(ctx).activeTurnId;
+  for (const { occurrence, result } of occurrences) {
+    for (const intent of intentsOf(result, label)) {
+      if (intent.type === "cancel" && turnId === undefined) continue;
+      if (
+        intents.some((queued) => queued.occurrence === occurrence && queued.type === intent.type)
+      ) {
+        continue;
+      }
+      intents.push({
+        occurrence,
+        reactionId,
+        type: intent.type,
+        ...(intent.reason === undefined ? {} : { reason: intent.reason }),
+        ...(intent.type === "cancel" ? { turnId } : {}),
+      });
+      if (!asked.includes(occurrence)) asked.push(occurrence);
+    }
+  }
+  if (asked.length > 0) writeReactionsState(ctx, { ...state, intents });
+  return asked.length === 0 ? null : asked;
 }
 
-/**
- * A hook's result as the intents in its slot. A cancel is keyed by the turn it stops, the one
- * running when the hook resolved; a compact by its name in a result map, or `default`.
- */
-function intentsOf(result: unknown, label: string): JsonValue {
-  const intents = new Map<string, RecordedIntent>();
-  const record = (value: unknown, name: string): void => {
-    const intent = value as Partial<HookIntent>;
-    if (intent.type === "cancel") {
-      const turnId = currentProjection().activeTurnId;
-      if (turnId === undefined) return;
-      intents.set(`cancel:${turnId}`, {
-        key: `cancel:${turnId}`,
-        turnId,
-        type: "cancel",
-        ...(intent.reason === undefined ? {} : { reason: intent.reason }),
-      });
-    } else if (intent.type === "compact") {
-      intents.set(`compact:${name}`, {
-        key: `compact:${name}`,
-        type: "compact",
-        ...(intent.reason === undefined ? {} : { reason: intent.reason }),
-      });
-    }
-  };
-  const visit = (value: unknown, name: string): void => {
-    if (value === null || value === undefined) return;
-    if (Array.isArray(value)) {
-      for (const entry of value) visit(entry, name);
-      return;
-    }
-    if (typeof value !== "object") throw notAnIntent(label);
-    if ((value as Partial<HookIntent>).kind === INTENT_KIND) {
-      record(value, name);
-      return;
-    }
-    if (name !== "default") throw notAnIntent(label);
-    for (const [entry, intent] of Object.entries(value)) {
-      if (intent === null || intent === undefined) continue;
-      if ((intent as Partial<HookIntent>).kind !== INTENT_KIND) throw notAnIntent(label);
-      record(intent, entry);
-    }
-  };
-  visit(result, "default");
-  return intents.size === 0 ? null : ([...intents.values()] as unknown as JsonValue);
+/** The intents in a hook's result: one, several, or a map of them, whose names don't matter. */
+function intentsOf(result: unknown, label: string): readonly HookIntent[] {
+  if (result === null || result === undefined) return [];
+  if (Array.isArray(result)) return result.flatMap((entry) => intentsOf(entry, label));
+  if (typeof result !== "object") throw notAnIntent(label);
+  if ((result as Partial<HookIntent>).kind === INTENT_KIND) return [result as HookIntent];
+  return Object.values(result).flatMap((entry) => {
+    if (entry === null || entry === undefined) return [];
+    if ((entry as Partial<HookIntent>).kind !== INTENT_KIND) throw notAnIntent(label);
+    return [entry as HookIntent];
+  });
 }
 
 function notAnIntent(label: string): Error {
   return new Error(
-    `Hook "${label}" returned something other than intents. Return cancel(), compact(), a map of them, or nothing.`,
+    `Hook "${label}" returned something other than intents. Return cancel(), compact(), several of them, or nothing.`,
   );
 }
 
-function recordedIntents(slot: Slot | undefined): readonly RecordedIntent[] {
-  return Array.isArray(slot?.value) ? (slot.value as unknown as readonly RecordedIntent[]) : [];
-}
-
-/** The hook intents of `type` the session hasn't acted on, with the reaction that asked. */
-export function pendingIntents(
-  ctx: Pick<ContextContainer, "get"> | undefined,
-  type: HookIntent["type"],
-): readonly { readonly reactionId: string; readonly intent: RecordedIntent }[] {
+/** Removes and returns the waiting intents that match, because the session acted on them. */
+export function takeIntents(
+  ctx: ContextContainer,
+  matches: (intent: PendingIntent) => boolean,
+): readonly PendingIntent[] {
   const state = readReactionsState(ctx);
-  return Object.entries(state.slots).flatMap(([reactionId, slot]) => {
-    if (!reactionId.startsWith("hook:")) return [];
-    const satisfied = new Set(state.satisfied?.[reactionId] ?? []);
-    return recordedIntents(slot)
-      .filter((intent) => intent.type === type && !satisfied.has(intent.key))
-      .map((intent) => ({ intent, reactionId }));
-  });
-}
-
-/**
- * Records that the session acted on these intents. A reaction keeps one cancel key, its latest
- * turn's, since a cancel never applies to a turn after its own.
- */
-export function satisfyIntents(
-  state: ReactionsState,
-  acted: readonly { readonly reactionId: string; readonly intent: RecordedIntent }[],
-): ReactionsState {
-  if (acted.length === 0) return state;
-  const satisfied = { ...state.satisfied };
-  for (const { intent, reactionId } of acted) {
-    const keys = (satisfied[reactionId] ?? []).filter(
-      (key) => !(intent.type === "cancel" && key.startsWith("cancel:")),
-    );
-    satisfied[reactionId] = keys.includes(intent.key) ? keys : [...keys, intent.key];
-  }
-  return { ...state, satisfied };
+  const taken = (state.intents ?? []).filter(matches);
+  if (taken.length === 0) return taken;
+  const intents = (state.intents ?? []).filter((intent) => !matches(intent));
+  writeReactionsState(ctx, { ...state, intents });
+  return taken;
 }
 
 /** True while a hook's compact intent waits for a compaction to start. */
 export function hasPendingCompaction(ctx: Pick<ContextContainer, "get"> | undefined): boolean {
-  return pendingIntents(ctx, "compact").length > 0;
+  return (readReactionsState(ctx).intents ?? []).some((intent) => intent.type === "compact");
 }

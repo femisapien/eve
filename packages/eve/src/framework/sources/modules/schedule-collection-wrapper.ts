@@ -34,7 +34,7 @@ export async function loadScheduleCollectionWrapperNamespace(
     getAuthoredModuleExport(dependency, { exportName, logicalPath }),
   );
   if (!isScheduleCollectionDefinition(value)) {
-    return { default: defineDynamic({ select: () => null, resolve: () => null }) };
+    return { default: defineDynamic({ select: () => null, build: () => null }) };
   }
   const definition = normalizeScheduleCollectionDefinition(
     value,

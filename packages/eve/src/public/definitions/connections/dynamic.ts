@@ -2,7 +2,7 @@ import type { McpClientConnectionDefinition } from "#public/definitions/connecti
 import type { OpenAPIConnectionDefinition } from "#public/definitions/connections/openapi.js";
 import {
   defineDynamic as defineDynamicDefinition,
-  type DefineDynamic,
+  type DefineDynamicCode,
 } from "#dynamic/definition.js";
 
 /** One connection returned by a dynamic connection resolver. */
@@ -16,5 +16,8 @@ export type DynamicConnectionSet = Readonly<Record<string, DynamicConnectionDefi
 /** Supported return value for a dynamic connection resolver. */
 export type DynamicConnectionResult = DynamicConnectionDefinition | DynamicConnectionSet | null;
 
-/** `defineDynamic()` for `agent/connections/`: one connection named after the file, or a map. */
-export const defineDynamic: DefineDynamic<DynamicConnectionResult> = defineDynamicDefinition;
+/**
+ * `defineDynamic()` for `agent/connections/`: one connection named after the file, or a map.
+ * Connections carry code, such as `getToken`, so `build` creates them.
+ */
+export const defineDynamic = defineDynamicDefinition as DefineDynamicCode<DynamicConnectionResult>;

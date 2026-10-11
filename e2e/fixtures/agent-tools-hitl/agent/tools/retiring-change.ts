@@ -8,9 +8,9 @@ import { z } from "zod";
  * asked even when a later step would not offer this one.
  */
 export default defineDynamic({
-  select: (view) => view.latest["model.requested"] ?? null,
-  resolve: (_event, ctx) =>
-    ctx.session.auth.current?.attributes?.flag === "retire"
+  select: (_view, { session }) => session.auth.current?.attributes?.flag === "retire",
+  build: (retired) =>
+    retired
       ? null
       : defineTool({
           description: "Apply the retiring fixture change after approval.",

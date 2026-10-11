@@ -1,8 +1,4 @@
-import {
-  defineDynamic as defineDynamicBase,
-  type DynamicDefinition,
-  type DynamicSentinel,
-} from "#dynamic/definition.js";
+import { defineDynamic as defineDynamicBase, type DefineDynamic } from "#dynamic/definition.js";
 import type { PublicAgentDynamicModelResult } from "#shared/agent-definition.js";
 
 export type {
@@ -27,12 +23,8 @@ export type {
  * });
  * ```
  *
- * A model `resolve` returns as a gateway id is recorded with the session. A provider object, such
- * as `anthropic("...")`, is code: a process that didn't choose it calls `resolve` again with the
- * recorded selection, and a different model there fails the model call rather than switching.
+ * A gateway ID is data, and eve records it. A provider object, such as `anthropic("...")`, is
+ * code: return the JSON it's made from in `resolve`, or select it, and create it in `build`, so a
+ * process that didn't choose it builds the same model from what the session recorded.
  */
-export function defineDynamic<TSelected = null>(
-  definition: DynamicDefinition<TSelected, PublicAgentDynamicModelResult>,
-): DynamicSentinel<PublicAgentDynamicModelResult, TSelected> {
-  return defineDynamicBase(definition);
-}
+export const defineDynamic = defineDynamicBase as DefineDynamic<PublicAgentDynamicModelResult>;

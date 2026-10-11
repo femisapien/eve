@@ -1,5 +1,5 @@
 import { e2eAgentConfig, MOCK_MODEL_SENTINEL } from "@eve-e2e/config";
-import { defineAgent } from "eve";
+import { defineAgent, once } from "eve";
 import { defineDynamic } from "eve/models";
 
 const requestedModel = process.env.EVE_E2E_MODEL;
@@ -18,7 +18,7 @@ const { experimental } = e2eAgentConfig();
 export default defineAgent({
   experimental,
   model: defineDynamic({
-    select: () => null,
+    select: once,
     resolve: () => ({ model: selectedModel, modelContextWindowTokens: 1_000_000 }),
   }),
 });

@@ -38,6 +38,7 @@ import { defineWorkflowTool } from "#tools/workflow-definition.js";
 import { defineTool, disableTool } from "#tools/definition.js";
 import { defineMemory } from "#public/memory/index.js";
 import { defineDynamic } from "#dynamic/definition.js";
+import { defineDynamic as defineDynamicModel } from "#public/definitions/model.js";
 import { webSearch, type WebSearchToolInput } from "#tools/provided/web-search.js";
 import { agent as agentTool } from "#tools/framework/agent.js";
 
@@ -441,14 +442,10 @@ describe("compileAgentManifest source graph", () => {
       sourceRegistry,
     ]);
     const namespace = moduleMap.nodes.__root__!.modules[wrapper.sourceId]!;
-    const tools = await (namespace.default as ReturnType<typeof defineDynamic>).resolve(
-      { schedule: null, turn: null } as never,
-      {
-        abortSignal: new AbortController().signal,
-        channel: {},
-        session: { id: "session", auth: { current: null, initiator: null } },
-      } as never,
-    );
+    const tools = await (namespace.default as ReturnType<typeof defineDynamic>).build!({
+      schedule: null,
+      turn: null,
+    } as never);
     expect(Object.keys(tools as object).sort()).toEqual(
       ["create", "delete", "disable", "enable", "get", "invoke", "list", "update"].map(
         (operation) => `schedule__billing-requests__${operation}`,
@@ -629,7 +626,7 @@ describe("compileAgentManifest source graph", () => {
         logicalPath: "agent.ts",
         loadNamespace: async () => ({
           default: defineAgent({
-            model: defineDynamic({ select: () => null, resolve: () => "openai/gpt-5.4" }),
+            model: defineDynamicModel({ select: () => null, resolve: () => "openai/gpt-5.4" }),
           }),
         }),
       },

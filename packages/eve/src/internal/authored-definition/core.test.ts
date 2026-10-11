@@ -60,7 +60,7 @@ describe("normalizeAgentDefinition", () => {
     ).toThrow(/returns its "modelContextWindowTokens" and "modelOptions" from resolve/);
   });
 
-  it("rejects keys beside a dynamic model's select and resolve", () => {
+  it("rejects keys beside a dynamic model's select, resolve, and build", () => {
     expect(() =>
       normalizeAgentDefinition(
         {
@@ -71,7 +71,7 @@ describe("normalizeAgentDefinition", () => {
         },
         FAILURE_MESSAGE,
       ),
-    ).toThrow(/takes only select and resolve. Unknown key\(s\): reasoning/);
+    ).toThrow(/takes only select, resolve, and build. Unknown key\(s\): reasoning/);
   });
 
   it("rejects a dynamic compaction model", () => {

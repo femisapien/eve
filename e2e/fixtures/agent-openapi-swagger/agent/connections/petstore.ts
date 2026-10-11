@@ -1,10 +1,10 @@
-import { defineDynamic, defineOpenAPIConnection } from "eve/connections";
+import { defineDynamic, defineOpenAPIConnection, once } from "eve/connections";
 
 import { petstoreBaseUrl, petstoreHeaders, petstoreSpecUrl } from "../../petstore";
 
 export default defineDynamic({
-  select: () => null,
-  resolve: () => ({
+  select: once,
+  build: () => ({
     petstore: defineOpenAPIConnection({
       baseUrl: petstoreBaseUrl(),
       spec: petstoreSpecUrl(),

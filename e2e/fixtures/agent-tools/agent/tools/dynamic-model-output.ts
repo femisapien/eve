@@ -1,11 +1,11 @@
-import { defineDynamic, defineTool } from "eve/tools";
+import { defineDynamic, defineTool, once } from "eve/tools";
 import { z } from "zod";
 
 export const MODEL_OUTPUT_TOKEN = "projected-X9K3";
 
 export default defineDynamic({
-  select: () => null,
-  resolve: async () => {
+  select: once,
+  build: () => {
     return {
       check_model_output: defineTool({
         description:

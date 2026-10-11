@@ -3,6 +3,7 @@ import type { FactPosition } from "../../protocol/session-events/envelope.js";
 import type { SessionView } from "../../protocol/session-projection/tables.js";
 import {
   defineResolver,
+  HOOK_FORM,
   type ReactionSelect,
   type ReactionView,
   type ResolveContext,
@@ -93,13 +94,9 @@ export function cancel(reason?: string): CancelIntent {
 }
 
 /**
- * Asks eve to compact the conversation before the next model call. Each entry compacts once: the
- * compaction that follows satisfies it, and eve records that, so returning it again changes
- * nothing. To compact again, return it under a new name in a map, such as one with a count:
- *
- * ```ts
- * resolve: (imports) => ({ [`import-${imports}`]: compact({ reason: "A new import landed." }) })
- * ```
+ * Asks eve to compact the conversation before the next model call. It acts once for the
+ * occurrence that returned it, a hook's new selection or a fact an `events` handler received, so
+ * a hook that compacts whenever the session goes idle compacts once per idle stretch.
  */
 export function compact(options: { readonly reason?: string } = {}): CompactIntent {
   return options.reason === undefined
@@ -108,8 +105,8 @@ export function compact(options: { readonly reason?: string } = {}): CompactInte
 }
 
 /**
- * What a hook may return: nothing, one intent, several, or a map of named intents. A compact is
- * keyed by its name in the map (`default` outside one); a cancel by the turn it stops.
+ * What a hook may return: nothing, one intent, several, or a map of them. Each acts once for the
+ * occurrence that returned it; a cancel stops the turn running when the hook resolved.
  */
 export type HookResult =
   | HookIntent
@@ -144,12 +141,19 @@ export interface HookContext extends SessionContext {
    * settled. Read what changed from the event, and where things stand from the view.
    */
   readonly view: SessionView;
+  /**
+   * A stable key for this occurrence, the same if a retried step runs the handler again. Pass it
+   * as the idempotency key of a side effect, such as an email, that must happen once.
+   */
+  readonly occurrence: string;
 }
 
 /** What a hook's `resolve` receives besides its selection. */
 export interface HookResolveContext extends ResolveContext, Omit<SessionContext, "session"> {
   readonly session: SessionContext["session"];
   readonly agent: HookContext["agent"];
+  /** A stable key for this occurrence: the hook, and its selection. See {@link HookContext}. */
+  readonly occurrence: string;
 }
 
 /**
@@ -190,9 +194,9 @@ export interface EventHookDefinition<TKey extends HookEventKey = HookEventKey> {
 }
 
 /**
- * A hook of `select` and `resolve`: `resolve` runs after each commit that changes what `select`
- * read, and returns the hook's intents. eve may run it again with the same selection, so keep
- * effects in `events` handlers.
+ * A hook of `select` and `resolve`: each new selection is an occurrence, and `resolve` runs once
+ * for it and returns the hook's intents. A side effect runs at least once: key it on
+ * `ctx.occurrence`.
  */
 export interface ResolverHookDefinition<TSelected = unknown> {
   readonly select: ReactionSelect<TSelected, HookView>;
@@ -229,5 +233,5 @@ export function defineHook<TSelected>(
   definition: ResolverHookDefinition<TSelected>,
 ): ResolverHookDefinition<TSelected>;
 export function defineHook(definition: HookDefinition<HookEventKey, unknown>): HookDefinition {
-  return defineResolver(definition as never, "defineHook") as unknown as HookDefinition;
+  return defineResolver(definition as never, "defineHook", HOOK_FORM) as unknown as HookDefinition;
 }

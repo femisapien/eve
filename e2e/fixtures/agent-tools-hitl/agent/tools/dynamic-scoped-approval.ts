@@ -1,9 +1,9 @@
-import { defineDynamic, defineTool } from "eve/tools";
+import { defineDynamic, defineTool, once } from "eve/tools";
 import { z } from "zod";
 
 export default defineDynamic({
-  select: () => null,
-  resolve: () => ({
+  select: once,
+  build: () => ({
     dynamic_scoped_approval: defineTool({
       description:
         "Echoes a scope after approving that scope. Only call when explicitly asked for dynamic_scoped_approval.",

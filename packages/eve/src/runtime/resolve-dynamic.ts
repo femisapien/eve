@@ -3,17 +3,22 @@ import {
   assertResolverForm,
   isDynamicSentinel,
   isFrameworkResolver,
+  type ResolverFormOptions,
 } from "#dynamic/definition.js";
 import { loadResolvedModuleExport, ResolveAgentError } from "#runtime/resolve-helpers.js";
 import type { ResolvedReactionSource } from "#runtime/types.js";
 import { toErrorMessage } from "#shared/errors.js";
 import type { ModuleSourceRef } from "#shared/source-ref.js";
 
-/** Reattaches a compiled `defineDynamic()` export's `select` and `resolve` from its module. */
+/**
+ * Reattaches a compiled `defineDynamic()` export's `select`, `resolve`, and `build` from its
+ * module. Kinds whose values are code, tools and connections, require `build`.
+ */
 export async function resolveDynamicDefinition<T extends ModuleSourceRef>(
   definition: T,
   input: {
     readonly kindLabel: string;
+    readonly build?: ResolverFormOptions["build"];
     readonly moduleMap: CompiledModuleMap;
     readonly nodeId: string | undefined;
   },
@@ -31,12 +36,17 @@ export async function resolveDynamicDefinition<T extends ModuleSourceRef>(
     assertResolverForm(
       value,
       `The ${input.kindLabel} export "${definition.exportName ?? "default"}" from "${definition.logicalPath}"`,
-      { events: false },
+      { build: input.build },
     );
     return {
       ...definition,
       ...(isFrameworkResolver(value) ? { framework: true as const } : {}),
-      resolve: value.resolve as ResolvedReactionSource["resolve"],
+      ...(value.build === undefined
+        ? {}
+        : { build: value.build as ResolvedReactionSource["build"] }),
+      ...(value.resolve === undefined
+        ? {}
+        : { resolve: value.resolve as ResolvedReactionSource["resolve"] }),
       select: value.select as ResolvedReactionSource["select"],
     };
   } catch (error) {

@@ -1,4 +1,4 @@
-import { defineDynamic, defineTool } from "eve/tools";
+import { defineDynamic, defineTool, once } from "eve/tools";
 
 import { LEDGER_REGIONS } from "../lib/ledger-regions";
 
@@ -7,8 +7,8 @@ import { LEDGER_REGIONS } from "../lib/ledger-regions";
  * all under the `ledger` namespace.
  */
 export default defineDynamic({
-  select: () => null,
-  resolve: () =>
+  select: once,
+  build: () =>
     Object.fromEntries(
       LEDGER_REGIONS.map((region) => [
         `ledger__${region}`,

@@ -1,11 +1,11 @@
-import { defineDynamic, defineSkill } from "eve/skills";
+import { defineDynamic, defineSkill, once } from "eve/skills";
 
 // A map-producing dynamic skill resolver. Its bare key `incident` must compose
 // under the mount namespace as `toolkit__incident` once mounted — not the bare
 // `incident` — so it can't collide with the consumer's or another extension's
 // skills. The dynamic-skill eval loads it by the namespaced name to prove that.
 export default defineDynamic({
-  select: () => null,
+  select: once,
   resolve: async () => ({
     incident: defineSkill({
       description:

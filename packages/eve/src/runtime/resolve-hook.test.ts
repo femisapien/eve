@@ -103,7 +103,7 @@ describe("resolveHookDefinition", () => {
     });
 
     await expect(resolveHookDefinition(definition, moduleMap, undefined)).rejects.toThrow(
-      "Return null from select to resolve once per session",
+      "Use select: once to resolve once per session",
     );
   });
 

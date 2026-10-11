@@ -13,7 +13,7 @@ export default defineDynamic({
           : message.content.map((part) => (part.type === "text" ? part.text : "")).join(" ");
       return text.startsWith("Call call_child ");
     }),
-  resolve: (requested) => {
+  build: (requested) => {
     if (!requested) return null;
 
     return defineTool({

@@ -1,4 +1,4 @@
-import { defineAgent } from "eve";
+import { defineAgent, once } from "eve";
 import { defineDynamic } from "eve/models";
 import { mockModel } from "eve/evals";
 
@@ -13,7 +13,7 @@ export default defineAgent({
   // Selected per step: in mock mode this fixture replaces static authored
   // models with eve's bootstrap mock, which would drop the worker's usage.
   model: defineDynamic({
-    select: () => null,
+    select: once,
     resolve: () => ({ model: workerModel, modelContextWindowTokens: 1_000_000 }),
   }),
 });

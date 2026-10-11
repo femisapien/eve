@@ -6,7 +6,7 @@ import type {
 import type { ExactDefinition } from "#public/definitions/exact.js";
 import type { RemoteAgentDefinition } from "#public/definitions/remote-agent.js";
 import { defineDynamic as defineDynamicBase } from "#dynamic/definition.js";
-import type { DynamicDefinition, DynamicSentinel } from "#dynamic/definition.js";
+import type { DynamicDataDefinition, DynamicSentinel } from "#dynamic/definition.js";
 
 declare const DEFINED_AGENT: unique symbol;
 
@@ -80,9 +80,10 @@ export type DynamicSubagentResult = DynamicSubagentDefinition | null;
  * ```
  */
 export function defineDynamic<TSelected = null>(
-  definition: DynamicDefinition<TSelected, DynamicSubagentResult> & DynamicSubagentStaticFields,
+  definition: DynamicDataDefinition<TSelected, DynamicSubagentResult> & DynamicSubagentStaticFields,
 ): DynamicSentinel<DynamicSubagentResult, TSelected> & DynamicSubagentStaticFields {
-  return defineDynamicBase(definition);
+  return defineDynamicBase(definition) as DynamicSentinel<DynamicSubagentResult, TSelected> &
+    DynamicSubagentStaticFields;
 }
 
 /**

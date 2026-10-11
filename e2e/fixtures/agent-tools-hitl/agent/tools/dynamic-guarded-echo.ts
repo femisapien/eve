@@ -1,11 +1,11 @@
-import { defineDynamic, defineTool } from "eve/tools";
+import { defineDynamic, defineTool, once } from "eve/tools";
 import { z } from "zod";
 
 export const DYNAMIC_GUARDED_ECHO_TOKEN = "dynamic-guarded-echo-ok-L8R6";
 
 export default defineDynamic({
-  select: () => null,
-  resolve: async () => {
+  select: once,
+  build: () => {
     return {
       dynamic_guarded_echo: defineTool({
         description:

@@ -1,8 +1,8 @@
-import { defineDynamic, defineOpenAPIConnection } from "eve/connections";
+import { defineDynamic, defineOpenAPIConnection, once } from "eve/connections";
 
 export default defineDynamic({
-  select: () => null,
-  resolve: () => ({
+  select: once,
+  build: () => ({
     "dynamic-catalog": defineOpenAPIConnection({
       baseUrl: "https://catalog.example.com",
       description: "Caller-specific product catalog.",

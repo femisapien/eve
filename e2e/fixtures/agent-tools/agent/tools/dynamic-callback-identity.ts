@@ -3,10 +3,9 @@ import { defineDynamic, defineTool } from "eve/tools";
 import metadataProvider from "../channels/metadata-provider";
 
 export default defineDynamic({
-  select: () => null,
-  resolve: (_event, ctx) => {
-    if (!isChannel(ctx.channel, metadataProvider)) return null;
-    const topic = ctx.channel.metadata.topic;
+  select: (_view, { channel }) =>
+    isChannel(channel, metadataProvider) ? (channel.metadata.topic ?? null) : null,
+  build: (topic) => {
     if (topic === "callback-guarded") {
       return {
         callback_identity: defineTool({

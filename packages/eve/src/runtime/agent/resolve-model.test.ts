@@ -122,7 +122,7 @@ describe("dynamic runtime model resolution", () => {
       dynamicModel: DYNAMIC_MODEL_SOURCE,
       scope: { moduleMap, nodeId: undefined },
     });
-    const result = await definition.resolve("slack" as never, {} as never);
+    const result = await definition.resolve!("slack" as never, {} as never);
 
     const resolved = await resolveRuntimeModelSelection({
       durability: "live",

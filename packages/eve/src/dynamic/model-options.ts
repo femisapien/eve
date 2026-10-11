@@ -1,36 +1,16 @@
-import type { ModelMessage } from "ai";
-
-import type { ResolveContext } from "#dynamic/definition.js";
-import type { PublicAgentDynamicModelResult } from "#shared/agent-definition.js";
+const READS_CONVERSATION = Symbol.for("eve.model-reads-conversation");
 
 /**
- * How eve's own model resolvers, such as auto(), choose among fixed options. The slot records the
- * option a session chose, so a process that didn't choose it rebuilds the same model from the
- * option without choosing again. Not public: authored resolvers return the model itself.
+ * Marks eve's own model definition, such as auto()'s, whose `resolve` reads the conversation
+ * before the turn, which an authored `resolve` can't. That's safe because eve records what
+ * `resolve` returns and builds the model from it, so the decision never runs again for the same
+ * selection. Not public.
  */
-export interface ModelOptions {
-  /**
-   * Chooses an option for the selection, or `null` while there's nothing to choose from. It may
-   * read the conversation as it stands, which an authored `resolve` can't: the slot records what
-   * it chose, and `rebuild` restores that, so it never runs again for the same selection.
-   */
-  readonly choose: (
-    selected: never,
-    ctx: ResolveContext & { readonly messages: readonly ModelMessage[] },
-  ) => Promise<string | null>;
-  /** The model an option names, or `undefined` for one these options no longer have. */
-  readonly option: (key: string) => PublicAgentDynamicModelResult | undefined;
-}
-
-const MODEL_OPTIONS = Symbol.for("eve.model-options");
-
-export function withModelOptions<T extends object>(definition: T, options: ModelOptions): T {
-  Object.defineProperty(definition, MODEL_OPTIONS, { value: options });
+export function readingConversation<T extends object>(definition: T): T {
+  Object.defineProperty(definition, READS_CONVERSATION, { value: true });
   return definition;
 }
 
-export function modelOptionsOf(definition: unknown): ModelOptions | undefined {
-  return typeof definition === "object" && definition !== null
-    ? (Reflect.get(definition, MODEL_OPTIONS) as ModelOptions | undefined)
-    : undefined;
+export function readsConversation(definition: unknown): boolean {
+  return typeof definition === "object" && definition !== null && READS_CONVERSATION in definition;
 }

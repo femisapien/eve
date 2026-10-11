@@ -4,9 +4,9 @@ import { auditOutbox, isWorkspaceMember } from "../lib/workspace";
 
 // Only workspace members have an audit outbox, so other callers never see this tool.
 export default defineDynamic({
-  select: (view) => view.latest["model.requested"] ?? null,
-  resolve: (_event, ctx) =>
-    isWorkspaceMember(ctx.session.auth.current)
+  select: (_view, { session }) => isWorkspaceMember(session.auth.current),
+  build: (member) =>
+    member
       ? defineTool({
           description: "List audit events waiting for the workspace audit sink.",
           inputSchema: z.strictObject({}),

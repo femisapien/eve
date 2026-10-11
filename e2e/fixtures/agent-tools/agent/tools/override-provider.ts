@@ -1,4 +1,4 @@
-import { defineDynamic, defineTool } from "eve/tools";
+import { defineDynamic, defineTool, once } from "eve/tools";
 
 export const OVERRIDE_TOKEN = "dynamic-override-ok-K2P7";
 
@@ -6,8 +6,8 @@ export const OVERRIDE_TOKEN = "dynamic-override-ok-K2P7";
 // same name. A dynamic tool wins on conflict, so calls to `override-target`
 // must execute this version.
 export default defineDynamic({
-  select: () => null,
-  resolve: async () => {
+  select: once,
+  build: () => {
     return {
       "override-target": defineTool({
         description:

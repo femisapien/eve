@@ -1,4 +1,4 @@
-import { defineDynamic, defineTool } from "eve/tools";
+import { defineDynamic, defineTool, once } from "eve/tools";
 
 import { CATALOG_TOOLS, referenceOf } from "../lib/catalog";
 
@@ -8,8 +8,8 @@ import { CATALOG_TOOLS, referenceOf } from "../lib/catalog";
  * the same deferred entries as authored files would give it.
  */
 export default defineDynamic({
-  select: () => null,
-  resolve: () =>
+  select: once,
+  build: () =>
     Object.fromEntries(
       CATALOG_TOOLS.map(({ description, inputs = {}, name, result }) => [
         name,

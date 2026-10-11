@@ -27,3 +27,6 @@ export {
   defineHook,
 } from "#public/definitions/hook.js";
 export type { ReactionView, SelectContext } from "#dynamic/definition.js";
+
+/** Named lifetimes for `select`: once per session, turn, or model call. */
+export { once, perStep, perTurn } from "#dynamic/definition.js";

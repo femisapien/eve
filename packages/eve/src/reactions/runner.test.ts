@@ -35,7 +35,8 @@ function written(line: number, type = "turn.started", data: object = {}) {
 function session(
   resolver: {
     readonly select?: (view: never, ctx: never) => unknown;
-    readonly resolve: (selected: never, ctx: never) => unknown;
+    readonly resolve?: (selected: never, ctx: never) => unknown;
+    readonly build?: (input: never) => unknown;
   },
   hooks: readonly object[] = [],
   instructions: readonly object[] = [],
@@ -71,17 +72,27 @@ async function inSession(ctx: ContextContainer, input: Parameters<typeof runReac
   await contextStorage.run(ctx, async () => await runReactions(ctx, input));
 }
 
-const counted = (selections: unknown[]) => ({
-  resolve: (selected: never) => {
+const countTool = (count: unknown) =>
+  defineTool({
+    description: `Count ${String(count)}.`,
+    execute: async () => count,
+    inputSchema: {},
+  });
+
+/** A tool whose `resolve` records each selection it fetches for, and whose `build` each build. */
+const counted = (selections: unknown[], builds: unknown[] = []) => ({
+  build: ((count: unknown) => {
+    builds.push(count);
+    return countTool(count);
+  }) as never,
+  resolve: ((selected: never) => {
     selections.push(selected);
-    return defineTool({
-      description: `Count ${String(selected)}.`,
-      execute: async () => selected,
-      inputSchema: {},
-    });
-  },
+    return selected;
+  }) as never,
   select: ((view: { readonly messages: readonly ModelMessage[] }) => view.messages.length) as never,
 });
+
+const noTools = { build: (() => null) as never, select: (() => null) as never };
 
 describe("runReactions", () => {
   it("resolves only when the selection changes", async () => {
@@ -108,24 +119,26 @@ describe("runReactions", () => {
     expect(slotsOf(ctx, "tool")).toHaveLength(1);
   });
 
-  it("rebuilds code in a fresh process from the recorded selection", async () => {
+  it("builds code in a fresh process from what the slot recorded, without resolving again", async () => {
     const selections: unknown[] = [];
-    const ctx = session(counted(selections));
+    const builds: unknown[] = [];
+    const ctx = session(counted(selections, builds));
     await runReactions(ctx, { conversation: [user("a"), user("b")], written: written(1) });
 
     forgetSessionLive(ctx.get(SessionIdKey)!);
     expect(dynamicTools(ctx)).toEqual([]);
     await restoreReactions(ctx);
 
-    expect(selections).toEqual([2, 2]);
+    expect(selections).toEqual([2]);
+    expect(builds).toEqual([2, 2]);
     expect(dynamicTools(ctx).map((tool) => tool.description)).toEqual(["Count 2."]);
   });
 
-  it("records the new selection of a code slot even when its declaration is unchanged", async () => {
-    // Both scopes declare the same tool; only the code that closes over the scope differs.
+  it("builds from the latest input even when what the model is offered is unchanged", async () => {
+    // Both scopes offer the same tool; only the code that closes over the scope differs.
     const built: string[] = [];
     const ctx = session({
-      resolve: ((scope: string) => {
+      build: ((scope: string) => {
         built.push(scope);
         return defineTool({
           description: "Forget a memory.",
@@ -138,20 +151,20 @@ describe("runReactions", () => {
     });
     await runReactions(ctx, { conversation: [user("tenant-a")], written: written(1) });
     await runReactions(ctx, { conversation: [user("tenant-b")], written: written(2) });
-    expect(slotsOf(ctx, "tool")[0]?.slot.selection).toBe("tenant-b");
+    expect(slotsOf(ctx, "tool")[0]?.slot.input).toBe("tenant-b");
 
     forgetSessionLive(ctx.get(SessionIdKey)!);
     await restoreReactions(ctx);
 
-    // The rebuild in a fresh process binds the tool to the latest tenant, not the first.
     expect(built).toEqual(["tenant-a", "tenant-b", "tenant-b"]);
   });
 
-  it("fails calls to a tool whose rebuilt declaration differs from the one offered", async () => {
+  it("withdraws a slot whose build offers something else in a fresh process", async () => {
     let description = "Offered.";
     const ctx = session({
-      resolve: (() =>
+      build: (() =>
         defineTool({ description, execute: async () => "ran", inputSchema: {} })) as never,
+      select: (() => null) as never,
     });
     await runReactions(ctx, { written: written(1) });
 
@@ -159,18 +172,54 @@ describe("runReactions", () => {
     forgetSessionLive(ctx.get(SessionIdKey)!);
     await restoreReactions(ctx);
 
-    const [tool] = dynamicTools(ctx);
-    expect(tool?.description).toBe("Offered.");
-    await expect(tool!.execute!({}, {} as never)).rejects.toThrow(
-      'Tool "count" changed since it was offered.',
-    );
+    expect(dynamicTools(ctx)).toEqual([]);
+    expect(slotsOf(ctx, "tool").map(({ slot }) => slot.error)).toEqual([
+      expect.stringContaining("built something other than what this session was offered"),
+    ]);
+  });
+
+  it("requires JSON from a resolve whose value build creates", async () => {
+    const ctx = session({
+      build: ((tool: never) => tool) as never,
+      resolve: (() => countTool(1)) as never,
+      select: (() => null) as never,
+    });
+    await runReactions(ctx, { written: written(1) });
+
+    expect(slotsOf(ctx, "tool").map(({ slot }) => slot.error)).toEqual([
+      expect.stringContaining('The resolve of "tools/count.ts" must return JSON'),
+    ]);
+  });
+
+  it("rejects a build that returns a promise, since build can't do I/O", async () => {
+    const ctx = session({
+      build: (async () => countTool(1)) as never,
+      select: (() => null) as never,
+    });
+    await runReactions(ctx, { written: written(1) });
+
+    expect(slotsOf(ctx, "tool").map(({ slot }) => slot.error)).toEqual([
+      expect.stringContaining('The build of "tools/count.ts" returned a promise'),
+    ]);
+  });
+
+  it("caps a selection at 64 KB", async () => {
+    const ctx = session({
+      build: (() => null) as never,
+      select: (() => "x".repeat(70_000)) as never,
+    });
+    await runReactions(ctx, { written: written(1) });
+
+    expect(slotsOf(ctx, "tool").map(({ slot }) => slot.error)).toEqual([
+      expect.stringContaining("a selection is at most 64 KB"),
+    ]);
   });
 
   it("keeps the model out of the view of reactions that run before it", async () => {
     const seen: unknown[] = [];
     const ctx = session(
       {
-        resolve: (() => null) as never,
+        build: (() => null) as never,
         select: ((view: { readonly model: unknown }) => {
           seen.push(view.model);
           return null;
@@ -195,13 +244,13 @@ describe("runReactions", () => {
     ]);
   });
 
-  it("compacts once per entry, and records it rather than reading it from the view", async () => {
+  it("compacts once per occurrence, without naming it", async () => {
     let imports = 1;
-    const ctx = session({ resolve: (() => null) as never, select: (() => null) as never }, [
+    const ctx = session(noTools, [
       {
         events: {},
         logicalPath: "hooks/imports.ts",
-        resolve: (count: number) => ({ [`import-${count}`]: compact() }),
+        resolve: () => compact(),
         select: () => imports,
         slug: "imports",
       },
@@ -211,7 +260,7 @@ describe("runReactions", () => {
 
     await inSession(ctx, { written: written(2, "context.started", { kind: "compaction" }) });
     expect(hasPendingCompaction(ctx)).toBe(false);
-    // Losing what the view knew about that compaction doesn't make the intent pending again.
+    // The same selection is the same occurrence, which already acted.
     writeReactionsState(ctx, { ...readReactionsState(ctx), latest: {} });
     await inSession(ctx, { written: written(3) });
     expect(hasPendingCompaction(ctx)).toBe(false);
@@ -221,8 +270,32 @@ describe("runReactions", () => {
     expect(hasPendingCompaction(ctx)).toBe(true);
   });
 
+  it("gives a hook's resolve a stable key for its occurrence", async () => {
+    const occurrences: string[] = [];
+    let turn = 1;
+    const ctx = session(noTools, [
+      {
+        events: {},
+        logicalPath: "hooks/notify.ts",
+        resolve: (_selected: unknown, hookContext: { readonly occurrence: string }) => {
+          occurrences.push(hookContext.occurrence);
+          return null;
+        },
+        select: () => turn,
+        slug: "notify",
+      },
+    ]);
+    await inSession(ctx, { written: written(1) });
+    turn = 2;
+    await inSession(ctx, { written: written(2) });
+
+    expect(occurrences).toHaveLength(2);
+    expect(new Set(occurrences).size).toBe(2);
+    expect(occurrences[0]).toContain(":notify:");
+  });
+
   it("cancels the running turn once, and waits for a commit that can", async () => {
-    const ctx = session({ resolve: (() => null) as never, select: (() => null) as never }, [
+    const ctx = session(noTools, [
       {
         events: {},
         logicalPath: "hooks/stop.ts",
@@ -244,36 +317,34 @@ describe("runReactions", () => {
     expect(stopped).toEqual([{ hook: "hooks/stop.ts", reason: "Asked to stop." }]);
   });
 
-  it("runs resolve outside the session's context, so it reads only its selection", async () => {
+  it("runs resolve and build outside the session's context, so they read only the selection", async () => {
     const counter = defineState("runner-test.counter", () => 7);
     const read = session({
       resolve: (() => counter.get()) as never,
+      build: (() => null) as never,
       select: (() => null) as never,
     });
+    const built = session({ build: (() => counter.get()) as never, select: (() => null) as never });
     const selected = session({
-      resolve: ((count: number) =>
-        defineTool({
-          description: `Count ${count}.`,
-          execute: async () => count,
-          inputSchema: {},
-        })) as never,
+      build: ((count: number) => countTool(count)) as never,
       select: (() => counter.get()) as never,
     });
     await inSession(read, { written: written(1) });
+    await inSession(built, { written: written(1) });
     await inSession(selected, { written: written(1) });
 
-    expect(slotsOf(read, "tool").map(({ slot }) => slot.error)).toEqual([
-      expect.stringContaining(
-        '"tools/count.ts" read session state in resolve, which reads only its selection',
-      ),
-    ]);
+    for (const ctx of [read, built]) {
+      expect(slotsOf(ctx, "tool").map(({ slot }) => slot.error)).toEqual([
+        expect.stringContaining('"tools/count.ts" read session state in resolve or build'),
+      ]);
+    }
     expect(dynamicTools(selected).map((tool) => tool.description)).toEqual(["Count 7."]);
   });
 
   it("runs only hooks for a commit of streamed progress", async () => {
     let selects = 0;
     const ctx = session({
-      resolve: (() => null) as never,
+      build: (() => null) as never,
       select: (() => {
         selects += 1;
         return null;
@@ -292,10 +363,16 @@ describe("runReactions", () => {
     let fail = false;
     let calls = 0;
     const ctx = session({
+      build: (() =>
+        defineTool({
+          description: "Listed.",
+          execute: async () => null,
+          inputSchema: {},
+        })) as never,
       resolve: (() => {
         calls += 1;
         if (fail) throw new Error("listing failed");
-        return defineTool({ description: "Listed.", execute: async () => null, inputSchema: {} });
+        return "listed";
       }) as never,
       select: ((view: { readonly latest: Record<string, number> }) =>
         view.latest["turn.started"] ?? null) as never,
@@ -326,24 +403,27 @@ describe("runReactions", () => {
     expect(selections).toEqual([1, 1]);
   });
 
-  it("doesn't resolve again under a new revision what a fresh process rebuilt under it", async () => {
+  it("builds a fresh process's code under a new revision, then resolves again at its first commit", async () => {
     const selections: unknown[] = [];
-    const ctx = session(counted(selections));
+    const builds: unknown[] = [];
+    const ctx = session(counted(selections, builds));
     await restoreReactions(ctx, { revision: "r1" });
     await runReactions(ctx, { conversation: [user("a")], written: written(1) });
     forgetSessionLive(ctx.get(SessionIdKey)!);
     await restoreReactions(ctx, { revision: "r2" });
+    expect(dynamicTools(ctx).map((tool) => tool.description)).toEqual(["Count 1."]);
     await runReactions(ctx, { conversation: [user("a")], written: written(2) });
 
-    // Once to choose, once to rebuild under r2, and not again after r2's first commit.
+    // Once to choose under r1; under r2, once to build for the step and once to resolve again.
     expect(selections).toEqual([1, 1]);
+    expect(builds).toEqual([1, 1, 1]);
     expect(slotsOf(ctx, "tool")[0]?.slot.revision).toBe("r2");
   });
 
   it("keeps a data slot under a new runtime revision until its selection changes", async () => {
     const resolved: unknown[] = [];
     const ctx = session(
-      { resolve: (() => null) as never, select: (() => null) as never },
+      noTools,
       [],
       [
         {

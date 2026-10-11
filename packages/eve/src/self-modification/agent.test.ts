@@ -22,7 +22,7 @@ describe("retired self-modification agent scaffold", () => {
       reasoning: "high",
     });
 
-    await expect(agent.resolve(null, context)).resolves.toBeNull();
+    await expect(agent.resolve!(null, context)).resolves.toBeNull();
   });
 
   it("warns once in development across resolves", async () => {
@@ -30,8 +30,8 @@ describe("retired self-modification agent scaffold", () => {
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const agent = defineSelfModificationAgent();
 
-    await agent.resolve(null, context);
-    await agent.resolve(null, context);
+    await agent.resolve!(null, context);
+    await agent.resolve!(null, context);
 
     expect(warning).toHaveBeenCalledTimes(1);
     expect(warning).toHaveBeenCalledWith(
@@ -41,7 +41,7 @@ describe("retired self-modification agent scaffold", () => {
 
   it("does not warn in production", async () => {
     const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    await defineSelfModificationAgent().resolve(null, context);
+    await defineSelfModificationAgent().resolve!(null, context);
     expect(warning).not.toHaveBeenCalled();
   });
 });

@@ -2,7 +2,7 @@ import { defineDynamic, defineTool } from "eve/tools";
 
 export default defineDynamic({
   select: (view) => view.session.turnCount,
-  resolve: async (turn) => ({
+  build: (turn) => ({
     session_only: defineTool({
       description: "A tool only from session scope. Call when the user asks for session_only.",
       inputSchema: { type: "object" as const, properties: {} },

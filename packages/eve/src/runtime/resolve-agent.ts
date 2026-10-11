@@ -63,7 +63,11 @@ export async function resolveAgent(input: ResolveAgentInput): Promise<ResolvedAg
   const scope = { moduleMap: input.moduleMap, nodeId: input.nodeId };
   const resolvedDynamicConnectionResolvers = await Promise.all(
     input.manifest.dynamicConnections.map((definition) =>
-      resolveDynamicDefinition(definition, { ...scope, kindLabel: "dynamic connection" }),
+      resolveDynamicDefinition(definition, {
+        ...scope,
+        build: "required",
+        kindLabel: "dynamic connection",
+      }),
     ),
   );
   const resolvedDynamicInstructionsResolvers = await Promise.all(
@@ -78,7 +82,7 @@ export async function resolveAgent(input: ResolveAgentInput): Promise<ResolvedAg
   );
   const resolvedDynamicToolResolvers = await Promise.all(
     input.manifest.dynamicTools.map((def) =>
-      resolveDynamicDefinition(def, { ...scope, kindLabel: "dynamic tool" }),
+      resolveDynamicDefinition(def, { ...scope, build: "required", kindLabel: "dynamic tool" }),
     ),
   );
   // Hook resolution preserves the manifest's lexicographic-on-slug order
