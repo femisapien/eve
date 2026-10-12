@@ -1,3 +1,4 @@
+import type { JsonValue } from "#shared/json.js";
 import type { SubagentInputRequestHookPayload } from "#channel/types.js";
 import type { StepCoordinates as PendingInputBatchEvent } from "#harness/session-machine/view.js";
 import type { InputOption, InputRequestKind } from "#shared/input.js";
@@ -197,6 +198,8 @@ function parseRemoteAgentBinding(
   const resolverId = Reflect.get(value, "resolverId");
   const forwardPrincipal = Reflect.get(value, "forwardPrincipal");
   const sessionId = Reflect.get(value, "sessionId");
+  // The parent's own step wrote it: the record its credentials render from.
+  const record = Reflect.get(value, "record") as JsonValue | undefined;
   if (
     typeof name !== "string" ||
     !name ||
@@ -214,6 +217,7 @@ function parseRemoteAgentBinding(
     sessionId,
     ...(resolverId !== undefined && { resolverId }),
     ...(forwardPrincipal !== undefined && { forwardPrincipal }),
+    ...(record !== undefined && { record }),
   };
 }
 

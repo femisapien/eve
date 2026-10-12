@@ -115,12 +115,12 @@ describe("dynamic remote agent credentials", () => {
     },
   } as never;
 
-  it("renders credentials from the parent's record for the child's destination", async () => {
+  it("renders credentials from the record the child was opened with, for its destination", async () => {
     await expect(
       resolveRemoteAgentStreamHeaders({
         bundle,
         name: "finance",
-        recordOf: () => ({ id: "acme", region: "eu" }),
+        record: { id: "acme", region: "eu" },
         resolverId: tenantRemote.nodeId,
         url: "https://eu.finance.example",
       }),

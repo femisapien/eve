@@ -473,8 +473,8 @@ export function resolveRemoteAgentForAction(input: {
  *
  * `resolverId` is the key the parent's private child binding records: the subagent's node id,
  * never resolved credentials. A static remote agent's definition must still agree with the
- * event's `name`/`url`, and a dynamic one's credentials are rendered from the record the parent's
- * session holds, for the same destination, so a stale or mismatched key fails closed rather than
+ * event's `name`/`url`, and a dynamic one's credentials are rendered from the record the child was
+ * opened with, for the same destination, so a stale or mismatched key fails closed rather than
  * minting headers for the wrong upstream.
  */
 export async function resolveRemoteAgentStreamHeaders(input: {
@@ -482,8 +482,8 @@ export async function resolveRemoteAgentStreamHeaders(input: {
   readonly name: string;
   readonly resolverId?: string;
   readonly url: string;
-  /** The parent session's record for a dynamic remote agent, by node id. */
-  readonly recordOf?: (nodeId: string) => JsonValue | undefined;
+  /** A dynamic remote agent's record, from the parent's binding for the child. */
+  readonly record?: JsonValue;
 }): Promise<Record<string, string>> {
   if (input.resolverId === undefined) {
     return {};
@@ -493,7 +493,7 @@ export async function resolveRemoteAgentStreamHeaders(input: {
   for (const node of nodes) {
     const { dynamicNodeIds, dynamicResolvers } = node.subagentRegistry;
     if (dynamicNodeIds?.has(input.resolverId) === true) {
-      const record = input.recordOf?.(input.resolverId);
+      const { record } = input;
       // A dynamic remote agent without credentials records nothing to render.
       if (record === undefined) return {};
       return await resolveRemoteAgentRequestHeaders(

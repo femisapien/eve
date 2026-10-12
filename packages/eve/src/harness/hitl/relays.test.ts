@@ -115,6 +115,9 @@ describe("upsertProxyInputRequests", () => {
   it("preserves remote response coordinates through a durable proxy snapshot", () => {
     const remote = {
       name: "research",
+      // A dynamic remote agent's record survives the snapshot, so the answer carries the
+      // credentials the child was opened with.
+      record: { tenant: "acme" },
       resolverId: "subagents/research.ts",
       sessionId: "remote-child-session",
       url: "https://remote.example.com",
