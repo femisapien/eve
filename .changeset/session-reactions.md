@@ -13,6 +13,8 @@
 - **A new deployment evaluates every value again,** data and code alike, before the next model call.
 - **A user-role dynamic instruction joins the conversation once per occurrence,** as a `turn.started` handler's did.
 - **A call that waits, such as for approval, fails if its dynamic tool changed** since the model was offered it.
-- **Dynamic remote agents carry `auth` and `headers`** from `render`, rendered again wherever the child is reached, and only for the destination it was opened at.
+- **Dynamic remote agents carry `auth` and `headers`** from `render`. A child keeps the record it was opened with: every later request to it renders its credentials from that record, and only for the destination it was opened at.
+- **A dynamic subagent that runs the parent's model** gets the parent's context-window metadata for it, so a custom parent model works without repeating `modelContextWindowTokens`.
 - **A selection is at most 64 KB, and a record at most 1 MB.**
 - **Memory drops its compaction hooks and `visibility`.** Recall applies to each model call.
+- **Extensions with dynamic capabilities, subagents, connections, or hooks must be rebuilt** with this eve: those contracts drop their earlier epochs.
