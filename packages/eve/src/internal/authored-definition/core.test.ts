@@ -57,7 +57,7 @@ describe("normalizeAgentDefinition", () => {
         },
         FAILURE_MESSAGE,
       ),
-    ).toThrow(/returns its "modelContextWindowTokens" and "modelOptions" from resolve/);
+    ).toThrow(/returns its "modelContextWindowTokens" and "modelOptions" from render/);
   });
 
   it("rejects keys beside a dynamic model's select, record, and render", () => {

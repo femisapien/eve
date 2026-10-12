@@ -54,7 +54,7 @@ import { createEditableMarkerTool } from "../lib/editable-factory.ts";
 
 export default defineDynamic({
   select: () => null,
-  resolve: () => ({
+  render: () => ({
     alpha_marker: createEditableMarkerTool("alpha", "v1"),
     beta_marker: createEditableMarkerTool("beta", "v1"),
   }),
