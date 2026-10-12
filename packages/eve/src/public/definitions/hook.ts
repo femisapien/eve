@@ -141,19 +141,28 @@ export interface HookContext extends SessionContext {
    * settled. Read what changed from the event, and where things stand from the view.
    */
   readonly view: SessionView;
-  /**
-   * A stable key for this occurrence, the same if a retried step runs the handler again. Pass it
-   * as the idempotency key of a side effect, such as an email, that must happen once.
-   */
-  readonly occurrence: string;
+  /** The fact this handler runs for. See {@link HookOccurrence}. */
+  readonly occurrence: HookOccurrence;
 }
 
-/** What a hook's `record` receives besides its selection. */
-export interface HookRecordContext extends RecordContext, Omit<SessionContext, "session"> {
+/**
+ * One occurrence of a hook: a new selection, or a fact an `events` handler receives. A retried step
+ * runs the hook again for the same occurrence; a selection that comes back later is a new one.
+ */
+export interface HookOccurrence {
+  /**
+   * A stable key for the occurrence. Pass it as the idempotency key of a side effect, such as an
+   * email, that must happen once: a hook runs at least once until its step is checkpointed.
+   */
+  readonly id: string;
+}
+
+/** What a hook's `run` receives besides its selection. */
+export interface HookRunContext extends RecordContext, Omit<SessionContext, "session"> {
   readonly session: SessionContext["session"];
   readonly agent: HookContext["agent"];
-  /** A stable key for this occurrence: the hook, and its selection. See {@link HookContext}. */
-  readonly occurrence: string;
+  /** This selection's occurrence. See {@link HookOccurrence}. */
+  readonly occurrence: HookOccurrence;
 }
 
 /**
@@ -190,78 +199,47 @@ export type HookView = Omit<ReactionView, "model">;
 export interface EventHookDefinition<TKey extends HookEventKey = HookEventKey> {
   readonly events: StreamEventHooks<TKey>;
   readonly select?: never;
-  readonly record?: never;
-  readonly render?: never;
-}
-
-/** The usual form: `render` returns the intents for each new selection. */
-export interface RenderedHookDefinition<TSelected = unknown> {
-  readonly select: ReactionSelect<TSelected, HookView>;
-  readonly render: (selected: TSelected) => HookResult;
-  readonly record?: never;
-  readonly events?: never;
+  readonly run?: never;
 }
 
 /**
- * With something to await, or a side effect: `record` runs once per new selection, eve keeps what
- * it returns, and `render` returns the intents from it. Key a side effect on `ctx.occurrence`.
+ * A hook that reads the session: `run` acts once for each new selection. It may do I/O and side
+ * effects, keyed on `ctx.occurrence.id`, and return intents such as {@link compact}.
  */
-export interface RecordedHookDefinition<TSelected = unknown, TData = unknown> {
+export interface SelectHookDefinition<TSelected = unknown> {
   readonly select: ReactionSelect<TSelected, HookView>;
-  readonly record: (selected: TSelected, ctx: HookRecordContext) => TData | Promise<TData>;
-  readonly render: (data: TData) => HookResult;
+  readonly run: (selected: TSelected, ctx: HookRunContext) => HookResult | Promise<HookResult>;
   readonly events?: never;
 }
-
-/** When `record` returns the intents itself. */
-export interface RecordOnlyHookDefinition<TSelected = unknown> {
-  readonly select: ReactionSelect<TSelected, HookView>;
-  readonly record: (
-    selected: TSelected,
-    ctx: HookRecordContext,
-  ) => HookResult | Promise<HookResult>;
-  readonly render?: never;
-  readonly events?: never;
-}
-
-/** A hook that reads the session: `select` with `render`, `record`, or both. */
-export type SelectHookDefinition<TSelected = unknown> =
-  | RenderedHookDefinition<TSelected>
-  | RecordedHookDefinition<TSelected>
-  | RecordOnlyHookDefinition<TSelected>;
 
 /**
- * Public hook definition authored in `agent/hooks/*.ts`: `events` handlers, or a reaction to the
- * session like any dynamic value, whose `render` returns intents such as {@link compact}. Both run
- * after eve has durably recorded the commit.
+ * Public hook definition authored in `agent/hooks/*.ts`: `events` handlers, or `select` with `run`,
+ * which acts when what it selects changes. Both run after eve has durably recorded the commit, and
+ * may return intents such as {@link cancel} and {@link compact}.
  */
 export type HookDefinition<TKey extends HookEventKey = HookEventKey, TSelected = unknown> =
   | EventHookDefinition<TKey>
   | SelectHookDefinition<TSelected>;
 
 /**
- * Defines a hook. Pass `events` handlers, or `select` with `render`, `record`, or both, as a
- * dynamic value does: intents act once for each new selection.
+ * Defines a hook. Pass `events` handlers, which run for each fact, or `select` with `run`, which
+ * runs once for each new selection. Intents act once per occurrence. A hook that throws during a
+ * turn fails the turn; catch errors a hook should survive.
  *
  * ```ts
  * export default defineHook({
- *   select: (view) => (idle(view) ? (view.turn?.id ?? null) : null),
- *   render: (turnId) => (turnId === null ? null : compact({ reason: "The session went idle." })),
+ *   select: (view) => ({ idle: idle(view), turnId: view.turn?.id ?? null }),
+ *   run: ({ idle, turnId }) =>
+ *     idle && turnId !== null ? compact({ reason: "The session went idle." }) : null,
  * });
  * ```
  */
 export function defineHook<const T extends StreamEventHooks<HookEventKey>>(definition: {
   readonly events: ExactDefinition<T, StreamEventHooks<HookEventKey>>;
 }): EventHookDefinition<NoInfer<Extract<keyof T, HookEventKey>>>;
-export function defineHook<TSelected, TData>(
-  definition: RecordedHookDefinition<TSelected, TData>,
-): RecordedHookDefinition<TSelected, TData>;
 export function defineHook<TSelected>(
-  definition: RenderedHookDefinition<TSelected>,
-): RenderedHookDefinition<TSelected>;
-export function defineHook<TSelected>(
-  definition: RecordOnlyHookDefinition<TSelected>,
-): RecordOnlyHookDefinition<TSelected>;
+  definition: SelectHookDefinition<TSelected>,
+): SelectHookDefinition<TSelected>;
 export function defineHook(definition: HookDefinition<HookEventKey, unknown>): HookDefinition {
   return defineReaction(definition as never, "defineHook", HOOK_FORM) as unknown as HookDefinition;
 }

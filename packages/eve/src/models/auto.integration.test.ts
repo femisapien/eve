@@ -70,7 +70,7 @@ async function run(definition: ReturnType<typeof auto>, input: ReturnType<typeof
   const chosen = await definition.record!(selected, {
     abortSignal: input.abortSignal,
     channel: {},
-    messages: [],
+    messages: async () => [],
     session: { id: "test", auth: { current: null, initiator: null } },
   });
   // auto() records the option it chose, and builds the model from it.

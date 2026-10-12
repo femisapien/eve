@@ -23,6 +23,7 @@ import {
 } from "#execution/session/state-delta.js";
 import { deserializeContext, serializeContext } from "#context/serialize.js";
 import { BundleKey, ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
+import { readSlot } from "#reactions/runner.js";
 import {
   resolveRemoteAgentStreamHeaders,
   respondToRemoteAgentSession,
@@ -228,6 +229,7 @@ async function routeProxiedDeliver(
         const headers = await resolveRemoteAgentStreamHeaders({
           bundle: ctx.require(BundleKey),
           name: remote.name,
+          recordOf: (nodeId) => readSlot(ctx, `subagent:${nodeId}`)?.input,
           resolverId: remote.resolverId,
           url: remote.url,
         });

@@ -18,8 +18,8 @@ interface Instruction {
 
 /**
  * A `defineDynamic()` in `agent/instructions/`. A system instruction is part of every model call
- * while its slot holds it; a user instruction joins the conversation once, when a new selection
- * resolves to it.
+ * while its slot holds it; a user instruction joins the conversation once per occurrence, and
+ * stays there.
  */
 export function instructionsReaction(resolver: ResolvedDynamicInstructionsResolver): Reaction {
   return {
@@ -62,17 +62,25 @@ export function dynamicInstructionMessages(
   });
 }
 
-/** User instructions whose slots changed since the conversation last took them; marks them taken. */
+/**
+ * User instructions from occurrences the conversation hasn't taken yet; marks them taken. Each
+ * occurrence that returns one adds it once, even when its text matches the last one's, and a
+ * retried occurrence adds nothing new.
+ */
 export function takeUserInstructionMessages(ctx: AlsContext): UserModelMessage[] {
   const state = readReactionsState(ctx);
   const appended = { ...state.appended };
   const messages: UserModelMessage[] = [];
+  let changed = false;
   for (const { id, slot } of slotsOf(ctx, "instructions")) {
+    const occurrence = slot.occurrence ?? 1;
+    if ((appended[id] ?? 0) >= occurrence) continue;
+    appended[id] = occurrence;
+    changed = true;
     const instruction = slot.value as Instruction | null;
-    if (instruction?.role !== "user" || (appended[id] ?? -1) >= slot.since) continue;
-    appended[id] = slot.since;
+    if (instruction?.role !== "user") continue;
     messages.push(createFrameworkUserMessage("context.instruction", instruction.content));
   }
-  if (messages.length > 0) writeReactionsState(ctx, { ...state, appended });
+  if (changed) writeReactionsState(ctx, { ...state, appended });
   return messages;
 }

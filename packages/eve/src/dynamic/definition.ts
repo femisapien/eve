@@ -25,9 +25,9 @@ export interface ReactionTurn {
  * What a reaction selects from: the session's tables, the position of the latest event of each
  * type, the latest turn, the effective model, and the conversation.
  *
- * `messages` is the conversation as the model sees it. Steps that run without the conversation,
- * such as a task settling between turns, skip a reaction whose `select` reads it; the reaction runs
- * again after the next commit that has it.
+ * `messages` is the conversation as the model sees it. Dynamic values select before each model
+ * call, with the conversation it reads. A hook's `select` that reads it runs only where the step
+ * holds it: steps that settle background work between turns don't.
  */
 export interface ReactionView extends SessionView {
   /** The line position of the latest event of each type, and `"*"` for the latest fact. */
@@ -73,11 +73,10 @@ export interface SelectContext {
 export interface RecordContext extends SelectContext {
   readonly abortSignal: AbortSignal;
   /**
-   * The conversation as the model sees it, as of this commit. In a commit outside a turn step,
-   * which doesn't hold the conversation, reading it postpones `record` to the next commit that
-   * does.
+   * The conversation as the model sees it. Before a model call, it's what the call reads. Steps
+   * that settle background work between turns don't hold it, and reading it there throws.
    */
-  readonly messages: readonly ModelMessage[];
+  messages(): Promise<readonly ModelMessage[]>;
 }
 
 /** Reads what a reaction depends on. Synchronous and deterministic; returns JSON. */
@@ -109,7 +108,10 @@ export const once = (): null => null;
 export const perTurn = (view: { readonly turn: { readonly id: string } | null }): string | null =>
   view.turn?.id ?? null;
 
-/** Resolves once per model call: `select: perStep`. */
+/**
+ * Resolves once per model call: `select: perStep`. Each ordinary model call of a turn is a new
+ * one, including the call after a tool batch or a resumed approval; compaction's call isn't.
+ */
 export const perStep = (view: {
   readonly latest: Readonly<Record<string, number | undefined>>;
 }): number | null => view.latest["model.requested"] ?? null;
@@ -174,13 +176,22 @@ export interface DefineDynamicRendered<TResult> {
 
 /**
  * The one definition every authored reaction compiles from: `select` with `record`, `render`, or
- * both, or a hook's map of `events` handlers. `defineDynamic()` and `defineHook()` narrow it.
+ * both; a hook's `select` with `run`; or a hook's map of `events` handlers. `defineDynamic()` and
+ * `defineHook()` narrow it.
  */
 export type ReactionDefinition =
   | {
       readonly select: (...args: never[]) => unknown;
       readonly record?: (...args: never[]) => unknown;
       readonly render?: (...args: never[]) => unknown;
+      readonly run?: never;
+      readonly events?: never;
+    }
+  | {
+      readonly select: (...args: never[]) => unknown;
+      readonly run: (...args: never[]) => unknown;
+      readonly record?: never;
+      readonly render?: never;
       readonly events?: never;
     }
   | {
@@ -188,6 +199,7 @@ export type ReactionDefinition =
       readonly select?: never;
       readonly record?: never;
       readonly render?: never;
+      readonly run?: never;
     };
 
 /** Validates a reaction's form and marks it for the compiler. Not public: use its narrowings. */
@@ -202,19 +214,20 @@ export function defineReaction<T extends ReactionDefinition>(
   return sentinel;
 }
 
-/** A hook's form: `select` with `record` or `render`, or a map of `events` handlers. */
-export const HOOK_FORM: ReactionFormOptions = { events: true };
+/** A hook's form: `select` with `run`, or a map of `events` handlers. */
+export const HOOK_FORM: ReactionFormOptions = { hook: true };
 
 export interface ReactionFormOptions {
-  /** Whether a map of `events` handlers is allowed instead of `select`. Hooks only. */
-  readonly events?: boolean;
+  /** A hook: `select` with `run`, or a map of `events` handlers. */
+  readonly hook?: boolean;
   /** Whether `render` is required: for tools and connections, whose values are code. */
   readonly render?: "required";
 }
 
 /**
- * Throws unless `value` takes one form: `select` with `record`, `render`, or both, or an `events`
- * object. The definers, the compiler, and the runtime loader all use it, so every source agrees.
+ * Throws unless `value` takes one form: a value's `select` with `record`, `render`, or both, or a
+ * hook's `select` with `run`, or its `events` object. The definers, the compiler, and the runtime
+ * loader all use it, so every source agrees.
  */
 export function assertReactionForm(
   value: unknown,
@@ -224,18 +237,37 @@ export function assertReactionForm(
   if (typeof value !== "object" || value === null) {
     throw new Error(`${subject} takes an object.`);
   }
-  const { events, record, render, select } = value as Record<string, unknown>;
-  if (events !== undefined) {
-    if (options.events !== true) {
-      throw new Error(`${subject} takes select with record or render, not events.`);
+  const { events, record, render, run, select } = value as Record<string, unknown>;
+  if (options.hook === true) {
+    if (record !== undefined || render !== undefined) {
+      throw new Error(
+        `${subject} takes select with run, or events: a hook acts rather than holds a value, so it has nothing to render. Do the work in run, and return cancel() or compact() from it.`,
+      );
     }
-    if (select !== undefined || record !== undefined || render !== undefined) {
-      throw new Error(`${subject} takes either events or select, not both.`);
+    if (events !== undefined) {
+      if (select !== undefined || run !== undefined) {
+        throw new Error(`${subject} takes either events, or select with run, not both.`);
+      }
+      if (typeof events !== "object" || events === null) {
+        throw new Error(`${subject} events must be an object of handlers.`);
+      }
+      return;
     }
-    if (typeof events !== "object" || events === null) {
-      throw new Error(`${subject} events must be an object of handlers.`);
+    if (typeof run !== "function") {
+      throw new Error(`${subject} requires events, or select with a run function.`);
+    }
+    if (typeof select !== "function") {
+      throw new Error(`${subject} requires a select function beside run.`);
     }
     return;
+  }
+  if (events !== undefined) {
+    throw new Error(`${subject} takes select with record or render, not events.`);
+  }
+  if (run !== undefined) {
+    throw new Error(
+      `${subject} takes select with record or render. run is a hook's: a value renders what the session should have.`,
+    );
   }
   if (record !== undefined && typeof record !== "function") {
     throw new Error(`${subject} record must be a function.`);
@@ -249,11 +281,7 @@ export function assertReactionForm(
     );
   }
   if (record === undefined && render === undefined) {
-    throw new Error(
-      options.events === true
-        ? `${subject} requires events, or select with record or render.`
-        : `${subject} requires render, or record, beside select.`,
-    );
+    throw new Error(`${subject} requires render, or record, beside select.`);
   }
   if (typeof select !== "function") {
     throw new Error(

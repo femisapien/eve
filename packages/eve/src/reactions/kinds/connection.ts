@@ -11,6 +11,7 @@ import type {
   ResolvedConnectionDefinition,
   ResolvedDynamicConnectionResolver,
 } from "#runtime/types.js";
+import type { JsonObject } from "#shared/json.js";
 import { authoredRender, authoredRecord, type Reaction } from "../reaction.js";
 import { slotsOf } from "../runner.js";
 import { dynamicToolNames } from "./tool.js";
@@ -35,16 +36,34 @@ export function connectionReaction(resolver: ResolvedDynamicConnectionResolver):
       );
       assertOwnsNoEntries(ctx, connections, resolver);
       if (connections.length === 0) return { value: null };
-      return {
-        live: connections,
-        value: connections.map((connection) => connection.connectionName),
-      };
+      return { live: connections, value: connections.map(target) };
     },
     id: `connection:${resolver.extensionNamespace ?? ""}:${resolver.slug}`,
     kind: "connection",
     label: resolver.logicalPath,
     record: authoredRecord(resolver.logicalPath, resolver.record, framework),
     select: resolver.select as Reaction["select"],
+  };
+}
+
+/**
+ * What a connection's slot records: its name and where it reaches, so a render that points the
+ * same name somewhere else doesn't match. Equal names don't make two connections the same.
+ */
+function target(connection: ResolvedConnectionDefinition): JsonObject {
+  const authorization = connection.authorization;
+  const credentialOwner =
+    typeof authorization === "object" &&
+    authorization !== null &&
+    "credentialOwner" in authorization
+      ? (authorization as { readonly credentialOwner?: unknown }).credentialOwner
+      : undefined;
+  return {
+    name: connection.connectionName,
+    protocol: connection.protocol,
+    url: connection.url,
+    ...(connection.instanceId === undefined ? {} : { instanceId: connection.instanceId }),
+    ...(typeof credentialOwner === "string" ? { credentialOwner } : {}),
   };
 }
 

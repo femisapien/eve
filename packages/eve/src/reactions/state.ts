@@ -24,9 +24,13 @@ export interface Slot {
   readonly input?: JsonValue;
   /** The line after which the slot last changed. */
   readonly since: number;
-  /** The runtime revision that resolved it. */
+  /** How many selections the reaction has had: each new selection is a new occurrence. */
+  readonly occurrence?: number;
+  /** The runtime revision that recorded it; another deployment evaluates it again. */
   readonly revision?: string;
-  /** Why the slot's reaction failed, when its contribution is withdrawn. */
+  /** A render from the record didn't match what was offered: the next model call evaluates it. */
+  readonly invalid?: true;
+  /** Why a hook's occurrence failed. */
   readonly error?: string;
 }
 
@@ -34,8 +38,13 @@ export interface ReactionsState {
   readonly slots: Readonly<Record<string, Slot>>;
   /** The latest line of each event type, plus `"*"` for the latest fact. */
   readonly latest: Readonly<Record<string, number>>;
-  /** For user-role contributions: the `since` of each slot already appended to history. */
+  /** For user-role instructions: the occurrence of each slot already in the conversation. */
   readonly appended?: Readonly<Record<string, number>>;
+  /**
+   * For calls that wait, such as for approval: the digest of the record each call's dynamic tool
+   * was rendered from. A call whose tool's record changed fails rather than run another tool.
+   */
+  readonly bound?: Readonly<Record<string, string>>;
   /** The runtime revision the latest turn step ran; a slot resolved under another is stale. */
   readonly revision?: string;
   /** Intents hooks returned that the session hasn't acted on yet, one per occurrence and type. */
@@ -48,9 +57,10 @@ export interface PendingIntent {
   readonly reactionId: string;
   /** The occurrence it acts once for. */
   readonly occurrence: string;
-  readonly type: "cancel" | "compact";
+  /** `fail` is eve's own: a hook failed during the turn, which fails at its next boundary. */
+  readonly type: "cancel" | "compact" | "fail";
   readonly reason?: string;
-  /** For a cancel, the turn running when the hook resolved: it stops that turn, never a later one. */
+  /** For a cancel or failure, the turn running when the hook ran: never a later one. */
   readonly turnId?: string;
 }
 

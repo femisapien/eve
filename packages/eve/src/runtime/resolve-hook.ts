@@ -72,20 +72,14 @@ export async function resolveHookDefinition(
             resolvedRecord.select,
             describe(definition, "to provide select as a function"),
           );
-    const fn = (key: "record" | "render") =>
-      resolvedRecord[key] === undefined
+    const run =
+      resolvedRecord.run === undefined
         ? undefined
-        : expectFunction(
-            resolvedRecord[key],
-            describe(definition, `to provide ${key} as a function`),
-          );
-    const record = fn("record");
-    const render = fn("render");
+        : expectFunction(resolvedRecord.run, describe(definition, "to provide run as a function"));
     return {
       events,
       ...(select === undefined ? {} : { select: select as ResolvedHookDefinition["select"] }),
-      ...(record === undefined ? {} : { record: record as ResolvedHookDefinition["record"] }),
-      ...(render === undefined ? {} : { render: render as ResolvedHookDefinition["render"] }),
+      ...(run === undefined ? {} : { run: run as ResolvedHookDefinition["run"] }),
       exportName: definition.exportName,
       logicalPath: definition.logicalPath,
       slug: definition.slug,

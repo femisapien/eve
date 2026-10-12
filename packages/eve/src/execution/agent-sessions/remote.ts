@@ -31,7 +31,12 @@ import { formatSubagentInput, type SubagentParentContext } from "#subagents/invo
 import type { HarnessSession } from "#harness/types.js";
 import type { RuntimeRemoteAgentDispatchRequest } from "#shared/action-types.js";
 import type { RuntimeSubagentRegistry } from "#runtime/subagents/registry.js";
-import type { DynamicRemoteAgentConfig } from "#runtime/subagents/dynamic-remote-agent-config.js";
+import type {
+  DynamicRemoteAgentConfig,
+  RemoteAgentCredentials,
+} from "#runtime/subagents/dynamic-remote-agent-config.js";
+import { remoteAgentCredentials } from "#reactions/kinds/subagent.js";
+import type { JsonValue } from "#shared/json.js";
 import type { CompiledRuntimeAgentBundle } from "#runtime/sessions/compiled-agent-cache.js";
 import type { RemoteAgentBinding } from "#eve-channel/support.js";
 import type { InputResponse } from "#shared/input.js";
@@ -413,6 +418,8 @@ export async function resetRemoteAgentSession(input: {
 
 export function resolveRemoteAgentForAction(input: {
   readonly dynamicRemoteAgent?: DynamicRemoteAgentConfig;
+  /** A dynamic remote agent's credentials, rendered from its record. */
+  readonly credentials?: RemoteAgentCredentials;
   readonly nodeId: string;
   readonly registry: RuntimeSubagentRegistry["subagentsByNodeId"];
   readonly remoteAgentName: string;
@@ -451,6 +458,8 @@ export function resolveRemoteAgentForAction(input: {
     if (config.forwardPrincipal !== undefined) {
       remote.forwardPrincipal = config.forwardPrincipal;
     }
+    if (input.credentials?.auth !== undefined) remote.auth = input.credentials.auth;
+    if (input.credentials?.headers !== undefined) remote.headers = input.credentials.headers;
     return remote;
   }
   if (definition?.kind !== "remote") {
@@ -462,20 +471,19 @@ export function resolveRemoteAgentForAction(input: {
 /**
  * Resolves authored outbound headers for a server-authored remote child event.
  *
- * `resolverId` is the key the parent's private child binding records: it identifies the
- * authored credential
- * functions, never their resolved values. Lookup order mirrors how dispatch
- * chose the key — first as a subagent node id (static remote definition),
- * then as a `credentialsStepId` in the step registry (dynamic remote
- * definition). The matched static definition must still agree with the
- * event's `name`/`url`, so a stale or mismatched key fails closed rather
- * than minting headers for the wrong upstream.
+ * `resolverId` is the key the parent's private child binding records: the subagent's node id,
+ * never resolved credentials. A static remote agent's definition must still agree with the
+ * event's `name`/`url`, and a dynamic one's credentials are rendered from the record the parent's
+ * session holds, for the same destination, so a stale or mismatched key fails closed rather than
+ * minting headers for the wrong upstream.
  */
 export async function resolveRemoteAgentStreamHeaders(input: {
   readonly bundle: CompiledRuntimeAgentBundle;
   readonly name: string;
   readonly resolverId?: string;
   readonly url: string;
+  /** The parent session's record for a dynamic remote agent, by node id. */
+  readonly recordOf?: (nodeId: string) => JsonValue | undefined;
 }): Promise<Record<string, string>> {
   if (input.resolverId === undefined) {
     return {};
@@ -483,6 +491,20 @@ export async function resolveRemoteAgentStreamHeaders(input: {
 
   const nodes = new Set([input.bundle.graph.root, ...input.bundle.graph.nodesByNodeId.values()]);
   for (const node of nodes) {
+    const { dynamicNodeIds, dynamicResolvers } = node.subagentRegistry;
+    if (dynamicNodeIds?.has(input.resolverId) === true) {
+      const record = input.recordOf?.(input.resolverId);
+      // A dynamic remote agent without credentials records nothing to render.
+      if (record === undefined) return {};
+      return await resolveRemoteAgentRequestHeaders(
+        await remoteAgentCredentials({
+          destination: { name: input.name, url: input.url },
+          nodeId: input.resolverId,
+          record,
+          resolvers: dynamicResolvers,
+        }),
+      );
+    }
     const definition = node.subagentRegistry.subagentsByNodeId.get(input.resolverId)?.definition;
     if (definition === undefined) continue;
     if (

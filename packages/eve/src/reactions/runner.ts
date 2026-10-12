@@ -14,6 +14,7 @@ import { readSessionSchedule } from "#context/session-schedule.js";
 import type { ReactionView, SelectContext } from "#dynamic/definition.js";
 import type { WrittenEvent } from "#execution/publish-session-events.js";
 import { currentProjection, currentView } from "#harness/session-machine/current.js";
+import { isEveDevEnvironment } from "#internal/application/dev-environment.js";
 import { createLogger } from "#internal/logging.js";
 import { ChannelKey } from "#runtime/sessions/runtime-context-keys.js";
 import { ConversationContextKey } from "#shared/conversation-context.js";
@@ -22,12 +23,12 @@ import { parseJsonValue, type JsonValue } from "#shared/json.js";
 import { bundleReactions } from "./bundle.js";
 import { effectiveModelId } from "./kinds/model.js";
 import {
+  CONVERSATION_UNAVAILABLE,
   REACTION_ORDER,
   type BundleReactions,
   type InternalRecordContext,
   type Reaction,
   type ReactionKind,
-  withMessages,
 } from "./reaction.js";
 import {
   canonicalJson,
@@ -41,14 +42,17 @@ import {
   writeLive,
   writeReactionsState,
 } from "./state.js";
-import { takeIntents } from "./intents.js";
+import { reportReactionFailure, takeIntents } from "./intents.js";
 import { latestTurn } from "./turn.js";
+
+// Two schedules. Hooks, and eve's own effects such as memory capture, run after every commit, so
+// they notice a change when it happens. Dynamic values are evaluated before each model call, with
+// the conversation that call reads, and fix the model, tools, and context it uses. A value that
+// fails isn't recorded: the last good record stands, and the next model call evaluates it again.
 
 const log = createLogger("reactions");
 const neverAborted = new AbortController().signal;
 
-/** Thrown by `view.messages` in a step without the conversation; the runner skips that reaction. */
-const CONVERSATION_UNAVAILABLE = Symbol("eve.reactions.conversation-unavailable");
 /** The digest a slot keeps when its `select` threw, so the failure logs once. */
 const SELECT_FAILED = "select-failed";
 
@@ -62,25 +66,24 @@ export interface RunReactionsInput {
 }
 
 /**
- * Runs after every commit: each reaction's `select` reads the view, and `record` and `render` run
- * only when the selection changed since its slot was written. Slots change nothing else, so this settles.
+ * Runs after every commit: each hook's `select` reads the view, and `run` acts only when the
+ * selection changed since its slot was written, once per occurrence.
  */
 export async function runReactions(ctx: ContextContainer, input: RunReactionsInput): Promise<void> {
   const { reactions, effects } = await bundleReactions(ctx);
   writeReactionsState(ctx, withLatest(readReactionsState(ctx), input.written));
   // A compaction that starts acts on every compact intent waiting for one.
   if (startsCompaction(input.written)) takeIntents(ctx, (intent) => intent.type === "compact");
-  if (reactions.length === 0) return;
+  const onCommit = reactions.filter((reaction) => reaction.timing === "commit");
+  if (onCommit.length === 0) return;
   const line = input.written.at(-1)?.position.line ?? readReactionsState(ctx).latest["*"] ?? 0;
   const selectContext = selectContextOf(ctx);
-  const revision = readReactionsState(ctx).revision;
   const changedKinds = new Set<ReactionKind>();
   const changedHooks = new Set<string>();
-  // Streamed progress, such as content deltas, reaches hooks that handle it, and nothing else:
-  // capabilities depend on facts, and a select per delta would cost every stream.
+  // Streamed progress, such as content deltas, reaches hooks that handle it, and nothing else.
   const progressOnly = input.written.length > 0 && input.written.every(({ progress }) => progress);
 
-  for (const reaction of reactions) {
+  for (const reaction of onCommit) {
     if (progressOnly && reaction.kind !== "hook") continue;
     let selection: JsonValue;
     try {
@@ -90,35 +93,147 @@ export async function runReactions(ctx: ContextContainer, input: RunReactionsInp
         selectContext,
       );
     } catch (error) {
+      // A select that reads the conversation runs where the step holds it; it's pure, so
+      // skipping it repeats no work.
       if (error === CONVERSATION_UNAVAILABLE) continue;
-      const failed = { digest: SELECT_FAILED, line, revision };
-      if (withdraw(ctx, reaction, error, failed)) changedKinds.add(reaction.kind);
+      const slot = readSlot(ctx, reaction.id);
+      if (slot?.digest === SELECT_FAILED) continue;
+      writeSlot(ctx, reaction.id, failedSlot(slot, SELECT_FAILED, line, error));
+      reportReactionFailure(ctx, reaction, error);
       continue;
     }
     const digest = digestOf(selection);
-    const slot = readReactionsState(ctx).slots[reaction.id];
-    if (slot !== undefined && slot.digest === digest && !staleUnder(slot, revision)) continue;
-    const changed = await resolveInto(ctx, reaction, {
-      abortSignal: input.abortSignal,
-      conversation: input.conversation,
-      digest,
-      line,
-      revision,
-      selection,
-      written: input.written,
-    });
-    if (!changed) continue;
-    changedKinds.add(reaction.kind);
-    if (reaction.kind === "hook") changedHooks.add(reaction.id);
+    const slot = readSlot(ctx, reaction.id);
+    if (slot !== undefined && slot.digest === digest) continue;
+    const occurrence = (slot?.occurrence ?? 0) + 1;
+    try {
+      const result = await evaluate(ctx, reaction, {
+        abortSignal: input.abortSignal,
+        conversation: input.conversation,
+        digest,
+        line,
+        occurrence,
+        selection,
+        written: input.written,
+      });
+      if (result.changed) changedKinds.add(reaction.kind);
+      if (reaction.kind === "hook") changedHooks.add(reaction.id);
+    } catch (error) {
+      // A failed occurrence isn't run again: a compaction meant for an idle moment shouldn't
+      // happen later. The workflow's own retry of the step still runs it again.
+      writeSlot(ctx, reaction.id, { ...failedSlot(slot, digest, line, error), occurrence });
+      reportReactionFailure(ctx, reaction, error);
+    }
   }
 
   for (const kind of changedKinds) await effects[kind]?.(ctx);
   actOnCancels(ctx, reactions, changedHooks, input.cancelTurn);
 }
 
+/** A dynamic value failed to evaluate before a model call: the turn fails. */
+export class ReactionFailedError extends Error {
+  override readonly name = "ReactionFailedError";
+  readonly reaction: string;
+
+  constructor(reaction: string, error: unknown) {
+    super(toErrorMessage(error), { cause: error });
+    this.reaction = reaction;
+  }
+}
+
+export function isReactionFailedError(error: unknown): error is ReactionFailedError {
+  return error instanceof ReactionFailedError;
+}
+
 /**
- * Stops the running turn for the first cancel intent that targets it, and drops cancels whose turn
- * has ended. One the commit can't act on waits for a commit that can, while its turn still runs.
+ * Evaluates the session's dynamic values before a model call: each `select` reads the view and
+ * the conversation the call reads, and `record` and `render` run for a selection that changed, a
+ * record another deployment made, or one whose render didn't match. Throws
+ * {@link ReactionFailedError} for the first value that fails; nothing is recorded for it.
+ */
+export async function evaluateValues(
+  ctx: ContextContainer,
+  input: {
+    readonly abortSignal?: AbortSignal;
+    readonly conversation: readonly ModelMessage[];
+  },
+): Promise<void> {
+  const { reactions, effects } = await bundleReactions(ctx);
+  const values = reactions.filter((reaction) => reaction.timing !== "commit");
+  if (values.length === 0) return;
+  const state = readReactionsState(ctx);
+  const line = state.latest["*"] ?? 0;
+  const revision = state.revision;
+  const selectContext = selectContextOf(ctx);
+  const changedKinds = new Set<ReactionKind>();
+  for (const reaction of values) {
+    const started = Date.now();
+    let selection: JsonValue;
+    try {
+      selection = selectionOf(
+        reaction,
+        reactionView(ctx, reaction.kind, input.conversation),
+        selectContext,
+      );
+    } catch (error) {
+      throw failed(reaction, error);
+    }
+    const digest = digestOf(selection);
+    const slot = readSlot(ctx, reaction.id);
+    const trigger =
+      slot === undefined
+        ? "first"
+        : slot.digest !== digest
+          ? "selection"
+          : slot.invalid === true
+            ? "mismatch"
+            : slot.revision !== revision
+              ? "deployment"
+              : undefined;
+    if (trigger === undefined) continue;
+    const occurrence =
+      slot !== undefined && slot.digest === digest
+        ? (slot.occurrence ?? 1)
+        : (slot?.occurrence ?? 0) + 1;
+    let changed: boolean;
+    try {
+      ({ changed } = await evaluate(ctx, reaction, {
+        abortSignal: input.abortSignal,
+        conversation: input.conversation,
+        digest,
+        line,
+        occurrence,
+        revision,
+        selection,
+        written: [],
+      }));
+    } catch (error) {
+      throw failed(reaction, error);
+    }
+    if (changed) changedKinds.add(reaction.kind);
+    log.debug("Evaluated a dynamic value", {
+      changed,
+      durationMs: Date.now() - started,
+      occurrence,
+      reaction: reaction.label,
+      trigger,
+    });
+  }
+  for (const kind of changedKinds) await effects[kind]?.(ctx);
+}
+
+function failed(reaction: Reaction, error: unknown): ReactionFailedError {
+  log.error(`Dynamic value "${reaction.label}" failed; the turn fails.`, {
+    error: toErrorMessage(error),
+    kind: reaction.kind,
+  });
+  return new ReactionFailedError(reaction.label, error);
+}
+
+/**
+ * Stops the running turn for the first cancel intent that targets it, and drops cancels and
+ * failures whose turn has ended. One the commit can't act on waits for a commit that can, while
+ * its turn still runs.
  */
 function actOnCancels(
   ctx: ContextContainer,
@@ -127,7 +242,10 @@ function actOnCancels(
   cancelTurn: RunReactionsInput["cancelTurn"],
 ): void {
   const turnId = currentProjection(ctx).activeTurnId;
-  takeIntents(ctx, (intent) => intent.type === "cancel" && intent.turnId !== turnId);
+  takeIntents(
+    ctx,
+    (intent) => (intent.type === "cancel" || intent.type === "fail") && intent.turnId !== turnId,
+  );
   const pending = (readReactionsState(ctx).intents ?? []).filter(
     (intent) => intent.type === "cancel",
   );
@@ -155,9 +273,8 @@ function startsCompaction(written: readonly WrittenEvent[]): boolean {
 /**
  * Renders the code of every slot that carries some, for a step in a process that didn't render it:
  * `render` runs with the JSON the slot recorded, and `record` doesn't run. What the code offers
- * must match what the session was offered, or the slot is withdrawn: eve fails closed rather than
- * switch. `revision` is the runtime revision the step runs; a slot another revision resolved is
- * built for this step without that check, and resolves again after the step's first commit.
+ * must match what the session was offered; a slot whose render doesn't, or another deployment
+ * recorded, renders nothing here, and the next model call evaluates it again.
  */
 export async function restoreReactions(
   ctx: ContextContainer,
@@ -175,11 +292,16 @@ export async function restoreReactions(
   const revision = readReactionsState(ctx).revision;
   for (const reaction of reactions) {
     const slot = readSlot(ctx, reaction.id);
-    if (reaction.render === undefined || slot?.input === undefined) continue;
+    if (reaction.render === undefined || slot?.input === undefined || slot.invalid === true) {
+      continue;
+    }
+    // The new deployment must not render another's data with its own render.
+    if (slot.revision !== revision) continue;
     if (readLive(ctx, reaction.id, slot) !== undefined) continue;
-    const rctx = resolveContextOf(ctx, {
+    const rctx = recordContextOf(ctx, {
       abortSignal: input.abortSignal,
       digest: slot.digest,
+      occurrence: slot.occurrence ?? 1,
       written: [],
     });
     log.debug("Rendering a reaction's code again from what its slot recorded", {
@@ -188,19 +310,18 @@ export async function restoreReactions(
     try {
       const contribution = await reaction.contribute(await reaction.render(slot.input, rctx), rctx);
       const offered = parseJsonValue(contribution.value ?? null);
-      if (!staleUnder(slot, revision) && canonicalJson(offered) !== canonicalJson(slot.value)) {
+      if (canonicalJson(offered) !== canonicalJson(slot.value)) {
         throw new Error(
-          `"${reaction.label}" rendered something other than what this session was offered. eve fails closed rather than switch; the next change to its selection records it again.`,
+          `"${reaction.label}" rendered something other than what this session was offered, so its render isn't deterministic. The next model call evaluates it again.`,
         );
       }
       if (contribution.live !== undefined) writeLive(ctx, reaction.id, slot, contribution.live);
     } catch (error) {
-      if (reaction.failure === "throw") throw error;
-      withdraw(ctx, reaction, error, {
-        digest: slot.digest,
-        line: slot.since,
-        revision: slot.revision,
+      log.warn(`Reaction "${reaction.label}" didn't render from its record.`, {
+        error: toErrorMessage(error),
       });
+      writeSlot(ctx, reaction.id, { ...slot, invalid: true });
+      clearLive(ctx, reaction.id);
     }
   }
 }
@@ -221,7 +342,7 @@ export function slotsOf(
   return Object.entries(readReactionsState(ctx).slots)
     .filter(([id]) => id.startsWith(prefix))
     .map(([id, slot]) => {
-      const live = readLive(ctx, id, slot);
+      const live = slot.invalid === true ? undefined : readLive(ctx, id, slot);
       return live === undefined ? { id, slot } : { id, live: live.live, slot };
     });
 }
@@ -241,22 +362,30 @@ function writeSlot(ctx: ContextContainer, id: string, slot: Slot | undefined): v
   writeReactionsState(ctx, { ...state, slots });
 }
 
-/**
- * Whether a new runtime revision must record the slot again. Only slots with code, which another
- * revision's code built, and failed slots, which new code may fix, do. A data slot keeps its value
- * until its selection changes, so a redeploy doesn't re-run every reaction in every session; data
- * that changed code would produce differently stays as it was until then.
- */
-function staleUnder(slot: Slot, revision: string | undefined): boolean {
-  if (revision === undefined || slot.revision === revision) return false;
-  return slot.input !== undefined || slot.error !== undefined;
+function failedSlot(
+  previous: Slot | undefined,
+  digest: string,
+  line: number,
+  error: unknown,
+): Slot {
+  return {
+    digest,
+    error: toErrorMessage(error),
+    since: previous?.value === null ? previous.since : line,
+    value: null,
+    ...(previous?.occurrence === undefined ? {} : { occurrence: previous.occurrence }),
+  };
 }
 
+/** The largest record eve keeps for a reaction, as JSON characters. */
+const RECORD_CAP = 1024 * 1024;
+
 /**
- * Records a new selection into its slot: `record` fetches, eve keeps its JSON when the value
+ * Evaluates one occurrence into its slot: `record` fetches, eve keeps its JSON when the value
  * carries code, and `render` makes the value. Returns whether the slot's contribution changed.
+ * Throws without writing the slot.
  */
-async function resolveInto(
+async function evaluate(
   ctx: ContextContainer,
   reaction: Reaction,
   run: {
@@ -264,42 +393,41 @@ async function resolveInto(
     readonly conversation: readonly ModelMessage[] | undefined;
     readonly digest: string;
     readonly line: number;
-    readonly revision: string | undefined;
+    readonly occurrence: number;
+    readonly revision?: string;
     readonly selection: JsonValue;
     readonly written: readonly WrittenEvent[];
   },
-): Promise<boolean> {
+): Promise<{ readonly changed: boolean }> {
   const previous = readSlot(ctx, reaction.id);
-  const rctx = resolveContextOf(ctx, {
-    abortSignal: run.abortSignal,
-    conversation: run.conversation,
-    digest: run.digest,
-    written: run.written,
-  });
-  let value: JsonValue;
-  let live: unknown;
+  const rctx = recordContextOf(ctx, run);
+  const recorded =
+    reaction.record === undefined ? run.selection : await reaction.record(run.selection, rctx);
+  let result = recorded;
   let input: JsonValue | undefined;
-  try {
-    const recorded =
-      reaction.record === undefined ? run.selection : await reaction.record(run.selection, rctx);
-    let result = recorded;
-    if (reaction.render !== undefined) {
-      input = recordable(reaction, recorded);
-      result = await reaction.render(input, rctx);
+  if (reaction.render !== undefined) {
+    input = recordable(reaction, recorded);
+    result = await reaction.render(input, rctx);
+  }
+  const contribution = await reaction.contribute(result, rctx);
+  const value = parseJsonValue(contribution.value ?? null);
+  if (input === undefined) assertStorable(reaction, value);
+  const live = contribution.live;
+  // In development, render twice: a render that isn't deterministic shows up now, rather than
+  // after a cold start in production.
+  if (live !== undefined && input !== undefined && isEveDevEnvironment()) {
+    const again = await reaction.contribute(await reaction.render!(input, rctx), rctx);
+    if (canonicalJson(parseJsonValue(again.value ?? null)) !== canonicalJson(value)) {
+      throw new Error(
+        `"${reaction.label}" rendered differently from the same record. render must be deterministic: a fresh process renders again from what was recorded. Move randomness, time, and I/O into record.`,
+      );
     }
-    const contribution = await reaction.contribute(result, rctx);
-    value = parseJsonValue(contribution.value ?? null);
-    live = contribution.live;
-  } catch (error) {
-    // record read the conversation in a commit without it: the next commit that has it records.
-    if (error === CONVERSATION_UNAVAILABLE) return false;
-    if (reaction.failure === "throw") throw error;
-    return withdraw(ctx, reaction, error, run);
   }
   const unchanged =
     previous !== undefined && canonicalJson(previous.value) === canonicalJson(value);
   const slot: Slot = {
     digest: run.digest,
+    occurrence: run.occurrence,
     since: unchanged ? previous.since : run.line,
     value,
     ...(live === undefined || input === undefined ? {} : { input }),
@@ -308,52 +436,33 @@ async function resolveInto(
   writeSlot(ctx, reaction.id, slot);
   if (live === undefined) clearLive(ctx, reaction.id);
   else writeLive(ctx, reaction.id, slot, live);
-  return !unchanged;
+  return { changed: !unchanged };
 }
 
 /** What `render` renders from, which eve keeps: it must be JSON. */
 function recordable(reaction: Reaction, recorded: unknown): JsonValue {
+  let input: JsonValue;
   try {
-    return parseJsonValue(recorded ?? null);
+    input = parseJsonValue(recorded ?? null);
   } catch {
     throw new Error(
       `The record of "${reaction.label}" must return JSON: eve keeps it, and render makes the value from it. Return the data, and create tools, clients, or models in render.`,
     );
   }
+  assertStorable(reaction, input);
+  return input;
 }
 
-/**
- * A throw withdraws the slot's contribution; the kind's readers then see nothing from it. The slot
- * keeps the failed selection's digest, so the reaction retries when its selection or the runtime
- * revision changes rather than on every commit.
- */
-function withdraw(
-  ctx: ContextContainer,
-  reaction: Reaction,
-  error: unknown,
-  failed: { readonly digest: string; readonly line: number; readonly revision?: string },
-): boolean {
-  const previous = readSlot(ctx, reaction.id);
-  if (previous?.digest !== failed.digest || previous.value !== null) {
-    // A model selection's failure is reported by the model call that needs it.
-    (reaction.kind === "model" ? log.warn : log.error)(
-      `Reaction "${reaction.label}" failed; its contribution is withdrawn.`,
-      { error: toErrorMessage(error), kind: reaction.kind },
+function assertStorable(reaction: Reaction, value: JsonValue): void {
+  const size = JSON.stringify(value).length;
+  if (size > RECORD_CAP) {
+    throw new Error(
+      `"${reaction.label}" recorded ${Math.ceil(size / 1024)} KB of JSON; a record is at most 1 MB, and every step of the session carries it. Record an ID, and fetch the rest where it's used.`,
     );
   }
-  const had = previous !== undefined && previous.value !== null;
-  writeSlot(ctx, reaction.id, {
-    digest: failed.digest,
-    error: toErrorMessage(error),
-    since: had ? failed.line : (previous?.since ?? failed.line),
-    value: null,
-    ...(failed.revision === undefined ? {} : { revision: failed.revision }),
-  });
-  clearLive(ctx, reaction.id);
-  return had;
 }
 
-/** The largest selection eve digests after every commit, as JSON characters. */
+/** The largest selection eve digests, as JSON characters. */
 const SELECTION_CAP = 64 * 1024;
 
 function selectionOf(reaction: Reaction, view: ReactionView, ctx: SelectContext): JsonValue {
@@ -388,15 +497,15 @@ function withLatest(state: ReactionsState, written: readonly WrittenEvent[]): Re
   return { ...state, latest };
 }
 
-/** Kinds that run before the model this commit, so can't read the model it chooses. */
+/** Kinds that run before the model, so can't read the model it chooses. */
 const BEFORE_MODEL = new Set<ReactionKind>(
   REACTION_ORDER.slice(0, REACTION_ORDER.indexOf("model") + 1),
 );
 
 /**
- * The view a reaction of `kind` selects from. It holds only what earlier kinds have contributed
- * this commit: a kind that runs before the model, or the model itself, would otherwise read the
- * previous commit's model.
+ * The view a reaction of `kind` selects from. It holds only what earlier kinds have contributed:
+ * a kind that runs before the model, or the model itself, would otherwise read the previous
+ * model.
  */
 function reactionView(
   ctx: ContextContainer,
@@ -451,29 +560,26 @@ export function selectContextOf(ctx: Pick<ContextContainer, "get">): SelectConte
   };
 }
 
-function resolveContextOf(
+function recordContextOf(
   ctx: ContextContainer,
   input: {
     readonly abortSignal: AbortSignal | undefined;
     readonly conversation?: readonly ModelMessage[];
     readonly digest: string;
+    readonly occurrence: number;
     readonly written: readonly WrittenEvent[];
   },
 ): InternalRecordContext {
-  return withMessages(
-    {
-      ...selectContextOf(ctx),
-      abortSignal: input.abortSignal ?? neverAborted,
-      ctx,
-      digest: input.digest,
-      facts: input.written.map(({ event }) => event),
-      written: input.written,
-    },
-    () => {
-      if (input.conversation === undefined) throw CONVERSATION_UNAVAILABLE;
-      return input.conversation;
-    },
-  );
+  return {
+    ...selectContextOf(ctx),
+    abortSignal: input.abortSignal ?? neverAborted,
+    ctx,
+    digest: input.digest,
+    facts: input.written.map(({ event }) => event),
+    history: input.conversation,
+    occurrence: input.occurrence,
+    written: input.written,
+  };
 }
 
 export type { BundleReactions };

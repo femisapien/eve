@@ -34,6 +34,8 @@ import {
   resolveRemoteAgentForAction,
   startRemoteAgentSession,
 } from "#execution/agent-sessions/remote.js";
+import { remoteAgentCredentials } from "#reactions/kinds/subagent.js";
+import type { RemoteAgentCredentials } from "#runtime/subagents/dynamic-remote-agent-config.js";
 import { buildSubagentRunInput } from "#subagents/tool.js";
 import { resolveConversationId } from "#shared/conversation-identity.js";
 import { stubToolPath } from "#tool-stubs/target.js";
@@ -290,6 +292,10 @@ async function startRemoteSession(
   const { auth, bundle, context, target } = input;
   const { action } = target;
   const remote = resolveRemoteAgentForAction({
+    credentials: await credentialsOf(bundle, context, action.nodeId, {
+      name: action.remoteAgentName,
+      url: target.dynamicRemoteAgent?.url,
+    }),
     dynamicRemoteAgent: target.dynamicRemoteAgent,
     nodeId: action.nodeId,
     registry: bundle.subagentRegistry.subagentsByNodeId,
@@ -344,12 +350,34 @@ async function resolveSessionRemote(
   const bundle = await loadAgentSessionBundle(context);
   const selection = context.dynamicSelections[address.nodeId];
   const resolved = resolveRemoteAgentForAction({
+    // Credentials go only to the destination the child was opened at.
+    credentials: await credentialsOf(bundle, context, address.nodeId, address),
     dynamicRemoteAgent: selection?.kind === "remote" ? selection.remoteAgent : undefined,
     nodeId: address.nodeId,
     registry: bundle.subagentRegistry.subagentsByNodeId,
     remoteAgentName: address.name,
   });
   return { ...resolved, url: address.url };
+}
+
+/**
+ * A dynamic remote agent's credentials, rendered from the record the dispatching call's selection
+ * carries, for `destination`. `undefined` for one without credentials.
+ */
+async function credentialsOf(
+  bundle: CompiledBundle,
+  context: AgentSessionContext,
+  nodeId: string,
+  destination: { readonly name: string; readonly url: string | undefined },
+): Promise<RemoteAgentCredentials | undefined> {
+  const selection = context.dynamicSelections[nodeId];
+  if (selection?.kind !== "remote" || selection.remoteAgent.credentials !== true) return undefined;
+  return await remoteAgentCredentials({
+    destination: { name: destination.name, url: destination.url ?? selection.remoteAgent.url },
+    nodeId,
+    record: selection.record,
+    resolvers: bundle.subagentRegistry.dynamicResolvers,
+  });
 }
 
 async function loadAgentSessionBundle(context: AgentSessionContext): Promise<CompiledBundle> {

@@ -6,21 +6,36 @@ import {
   expectOnlyKnownKeys,
   expectString,
 } from "#internal/authored-module.js";
+import type { HeadersValue } from "#client/types.js";
+import type { OutboundAuthFn } from "#public/agents/auth.js";
 import { EVE_SESSION_ROUTE_PATH } from "#protocol/routes.js";
 import type { AgentToolExposure } from "#shared/agent-definition.js";
 
+/** A dynamic remote agent as the session records it: JSON, without its credentials. */
 export interface DynamicRemoteAgentConfig {
   readonly description: string;
   readonly forwardPrincipal?: boolean;
   readonly path: string;
   readonly tool?: AgentToolExposure;
   readonly url: string;
+  /** It carries `auth` or `headers`, which are code: they're rendered from its record. */
+  readonly credentials?: true;
 }
 
-export async function normalizeDynamicRemoteAgentConfig(input: {
+/** A dynamic remote agent's `auth` and `headers`, which its `render` creates. */
+export interface RemoteAgentCredentials {
+  readonly auth?: OutboundAuthFn;
+  readonly headers?: HeadersValue;
+}
+
+/** Normalizes what a dynamic subagent returned for a remote agent: its config, and credentials. */
+export async function normalizeDynamicRemoteAgent(input: {
   readonly name: string;
   readonly value: unknown;
-}): Promise<DynamicRemoteAgentConfig> {
+}): Promise<{
+  readonly config: DynamicRemoteAgentConfig;
+  readonly credentials?: RemoteAgentCredentials;
+}> {
   const message = `Dynamic subagent "${input.name}" must return defineAgent(...), defineRemoteAgent(...), or null.`;
   const record = expectObjectRecord(input.value, message);
   expectOnlyKnownKeys(
@@ -34,17 +49,27 @@ export async function normalizeDynamicRemoteAgentConfig(input: {
   }
 
   const url = await resolveUrl(record.url, message);
-  if (record.auth !== undefined || record.headers !== undefined) {
-    throw new Error(
-      `${message} A dynamic remote agent can't carry auth or headers; define a static remote agent for authenticated upstreams.`,
+  const credentials: { auth?: OutboundAuthFn; headers?: HeadersValue } = {};
+  if (record.auth !== undefined) {
+    credentials.auth = expectFunction<OutboundAuthFn>(
+      record.auth,
+      `${message} "auth" must be a function.`,
     );
   }
+  if (record.headers !== undefined) {
+    if (typeof record.headers !== "function") {
+      expectObjectRecord(record.headers, `${message} "headers" must be an object or a function.`);
+    }
+    credentials.headers = record.headers as HeadersValue;
+  }
+  const hasCredentials = credentials.auth !== undefined || credentials.headers !== undefined;
   const config: {
     description: string;
     forwardPrincipal?: boolean;
     path: string;
     tool?: AgentToolExposure;
     url: string;
+    credentials?: true;
   } = {
     description: expectString(record.description, message),
     path: record.path === undefined ? EVE_SESSION_ROUTE_PATH : expectString(record.path, message),
@@ -57,8 +82,9 @@ export async function normalizeDynamicRemoteAgentConfig(input: {
   if (record.tool !== undefined) {
     config.tool = expectAgentToolExposure(record.tool, message);
   }
+  if (hasCredentials) config.credentials = true;
 
-  return config;
+  return hasCredentials ? { config, credentials } : { config };
 }
 
 async function resolveUrl(value: unknown, message: string): Promise<string> {

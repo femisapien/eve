@@ -26,11 +26,14 @@ import { slotsOf } from "../runner.js";
 const log = createLogger("dynamic-skills");
 
 /**
- * A `defineDynamic()` in `agent/skills/`: one skill named after the file, or a map of them. Skills
- * are data: the slot records a package's files too, so any step can write it to the sandbox.
+ * A `defineDynamic()` in `agent/skills/`: one skill named after the file, or a map of them. The
+ * slot records what the model sees: each skill's name, description, markdown, and a revision of
+ * its files. Files `render` makes are rendered again wherever a sandbox needs them, not stored;
+ * files `record` returns, without a render, are in the record.
  */
 export function skillReaction(resolver: ResolvedDynamicSkillResolver): Reaction {
   const framework = { framework: resolver.framework };
+  const rendered = resolver.render !== undefined;
   return {
     render: authoredRender(resolver.logicalPath, resolver.render, framework),
     contribute: (result) => {
@@ -38,7 +41,12 @@ export function skillReaction(resolver: ResolvedDynamicSkillResolver): Reaction 
         normalizeSkillPackage({ ...entry, name }),
       );
       if (skills.length === 0) return { value: null };
-      return { value: skills.map(toDurableSkill) as unknown as JsonValue };
+      const value = skills.map((skill) => toDurableSkill(skill, { files: !rendered }));
+      const withFiles = skills.filter((skill) => skill.files.length > 1);
+      return {
+        value: value as unknown as JsonValue,
+        ...(rendered && withFiles.length > 0 ? { live: withFiles } : {}),
+      };
     },
     id: `skill:${resolver.extensionNamespace ?? ""}:${resolver.slug}`,
     kind: "skill",
@@ -83,16 +91,27 @@ export async function syncDynamicSkillFiles(ctx: ContextContainer): Promise<void
   if (access === undefined) return;
   const desired = new Map<string, string>();
   const packages = new Map<string, MaterializableSkillPackage>();
-  for (const { slot } of slotsOf(ctx, "skill")) {
+  for (const { live, slot } of slotsOf(ctx, "skill")) {
+    const rendered = new Map(
+      ((live as readonly MaterializableSkillPackage[] | undefined) ?? []).map((skill) => [
+        skill.name,
+        skill,
+      ]),
+    );
     for (const skill of (slot.value ?? []) as unknown as readonly DurableDynamicSkillMetadata[]) {
-      if (skill.revision === undefined || skill.files === undefined) continue;
+      if (skill.revision === undefined) continue;
       desired.set(skill.name, skill.revision);
-      packages.set(skill.name, {
-        description: skill.description,
-        files: skill.files.map(({ content, relativePath }) => ({
+      const files =
+        rendered.get(skill.name)?.files ??
+        skill.files?.map(({ content, relativePath }) => ({
           content: Buffer.from(content, "base64"),
           relativePath,
-        })),
+        }));
+      // A rendered package this step couldn't render again waits for the next model call.
+      if (files === undefined) continue;
+      packages.set(skill.name, {
+        description: skill.description,
+        files,
         markdown: skill.markdown,
         name: skill.name,
       });
@@ -156,7 +175,10 @@ function namedSkills(
   });
 }
 
-function toDurableSkill(skill: MaterializableSkillPackage): DurableDynamicSkillMetadata {
+function toDurableSkill(
+  skill: MaterializableSkillPackage,
+  options: { readonly files: boolean },
+): DurableDynamicSkillMetadata {
   return {
     ...(skill.deferred === true ? { deferred: true } : {}),
     description: skill.description,
@@ -164,10 +186,14 @@ function toDurableSkill(skill: MaterializableSkillPackage): DurableDynamicSkillM
     name: skill.name,
     ...(skill.files.length > 1
       ? {
-          files: skill.files.map(({ content, relativePath }) => ({
-            content: content.toString("base64"),
-            relativePath,
-          })),
+          ...(options.files
+            ? {
+                files: skill.files.map(({ content, relativePath }) => ({
+                  content: content.toString("base64"),
+                  relativePath,
+                })),
+              }
+            : {}),
           revision: skillPackageRevision(skill),
         }
       : {}),

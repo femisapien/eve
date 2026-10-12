@@ -66,7 +66,6 @@ export async function loadModelReaction(bundle: CompiledBundle): Promise<Reactio
     id: MODEL_REACTION_ID,
     kind: "model",
     label,
-    // A failure fails the model call that needs it, not the commit that recorded it.
     record: authoredRecord(label, definition.record as never),
     // Without an authored render, the model is what record returned, such as a gateway ID.
     render: authoredRender(label, definition.render as never) ?? ((input) => input),
@@ -94,12 +93,11 @@ async function contributionOf(
   return { live, value: value as unknown as JsonValue };
 }
 
-/** The model the next call uses: the dynamic agent's, or the static one. Throws a failed selection. */
+/** The model the next call uses: the dynamic agent's, or the static one. */
 export function getEffectiveModelSelection(
   ctx: Pick<ContextReader, "get">,
 ): LiveDynamicModelSelection | null {
   const slot = readReactionsState(ctx).slots[MODEL_REACTION_ID];
-  if (slot?.error !== undefined) throw new DynamicModelSelectionError(new Error(slot.error));
   if (slot !== undefined && slot.value !== null) {
     const live = readLive(ctx, MODEL_REACTION_ID, slot);
     return (

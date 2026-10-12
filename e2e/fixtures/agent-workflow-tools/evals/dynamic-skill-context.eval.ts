@@ -88,8 +88,9 @@ export default (["direct", "waiting"] as const).map((mode) =>
       const observations = output as DynamicSkillContextObservation[];
       t.check(
         observations.map((entry) => entry.event),
-        equals(["session.started", "turn.started", "turn.started"]),
-      ).label("resolver runs once at session start and at every parent turn boundary");
+        // Values are evaluated before model calls, so the first already sees the first turn.
+        equals(["turn.started", "turn.started"]),
+      ).label("resolver runs before each parent turn's first model call");
 
       for (const [index, { context, event }] of observations.entries()) {
         const last = index === observations.length - 1;

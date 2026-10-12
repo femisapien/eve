@@ -81,29 +81,33 @@ describe("resolveHookDefinition", () => {
     });
 
     await expect(resolveHookDefinition(definition, moduleMap, undefined)).rejects.toThrow(
-      "requires events, or select with record or render",
+      "requires events, or select with a run function",
     );
   });
 
   it("rejects a hook with both events and select", async () => {
     const definition = buildDefinition({ slug: "both" });
     const moduleMap = buildModuleMap(definition.sourceId, {
-      default: { events: {}, render: () => null, select: () => null },
+      default: { events: {}, run: () => null, select: () => null },
     });
 
     await expect(resolveHookDefinition(definition, moduleMap, undefined)).rejects.toThrow(
-      "either events or select, not both",
+      "either events, or select with run, not both",
     );
   });
 
-  it("rejects a hook render without select", async () => {
+  it("rejects a hook run without select, and a hook render", async () => {
     const definition = buildDefinition({ slug: "unselected" });
-    const moduleMap = buildModuleMap(definition.sourceId, {
-      default: { render: () => null },
-    });
+    const unselected = buildModuleMap(definition.sourceId, { default: { run: () => null } });
+    await expect(resolveHookDefinition(definition, unselected, undefined)).rejects.toThrow(
+      "requires a select function beside run",
+    );
 
-    await expect(resolveHookDefinition(definition, moduleMap, undefined)).rejects.toThrow(
-      "Use select: once to resolve once per session",
+    const rendered = buildModuleMap(definition.sourceId, {
+      default: { render: () => null, select: () => null },
+    });
+    await expect(resolveHookDefinition(definition, rendered, undefined)).rejects.toThrow(
+      "a hook acts rather than holds a value",
     );
   });
 

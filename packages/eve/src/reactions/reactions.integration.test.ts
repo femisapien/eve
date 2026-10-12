@@ -190,7 +190,7 @@ describe("reactions", () => {
           loadNamespace: async () => ({
             default: defineHook({
               select: (view) => view.session.turnCount >= 2,
-              render: (second) => {
+              run: (second) => {
                 log.push(`hook:compact:${String(second)}`);
                 return second ? compact() : null;
               },
@@ -240,12 +240,13 @@ describe("reactions", () => {
     // process builds the model from what the session recorded, without resolving it again.
     expect(log.filter((entry) => entry === "record:model")).toHaveLength(1);
     expect(log.filter((entry) => entry === "render:instructions")).toHaveLength(1);
-    // Tools select the latest turn start: once before the first turn, then once per turn, before
-    // its first call.
-    expect(log.filter((entry) => entry === "render:tools").length).toBeGreaterThanOrEqual(4);
+    // Tools select the latest turn start, so they render before each turn's first model call. The
+    // third turn's hook cancels it before it reaches one.
+    expect(log.filter((entry) => entry === "render:tools").length).toBeGreaterThanOrEqual(2);
     expect(log.indexOf("render:tools")).toBeLessThan(log.indexOf("call:turn"));
-    // Recall runs after each turn starts, and every model call reads it with the instructions.
-    expect(log.filter((entry) => entry === "resolve:recall")).toHaveLength(3);
+    // Recall runs before each turn's first model call, and every call reads it with the
+    // instructions.
+    expect(log.filter((entry) => entry === "resolve:recall")).toHaveLength(2);
     // Recall and capture both see the turn's own input.
     expect(log).toContain(`recall:input:${JSON.stringify(["Look up the first thing."])}`);
     expect(log).toContain(`capture:input:${JSON.stringify(["Look up the first thing."])}`);

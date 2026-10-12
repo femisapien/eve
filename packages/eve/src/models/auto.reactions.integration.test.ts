@@ -190,7 +190,7 @@ describe("auto() as the agent's model", () => {
     expectCallsPerTurn(log);
   }, 60_000);
 
-  it("fails the model call when a fresh process builds a different model", async () => {
+  it("evaluates again when a fresh process renders a different model, never serving it unevaluated", async () => {
     vi.stubEnv("EVE_REACTIONS_COLD", "1");
     const log: string[] = [];
     let builds = 0;
@@ -199,7 +199,7 @@ describe("auto() as the agent's model", () => {
     const runtime = await createTestRuntime({
       agent: {
         definition: defineAgent({
-          // A build that isn't a function of what it's given: building again returns another model.
+          // A render that isn't a function of what it's given: rendering again returns another model.
           model: defineDynamic({
             select: () => null,
             render: () => {
@@ -238,15 +238,16 @@ describe("auto() as the agent's model", () => {
         },
       ]);
       try {
-        await until(log, "build", 2);
-        await new Promise((resolve) => setTimeout(resolve, 500));
+        await until(log, "call:large", 1);
       } finally {
         await run.cancel().catch(() => {});
       }
     });
 
-    // The model built in a fresh process differed from the one the session chose, so no call
-    // reached it.
-    expect(log.filter((entry) => entry.startsWith("call:"))).toEqual(["call:small"]);
+    // The fresh process's render didn't match what the session chose, so it served nothing; the
+    // next model call evaluated the model again, and that call used what it chose.
+    const calls = log.filter((entry) => entry === "build" || entry.startsWith("call:"));
+    expect(calls.slice(0, 2)).toEqual(["build", "call:small"]);
+    expect(calls.slice(2, 5)).toEqual(["build", "build", "call:large"]);
   }, 60_000);
 });

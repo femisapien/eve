@@ -2,13 +2,17 @@
 "eve": minor
 ---
 
-`defineDynamic` now takes `select` and `resolve` instead of an `events` map. `select` is required: it reads the session view synchronously, and returning `null` from it resolves once. `resolve` runs again only when the selection changes, and its result is available at every model call.
+`defineDynamic` now takes `select`, with `render`, `record`, or both, instead of an `events` map. `select` reads what the value depends on, synchronously, and `render` makes the value from it. When there's something to await, `record` runs once per new selection, eve keeps the JSON it returns, and `render` makes the value from that. `once`, `perTurn`, and `perStep` name the common selections.
 
-- **`resolve` is a function of its selection.** eve may call it again with the same selection, such as in another process. It runs outside the session's context and receives no facts, so reading session state there throws. Read state in `select`.
-- **A dynamic model is a `model` field.** Use `defineDynamic` from `eve/models`, whose `resolve` returns the model or `{ model, reasoning?, modelContextWindowTokens?, modelOptions? }`, or `auto()`. `agent.ts` itself can't be dynamic. A subagent keeps its `description` and makes its `model` dynamic the same way, or makes the whole subagent dynamic with `defineDynamic` from `eve`.
-- **`auto()` decides once per turn.** Steering and tool calls don't decide again, and a step in another process reuses the model the turn chose. Its options can carry `modelContextWindowTokens` and `modelOptions`.
-- **`view.turn` is the session's latest turn,** with its ID, status, and the input it opened with. Select `view.turn?.id` to resolve once per turn.
-- **Hooks return intents.** Hooks take either `events` handlers or `select` and `resolve`, never both. They return `cancel(reason?)` or `compact({ reason? })` from `eve/hooks`, and `ctx.cancel()` is gone. Each `compact()` runs once per entry; return it under a new key in a map to compact again.
-- **Dynamic tools no longer need durable callbacks.** `defineDurableCallback` and `defineDurableSchema` are gone. If a rebuilt tool no longer matches the declaration the model was offered, its calls fail.
+- **Values are evaluated before each model call,** with the conversation that call reads, and fix its model, tools, and context. A fresh process renders from what was recorded and never records again.
+- **`render` is synchronous, and runs outside the session's context.** So does `record`, which reads the conversation with `await ctx.messages()`. Reading session state in either throws: read it in `select`.
+- **Tools and connections are always rendered,** since what `record` returns must be JSON. `defineDurableCallback` and `defineDurableSchema` are gone: `render` returns ordinary tools.
+- **A dynamic model is a `model` field.** Use `defineDynamic` from `eve/models`, or `auto()`, which decides once per turn. `agent.ts` itself can't be dynamic; a whole subagent can, with `defineDynamic` from `eve`.
+- **Hooks take `select` with `run`, or `events` handlers.** `run` acts once for each new selection. Both return `cancel(reason?)` or `compact({ reason? })` from `eve/hooks`, which act once per occurrence, and `ctx.occurrence.id` keys a side effect that must happen once. `ctx.cancel()` is gone.
+- **An unhandled error fails the turn.** That includes a hook's: one that only observes catches its own errors. A value that fails isn't recorded, and the next model call evaluates it again.
+- **A new deployment evaluates every value again,** data and code alike, before the next model call.
+- **A user-role dynamic instruction joins the conversation once per occurrence,** as a `turn.started` handler's did.
+- **A call that waits, such as for approval, fails if its dynamic tool changed** since the model was offered it.
+- **Dynamic remote agents carry `auth` and `headers`** from `render`, rendered again wherever the child is reached, and only for the destination it was opened at.
+- **A selection is at most 64 KB, and a record at most 1 MB.**
 - **Memory drops its compaction hooks and `visibility`.** Recall applies to each model call.
-- **Dynamic remote agents can't carry `auth` or `headers`.** Use a static remote agent for authenticated upstreams.

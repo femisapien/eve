@@ -13,7 +13,7 @@ const serverUrl = "http://127.0.0.1:3000";
 const context: DynamicResolveContext = {
   abortSignal: new AbortController().signal,
   channel: {},
-  messages: [],
+  messages: async () => [],
   session: { auth: { current: null, initiator: null }, id: "session" },
 };
 

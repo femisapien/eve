@@ -20,7 +20,7 @@ import {
 import { BundleKey } from "#runtime/sessions/runtime-context-keys.js";
 import type { ResolvedMemoryDefinition } from "#runtime/types.js";
 import { createMemoryScope, validateMemoryRecallResult } from "#shared/memory-state.js";
-import type { InternalRecordContext, Reaction } from "../reaction.js";
+import { requireHistory, type InternalRecordContext, type Reaction } from "../reaction.js";
 import { slotsOf } from "../runner.js";
 
 const log = createLogger("memory");
@@ -37,8 +37,9 @@ export function bindMemoryInstrumentation(
 }
 
 /**
- * A memory slot's reactions. Recall runs after each turn starts, and what it brings back is part
- * of every model call until the next recall replaces it. Capture runs after each completed turn.
+ * A memory slot's reactions. Recall runs before the first model call of each turn, and what it
+ * brings back is part of every model call until the next recall replaces it. Capture runs after
+ * the commit that completes a turn.
  */
 export function memoryReactions(memory: ResolvedMemoryDefinition): readonly Reaction[] {
   const recall: Reaction = {
@@ -46,16 +47,14 @@ export function memoryReactions(memory: ResolvedMemoryDefinition): readonly Reac
       const messages = validateMemoryRecallResult(result as never, memory.slot);
       return { value: messages.length === 0 ? null : messages.map(({ content }) => content) };
     },
-    // A recall that fails fails the turn, rather than running it without what it would bring.
-    failure: "throw",
     id: `memory:${memory.slot}:recall`,
     kind: "memory",
     label: memory.logicalPath,
     record: async (selected, ctx) => {
       const { turn } = selected as { readonly turn: number | null };
       if (turn === null) return null;
-      // Read first: a commit without the conversation postpones recall before any I/O.
-      const turnContext = activeTurn(ctx.messages);
+      const messages = requireHistory(ctx, memory.logicalPath);
+      const turnContext = activeTurn(messages);
       const scope = await resolveMemoryScope(memory, ctx);
       if (scope === null) return null;
       const id = operationId(ctx, memory.slot, "turn.started", turnContext);
@@ -74,7 +73,7 @@ export function memoryReactions(memory: ResolvedMemoryDefinition): readonly Reac
             ...buildCallbackContext(),
             abortSignal: ctx.abortSignal,
             memory: { scope, slot: memory.slot },
-            messages: ctx.messages,
+            messages,
             operationId: id,
             turn: turnContext,
           });
@@ -101,12 +100,15 @@ export function memoryReactions(memory: ResolvedMemoryDefinition): readonly Reac
       id: `memory:${memory.slot}:capture`,
       kind: "memory",
       label: memory.logicalPath,
+      // Capture is an effect of the turn settling, so it runs after the commit that settles it.
+      timing: "commit",
       record: async (_selected, ctx) => {
         const settled = ctx.facts.find(
           (fact) => fact.type === "turn.settled" && fact.data.outcome === "completed",
         );
         if (settled === undefined) return null;
-        const turnContext = activeTurn(ctx.messages);
+        const messages = requireHistory(ctx, memory.logicalPath);
+        const turnContext = activeTurn(messages);
         const scope = await resolveMemoryScope(memory, ctx);
         if (scope === null) return null;
         const id = operationId(ctx, memory.slot, "turn.completed", turnContext);
@@ -126,7 +128,7 @@ export function memoryReactions(memory: ResolvedMemoryDefinition): readonly Reac
                 ...buildCallbackContext(),
                 abortSignal: ctx.abortSignal,
                 memory: { scope, slot: memory.slot },
-                messages: ctx.messages,
+                messages,
                 operationId: id,
                 turn: turnContext,
               });

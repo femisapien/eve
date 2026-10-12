@@ -13,7 +13,13 @@ import {
   runApprovedLocalCalls,
 } from "#harness/hitl/index.js";
 import { requestModel, startModel } from "#harness/session-machine/transitions.js";
-import { failBoundaryEvent, failModelSelection, type Step } from "#harness/step/context.js";
+import {
+  failBoundaryEvent,
+  failModelSelection,
+  failTurnForReaction,
+  prepareModelCall,
+  type Step,
+} from "#harness/step/context.js";
 import type { TurnInput } from "#harness/step/intake.js";
 import {
   buildPrompt,
@@ -52,8 +58,9 @@ export interface ModelResponse {
  *
  * Approved work runs before the run is requested: approved workflow calls join their runs, the
  * budget gate passes, then approved local calls run and the model reads their results. Then the
- * turn requests a model run, after which reactions choose its model and tools, and the run starts
- * as its provider call begins.
+ * session's dynamic values are evaluated with the conversation the call reads, which fixes its
+ * model, tools, and context; the turn requests a model run, and the run starts as its provider
+ * call begins. A hook that failed during the turn fails it here, before the next model call.
  */
 export async function runModelStep(
   step: Step,
@@ -67,7 +74,13 @@ export async function runModelStep(
   },
 ): Promise<StepResult> {
   const { generation } = input;
+  const hookFailure = await failTurnForReaction(step);
+  if (hookFailure !== undefined) return hookFailure;
   const approves = hasApprovedWork(step);
+  if (!approves) {
+    const failed = await prepareModelCall(step, previewPrompt(step, input.turn));
+    if (failed !== undefined) return failed;
+  }
   let prompt = approves ? previewPrompt(step, input.turn) : await buildPrompt(step, input.turn);
   // The turn waits on the runtime for the runs approved calls joined.
   if (approves && (await dispatchApprovedWorkflows(step, input.approved))) {
@@ -80,14 +93,16 @@ export async function runModelStep(
   if (approves) {
     const held = await runApprovedLocalCalls(step, input.approved, input.setAttemptScope);
     if (held !== undefined) return held;
+    const failed = await prepareModelCall(step, previewPrompt(step, input.turn));
+    if (failed !== undefined) return failed;
     prompt = await buildPrompt(step, input.turn);
   }
 
   const run = await requestRun(step, prompt);
   if ("failed" in run) return run.failed;
   const projectedMessages = projectPrompt(prompt);
-  // Dynamic tools and subagents resolved when the run was requested, so the step's calls resolve
-  // once, against this catalog.
+  // Dynamic tools and subagents were evaluated before the run was requested, so the step's calls
+  // resolve once, against this catalog.
   const endsTurn = !step.hasDelegatedCaller && step.session.outputSchema === undefined;
   const catalog = buildStepCatalog({
     agentTools: step.config.tools,
@@ -165,8 +180,8 @@ export async function runModelStep(
 }
 
 /**
- * The turn requests a model run: reactions choose the model and tools from the prompt, or
- * the agent's model serves. No model fails the session.
+ * The turn requests a model run, which the dynamic model evaluated for it serves, or the agent's
+ * model. No model fails the session.
  */
 async function requestRun(
   step: Step,

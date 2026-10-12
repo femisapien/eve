@@ -191,7 +191,7 @@ export function auto<const T extends Readonly<Record<string, AutoOption>>>(
   /** The option a turn chooses: the decision's, or the fallback's. */
   async function choose(turn: TurnState | null, ctx: RecordContext): Promise<string | null> {
     if (turn === null) return null;
-    const state = routingState(turn, ctx.messages);
+    const state = routingState(turn, await ctx.messages());
     if (!state.messages.some((message) => message.role === "user")) {
       throw new Error("auto requires user text to select a model.");
     }

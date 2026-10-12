@@ -2,7 +2,7 @@
  * Hook authoring helpers for `agent/hooks/*.ts` files.
  *
  * Hooks react to the session: handlers for the events each commit carries (under `events:`), or
- * `select` with `render`, `record`, or both, like any dynamic value. Both return intents,
+ * `select` with `run`, which acts once for each new selection. Both may return intents,
  * {@link cancel} and {@link compact}, which act once per occurrence.
  */
 
@@ -19,12 +19,10 @@ export {
   type HookEventMap,
   type HookEventType,
   type HookIntent,
-  type HookRecordContext,
+  type HookOccurrence,
   type HookResult,
+  type HookRunContext,
   type HookView,
-  type RecordedHookDefinition,
-  type RecordOnlyHookDefinition,
-  type RenderedHookDefinition,
   type SelectHookDefinition,
   type StreamEventHook,
   type StreamEventHooks,

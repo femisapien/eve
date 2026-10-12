@@ -1,8 +1,13 @@
 import type { ContextContainer } from "#context/container.js";
 import { currentProjection } from "#harness/session-machine/current.js";
+import { createLogger } from "#internal/logging.js";
 import { INTENT_KIND, type HookIntent } from "#public/definitions/hook.js";
+import { toErrorMessage } from "#shared/errors.js";
 import type { JsonValue } from "#shared/json.js";
+import type { Reaction } from "./reaction.js";
 import { readReactionsState, writeReactionsState, type PendingIntent } from "./state.js";
+
+const log = createLogger("hooks");
 
 // Intents are what a reaction asks the session to do, such as compact or cancel. Unlike the
 // capabilities a reaction holds while its selection stands, an intent acts once for the
@@ -87,4 +92,48 @@ export function takeIntents(
 /** True while a hook's compact intent waits for a compaction to start. */
 export function hasPendingCompaction(ctx: Pick<ContextContainer, "get"> | undefined): boolean {
   return (readReactionsState(ctx).intents ?? []).some((intent) => intent.type === "compact");
+}
+
+/**
+ * A hook, or an effect eve runs after a commit, failed. During a turn, the turn fails at its next
+ * boundary: before its next model call, or as it would settle. Between turns, there's no turn to
+ * fail, and the failure is logged.
+ */
+export function reportReactionFailure(
+  ctx: ContextContainer,
+  reaction: Pick<Reaction, "id" | "label">,
+  error: unknown,
+): void {
+  const turnId = currentProjection(ctx).activeTurnId;
+  const message = toErrorMessage(error);
+  log.error(`Hook "${reaction.label}" failed.`, { error: message, turnId });
+  if (turnId === undefined) return;
+  const state = readReactionsState(ctx);
+  const intents = state.intents ?? [];
+  if (intents.some((intent) => intent.type === "fail" && intent.turnId === turnId)) return;
+  writeReactionsState(ctx, {
+    ...state,
+    intents: [
+      ...intents,
+      {
+        occurrence: `fail:${turnId}`,
+        reactionId: reaction.id,
+        reason: `Hook "${reaction.label}" failed: ${message}`,
+        turnId,
+        type: "fail",
+      },
+    ],
+  });
+}
+
+/** Takes the failure a hook reported for the running turn, if any. */
+export function takeTurnFailure(ctx: ContextContainer | undefined): string | undefined {
+  if (ctx === undefined) return undefined;
+  const turnId = currentProjection(ctx).activeTurnId;
+  if (turnId === undefined) return undefined;
+  const [failure] = takeIntents(
+    ctx,
+    (intent) => intent.type === "fail" && intent.turnId === turnId,
+  );
+  return failure?.reason;
 }

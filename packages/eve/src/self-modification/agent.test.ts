@@ -6,7 +6,7 @@ import { defineSelfModificationAgent } from "./agent.js";
 const context: DynamicResolveContext = {
   abortSignal: new AbortController().signal,
   channel: {},
-  messages: [],
+  messages: async () => [],
   session: { auth: { current: null, initiator: null }, id: "session" },
 };
 

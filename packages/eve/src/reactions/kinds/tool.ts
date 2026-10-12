@@ -1,5 +1,5 @@
 import { assertNotConnectionOwned } from "#connections/ownership.js";
-import type { ContextContainer } from "#context/container.js";
+import type { AlsContext, ContextContainer } from "#context/container.js";
 import type { ContextReader } from "#context/key.js";
 import { ConnectionRegistryKey } from "#context/providers/connection-key.js";
 import { TOOL_SLUG_PATTERN, TOOL_SLUG_RULE } from "#discover/grammar.js";
@@ -24,6 +24,8 @@ import {
 import { isWorkflowToolDefinition } from "#tools/workflow-definition.js";
 import { authoredRender, authoredRecord, type Reaction } from "../reaction.js";
 import { slotsOf } from "../runner.js";
+import { digestOf, readReactionsState, writeReactionsState } from "../state.js";
+import { currentView } from "#harness/session-machine/current.js";
 
 const log = createLogger("dynamic-tools");
 
@@ -57,16 +59,58 @@ export function toolReaction(resolver: ResolvedDynamicToolResolver): Reaction {
  */
 export function dynamicTools(ctx: Pick<ContextReader, "get"> | undefined): HarnessToolDefinition[] {
   const tools = new Map<string, HarnessToolDefinition>();
-  for (const { id, live } of slotsOf(ctx, "tool")) {
+  for (const { id, live, slot } of slotsOf(ctx, "tool")) {
+    const origin = { reaction: id, record: digestOf(slot.input ?? null) };
     for (const tool of (live as readonly HarnessToolDefinition[] | undefined) ?? []) {
       if (tools.has(tool.name)) {
         log.error(`Dynamic tool "${tool.name}" from "${id}" collides with another dynamic tool.`);
         continue;
       }
-      tools.set(tool.name, tool);
+      tools.set(tool.name, { ...tool, origin });
     }
   }
   return [...tools.values()];
+}
+
+/**
+ * Records, for calls that wait, such as for approval, the record each one's dynamic tool was
+ * rendered from. Forgets calls that have settled.
+ */
+export function bindWaitingCalls(
+  ctx: AlsContext | undefined,
+  calls: readonly { readonly callId: string; readonly tool: HarnessToolDefinition | undefined }[],
+): void {
+  if (ctx === undefined) return;
+  const state = readReactionsState(ctx);
+  const settled = new Set(
+    Object.entries(currentView(ctx).calls)
+      .filter(([, call]) => call.status === "settled")
+      .map(([callId]) => callId),
+  );
+  const bound = Object.fromEntries(
+    Object.entries(state.bound ?? {}).filter(([callId]) => !settled.has(callId)),
+  );
+  for (const { callId, tool } of calls) {
+    if (tool?.origin !== undefined) bound[callId] = tool.origin.record;
+  }
+  if (Object.keys(bound).length === 0 && state.bound === undefined) return;
+  writeReactionsState(ctx, { ...state, bound });
+}
+
+/**
+ * Why a waiting call can't run: its dynamic tool was rendered from another record than the one
+ * the model saw, such as after the caller's role changed during an approval. `undefined` when it
+ * can run.
+ */
+export function changedSinceOffered(
+  ctx: Pick<ContextReader, "get"> | undefined,
+  callId: string,
+  tool: HarnessToolDefinition | undefined,
+): string | undefined {
+  const offered = readReactionsState(ctx).bound?.[callId];
+  if (offered === undefined || tool?.origin?.record === offered) return undefined;
+  const name = tool?.name ?? "the tool";
+  return `The tool "${name}" changed since it was offered, so this call didn't run. Request it again if it's still needed.`;
 }
 
 /** The names of the dynamic tools the session's slots hold, live or not. */

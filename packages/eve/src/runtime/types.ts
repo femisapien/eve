@@ -216,10 +216,9 @@ export interface ResolvedHookDefinition extends ResolvedModuleSourceRef {
    * and ignored at dispatch time.
    */
   readonly events: Readonly<Record<string, StreamEventHook<SessionEvent>>>;
-  /** A hook authored as `select` with `record` or `render`, instead of `events`. */
+  /** A hook authored as `select` with `run`, instead of `events`. */
   readonly select?: ReactionSelectFn;
-  readonly record?: ReactionRecordFn;
-  readonly render?: ReactionRenderFn;
+  readonly run?: ReactionRecordFn;
 }
 
 /** A reaction's `select`, loaded from its module. */

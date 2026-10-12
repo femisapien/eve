@@ -14,6 +14,8 @@ import {
 } from "#execution/agent-sessions/remote.js";
 import type { RuntimeRemoteAgentDispatchRequest } from "#shared/action-types.js";
 import type { ResolvedRuntimeRemoteAgentNode } from "#runtime/types.js";
+import { defineRemoteAgent } from "#public/definitions/remote-agent.js";
+import { remoteAgentCredentials } from "#reactions/kinds/subagent.js";
 
 describe("resolveRemoteAgentStreamHeaders", () => {
   it("resolves static authored credentials without storing them in events", async () => {
@@ -84,6 +86,57 @@ describe("resolveRemoteAgentStreamHeaders", () => {
         url: "https://forged.example",
       }),
     ).rejects.toThrow(/does not match/);
+  });
+});
+
+describe("dynamic remote agent credentials", () => {
+  /** A dynamic subagent that renders a tenant's remote agent, with a token for that tenant. */
+  const tenantRemote = {
+    logicalPath: "subagents/finance.ts",
+    name: "finance",
+    nodeId: "subagents/finance",
+    render: (tenant: { readonly id: string; readonly region: string }) =>
+      defineRemoteAgent({
+        auth: async () => ({ headers: { authorization: `Bearer ${tenant.id}` } }),
+        description: "Finance",
+        url: `https://${tenant.region}.finance.example`,
+      }),
+  };
+  const bundle = {
+    graph: {
+      nodesByNodeId: new Map(),
+      root: {
+        subagentRegistry: {
+          dynamicNodeIds: new Set([tenantRemote.nodeId]),
+          dynamicResolvers: [tenantRemote],
+          subagentsByNodeId: new Map(),
+        },
+      },
+    },
+  } as never;
+
+  it("renders credentials from the parent's record for the child's destination", async () => {
+    await expect(
+      resolveRemoteAgentStreamHeaders({
+        bundle,
+        name: "finance",
+        recordOf: () => ({ id: "acme", region: "eu" }),
+        resolverId: tenantRemote.nodeId,
+        url: "https://eu.finance.example",
+      }),
+    ).resolves.toEqual({ authorization: "Bearer acme" });
+  });
+
+  it("sends no credentials to a destination the record doesn't render", async () => {
+    // The tenant moved to another region after the child opened in the old one.
+    await expect(
+      remoteAgentCredentials({
+        destination: { name: "finance", url: "https://eu.finance.example" },
+        nodeId: tenantRemote.nodeId,
+        record: { id: "acme", region: "us" },
+        resolvers: [tenantRemote as never],
+      }),
+    ).rejects.toThrow("now renders another destination");
   });
 });
 

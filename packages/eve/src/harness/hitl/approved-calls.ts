@@ -12,7 +12,9 @@ import {
   TOOL_EXECUTION_DENIED_MESSAGE,
   unavailableToolMessage,
 } from "#harness/input-request-resolution.js";
+import { contextStorage } from "#context/container.js";
 import { isRunnableTool } from "#harness/tools.js";
+import { changedSinceOffered } from "#reactions/kinds/tool.js";
 import type { HandleEventFn, HarnessToolLookup } from "#harness/types.js";
 import { SEARCH_TOOL_NAME } from "#protocol/catalog-tools.js";
 import { callSettledFrom } from "#harness/call-facts.js";
@@ -49,7 +51,11 @@ export async function runApprovedCalls(input: {
     input.requests.map(async (request): Promise<CallOutcome> => {
       const { callId, toolName } = request.action;
       const definition = input.tools.get(toolName);
-      if (isRunnableTool(definition)) {
+      // A dynamic tool can change while its call waits: the call runs only the tool it was for.
+      const changed = isRunnableTool(definition)
+        ? changedSinceOffered(contextStorage.getStore(), callId, definition)
+        : undefined;
+      if (isRunnableTool(definition) && changed === undefined) {
         return await executeToolCall(
           request.action,
           { ...input, clearedBy: { interactionId: request.requestId }, definition },
@@ -60,7 +66,7 @@ export async function runApprovedCalls(input: {
       const searchable = input.tools.get(SEARCH_TOOL_NAME) !== undefined;
       const failed = failedCall({
         callId,
-        message: unavailableToolMessage(toolName, searchable),
+        message: changed ?? unavailableToolMessage(toolName, searchable),
         toolName,
       });
       await input.publish(callSettledFrom(failed.result, { scope: scopeOf(input.position) }));

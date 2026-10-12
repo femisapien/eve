@@ -18,6 +18,7 @@ import type {
   SessionTurn,
 } from "#channel/types.js";
 import { ContextKey } from "#context/key.js";
+import type { JsonValue } from "#shared/json.js";
 import { STUB_CONTEXT_KEY, type StubScope } from "#tool-stubs/types.js";
 import {
   SESSION_INBOX_CONTEXT_KEY,
@@ -220,6 +221,11 @@ export type DurableDynamicSubagentSelection =
       readonly kind: "remote";
       readonly prepared: PreparedRuntimeDelegationTool;
       readonly remoteAgent: DynamicRemoteAgentConfig;
+      /**
+       * What the remote agent's `render` rendered from, when it carries credentials: the steps
+       * that reach the child render them again from it.
+       */
+      readonly record?: JsonValue;
     }
   | null;
 
@@ -247,8 +253,8 @@ export interface DurableDynamicSkillMetadata {
    */
   readonly revision?: string;
   /**
-   * The package's files, base64-encoded, for packages with supporting files: the session records
-   * them, so a step in any process can write the package to a new sandbox.
+   * The package's files, base64-encoded, when `record` returned them without a render: they're
+   * part of the record. Files a render makes are rendered again wherever a sandbox needs them.
    */
   readonly files?: readonly { readonly relativePath: string; readonly content: string }[];
 }

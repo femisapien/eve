@@ -17,7 +17,8 @@ import {
 import type { ModelResponse } from "#harness/model-call/run.js";
 import type { EndsTurnTools } from "#harness/model-call/tools.js";
 import type { JsonValue } from "#shared/json.js";
-import type { Step } from "#harness/step/context.js";
+import { failTurnForReaction, type Step } from "#harness/step/context.js";
+import { bindWaitingCalls } from "#reactions/kinds/tool.js";
 import {
   fail,
   finishTurn,
@@ -117,6 +118,14 @@ export async function handleStepResult(step: Step, input: ModelResponse): Promis
   );
 
   const approvalRequests = result.approvalRequests ?? [];
+  // A call that waits for approval runs only while its dynamic tool's record stands.
+  bindWaitingCalls(
+    step.ctx,
+    approvalRequests.map((request) => ({
+      callId: request.action.callId,
+      tool: input.catalog.get(request.action.toolName),
+    })),
+  );
   // Only unanswered calls can dispatch: automatic denials already have results.
   const blockedCallIds = new Set([
     ...approvalRequests.map((request) => request.action.callId),
@@ -364,6 +373,9 @@ async function settleTurn(
   },
 ): Promise<StepResult> {
   const { history, result, stepOutput } = input;
+  // A hook that failed after the turn's last model call fails it rather than let it complete.
+  const hookFailure = await failTurnForReaction(step);
+  if (hookFailure !== undefined) return hookFailure;
   const schema = step.session.outputSchema;
   step.session = clearTurnClientContextState(step.session);
 

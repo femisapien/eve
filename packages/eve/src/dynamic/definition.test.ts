@@ -13,11 +13,11 @@ const tool = defineTool({ description: "Echo.", execute: async () => null, input
 describe("defineDynamic and defineHook", () => {
   it("compile to the same reaction form", () => {
     const dynamic = defineDynamicTools({ select: () => null, render: () => tool });
-    const hook = defineHook({ select: () => null, render: () => cancel() });
-    const recorded = defineHook({ select: () => null, record: async () => cancel() });
+    const hook = defineHook({ select: () => null, run: () => cancel() });
+    const awaited = defineHook({ select: () => null, run: async () => cancel() });
     const events = defineHook({ events: { "turn.started": () => null } });
 
-    for (const definition of [dynamic, hook, recorded, events]) {
+    for (const definition of [dynamic, hook, awaited, events]) {
       expect(definition).toMatchObject({ kind: DYNAMIC_SENTINEL_KIND });
     }
   });
@@ -28,9 +28,20 @@ describe("defineDynamic and defineHook", () => {
       defineDynamicTools({ render: () => tool }),
     ).toThrow("Use select: once to resolve once per session");
     expect(() =>
-      // @ts-expect-error: a hook's render needs a select too.
-      defineHook({ render: () => null }),
-    ).toThrow("Use select: once to resolve once per session");
+      // @ts-expect-error: a hook's run needs a select too.
+      defineHook({ run: () => null }),
+    ).toThrow("requires a select function beside run");
+  });
+
+  it("give hooks run, and values record and render", () => {
+    expect(() =>
+      // @ts-expect-error: a hook has nothing to render.
+      defineHook({ select: () => null, render: () => cancel() }),
+    ).toThrow("a hook acts rather than holds a value");
+    expect(() =>
+      // @ts-expect-error: run is a hook's.
+      defineDynamicTools({ select: () => null, run: () => null }),
+    ).toThrow("run is a hook's");
   });
 
   it("require render for tools and connections", () => {
@@ -59,7 +70,7 @@ describe("defineDynamic and defineHook", () => {
   it("reject a hook with both forms", () => {
     expect(() =>
       // @ts-expect-error: events, or select, never both.
-      defineHook({ events: {}, render: () => null, select: () => null }),
+      defineHook({ events: {}, run: () => null, select: () => null }),
     ).toThrow("not both");
   });
 

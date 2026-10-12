@@ -1,9 +1,11 @@
 import type { ModelMessage } from "ai";
 
-import type { AlsContext } from "#context/container.js";
+import type { AlsContext, ContextContainer } from "#context/container.js";
 import { ParentSessionKey, SessionCallbackKey, SessionPredecessorKey } from "#context/keys.js";
+import { takeTurnFailure } from "#reactions/intents.js";
 import { takeUserInstructionMessages } from "#reactions/kinds/instructions.js";
 import { isDynamicModelSelectionError } from "#reactions/kinds/model.js";
+import { evaluateValues, isReactionFailedError } from "#reactions/runner.js";
 import { type HarnessModelMessage, validateHarnessModelMessages } from "#harness/messages.js";
 import {
   applyTransition,
@@ -13,6 +15,7 @@ import {
 } from "#harness/session-machine/commit.js";
 import { recordAppliedSession, type StepProjection } from "#harness/session-machine/current.js";
 import { fail, receive } from "#harness/session-machine/transitions.js";
+import { withClientContext, type Prompt } from "#harness/step/prompt.js";
 import {
   activeTurnId,
   type SessionView,
@@ -89,11 +92,7 @@ export function createStep(input: {
   return step;
 }
 
-/**
- * Opens the turn, or joins the open one. User-role dynamic instructions that changed with the
- * turn's start join history ahead of its input. Returns the step's result when opening failed the
- * session.
- */
+/** Opens the turn, or joins the open one. Returns the step's result when opening failed the session. */
 export async function openTurn(
   step: Step,
   opened: {
@@ -125,16 +124,69 @@ export async function openTurn(
   } catch (error) {
     failure = { error };
   }
-  const instructionMessages = ctx === undefined ? [] : takeUserInstructionMessages(ctx);
+  if (failure !== undefined) return failBoundaryEvent(step, failure.error);
+  step.instrumentation?.setTurnId(step.position().turnId);
+  return undefined;
+}
+
+/**
+ * Before a model call: the session's dynamic values are evaluated with the conversation the call
+ * reads, and user-role instructions from new occurrences join history, ahead of the turn's input
+ * on its first call. A value that fails fails the turn; returns the step's result then.
+ */
+export async function prepareModelCall(
+  step: Step,
+  preview: Prompt,
+): Promise<StepResult | undefined> {
+  // The step's context is the session's container; direct harness tests run without one.
+  const ctx = step.ctx as ContextContainer | undefined;
+  if (ctx === undefined) return undefined;
+  throwIfTurnAborted(step.config.abortSignal);
+  try {
+    await evaluateValues(ctx, {
+      abortSignal: step.config.abortSignal,
+      conversation: validateHarnessModelMessages(withClientContext(preview)),
+    });
+  } catch (error) {
+    if (!isReactionFailedError(error)) throw error;
+    return failTurn(step, error, "REACTION_FAILED");
+  }
+  const instructionMessages = takeUserInstructionMessages(ctx);
   if (instructionMessages.length > 0) {
     step.session = {
       ...step.session,
       history: validateHarnessModelMessages([...step.session.history, ...instructionMessages]),
     };
   }
-  if (failure !== undefined) return failBoundaryEvent(step, failure.error);
-  step.instrumentation?.setTurnId(step.position().turnId);
   return undefined;
+}
+
+/** A hook failed during the turn: the turn fails. Returns the step's result then. */
+export async function failTurnForReaction(step: Step): Promise<StepResult | undefined> {
+  const reason = takeTurnFailure(step.ctx as ContextContainer | undefined);
+  if (reason === undefined) return undefined;
+  return failTurn(step, new Error(reason), "HOOK_FAILED");
+}
+
+/** The turn fails with `error`; the session waits for its next message. */
+async function failTurn(step: Step, error: unknown, code: string): Promise<StepResult> {
+  throwIfTurnAborted(step.config.abortSignal);
+  step.instrumentation?.recordError(error);
+  const message = toErrorMessage(error);
+  const errorId = createErrorId();
+  log.error("turn failed", {
+    code,
+    error,
+    errorId,
+    sessionId: step.session.sessionId,
+    turnId: activeTurnId(step.position()),
+  });
+  await step.apply(fail(step.view(), { code, details: { errorId }, message }));
+  return {
+    next: null,
+    session: step.session,
+    settledTurn: { isError: true, output: message },
+  };
 }
 
 /** A lifecycle event failed to publish: a dynamic model selection failure ends the session. */

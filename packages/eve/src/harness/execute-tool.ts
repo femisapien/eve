@@ -14,6 +14,11 @@ import type { PreparedToolBehavior } from "#tools/behavior.js";
  */
 export interface HarnessToolDefinition {
   readonly availableInSubagents?: boolean;
+  /**
+   * For a dynamic tool: the reaction that rendered it, and a digest of the record it rendered
+   * from. A call that waits runs only while that record stands.
+   */
+  readonly origin?: { readonly reaction: string; readonly record: string };
   readonly label?: InternalToolLabelDefinition;
   readonly approvalKey?: (toolInput: Readonly<Record<string, unknown>>) => string;
   readonly behavior?: PreparedToolBehavior;
