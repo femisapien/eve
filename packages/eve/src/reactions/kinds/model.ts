@@ -10,9 +10,9 @@ import {
 import type { CompiledBundle } from "#runtime/sessions/runtime-context-keys.js";
 import type { PublicAgentDynamicModelResult } from "#shared/agent-definition.js";
 import { toErrorMessage } from "#shared/errors.js";
-import type { JsonValue } from "#shared/json.js";
+import { parseJsonValue, type JsonValue } from "#shared/json.js";
 import { authoredRecord, authoredRender, type Reaction } from "../reaction.js";
-import { readLive, readReactionsState } from "../state.js";
+import { readLive, readReactionsState, slotValueOf } from "../state.js";
 
 const MODEL_REACTION_ID = "model:agent";
 const DYNAMIC_MODEL_SELECTION_ERROR_CODE = "EVE_DYNAMIC_MODEL_SELECTION_FAILED";
@@ -90,7 +90,7 @@ async function contributionOf(
       ? undefined
       : selection;
   const value: ModelSlotValue = { reference: selection.reference };
-  return { live, value: value as unknown as JsonValue };
+  return { live, value: parseJsonValue(value) };
 }
 
 /** The model the next call uses: the dynamic agent's, or the static one. */
@@ -102,7 +102,7 @@ export function getEffectiveModelSelection(
     const live = readLive(ctx, MODEL_REACTION_ID, slot);
     return (
       (live?.live as LiveDynamicModelSelection | undefined) ?? {
-        reference: (slot.value as unknown as ModelSlotValue).reference,
+        reference: slotValueOf<ModelSlotValue>(slot.value).reference,
       }
     );
   }

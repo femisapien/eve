@@ -11,7 +11,7 @@ import { createLogger } from "#internal/logging.js";
 import { eveNamespaceReservation } from "#protocol/runtime-tools.js";
 import type { ResolvedDynamicSkillResolver } from "#runtime/types.js";
 import type { SandboxState } from "#sandbox/state.js";
-import type { JsonValue } from "#shared/json.js";
+import { parseJsonValue } from "#shared/json.js";
 import { isBrandedSkillEntry, type SkillPackageDefinition } from "#shared/skill-definition.js";
 import {
   type MaterializableSkillPackage,
@@ -22,6 +22,7 @@ import {
 } from "#shared/skill-package.js";
 import { authoredRender, authoredRecord, type Reaction } from "../reaction.js";
 import { slotsOf } from "../runner.js";
+import { slotValueOf } from "../state.js";
 
 const log = createLogger("dynamic-skills");
 
@@ -44,8 +45,8 @@ export function skillReaction(resolver: ResolvedDynamicSkillResolver): Reaction 
       const value = skills.map((skill) => toDurableSkill(skill, { files: !rendered }));
       const withFiles = skills.filter((skill) => skill.files.length > 1);
       return {
-        value: value as unknown as JsonValue,
-        ...(rendered && withFiles.length > 0 ? { live: withFiles } : {}),
+        value: parseJsonValue(value),
+        ...(rendered && withFiles.length > 0 && { live: withFiles }),
       };
     },
     id: `skill:${resolver.extensionNamespace ?? ""}:${resolver.slug}`,
@@ -66,17 +67,17 @@ export function dynamicSkillManifest(
   const manifest: Record<string, readonly DurableDynamicSkillMetadata[]> = {};
   const owners = new Map<string, string>();
   for (const { id, slot } of slotsOf(ctx, "skill")) {
-    const skills = ((slot.value ?? []) as unknown as readonly DurableDynamicSkillMetadata[]).filter(
-      (skill) => {
-        const owner = owners.get(skill.name);
-        if (owner === undefined) {
-          owners.set(skill.name, id);
-          return true;
-        }
-        log.error(`Dynamic skill "${skill.name}" from "${id}" collides with "${owner}".`);
-        return false;
-      },
-    );
+    const skills = (
+      slotValueOf<readonly DurableDynamicSkillMetadata[] | null>(slot.value) ?? []
+    ).filter((skill) => {
+      const owner = owners.get(skill.name);
+      if (owner === undefined) {
+        owners.set(skill.name, id);
+        return true;
+      }
+      log.error(`Dynamic skill "${skill.name}" from "${id}" collides with "${owner}".`);
+      return false;
+    });
     if (skills.length > 0) manifest[id] = skills;
   }
   return manifest;
@@ -98,7 +99,8 @@ export async function syncDynamicSkillFiles(ctx: ContextContainer): Promise<void
         skill,
       ]),
     );
-    for (const skill of (slot.value ?? []) as unknown as readonly DurableDynamicSkillMetadata[]) {
+    for (const skill of slotValueOf<readonly DurableDynamicSkillMetadata[] | null>(slot.value) ??
+      []) {
       if (skill.revision === undefined) continue;
       desired.set(skill.name, skill.revision);
       const files =
@@ -179,25 +181,21 @@ function toDurableSkill(
   skill: MaterializableSkillPackage,
   options: { readonly files: boolean },
 ): DurableDynamicSkillMetadata {
-  return {
-    ...(skill.deferred === true ? { deferred: true } : {}),
-    description: skill.description,
-    markdown: skill.markdown,
-    name: skill.name,
-    ...(skill.files.length > 1
-      ? {
-          ...(options.files
-            ? {
-                files: skill.files.map(({ content, relativePath }) => ({
-                  content: content.toString("base64"),
-                  relativePath,
-                })),
-              }
-            : {}),
-          revision: skillPackageRevision(skill),
-        }
-      : {}),
-  };
+  const durable: {
+    -readonly [K in keyof DurableDynamicSkillMetadata]: DurableDynamicSkillMetadata[K];
+  } = { description: skill.description, markdown: skill.markdown, name: skill.name };
+  if (skill.deferred === true) durable.deferred = true;
+  if (skill.files.length > 1) {
+    // Files a render makes are rendered again where a sandbox needs them; only recorded ones stay.
+    if (options.files) {
+      durable.files = skill.files.map(({ content, relativePath }) => ({
+        content: content.toString("base64"),
+        relativePath,
+      }));
+    }
+    durable.revision = skillPackageRevision(skill);
+  }
+  return durable;
 }
 
 function sandboxIdentity(state: SandboxState): string | null {

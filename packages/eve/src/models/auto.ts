@@ -224,11 +224,12 @@ export function auto<const T extends Readonly<Record<string, AutoOption>>>(
 
   // record decides, once per turn, and eve keeps the option it chose; render turns the option into
   // a model, so a process that didn't decide renders the same model without deciding again.
-  return defineDynamic({
+  const definition = defineDynamic({
     select: turnState,
     record: (state: TurnState | null, ctx) => choose(state, ctx),
     render: (key: string | null) => (key === null ? null : optionOf(key)),
-  }) as unknown as DynamicSentinel<PublicAgentDynamicModelResult, TurnState | null>;
+  });
+  return definition as DynamicSentinel<PublicAgentDynamicModelResult, TurnState | null>;
 
   function optionOf(key: string): PublicAgentDynamicModelResult {
     const option = models.get(key);

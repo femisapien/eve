@@ -78,8 +78,8 @@ export async function resolveHookDefinition(
         : expectFunction(resolvedRecord.run, describe(definition, "to provide run as a function"));
     return {
       events,
-      ...(select === undefined ? {} : { select: select as ResolvedHookDefinition["select"] }),
-      ...(run === undefined ? {} : { run: run as ResolvedHookDefinition["run"] }),
+      ...(select !== undefined && { select: select as ResolvedHookDefinition["select"] }),
+      ...(run !== undefined && { run: run as ResolvedHookDefinition["run"] }),
       exportName: definition.exportName,
       logicalPath: definition.logicalPath,
       slug: definition.slug,

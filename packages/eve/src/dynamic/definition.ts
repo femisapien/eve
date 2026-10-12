@@ -299,9 +299,12 @@ export function assertReactionForm(
  * ```ts
  * import { defineDynamic, defineTool } from "eve/tools";
  *
+ * const everyone = { list_users };
+ * const admins = { list_users, delete_user };
+ *
  * export default defineDynamic({
  *   select: (_view, { session }) => session.auth.current?.attributes.role ?? null,
- *   render: (role) => (role === "admin" ? { list_users, delete_user } : { list_users }),
+ *   render: (role) => (role === "admin" ? admins : everyone),
  * });
  * ```
  */

@@ -53,7 +53,7 @@ async function buildReactions(bundle: CompiledBundle): Promise<BundleReactions> 
       ...((agent.dynamicConnectionResolvers ?? []).length === 0
         ? {}
         : { connection: installDynamicConnections }),
-      ...(agent.dynamicSkillResolvers.length === 0 ? {} : { skill: syncDynamicSkillFiles }),
+      ...(agent.dynamicSkillResolvers.length !== 0 && { skill: syncDynamicSkillFiles }),
     },
     reactions,
   };

@@ -77,6 +77,14 @@ export function writeReactionsState(ctx: AlsContext, state: ReactionsState): voi
 }
 
 /** A stable digest of a JSON selection. */
+/**
+ * A slot's value in the shape its kind wrote. The kind checked it when it contributed, so the
+ * session holds only values of that shape: each kind reads its own slots, never another's.
+ */
+export function slotValueOf<T>(value: JsonValue | null | undefined): T {
+  return value as T;
+}
+
 export function digestOf(value: JsonValue): string {
   return createHash("sha256").update(canonicalJson(value)).digest("base64url").slice(0, 22);
 }

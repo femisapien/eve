@@ -231,8 +231,8 @@ function declaration(tool: HarnessToolDefinition): JsonObject {
     ...(tool.outputSchema === undefined
       ? {}
       : { outputSchema: serializeOutputSchema(tool.outputSchema as ToolSchemaSource) }),
-    ...(tool.deferred === true ? { deferred: true } : {}),
-    ...(tool.endsTurn === true ? { endsTurn: true } : {}),
-    ...(tool.availableInSubagents === false ? { availableInSubagents: false } : {}),
+    ...(tool.deferred === true && { deferred: true }),
+    ...(tool.endsTurn === true && { endsTurn: true }),
+    ...(tool.availableInSubagents === false && { availableInSubagents: false }),
   };
 }

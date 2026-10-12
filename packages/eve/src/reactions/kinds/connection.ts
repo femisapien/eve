@@ -62,8 +62,8 @@ function target(connection: ResolvedConnectionDefinition): JsonObject {
     name: connection.connectionName,
     protocol: connection.protocol,
     url: connection.url,
-    ...(connection.instanceId === undefined ? {} : { instanceId: connection.instanceId }),
-    ...(typeof credentialOwner === "string" ? { credentialOwner } : {}),
+    ...(connection.instanceId !== undefined && { instanceId: connection.instanceId }),
+    ...(typeof credentialOwner === "string" && { credentialOwner }),
   };
 }
 

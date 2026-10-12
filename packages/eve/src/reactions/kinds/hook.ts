@@ -111,7 +111,7 @@ function hookRunContext(
     abortSignal: ctx.abortSignal,
     agent: base.agent,
     channel: { ...ctx.channel, ...base.channel },
-    ...(ctx.conversation === undefined ? {} : { conversation: ctx.conversation }),
+    ...(ctx.conversation !== undefined && { conversation: ctx.conversation }),
     getSandbox: base.getSandbox,
     messages: async () => requireHistory(ctx, hook.logicalPath),
     occurrence,

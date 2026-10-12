@@ -47,8 +47,8 @@ export function queueIntents(
         occurrence,
         reactionId,
         type: intent.type,
-        ...(intent.reason === undefined ? {} : { reason: intent.reason }),
-        ...(intent.type === "cancel" ? { turnId } : {}),
+        ...(intent.reason !== undefined && { reason: intent.reason }),
+        ...(intent.type === "cancel" && { turnId }),
       });
       if (!asked.includes(occurrence)) asked.push(occurrence);
     }

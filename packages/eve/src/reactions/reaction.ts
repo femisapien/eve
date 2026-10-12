@@ -58,6 +58,17 @@ export interface InternalRecordContext extends SelectContext {
   readonly history: readonly ModelMessage[] | undefined;
 }
 
+/**
+ * The context a framework resolver's `record` receives: eve passes its own context to the
+ * resolvers it marks with `asFrameworkResolver`, where authored ones get the public part.
+ */
+export function frameworkRecordContext(ctx: unknown): InternalRecordContext {
+  if (typeof ctx !== "object" || ctx === null || !("ctx" in ctx) || !("written" in ctx)) {
+    throw new Error("A framework resolver ran without eve's record context.");
+  }
+  return ctx as InternalRecordContext;
+}
+
 /** One reaction as the runner sees it. Every surface desugars to this. */
 export interface Reaction {
   readonly id: string;
@@ -137,7 +148,7 @@ export function publicRecordContext(ctx: InternalRecordContext, label: string): 
     channel: ctx.channel,
     messages: async () => requireHistory(ctx, label),
     session: ctx.session,
-    ...(ctx.conversation === undefined ? {} : { conversation: ctx.conversation }),
+    ...(ctx.conversation !== undefined && { conversation: ctx.conversation }),
   };
 }
 

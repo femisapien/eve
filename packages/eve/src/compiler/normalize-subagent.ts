@@ -28,6 +28,8 @@ export type NormalizedSubagentConfig =
       readonly url?: string;
     };
 
+type DynamicSubagentConfig = Extract<NormalizedSubagentConfig, { readonly kind: "dynamic" }>;
+
 export function normalizeSubagentConfig(value: unknown, message: string): NormalizedSubagentConfig {
   // A dynamic subagent chooses the whole subagent: its description, or whether there is one. A
   // subagent the parent always sees, with a model chosen per session, is a defineAgent() whose
@@ -39,17 +41,18 @@ export function normalizeSubagentConfig(value: unknown, message: string): Normal
   }
   if (isDynamicSentinel(value)) {
     assertDynamicSentinelKeys(value, message, ["build", "defaultTools"]);
-    const record = value as unknown as Record<string, unknown>;
+    const record = expectObjectRecord(value, message);
     // assertDynamicSentinelKeys checked the form: select with record, render, or both.
-    const build =
-      record.build === undefined ? undefined : normalizeDynamicSubagentBuild(record.build, message);
-    return {
-      kind: "dynamic",
-      ...(build === undefined ? {} : { build }),
-      ...(record.defaultTools === undefined
-        ? {}
-        : { defaultTools: expectBoolean(record.defaultTools, message) }),
-    };
+    const config: {
+      -readonly [K in keyof DynamicSubagentConfig]: DynamicSubagentConfig[K];
+    } = { kind: "dynamic" };
+    if (record.build !== undefined) {
+      config.build = normalizeDynamicSubagentBuild(record.build, message);
+    }
+    if (record.defaultTools !== undefined) {
+      config.defaultTools = expectBoolean(record.defaultTools, message);
+    }
+    return config;
   }
 
   if (

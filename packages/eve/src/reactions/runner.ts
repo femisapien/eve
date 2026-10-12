@@ -259,7 +259,7 @@ function actOnCancels(
     return;
   }
   takeIntents(ctx, (intent) => intent.type === "cancel");
-  cancelTurn({ hook, ...(first.reason === undefined ? {} : { reason: first.reason }) });
+  cancelTurn({ hook, ...(first.reason !== undefined && { reason: first.reason }) });
 }
 
 function startsCompaction(written: readonly WrittenEvent[]): boolean {
@@ -373,7 +373,7 @@ function failedSlot(
     error: toErrorMessage(error),
     since: previous?.value === null ? previous.since : line,
     value: null,
-    ...(previous?.occurrence === undefined ? {} : { occurrence: previous.occurrence }),
+    ...(previous?.occurrence !== undefined && { occurrence: previous.occurrence }),
   };
 }
 
@@ -430,8 +430,8 @@ async function evaluate(
     occurrence: run.occurrence,
     since: unchanged ? previous.since : run.line,
     value,
-    ...(live === undefined || input === undefined ? {} : { input }),
-    ...(run.revision === undefined ? {} : { revision: run.revision }),
+    ...(live !== undefined && input !== undefined && { input }),
+    ...(run.revision !== undefined && { revision: run.revision }),
   };
   writeSlot(ctx, reaction.id, slot);
   if (live === undefined) clearLive(ctx, reaction.id);
@@ -550,7 +550,7 @@ export function selectContextOf(ctx: Pick<ContextContainer, "get">): SelectConte
       kind: channel === undefined ? undefined : getAdapterKind(channel),
       metadata: ctx.get(ChannelInstrumentationKey)?.metadata,
     },
-    ...(conversation === undefined ? {} : { conversation }),
+    ...(conversation !== undefined && { conversation }),
     session: {
       auth: { current: ctx.get(AuthKey) ?? null, initiator: ctx.get(InitiatorAuthKey) ?? null },
       id: ctx.get(SessionIdKey) ?? "",

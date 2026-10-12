@@ -6,7 +6,7 @@ import {
   type SelectContext,
 } from "#dynamic/definition.js";
 import { principalOf, resolveMemoryScope } from "#reactions/kinds/memory.js";
-import type { InternalRecordContext } from "#reactions/reaction.js";
+import { frameworkRecordContext, type InternalRecordContext } from "#reactions/reaction.js";
 import { isBrandedToolEntry } from "#tools/dynamic.js";
 
 /** A memory slot's provider tools, as a dynamic tool resolver named `<slot>__<key>`. */
@@ -20,10 +20,7 @@ export function createMemoryToolDynamicDefinition(definition: MemoryDefinition, 
       // The scope is the data the tools are made from, and the session records it.
       record: async (_selected: unknown, resolveContext: RecordContext) => {
         if (definition.provider.tools === undefined) return null;
-        return resolveMemoryScope(
-          { ...definition, slot },
-          resolveContext as unknown as InternalRecordContext,
-        );
+        return resolveMemoryScope({ ...definition, slot }, frameworkRecordContext(resolveContext));
       },
       // The provider builds its tools from the scope, in any process, without resolving it again.
       render: async (scope: MemoryScope | null, resolveContext?: InternalRecordContext) => {
@@ -32,10 +29,10 @@ export function createMemoryToolDynamicDefinition(definition: MemoryDefinition, 
         const context = {
           abortSignal,
           channel,
-          ...(conversation === undefined ? {} : { conversation }),
           memory: { scope, slot },
           session,
-        } as MemoryToolsContext;
+        } as { -readonly [K in keyof MemoryToolsContext]: MemoryToolsContext[K] };
+        if (conversation !== undefined) context.conversation = conversation;
         const result = await definition.provider.tools(context);
         if (result === null) return null;
         if (typeof result !== "object" || Array.isArray(result)) {

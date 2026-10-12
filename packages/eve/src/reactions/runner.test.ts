@@ -533,7 +533,7 @@ describe("runReactions", () => {
         slug: "count",
       },
     ]);
-    const [record] = written(1, "content.delta") as unknown as readonly object[];
+    const [record] = written(1, "content.delta") as readonly object[];
     await commit(ctx, { written: [{ ...record, progress: true }] as never });
     expect(selects).toBe(1);
   });

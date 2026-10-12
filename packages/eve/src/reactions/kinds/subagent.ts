@@ -20,6 +20,7 @@ import type { AgentToolExposure } from "#shared/agent-definition.js";
 import { parseJsonValue, type JsonValue } from "#shared/json.js";
 import { authoredRecord, authoredRender, type Reaction } from "../reaction.js";
 import { slotsOf } from "../runner.js";
+import { slotValueOf } from "../state.js";
 
 type Selection = Exclude<DurableDynamicSubagentSelection, null>;
 
@@ -55,7 +56,7 @@ export function readDynamicSubagentSelections(
 ): Readonly<Record<string, Selection>> {
   const selections: Record<string, Selection> = {};
   for (const { id, slot } of slotsOf(ctx, "subagent")) {
-    const selection = slot.value as unknown as Selection | null;
+    const selection = slotValueOf<Selection | null>(slot.value);
     if (selection === null) continue;
     selections[id.slice("subagent:".length)] =
       selection.kind === "remote" && selection.remoteAgent.credentials === true

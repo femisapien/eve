@@ -241,5 +241,5 @@ export function defineHook<TSelected>(
   definition: SelectHookDefinition<TSelected>,
 ): SelectHookDefinition<TSelected>;
 export function defineHook(definition: HookDefinition<HookEventKey, unknown>): HookDefinition {
-  return defineReaction(definition as never, "defineHook", HOOK_FORM) as unknown as HookDefinition;
+  return defineReaction(definition as never, "defineHook", HOOK_FORM) as HookDefinition;
 }
